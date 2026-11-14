@@ -297,7 +297,7 @@ func (g *liveGateway) admit(auth *authHeaders, preReqCtx *schemas.BifrostContext
 	}
 	key, err := g.client.SelectKeyForProviderRequestType(meter.keySelectionContext(), schemas.LiveRequest, target.providerKey, target.voiceModel, target.backendModel)
 	if err != nil {
-		bifrostErr := newRealtimeWireBifrostError(400, "invalid_request_error", err.Error())
+		bifrostErr := withSelectKeyRefusal(newRealtimeWireBifrostError(400, "invalid_request_error", err.Error()), err)
 		meter.abort(bifrostErr)
 		cancel()
 		return nil, bifrostErr
@@ -435,7 +435,7 @@ func closeSideband(ctx *schemas.BifrostContext, hooks *bifrost.RealtimeTurnHooks
 func (g *liveGateway) controlKey(ctx *schemas.BifrostContext, providerKey schemas.ModelProvider) (schemas.Key, *schemas.BifrostError) {
 	key, err := g.client.SelectKeyForProviderRequestType(ctx, schemas.LiveRequest, providerKey, "")
 	if err != nil {
-		return schemas.Key{}, newRealtimeWireBifrostError(400, "invalid_request_error", err.Error())
+		return schemas.Key{}, withSelectKeyRefusal(newRealtimeWireBifrostError(400, "invalid_request_error", err.Error()), err)
 	}
 	return key, nil
 }

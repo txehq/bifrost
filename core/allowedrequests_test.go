@@ -2,6 +2,7 @@ package bifrost
 
 import (
 	"context"
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -402,8 +403,19 @@ func TestSelectKeyForProviderRequestTypeEnforcesAllowedRequests(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
 	defer ctx.Cancel()
 	for _, rt := range []schemas.RequestType{schemas.WebSocketResponsesRequest, schemas.LiveRequest, schemas.LiveSidebandRequest} {
-		if _, err := client.SelectKeyForProviderRequestType(ctx, rt, name, "gpt-realtime"); err == nil {
+		_, err := client.SelectKeyForProviderRequestType(ctx, rt, name, "gpt-realtime")
+		if err == nil {
 			t.Errorf("%s: a key was handed out for an operation the provider does not allow", rt)
+			continue
+		}
+		// Typed, so the session handlers answer it as unsupported_operation (TXE-7423).
+		var refused *schemas.OperationNotAllowedError
+		if !errors.As(err, &refused) {
+			t.Errorf("%s: refusal is %T, want *schemas.OperationNotAllowedError", rt, err)
+			continue
+		}
+		if refused.RequestType != rt || refused.Provider != name {
+			t.Errorf("%s: refusal names %s on %s", rt, refused.RequestType, refused.Provider)
 		}
 	}
 	key, err := client.SelectKeyForProviderRequestType(ctx, schemas.RealtimeRequest, name, "gpt-realtime")

@@ -539,7 +539,7 @@ func (h *WSRealtimeHandler) runRealtimeSession(
 		var err error
 		key, err = h.client.SelectKeyForProviderRequestType(bifrostCtx, schemas.RealtimeRequest, providerKey, model)
 		if err != nil {
-			clientConn.writeRealtimeError(newRealtimeWireBifrostError(400, "invalid_request_error", err.Error()))
+			clientConn.writeRealtimeError(withSelectKeyRefusal(newRealtimeWireBifrostError(400, "invalid_request_error", err.Error()), err))
 			return
 		}
 		if mapped && mapping.ProviderToken != "" {
