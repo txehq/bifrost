@@ -542,17 +542,9 @@ func buildRealtimeResponsesUsage(usage *schemas.BifrostLLMUsage) *schemas.Respon
 		TotalTokens:  usage.TotalTokens,
 		AudioSeconds: usage.AudioSeconds,
 	}
-	if usage.PromptTokensDetails != nil {
-		result.InputTokensDetails = &schemas.ResponsesResponseInputTokens{
-			TextTokens:        usage.PromptTokensDetails.TextTokens,
-			AudioTokens:       usage.PromptTokensDetails.AudioTokens,
-			ImageTokens:       usage.PromptTokensDetails.ImageTokens,
-			CachedReadTokens:  usage.PromptTokensDetails.CachedReadTokens,
-			CachedWriteTokens: usage.PromptTokensDetails.CachedWriteTokens,
-
-			CachedReadTokenDetails: usage.PromptTokensDetails.CachedReadTokenDetails,
-		}
-	}
+	// Every prompt detail, through the shared conversion, so the cached modality split that cached
+	// audio is priced from (TXE-7361) and any detail added later reach billing and the log.
+	result.InputTokensDetails = usage.PromptTokensDetails.ToResponsesInputTokens()
 	if usage.CompletionTokensDetails != nil {
 		result.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{
 			TextTokens:               usage.CompletionTokensDetails.TextTokens,

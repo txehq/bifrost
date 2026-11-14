@@ -914,3 +914,58 @@ func TestNewBifrostErrorFromRealtimeErrorCarriesRealtimeMetadata(t *testing.T) {
 		t.Fatalf("error param = %#v, want session.type", bifrostErr.Error)
 	}
 }
+
+// TXE-7361: a realtime turn whose response.done splits the cached input by modality
+// (cached_tokens_details) keeps that split through the transport's accounting, both the provider
+// extractor and the generic fallback, into the Responses usage that is billed and logged. A
+// transport that dropped it would bill cached audio at the text cache rate.
+func TestRealtimeTurnKeepsTheCachedModalitySplit(t *testing.T) {
+	rawResponse := []byte(`{
+		"type":"response.done",
+		"response":{
+			"output":[{"id":"item_1","type":"message","content":[{"type":"audio","transcript":"hi"}]}],
+			"usage":{
+				"total_tokens":1002,
+				"input_tokens":1000,
+				"output_tokens":2,
+				"input_token_details":{
+					"text_tokens":200,
+					"audio_tokens":800,
+					"cached_tokens":600,
+					"cached_tokens_details":{"text_tokens":100,"audio_tokens":500}
+				},
+				"output_token_details":{"text_tokens":2}
+			}
+		}
+	}`)
+	requireSplit := func(t *testing.T, label string, details *schemas.ChatCachedReadTokenDetails) {
+		t.Helper()
+		if details == nil || details.AudioTokens != 500 || details.TextTokens != 100 {
+			t.Fatalf("%s: cached split = %+v, want 500 audio and 100 text", label, details)
+		}
+	}
+
+	// The generic fallback, used when a provider has no realtime usage extractor.
+	fallback := extractRealtimeResponseDoneUsage(rawResponse)
+	if fallback == nil || fallback.PromptTokensDetails == nil {
+		t.Fatal("extractRealtimeResponseDoneUsage returned no prompt details")
+	}
+	requireSplit(t, "extractRealtimeResponseDoneUsage", fallback.PromptTokensDetails.CachedReadTokenDetails)
+
+	// The Responses usage the turn is billed and logged with.
+	responsesUsage := buildRealtimeResponsesUsage(fallback)
+	if responsesUsage == nil || responsesUsage.InputTokensDetails == nil {
+		t.Fatal("buildRealtimeResponsesUsage returned no input details")
+	}
+	if responsesUsage.InputTokensDetails.CachedReadTokens != 600 || responsesUsage.InputTokensDetails.AudioTokens != 800 {
+		t.Fatalf("input details = %+v, want 600 cached and 800 audio", responsesUsage.InputTokensDetails)
+	}
+	requireSplit(t, "buildRealtimeResponsesUsage", responsesUsage.InputTokensDetails.CachedReadTokenDetails)
+
+	// The whole turn, through the OpenAI provider's extractor.
+	resp := buildRealtimeTurnPostResponse(&openai.OpenAIProvider{}, schemas.OpenAI, "gpt-realtime-mini", `{"type":"response.create"}`, rawResponse, "", 10, false)
+	if resp == nil || resp.ResponsesResponse == nil || resp.ResponsesResponse.Usage == nil || resp.ResponsesResponse.Usage.InputTokensDetails == nil {
+		t.Fatal("buildRealtimeTurnPostResponse returned no usage")
+	}
+	requireSplit(t, "buildRealtimeTurnPostResponse", resp.ResponsesResponse.Usage.InputTokensDetails.CachedReadTokenDetails)
+}
