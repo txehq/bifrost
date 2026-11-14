@@ -73,11 +73,8 @@ func newBifrostWithMockProvider(t *testing.T, providerDelay time.Duration) (*Bif
 	t.Helper()
 
 	var calls int32
-	var mu sync.Mutex
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		mu.Lock()
-		calls++
-		mu.Unlock()
+		atomic.AddInt32(&calls, 1)
 		time.Sleep(providerDelay)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -146,8 +143,8 @@ func TestOverheadEndToEndUnary(t *testing.T) {
 	if resp == nil {
 		t.Fatal("nil response")
 	}
-	if *calls != 2 {
-		t.Fatalf("provider called %d times, want 2 (warm-up plus measured request)", *calls)
+	if got := atomic.LoadInt32(calls); got != 2 {
+		t.Fatalf("provider called %d times, want 2 (warm-up plus measured request)", got)
 	}
 
 	upstream, ok := schemas.GetUpstreamLatency(ctx)
@@ -299,9 +296,15 @@ func TestOverheadStampedOnRootSpan(t *testing.T) {
 // request on a busy machine (298 ms for a 120 ms handler, with one upstream call and nothing
 // counted twice) read as a leak, and the test failed about once in sixty runs on the shared
 // build host (TXE-7066).
+//
+// A value near 2x providerDelay has a second possible cause, which the wall-time check cannot
+// see because it lengthens the request too: the transport sent the request twice (a chat
+// request on a reused connection may be resent). So the test also counts the provider's
+// calls, one per request, and logs every request that took 2x providerDelay or more with
+// that count, so a slow run states which of the two it was.
 func TestOverheadResetBetweenRequests(t *testing.T) {
 	const providerDelay = 120 * time.Millisecond
-	client, _, _ := newBifrostWithMockProvider(t, providerDelay)
+	client, _, calls := newBifrostWithMockProvider(t, providerDelay)
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
@@ -323,6 +326,14 @@ func TestOverheadResetBetweenRequests(t *testing.T) {
 		// this request holds at least that much.
 		if upstream < providerDelay {
 			t.Fatalf("request %d: upstream = %v, want at least the provider's %v", i, upstream, providerDelay)
+		}
+		sent := int(atomic.LoadInt32(calls))
+		if upstream >= 2*providerDelay {
+			t.Logf("request %d slow: upstream = %v, wall = %v, provider calls so far = %d (want %d)", i, upstream, wall, sent, i+1)
+		}
+		if sent != i+1 {
+			t.Fatalf("request %d: the provider has been called %d times, want %d: a request was sent more than once (upstream = %v, wall = %v)",
+				i, sent, i+1, upstream, wall)
 		}
 	}
 }
