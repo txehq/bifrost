@@ -139,6 +139,42 @@ type providerSpecificEntry struct {
 	// MiniMaxFreeInputImages is MiniMax's free input images per video job, read into
 	// Options.FreeInputImages.
 	MiniMaxFreeInputImages *float64 `json:"minimax_free_input_images"`
+	// US is Anthropic's US inference-geo multiplier (1.1), read into
+	// Options.InferenceGeoUSMultiplier (TXE-7422). 27 Claude rows publish it only here.
+	US *float64 `json:"us"`
+	// Fast is Anthropic's fast-mode multiplier on the standard token and cache rates (6 on Opus
+	// 4.6 to 4.8), read into each *_fast rate the row leaves out (TXE-7422). Two dated Opus rows
+	// publish it only here.
+	Fast *float64 `json:"fast"`
+}
+
+// applyTo fills the Options fields read from provider_specific_entry. A flat field the row
+// publishes wins: on claude-opus-4-8 the explicit fast rates are 2x while fast says 6, and the
+// explicit rate is the more specific statement.
+func (pse *providerSpecificEntry) applyTo(o *Options) {
+	if pse == nil {
+		return
+	}
+	if o.FreeInputImages == nil {
+		o.FreeInputImages = pse.MiniMaxFreeInputImages
+	}
+	if o.InferenceGeoUSMultiplier == nil {
+		o.InferenceGeoUSMultiplier = pse.US
+	}
+	if pse.Fast == nil || *pse.Fast <= 0 {
+		return
+	}
+	scale := func(dst **float64, base *float64) {
+		if *dst == nil && base != nil {
+			v := *base * *pse.Fast
+			*dst = &v
+		}
+	}
+	scale(&o.InputCostPerTokenFast, o.InputCostPerToken)
+	scale(&o.OutputCostPerTokenFast, o.OutputCostPerToken)
+	scale(&o.CacheReadInputTokenCostFast, o.CacheReadInputTokenCost)
+	scale(&o.CacheCreationInputTokenCostFast, o.CacheCreationInputTokenCost)
+	scale(&o.CacheCreationInputTokenCostAbove1hrFast, o.CacheCreationInputTokenCostAbove1hr)
 }
 
 // UnmarshalJSON handles the special case where search_context_cost_per_query
@@ -208,10 +244,8 @@ func (p *Entry) UnmarshalJSON(data []byte) error {
 			}
 		}
 	}
-	// MiniMax's free input images fill the provider-agnostic allowance; a flat field already set wins.
-	if pse := raw.ProviderSpecificEntry; pse != nil && p.FreeInputImages == nil {
-		p.FreeInputImages = pse.MiniMaxFreeInputImages
-	}
+	// provider_specific_entry fills what the row does not publish flat (TXE-7409, TXE-7422).
+	raw.ProviderSpecificEntry.applyTo(&p.Options)
 	// Older datasheet rows lack web_search_cost_per_request; fall back to the per-query search rate.
 	if p.WebSearchCostPerRequest == nil {
 		p.WebSearchCostPerRequest = p.SearchContextCostPerQuery
