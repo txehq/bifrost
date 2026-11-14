@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -4729,6 +4730,71 @@ func BenchmarkGetResourceRequestPath(b *testing.B) {
 				}
 			}
 		})
+	}
+}
+
+func TestOverrideRequestTypes(t *testing.T) {
+	for _, tc := range []struct {
+		base        schemas.ModelProvider
+		requestType schemas.RequestType
+		want        []schemas.RequestType
+	}{
+		{schemas.OpenAI, schemas.BatchResultsRequest, []schemas.RequestType{schemas.BatchResultsRequest, schemas.BatchRetrieveRequest}},
+		{schemas.Gemini, schemas.BatchResultsRequest, []schemas.RequestType{schemas.BatchResultsRequest, schemas.BatchRetrieveRequest}},
+		// A base with no fallback reads the call's own entry.
+		{schemas.Anthropic, schemas.BatchResultsRequest, []schemas.RequestType{schemas.BatchResultsRequest}},
+		{schemas.OpenAI, schemas.BatchRetrieveRequest, []schemas.RequestType{schemas.BatchRetrieveRequest}},
+	} {
+		if got := OverrideRequestTypes(tc.base, tc.requestType); !slices.Equal(got, tc.want) {
+			t.Errorf("OverrideRequestTypes(%s, %s) = %v, want %v", tc.base, tc.requestType, got, tc.want)
+		}
+	}
+	for base, fallbacks := range ResourcePathOverrideFallbacks {
+		for requestType, readTypes := range fallbacks {
+			if len(readTypes) == 0 || readTypes[0] != requestType {
+				t.Errorf("%s %s must read its own entry first, got %v", base, requestType, readTypes)
+			}
+		}
+	}
+}
+
+// A call that reads more than one request type's request_path_overrides entry takes its list from
+// ResourcePathOverrideFallbacks (OverrideRequestTypes), never from literals at the call site:
+// governance places where a call goes from the same table when it checks object ownership, so a
+// list written only at a call site is a call governance misplaces (TXE-7368). This scans every
+// provider source for a call to a function taking ...schemas.RequestType with two or more
+// request-type literals.
+func TestRequestTypeFallbacksComeFromTheSharedTable(t *testing.T) {
+	sources, err := filepath.Glob("../*/*.go")
+	if err != nil || len(sources) == 0 {
+		t.Fatalf("no provider sources found: %v", err)
+	}
+	variadic := regexp.MustCompile(`(?m)^func (?:\([^)]*\) )?([A-Za-z0-9_]+)\(.*\.\.\.schemas\.RequestType\)`)
+	contents := make(map[string]string, len(sources))
+	var names []string
+	for _, source := range sources {
+		if strings.HasSuffix(source, "_test.go") {
+			continue
+		}
+		data, err := os.ReadFile(source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		contents[source] = string(data)
+		for _, match := range variadic.FindAllStringSubmatch(string(data), -1) {
+			names = append(names, regexp.QuoteMeta(match[1]))
+		}
+	}
+	if len(names) == 0 {
+		t.Fatal("found no function taking ...schemas.RequestType: the scan is broken")
+	}
+	literalList := regexp.MustCompile(`\b(?:` + strings.Join(names, "|") + `)\([^\n]*schemas\.[A-Za-z]+Request, schemas\.[A-Za-z]+Request[,)]`)
+	for source, text := range contents {
+		for i, line := range strings.Split(text, "\n") {
+			if literalList.MatchString(line) {
+				t.Errorf("%s:%d passes a literal list of request types; add it to ResourcePathOverrideFallbacks and pass OverrideRequestTypes(...)...", source, i+1)
+			}
+		}
 	}
 }
 

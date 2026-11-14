@@ -7432,7 +7432,7 @@ func (provider *OpenAIProvider) BatchResults(ctx *schemas.BifrostContext, keys [
 	if idErr != nil {
 		return nil, idErr
 	}
-	retrieveURL, urlErr := provider.buildResourceURL("/v1/batches/", escapedBatchID, "", schemas.BatchResultsRequest, schemas.BatchRetrieveRequest)
+	retrieveURL, urlErr := provider.buildResourceURL("/v1/batches/", escapedBatchID, "", providerUtils.OverrideRequestTypes(schemas.OpenAI, schemas.BatchResultsRequest)...)
 	if urlErr != nil {
 		return nil, urlErr
 	}

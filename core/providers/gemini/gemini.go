@@ -3647,7 +3647,7 @@ func (provider *GeminiProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	requestURL, bifrostErr := provider.resourceURL(request.BatchID, "batches", "batch_id", "", schemas.BatchResultsRequest, schemas.BatchRetrieveRequest)
+	requestURL, bifrostErr := provider.resourceURL(request.BatchID, "batches", "batch_id", "", providerUtils.OverrideRequestTypes(schemas.Gemini, schemas.BatchResultsRequest)...)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}

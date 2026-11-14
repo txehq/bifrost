@@ -1621,6 +1621,9 @@ func TestPreLLMHookBindsObjectsAcrossProviderAliases(t *testing.T) {
 		buildProviderConfig("openai", []string{"*"}),
 		buildProviderConfig("my-openai", []string{"*"}),
 		buildProviderConfig("other-service", []string{"*"}),
+		buildProviderConfig("override-openai", []string{"*"}),
+		buildProviderConfig("relative-override", []string{"*"}),
+		buildProviderConfig("override-anthropic", []string{"*"}),
 		buildProviderConfig("anthropic", []string{"*"}),
 	}
 	plugin := newAccessTestPlugin(t, vk, nil)
@@ -1634,11 +1637,70 @@ func TestPreLLMHookBindsObjectsAcrossProviderAliases(t *testing.T) {
 			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI},
 			NetworkConfig:        &schemas.NetworkConfig{BaseURL: "https://inference.other-service.example/v1"},
 		},
+		// Another base URL, but its file retrieve goes to api.openai.com through a full-URL
+		// override, so its file calls reach OpenAI's files (TXE-7368).
+		"override-openai": {
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, RequestPathOverrides: map[schemas.RequestType]string{
+				schemas.FileRetrieveRequest: "https://API.openai.com/v1/files/{file_id}",
+			}},
+			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://gateway.override.example/v1"},
+		},
+		// A relative override stays on the provider's own base URL: still another upstream.
+		"relative-override": {
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, RequestPathOverrides: map[schemas.RequestType]string{
+				schemas.FileRetrieveRequest: "/v1/files/{file_id}",
+			}},
+			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://gateway.relative.example"},
+		},
+		// The same on the anthropic base: its file content goes to api.anthropic.com.
+		"override-anthropic": {
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Anthropic, RequestPathOverrides: map[schemas.RequestType]string{
+				schemas.FileContentRequest: "https://api.anthropic.com/v1/files/{file_id}/content",
+			}},
+			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://gateway.anthropic-proxy.example"},
+		},
 		schemas.Anthropic: {},
 	}}
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, "anthropic", "file-anthropic-other", "vk-someone-else")
 	seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, "openai", "file-other", "vk-someone-else")
 
-	_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), &schemas.BifrostRequest{RequestType: schemas.FileRetrieveRequest, FileRetrieveRequest: &schemas.BifrostFileRetrieveRequest{Provider: "my-openai", FileID: "file-other"}})
+	// A call whose full-URL override sends it to OpenAI reaches OpenAI's files, whatever the
+	// provider's base URL: another key's OpenAI file is refused through it (TXE-7368).
+	_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), &schemas.BifrostRequest{RequestType: schemas.FileRetrieveRequest, FileRetrieveRequest: &schemas.BifrostFileRetrieveRequest{Provider: "override-openai", FileID: "file-other"}})
+	require.NoError(t, err)
+	require.NotNil(t, shortCircuit, "another key's OpenAI file is refused through a provider whose full-URL file override reaches OpenAI")
+	assert.Equal(t, 404, *shortCircuit.Error.StatusCode)
+	_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), &schemas.BifrostRequest{RequestType: schemas.FileRetrieveRequest, FileRetrieveRequest: &schemas.BifrostFileRetrieveRequest{Provider: "relative-override", FileID: "file-other"}})
+	require.NoError(t, err)
+	assert.Nil(t, shortCircuit, "a relative override stays on the provider's own upstream")
+	// The provider's other file calls stay on its own base URL, where the OpenAI file is not: the
+	// id there names whatever that upstream holds, so OpenAI's binding does not apply to them.
+	_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), &schemas.BifrostRequest{RequestType: schemas.FileDeleteRequest, FileDeleteRequest: &schemas.BifrostFileDeleteRequest{Provider: "override-openai", FileID: "file-other"}})
+	require.NoError(t, err)
+	assert.Nil(t, shortCircuit, "a delete through the override's own base URL does not reach the OpenAI file")
+	_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), &schemas.BifrostRequest{RequestType: schemas.FileContentRequest, FileContentRequest: &schemas.BifrostFileContentRequest{Provider: "override-openai", FileID: "file-other"}})
+	require.NoError(t, err)
+	assert.Nil(t, shortCircuit, "a content read through the override's own base URL does not reach the OpenAI file")
+	_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), &schemas.BifrostRequest{RequestType: schemas.FileContentRequest, FileContentRequest: &schemas.BifrostFileContentRequest{Provider: "override-anthropic", FileID: "file-anthropic-other"}})
+	require.NoError(t, err)
+	require.NotNil(t, shortCircuit, "on the anthropic base too, a call whose full-URL override reaches Anthropic is refused another key's file")
+	_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), &schemas.BifrostRequest{RequestType: schemas.FileRetrieveRequest, FileRetrieveRequest: &schemas.BifrostFileRetrieveRequest{Provider: "override-anthropic", FileID: "file-anthropic-other"}})
+	require.NoError(t, err)
+	assert.Nil(t, shortCircuit, "its retrieve stays on its own base URL")
+
+	// Rows under two providers of one upstream that name different keys for one id cannot both be
+	// right: the id is refused to every key, the caller's own row included, rather than handed to
+	// whichever row was read last.
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, "openai", "file-contested", "vk-someone-else")
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, "my-openai", "file-contested", "vk-mcp-stamp")
+	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, "my-openai"} {
+		_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), &schemas.BifrostRequest{RequestType: schemas.FileRetrieveRequest, FileRetrieveRequest: &schemas.BifrostFileRetrieveRequest{Provider: provider, FileID: "file-contested"}})
+		require.NoError(t, err)
+		require.NotNil(t, shortCircuit, "a contested id is refused through %s", provider)
+		assert.Equal(t, 404, *shortCircuit.Error.StatusCode)
+	}
+
+	_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), &schemas.BifrostRequest{RequestType: schemas.FileRetrieveRequest, FileRetrieveRequest: &schemas.BifrostFileRetrieveRequest{Provider: "my-openai", FileID: "file-other"}})
 	require.NoError(t, err)
 	require.NotNil(t, shortCircuit, "another key's OpenAI file is refused through an OpenAI-based custom provider")
 	assert.Equal(t, 404, *shortCircuit.Error.StatusCode)
@@ -1663,6 +1725,47 @@ func TestPreLLMHookBindsObjectsAcrossProviderAliases(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, list.FileListResponse.Data, 1, "the alias list hides the file recorded under openai")
 	assert.Equal(t, "file-unknown", list.FileListResponse.Data[0].ID)
+}
+
+// BenchmarkObjectHolders measures resolving the providers whose files a file retrieve reaches,
+// which every ownership check does, over 20 configured providers of which 5 carry full-URL file
+// overrides. "before" is the comparison by base URL alone that TXE-7368 replaced.
+func BenchmarkObjectHolders(b *testing.B) {
+	configured := map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}
+	for i := 0; i < 19; i++ {
+		name := schemas.ModelProvider(fmt.Sprintf("custom-%02d", i))
+		config := configstore.ProviderConfig{
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI},
+			NetworkConfig:        &schemas.NetworkConfig{BaseURL: fmt.Sprintf("https://gateway-%02d.example/v1", i)},
+		}
+		if i%4 == 0 {
+			config.CustomProviderConfig.RequestPathOverrides = map[schemas.RequestType]string{
+				schemas.FileRetrieveRequest: fmt.Sprintf("https://files-%02d.example/v1/files/{file_id}", i),
+				schemas.FileContentRequest:  fmt.Sprintf("https://files-%02d.example/v1/files/{file_id}/content", i),
+			}
+		}
+		configured[name] = config
+	}
+	plugin := &GovernancePlugin{inMemoryStore: &mockInMemoryStore{configuredProviders: configured}}
+	b.Run("before: base URL only", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			base, endpoint := baseProviderOf("custom-03", configured), providerEndpoint("custom-03", configured)
+			aliases := []string{"custom-03"}
+			for name := range configured {
+				if name != "custom-03" && baseProviderOf(name, configured) == base && providerEndpoint(name, configured) == endpoint {
+					aliases = append(aliases, string(name))
+				}
+			}
+			_ = aliases
+		}
+	})
+	b.Run("after: the call's upstream against each provider's creating calls", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = plugin.objectHolders(configstoreTables.ProviderObjectKindFile, schemas.FileRetrieveRequest, "custom-03", false)
+		}
+	})
 }
 
 // The virtual key a request is attributed to is read from its Grant. A context whose identity
@@ -1790,7 +1893,7 @@ func TestHiddenProviderObjectsReadsAPageOverTheBindParameterLimit(t *testing.T) 
 	}
 	ids = append(ids, "file-other", "file-own")
 
-	hidden, err := plugin.hiddenProviderObjects(presentCtx(mcpTestVKValue), configstoreTables.ProviderObjectKindFile, "openai", "vk-mcp-stamp", ids)
+	hidden, err := plugin.hiddenProviderObjects(presentCtx(mcpTestVKValue), configstoreTables.ProviderObjectKindFile, schemas.FileListRequest, "openai", "vk-mcp-stamp", ids)
 	require.NoError(t, err)
 	require.NotNil(t, hidden)
 	assert.True(t, hidden("file-other"), "another key's file is hidden")
@@ -2422,6 +2525,373 @@ func TestPostLLMHookForgetsDeletedObjectsUnderEveryAlias(t *testing.T) {
 	rows, err := store.GetProviderObjectsByIDs(context.Background(), []string{configstoreTables.ProviderObjectID(configstoreTables.ProviderObjectKindFile, "openai", "file-aliased")})
 	require.NoError(t, err)
 	assert.Empty(t, rows, "the binding recorded under openai is forgotten by a delete through my-openai")
+}
+
+// A provider that moved only its file retrieve to OpenAI with a full-URL override still deletes
+// on its own upstream. A delete through it forgets the file there and nowhere else: the binding of
+// the file of the same id on OpenAI stays, so that file, which still exists, is still owned and
+// still refused to other keys (TXE-7368).
+func TestPostLLMHookForgetsADeleteOnlyWhereItWent(t *testing.T) {
+	store := newProviderObjectConfigStore(t)
+	vk := buildVKForMCPStamping(nil)
+	vk.ProviderConfigs = append(vk.ProviderConfigs, buildProviderConfig("split-openai", []string{"*"}))
+	plugin := newAccessTestPlugin(t, vk, nil)
+	plugin.configStore = store
+	plugin.inMemoryStore = &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.OpenAI: {},
+		"split-openai": {
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, RequestPathOverrides: map[schemas.RequestType]string{
+				schemas.FileRetrieveRequest: "https://api.openai.com/v1/files/{file_id}",
+			}},
+			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://gateway.split.example/v1"},
+		},
+	}}
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, "openai", "file-twice", "vk-mcp-stamp")
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, "split-openai", "file-twice", "vk-mcp-stamp")
+
+	ctx := presentCtx(mcpTestVKValue)
+	_, shortCircuit, err := plugin.PreLLMHook(ctx, &schemas.BifrostRequest{RequestType: schemas.FileDeleteRequest, FileDeleteRequest: &schemas.BifrostFileDeleteRequest{Provider: "split-openai", FileID: "file-twice"}})
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit)
+	_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{FileDeleteResponse: &schemas.BifrostFileDeleteResponse{ID: "file-twice", Deleted: true,
+		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.FileDeleteRequest, Provider: "split-openai"}}}, nil)
+	require.NoError(t, err)
+	gone, err := store.GetProviderObjectsByIDs(context.Background(), []string{configstoreTables.ProviderObjectID(configstoreTables.ProviderObjectKindFile, "split-openai", "file-twice")})
+	require.NoError(t, err)
+	assert.Empty(t, gone, "the file the delete reached is forgotten")
+	kept, err := store.GetProviderObjectsByIDs(context.Background(), []string{configstoreTables.ProviderObjectID(configstoreTables.ProviderObjectKindFile, "openai", "file-twice")})
+	require.NoError(t, err)
+	assert.Len(t, kept, 1, "the OpenAI file the delete did not reach keeps its binding")
+}
+
+// A provider that moved only its file delete to OpenAI still uploads on its own upstream, so the
+// files recorded under it live there. A delete through openai reaches OpenAI's file and not that
+// one: its binding stays, or another key could reach the surviving file once it was untracked
+// (TXE-7368).
+func TestPostLLMHookKeepsTheBindingOfAProviderThatCreatesElsewhere(t *testing.T) {
+	store := newProviderObjectConfigStore(t)
+	vk := buildVKForMCPStamping(nil)
+	vk.ProviderConfigs = append(vk.ProviderConfigs, buildProviderConfig("delete-moved", []string{"*"}))
+	plugin := newAccessTestPlugin(t, vk, nil)
+	plugin.configStore = store
+	plugin.inMemoryStore = &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.OpenAI: {},
+		"delete-moved": {
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, RequestPathOverrides: map[schemas.RequestType]string{
+				schemas.FileDeleteRequest: "https://api.openai.com/v1/files/{file_id}",
+			}},
+			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://gateway.delete-moved.example/v1"},
+		},
+	}}
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, "openai", "file-same-name", "vk-mcp-stamp")
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, "delete-moved", "file-same-name", "vk-mcp-stamp")
+
+	ctx := presentCtx(mcpTestVKValue)
+	_, shortCircuit, err := plugin.PreLLMHook(ctx, &schemas.BifrostRequest{RequestType: schemas.FileDeleteRequest, FileDeleteRequest: &schemas.BifrostFileDeleteRequest{Provider: schemas.OpenAI, FileID: "file-same-name"}})
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit)
+	_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{FileDeleteResponse: &schemas.BifrostFileDeleteResponse{ID: "file-same-name", Deleted: true,
+		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.FileDeleteRequest, Provider: schemas.OpenAI}}}, nil)
+	require.NoError(t, err)
+	gone, err := store.GetProviderObjectsByIDs(context.Background(), []string{configstoreTables.ProviderObjectID(configstoreTables.ProviderObjectKindFile, "openai", "file-same-name")})
+	require.NoError(t, err)
+	assert.Empty(t, gone, "the OpenAI file the delete reached is forgotten")
+	kept, err := store.GetProviderObjectsByIDs(context.Background(), []string{configstoreTables.ProviderObjectID(configstoreTables.ProviderObjectKindFile, "delete-moved", "file-same-name")})
+	require.NoError(t, err)
+	assert.Len(t, kept, 1, "the file uploaded through delete-moved lives on its own upstream and keeps its binding")
+
+	// A delete through delete-moved itself goes to OpenAI too, and its own file survives as well.
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, "openai", "file-same-name", "vk-mcp-stamp")
+	_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{FileDeleteResponse: &schemas.BifrostFileDeleteResponse{ID: "file-same-name", Deleted: true,
+		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.FileDeleteRequest, Provider: "delete-moved"}}}, nil)
+	require.NoError(t, err)
+	// The delete reached OpenAI, but a delete through a full-URL override forgets no other
+	// provider's binding: matching override URLs is a guess, and the binding left behind only
+	// refuses an id nobody has (TXE-7368).
+	gone, err = store.GetProviderObjectsByIDs(context.Background(), []string{configstoreTables.ProviderObjectID(configstoreTables.ProviderObjectKindFile, "openai", "file-same-name")})
+	require.NoError(t, err)
+	assert.Len(t, gone, 1, "the delete through delete-moved's override keeps OpenAI's binding")
+	kept, err = store.GetProviderObjectsByIDs(context.Background(), []string{configstoreTables.ProviderObjectID(configstoreTables.ProviderObjectKindFile, "delete-moved", "file-same-name")})
+	require.NoError(t, err)
+	assert.Len(t, kept, 1, "delete-moved's own upload was not where its delete went")
+}
+
+// A provider whose file upload and file content both go to one file store through full-URL
+// overrides, on paths that differ by call, reaches its own uploads: another key's upload is refused
+// to it, as are calls through another provider whose override reaches that store, while its batch
+// create stays on an unrelated base URL (TXE-7368).
+func TestPreLLMHookRefusesAnUploadReadThroughAnotherPathOfTheSameStore(t *testing.T) {
+	store := newProviderObjectConfigStore(t)
+	vk := buildVKForMCPStamping(nil)
+	vk.ProviderConfigs = append(vk.ProviderConfigs, buildProviderConfig("split-store", []string{"*"}), buildProviderConfig("store-reader", []string{"*"}))
+	plugin := newAccessTestPlugin(t, vk, nil)
+	plugin.configStore = store
+	plugin.inMemoryStore = &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.OpenAI: {},
+		"split-store": {
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, RequestPathOverrides: map[schemas.RequestType]string{
+				schemas.FileUploadRequest:  "https://files.example/v1/files",
+				schemas.FileContentRequest: "https://files.example/v1/files/{file_id}/content",
+			}},
+			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://gateway.split-store.example/v1"},
+		},
+		"store-reader": {
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, RequestPathOverrides: map[schemas.RequestType]string{
+				schemas.FileRetrieveRequest: "https://FILES.example/v1/files/{file_id}",
+			}},
+			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://gateway.store-reader.example/v1"},
+		},
+	}}
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, "split-store", "file-in-store", "vk-someone-else")
+
+	for _, req := range []*schemas.BifrostRequest{
+		{RequestType: schemas.FileContentRequest, FileContentRequest: &schemas.BifrostFileContentRequest{Provider: "split-store", FileID: "file-in-store"}},
+		{RequestType: schemas.FileRetrieveRequest, FileRetrieveRequest: &schemas.BifrostFileRetrieveRequest{Provider: "split-store", FileID: "file-in-store"}},
+		{RequestType: schemas.FileRetrieveRequest, FileRetrieveRequest: &schemas.BifrostFileRetrieveRequest{Provider: "store-reader", FileID: "file-in-store"}},
+	} {
+		_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), req)
+		require.NoError(t, err)
+		require.NotNil(t, shortCircuit, "another key's upload in the store is refused to %s", req.RequestType)
+		assert.Equal(t, 404, *shortCircuit.Error.StatusCode)
+	}
+	// Whether OpenAI's own calls reach that store cannot be told from its URL, so the binding of a
+	// provider with a full-URL override counts there too: the id is refused rather than guessed.
+	_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), providerObjectRequests("file-in-store")[schemas.FileContentRequest])
+	require.NoError(t, err)
+	require.NotNil(t, shortCircuit, "an id recorded through an override provider of the openai base is refused through openai")
+}
+
+// An override that spells the upstream differently from a base URL still shares its objects: a
+// default port written out (Codex P1 on 29a5a0dac), or an override the base provider never reads
+// (a gemini batch_create, which gemini builds from its base URL; Codex P2 on 29a5a0dac). Access
+// checks count the rows of any provider whose creating call carries a full-URL override, so the
+// first is refused to another key and the second admits its creator (TXE-7368).
+func TestPreLLMHookMatchesOverridesWhateverTheirSpelling(t *testing.T) {
+	store := newProviderObjectConfigStore(t)
+	configured := &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.OpenAI: {},
+		"port-spelled": {
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, RequestPathOverrides: map[schemas.RequestType]string{
+				schemas.FileContentRequest: "https://api.openai.com:443/v1/files/{file_id}/content",
+			}},
+		},
+		"gemini-creator": {
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Gemini, RequestPathOverrides: map[schemas.RequestType]string{
+				schemas.BatchCreateRequest: "https://batches.gemini-proxy.example/v1beta/batches",
+			}},
+			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://gemini-proxy.example/v1beta"},
+		},
+		"gemini-reader": {
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Gemini},
+			NetworkConfig:        &schemas.NetworkConfig{BaseURL: "https://gemini-proxy.example/v1beta"},
+		},
+		// Two base URLs that differ only in their path's case, no overrides.
+		"path-lower": {
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI},
+			NetworkConfig:        &schemas.NetworkConfig{BaseURL: "https://proxy.example/v1"},
+		},
+		"path-upper": {
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI},
+			NetworkConfig:        &schemas.NetworkConfig{BaseURL: "https://proxy.example/V1"},
+		},
+	}}
+	vk := buildVKForMCPStamping(nil)
+	vk.ProviderConfigs = append(vk.ProviderConfigs, buildProviderConfig("port-spelled", []string{"*"}), buildProviderConfig("gemini-reader", []string{"*"}), buildProviderConfig("path-upper", []string{"*"}))
+	plugin := newAccessTestPlugin(t, vk, nil)
+	plugin.configStore = store
+	plugin.inMemoryStore = configured
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, "openai", "file-openai-other", "vk-someone-else")
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindBatch, "gemini-creator", "batches/own-batch", "vk-mcp-stamp")
+
+	_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), &schemas.BifrostRequest{RequestType: schemas.FileContentRequest, FileContentRequest: &schemas.BifrostFileContentRequest{Provider: "port-spelled", FileID: "file-openai-other"}})
+	require.NoError(t, err)
+	require.NotNil(t, shortCircuit, "an override on api.openai.com:443 reaches OpenAI's files: another key's is refused")
+	assert.Equal(t, 404, *shortCircuit.Error.StatusCode)
+
+	_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), &schemas.BifrostRequest{RequestType: schemas.BatchRetrieveRequest, BatchRetrieveRequest: &schemas.BifrostBatchRetrieveRequest{Provider: "gemini-reader", BatchID: "batches/own-batch"}})
+	require.NoError(t, err)
+	assert.Nil(t, shortCircuit, "the creator retrieves its batch through a provider on the same base URL, whatever gemini-creator's unread override says")
+
+	// Whether /V1 and /v1 are one store is a guess; the access check makes it toward refusing.
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, "path-lower", "file-path-case", "vk-someone-else")
+	_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), &schemas.BifrostRequest{RequestType: schemas.FileRetrieveRequest, FileRetrieveRequest: &schemas.BifrostFileRetrieveRequest{Provider: "path-upper", FileID: "file-path-case"}})
+	require.NoError(t, err)
+	require.NotNil(t, shortCircuit, "base URLs that differ only in path case share their ownership rows for access")
+	assert.Equal(t, 404, *shortCircuit.Error.StatusCode)
+}
+
+// A delete through a full-URL override forgets no other provider's binding, however its URL
+// compares: a proxy whose paths tell stores apart by case keeps tenant-b-upper's file when
+// tenant-b-lower deletes an identically named one (Codex P1 on 4d7af7ed4). Providers on one base
+// URL with no override still share their bookkeeping (TXE-7368).
+func TestPostLLMHookForgetsNoOtherBindingThroughAFullURLDelete(t *testing.T) {
+	store := newProviderObjectConfigStore(t)
+	vk := buildVKForMCPStamping(nil)
+	vk.ProviderConfigs = append(vk.ProviderConfigs,
+		buildProviderConfig("tenant-b-lower", []string{"*"}), buildProviderConfig("tenant-b-upper", []string{"*"}), buildProviderConfig("openai-twin", []string{"*"}))
+	plugin := newAccessTestPlugin(t, vk, nil)
+	plugin.configStore = store
+	plugin.inMemoryStore = &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.OpenAI: {},
+		// Its delete override lies under its own base URL, so its delete reaches its own uploads.
+		"tenant-b-lower": {
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, RequestPathOverrides: map[schemas.RequestType]string{
+				schemas.FileDeleteRequest: "https://proxy.example/tenantb/v1/files/{file_id}",
+			}},
+			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://proxy.example/tenantb/v1"},
+		},
+		"tenant-b-upper": {
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI},
+			NetworkConfig:        &schemas.NetworkConfig{BaseURL: "https://proxy.example/TenantB/v1"},
+		},
+		// The same upstream as openai, spelled with its default port and no override.
+		"openai-twin": {
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI},
+			NetworkConfig:        &schemas.NetworkConfig{BaseURL: "https://API.openai.com:443"},
+		},
+	}}
+	rowsOf := func(provider, id string) int {
+		t.Helper()
+		rows, err := store.GetProviderObjectsByIDs(context.Background(), []string{configstoreTables.ProviderObjectID(configstoreTables.ProviderObjectKindFile, provider, id)})
+		require.NoError(t, err)
+		return len(rows)
+	}
+	deleteThrough := func(provider schemas.ModelProvider, id string) {
+		t.Helper()
+		ctx := presentCtx(mcpTestVKValue)
+		_, shortCircuit, err := plugin.PreLLMHook(ctx, &schemas.BifrostRequest{RequestType: schemas.FileDeleteRequest, FileDeleteRequest: &schemas.BifrostFileDeleteRequest{Provider: provider, FileID: id}})
+		require.NoError(t, err)
+		require.Nil(t, shortCircuit, "the key deletes its own file through %s", provider)
+		_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{FileDeleteResponse: &schemas.BifrostFileDeleteResponse{ID: id, Deleted: true,
+			ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.FileDeleteRequest, Provider: provider}}}, nil)
+		require.NoError(t, err)
+	}
+
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, "tenant-b-lower", "file-same-name", "vk-mcp-stamp")
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, "tenant-b-upper", "file-same-name", "vk-mcp-stamp")
+	deleteThrough("tenant-b-lower", "file-same-name")
+	assert.Equal(t, 0, rowsOf("tenant-b-lower", "file-same-name"), "the deleting provider uploads where it deletes, so its own binding goes")
+	assert.Equal(t, 1, rowsOf("tenant-b-upper", "file-same-name"), "the file uploaded under /TenantB survives and keeps its binding")
+
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, "openai", "file-twin", "vk-mcp-stamp")
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, "openai-twin", "file-twin", "vk-mcp-stamp")
+	deleteThrough("openai-twin", "file-twin")
+	assert.Equal(t, 0, rowsOf("openai-twin", "file-twin"))
+	assert.Equal(t, 0, rowsOf("openai", "file-twin"), "one base URL with no override is one store: the delete forgets both bindings")
+}
+
+func TestCanonicalURL(t *testing.T) {
+	for raw, want := range map[string]string{
+		" https://API.openai.com:443/v1/ ":                      "https://api.openai.com/v1",
+		"https://api.openai.com:443":                            "https://api.openai.com",
+		"http://localhost:80/v1/files/{file_id}":                "http://localhost/v1/files/{file_id}",
+		"https://api.openai.com:8443/v1":                        "https://api.openai.com:8443/v1",
+		"http://gateway.example:443/v1":                         "http://gateway.example:443/v1",
+		"/v1/files/{file_id}":                                   "/v1/files/{file_id}",
+		"https://files.example/v1/files/{file_id}/content:443/": "https://files.example/v1/files/{file_id}/content:443",
+		// The path keeps its case: a server may tell one tenant's store from another's by it.
+		"HTTPS://Proxy.Example:443/TenantB/": "https://proxy.example/TenantB",
+	} {
+		assert.Equal(t, want, canonicalURL(raw), raw)
+	}
+}
+
+// Batch results on the openai base fetch the batch through the batch_retrieve override when they
+// have none of their own (providerUtils.ResourcePathOverrideFallbacks). Two providers share an
+// unrelated base URL: one creates batches at a batch service, the other retrieves from it. Results
+// through the second reach the batch service, so the creator's row answers for them: its key is
+// admitted and another key refused (TXE-7368).
+func TestPreLLMHookPlacesBatchResultsWhereTheirRetrieveFallbackGoes(t *testing.T) {
+	store := newProviderObjectConfigStore(t)
+	configured := &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		"batch-creator": {
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, RequestPathOverrides: map[schemas.RequestType]string{
+				schemas.BatchCreateRequest: "https://batches.example/v1/batches",
+			}},
+			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://gateway.shared.example/v1"},
+		},
+		"batch-reader": {
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, RequestPathOverrides: map[schemas.RequestType]string{
+				schemas.BatchRetrieveRequest: "https://batches.example/v1/batches/{batch_id}",
+			}},
+			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://gateway.shared.example/v1"},
+		},
+	}}
+	owner := buildVKForMCPStamping(nil)
+	owner.ProviderConfigs = append(owner.ProviderConfigs, buildProviderConfig("batch-creator", []string{"*"}), buildProviderConfig("batch-reader", []string{"*"}))
+	plugin := newAccessTestPlugin(t, owner, nil)
+	plugin.configStore = store
+	plugin.inMemoryStore = configured
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindBatch, "batch-creator", "batch-at-service", "vk-mcp-stamp")
+
+	results := func(provider schemas.ModelProvider) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.BatchResultsRequest, BatchResultsRequest: &schemas.BifrostBatchResultsRequest{Provider: provider, BatchID: "batch-at-service"}}
+	}
+	_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), results("batch-reader"))
+	require.NoError(t, err)
+	assert.Nil(t, shortCircuit, "the batch's creator reads its results through the provider whose retrieve reaches the batch service")
+
+	otherKey := buildVKForMCPStamping(nil)
+	otherKey.ID = "vk-other"
+	otherKey.Value = *schemas.NewSecretVar("sk-bf-other")
+	otherKey.ProviderConfigs = append(otherKey.ProviderConfigs, buildProviderConfig("batch-reader", []string{"*"}))
+	otherPlugin := newAccessTestPlugin(t, otherKey, nil)
+	otherPlugin.configStore = store
+	otherPlugin.inMemoryStore = configured
+	_, shortCircuit, err = otherPlugin.PreLLMHook(presentCtx("sk-bf-other"), results("batch-reader"))
+	require.NoError(t, err)
+	require.NotNil(t, shortCircuit, "another key is refused the results")
+	assert.Equal(t, 404, *shortCircuit.Error.StatusCode)
+}
+
+// A provider that moved only its batch retrieve to OpenAI finds OpenAI's batches, and the output
+// file a retrieve names is recorded under that provider although it lives at OpenAI. Its file
+// rows count wherever its batch retrieve goes, so another key is refused the output through
+// openai (TXE-7368).
+func TestPreLLMHookRefusesABatchOutputRecordedThroughAMovedBatchRetrieve(t *testing.T) {
+	store := newProviderObjectConfigStore(t)
+	configured := &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.OpenAI: {},
+		"retrieve-moved": {
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, RequestPathOverrides: map[schemas.RequestType]string{
+				schemas.BatchRetrieveRequest: "https://api.openai.com/v1/batches/{batch_id}",
+			}},
+			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://gateway.retrieve-moved.example/v1"},
+		},
+	}}
+	owner := buildVKForMCPStamping(nil)
+	owner.ProviderConfigs = append(owner.ProviderConfigs, buildProviderConfig("retrieve-moved", []string{"*"}))
+	plugin := newAccessTestPlugin(t, owner, nil)
+	plugin.configStore = store
+	plugin.inMemoryStore = configured
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindBatch, "openai", "batch-at-openai", "vk-mcp-stamp")
+
+	ctx := presentCtx(mcpTestVKValue)
+	retrieve := &schemas.BifrostRequest{RequestType: schemas.BatchRetrieveRequest, BatchRetrieveRequest: &schemas.BifrostBatchRetrieveRequest{Provider: "retrieve-moved", BatchID: "batch-at-openai"}}
+	_, shortCircuit, err := plugin.PreLLMHook(ctx, retrieve)
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit, "the batch's creator retrieves it through the provider whose batch retrieve reaches OpenAI")
+	output := "file-batch-output"
+	_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{BatchRetrieveResponse: &schemas.BifrostBatchRetrieveResponse{ID: "batch-at-openai", Status: schemas.BatchStatusCompleted, OutputFileID: &output,
+		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.BatchRetrieveRequest, Provider: "retrieve-moved"}}}, nil)
+	require.NoError(t, err)
+	rows, err := store.GetProviderObjectsByIDs(context.Background(), []string{configstoreTables.ProviderObjectID(configstoreTables.ProviderObjectKindFile, "retrieve-moved", output)})
+	require.NoError(t, err)
+	require.Len(t, rows, 1, "the output file is recorded under the provider that retrieved the batch")
+	assert.Equal(t, "vk-mcp-stamp", rows[0].VirtualKeyID)
+
+	otherKey := buildVKForMCPStamping(nil)
+	otherKey.ID = "vk-other"
+	otherKey.Value = *schemas.NewSecretVar("sk-bf-other")
+	otherPlugin := newAccessTestPlugin(t, otherKey, nil)
+	otherPlugin.configStore = store
+	otherPlugin.inMemoryStore = configured
+	for _, requestType := range []schemas.RequestType{schemas.FileRetrieveRequest, schemas.FileContentRequest, schemas.FileDeleteRequest} {
+		_, shortCircuit, err = otherPlugin.PreLLMHook(presentCtx("sk-bf-other"), providerObjectRequests(output)[requestType])
+		require.NoError(t, err)
+		require.NotNil(t, shortCircuit, "another key's %s of the batch output through openai is refused", requestType)
+		assert.Equal(t, 404, *shortCircuit.Error.StatusCode)
+	}
 }
 
 // suffixCountingStore is the real store with the suffix lookups observed.

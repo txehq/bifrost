@@ -78,6 +78,30 @@
         "default_request_timeout_in_seconds": 10
       }
     },
+    "file_owner_override": {
+      "keys": [
+        {
+          "name": "file-owner-override-fixture",
+          "value": "file-owner-override-key",
+          "models": [
+            "*"
+          ],
+          "weight": 1,
+          "use_for_batch_api": true
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "request_path_overrides": {
+          "file_content": "http://127.0.0.1:8791/v1/files/{file_id}/content"
+        }
+      },
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/fileowner",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
     "assemblyai": {
       "keys": [
         {
