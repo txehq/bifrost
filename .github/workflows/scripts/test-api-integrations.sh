@@ -179,6 +179,14 @@ jq --arg host "$POSTGRES_HOST" --arg port "$POSTGRES_PORT" --arg user "$POSTGRES
      "logs_store":   {"enabled": true, "type": "postgres", "config": {"host": $host, "port": $port, "user": $user, "password": $pass, "db_name": $db, "ssl_mode": $ssl}}
    } | .client.skills_external_client_url = $skills_url' "$SOURCE_CONFIG" > "$MERGED_CONFIG"
 
+# tests/config.json's sse_mcp client reads its URL from MCP_SSE_URL. Unset, the gateway retries
+# the empty URL five times (31 s) before it reports started, which pushed a pull-request run
+# past the 60 s start limit (TXE-7464). No api-management row uses it, so it is left out then.
+if [ -z "${MCP_SSE_URL:-}" ]; then
+  jq '.mcp.client_configs |= map(select(.name != "sse_mcp"))' "$MERGED_CONFIG" > "$MERGED_CONFIG.tmp"
+  mv "$MERGED_CONFIG.tmp" "$MERGED_CONFIG"
+fi
+
 # Under scripts/test-offline.sh (the pull-request job, TXE-7464) the gateway cannot download its
 # pricing datasheets, so it reads empty ones from loopback.
 if [ "${BIFROST_TEST_OFFLINE:-}" = "1" ]; then
