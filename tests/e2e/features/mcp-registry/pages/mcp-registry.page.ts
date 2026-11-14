@@ -419,14 +419,33 @@ export class MCPRegistryPage extends BasePage {
   async pasteOpenAPISpec(text: string): Promise<void> {
     const editor = this.sheet.getByTestId('openapi-spec-paste-editor')
     await expect(editor).toBeVisible({ timeout: 10000 })
-    const textarea = editor.locator('textarea.inputarea')
-    await textarea.waitFor({ state: 'attached', timeout: 10000 })
+    await this.setMonacoText(editor, text)
+  }
+
+  /**
+   * Replaces the text of the Monaco editor inside editor (an element that holds one).
+   *
+   * Typing, even keyboard.insertText, goes through Monaco's auto-closing brackets and auto-indent:
+   * the first "{" gained a closing "}" and the preview refused the document with "trailing data
+   * after the document" (TXE-7393). This sets the text on the editor's model instead, as a paste
+   * does, and the editor's change handler still sees it. The loader's AMD build defines
+   * window.monaco; without it this falls back to typing.
+   */
+  async setMonacoText(editor: Locator, text: string): Promise<void> {
+    await editor.locator('textarea.inputarea').waitFor({ state: 'attached', timeout: 10000 })
     await editor.locator('.monaco-editor').first().click()
-    await this.page.keyboard.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A')
-    await this.page.keyboard.press('Backspace')
-    // insertText bypasses Monaco's auto-closing brackets/quotes, which would
-    // otherwise corrupt a typed JSON document.
-    await this.page.keyboard.insertText(text)
+    const set = await editor.evaluate((root, value) => {
+      const monaco = (window as unknown as { monaco?: { editor: { getEditors(): { getDomNode(): HTMLElement | null; setValue(v: string): void }[] } } }).monaco
+      const instance = monaco?.editor.getEditors().find((e) => root.contains(e.getDomNode()))
+      if (!instance) return false
+      instance.setValue(value)
+      return true
+    }, text)
+    if (!set) {
+      await this.page.keyboard.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A')
+      await this.page.keyboard.press('Backspace')
+      await this.page.keyboard.insertText(text)
+    }
   }
 
   async fillOpenAPISpecUrl(url: string): Promise<void> {
