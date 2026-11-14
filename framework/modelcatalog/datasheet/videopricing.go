@@ -451,13 +451,6 @@ func intValue(v *int) int {
 	return *v
 }
 
-// videoURIDroppedBy are the providers whose create converter never sends Input.VideoURI, with
-// the ticket that tracks it: a video_uri there is not a video input the vendor received, so it
-// does not take the video-input rate.
-var videoURIDroppedBy = map[schemas.ModelProvider]string{
-	schemas.Replicate: "TXE-7374: core/providers/replicate/videos.go never reads Input.VideoURI",
-}
-
 // videoBillingExtraKeys are the extra params video pricing reads from VideoPricingDimensions.Extra:
 // Kling's mode (PricedMode) and the resolution tier a provider reads from extra_params
 // (requestedTier). TestVideoBillingExtraKeysCoverEveryExtraRead parses this file and fails when
@@ -482,10 +475,11 @@ func VideoBillingSelectors(extra map[string]any) map[string]any {
 }
 
 // VideoRequestHasVideoInput reports whether a video create sends the vendor a video as input:
-// a video_uri on a provider that sends it, or the reference_videos extra param that Seedance
-// reads (BytePlus maps it to its reference_video content; Replicate passes extra params to the
-// model as they are). provider is the one whose converter sends the request: a custom provider's
-// base provider, not its name (TXE-7434).
+// a video_uri, or the reference_videos extra param that Seedance reads (BytePlus maps it to its
+// reference_video content; Replicate passes extra params to the model as they are). provider is
+// the one whose converter sends the request (a custom provider's base provider, TXE-7434); the
+// answer does not depend on it, since every converter sends a video_uri or refuses the create
+// (TXE-7374).
 func VideoRequestHasVideoInput(provider schemas.ModelProvider, input *schemas.VideoGenerationInput, extra map[string]any) bool {
 	return ReadVideoInputs(input, "", nil, extra).HasVideoInput(provider)
 }
@@ -506,8 +500,8 @@ func VideoRequestInputImages(provider schemas.ModelProvider, input *schemas.Vide
 }
 
 // VideoInputs is what a video create carries as input, read without knowing which converter sends
-// it (fork, TXE-7434). Part of it reaches the vendor only through some converters: a video_uri
-// (videoURIDroppedBy) and a provider's own first-frame name (videoNativeFirstFrameNames). For a
+// it (fork, TXE-7434). Part of it reaches the vendor only through some converters: a provider's
+// own first-frame name (videoNativeFirstFrameNames). For a
 // custom provider the converter is its base provider's, which core resolves only after the plugin
 // pre-hooks run, so a capture made there keeps this and resolves it once the base is known
 // (VideoPricingDimensions.ApplyVideoInputs). nativeFirstFrame is nil for nearly every request, so
@@ -562,12 +556,12 @@ func ReadVideoInputs(input *schemas.VideoGenerationInput, lastFrame string, refe
 	return v
 }
 
-// HasVideoInput reports whether provider's converter sends a video as input.
+// HasVideoInput reports whether provider's converter sends a video as input. Every converter
+// either sends a video_uri or refuses the create (Replicate and the OpenAI create form map it to
+// no vendor input and refuse it, TXE-7374), so a recorded job with one received it, whatever the
+// provider.
 func (v VideoInputs) HasVideoInput(provider schemas.ModelProvider) bool {
-	if _, dropped := videoURIDroppedBy[provider]; v.videoURI && !dropped {
-		return true
-	}
-	return v.referenceVideos
+	return v.videoURI || v.referenceVideos
 }
 
 // InputImages counts the images provider's converter sends as input.
