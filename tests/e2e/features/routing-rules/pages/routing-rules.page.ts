@@ -227,7 +227,7 @@ export class RoutingRulesPage extends BasePage {
         const option = this.page
           .getByRole("option", { name: new RegExp(config.provider, "i") })
           .first();
-        await option.scrollIntoViewIfNeeded();
+        // No separate scroll: it can hold an option the loading list replaces (TXE-7412).
         await option.click({ force: true });
         // Wait for dropdown to close
         await this.page
@@ -802,7 +802,10 @@ export class RoutingRulesPage extends BasePage {
     const option = this.page
       .getByRole("option", { name: new RegExp(provider, "i") })
       .first();
-    await option.scrollIntoViewIfNeeded();
+    // The list re-renders while its options load, and a separate scrollIntoViewIfNeeded failed with
+    // "Element is not attached to the DOM" when the option it held was replaced (TXE-7412). The
+    // click scrolls on its own and looks the locator up again when the element detaches. It stays
+    // forced: the open popover's layer intercepts an unforced click.
     await option.click({ force: true });
     await this.page
       .waitForSelector('[role="listbox"]', { state: "hidden", timeout: 5000 })
