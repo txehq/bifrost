@@ -610,7 +610,8 @@ jobs:
           # The compose stack's published ports DNAT to its pinned bridge addresses
           # (.github/workflows/configs/docker-compose.yml): Postgres 172.38.0.11, Weaviate
           # 172.38.0.12 (its gossip to its own advertise address too), Redis 172.38.0.13.
-          # The registries serve its images, npm the lockfile installs, the Go hosts the build,
+          # The registries serve its images, npm the lockfile installs, PyPI the pinned PyYAML,
+          # the Go hosts the build,
           # and api.github.com, github.com, release-assets.githubusercontent.com and nodejs.org
           # the setup-go and setup-node downloads on a runner without the toolchain cached.
           # The gateway, the stubs and the datasheets are on loopback.
@@ -627,11 +628,13 @@ jobs:
             release-assets.githubusercontent.com:443
             auth.docker.io:443
             cr.weaviate.io:443
+            files.pythonhosted.org:443
             ghcr.io:443
             pkg-containers.githubusercontent.com:443
             production.cloudflare.docker.com:443
             production.cloudfront.docker.com:443
             proxy.golang.org:443
+            pypi.org:443
             registry-1.docker.io:443
             registry.npmjs.org:443
             storage.googleapis.com:443
@@ -668,6 +671,12 @@ jobs:
       - name: Install e2e API test deps (lockfile)
         run: npm ci --ignore-scripts --no-audit --no-fund
         working-directory: tests/e2e/api
+
+      # The offline suites' Python checks import yaml; a runner's own python3 need not have it.
+      - name: Install PyYAML (hash-pinned)
+        run: |
+          python3 -m pip install --user --disable-pip-version-check \
+            --require-hashes -r .github/workflows/requirements/pyyaml.txt
 
       # Built before the offline run, whose guard would refuse the module downloads. The
       # collection does not load the UI, so the embed gets a placeholder, as in test-live.sh.
