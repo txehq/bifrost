@@ -68,6 +68,10 @@ COUNTERPARTS = {
         {"workflow": "go-unit-tests.yml", "job": "shard", "release": "test-bifrost-http.sh", "pr": "go-unit-shards.py run"},
         {"workflow": "api-collections-offline.yml", "job": "api-collections-offline", "release": "test-bifrost-http.sh", "pr": "validate-helm-schema.sh"},
     ],
+    "test-migrations": [
+        {"workflow": "go-unit-tests.yml", "job": "migrations", "release": "run-migration-tests.sh postgres", "pr": "run-migration-tests.sh postgres"},
+        {"workflow": "go-unit-tests.yml", "job": "migrations", "release": "run-migration-tests.sh sqlite", "pr": "run-migration-tests.sh sqlite"},
+    ],
 }
 
 # Keyless gates that do not run on pull requests, and why.
@@ -77,8 +81,6 @@ NOT_MOVED = {
     "resolve-cli-versions": "not a test: picks the CLI versions test-cli-harness runs, which needs vendor keys",
     "approve-flaky-test-core": "a manual approval, run only after test-core (vendor keys) failed",
     "approve-memory-regression": "a manual approval, run only after test-memory failed",
-    "test-migrations": "TXE-7451: runs the three previous releases (npm and the fork's GHCR images, which need a packages:read token) "
-    "against Postgres and SQLite, 14 minutes",
     "test-cost-accuracy": "TXE-7452: builds its mocker and hitter from an unpinned checkout of maximhq/bifrost-benchmarking; "
     "pin it to a commit before PR code runs it",
 }
