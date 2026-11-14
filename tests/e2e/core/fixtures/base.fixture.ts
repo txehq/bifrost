@@ -1,7 +1,9 @@
 import { test as base, expect } from "@playwright/test";
 import { existsSync } from "fs";
 import { readFile } from "fs/promises";
-import { extname, resolve } from "path";
+import { extname, relative, resolve } from "path";
+import { E2E_ROOT } from "../../plan";
+import { isOfflineRun, loadQuarantine, quarantineKey } from "../../quarantine";
 import { waitForNetworkIdle } from "../utils/test-helpers";
 import { SidebarPage } from "../pages/sidebar.page";
 import { ProvidersPage } from "../../features/providers/pages/providers.page";
@@ -27,6 +29,7 @@ import { AgentGatewayPage } from "../../features/agent-gateway/pages/agent-gatew
  * Custom test fixtures type
  */
 type BifrostFixtures = {
+	offlineQuarantine: void;
 	serveMonacoLocally: void;
 	closeDevProfiler: void;
 	handleLoginRedirect: void;
@@ -67,7 +70,21 @@ const MONACO_CONTENT_TYPES: Record<string, string> = {
 	".ttf": "font/ttf",
 };
 
+// The offline quarantine (TXE-7385, quarantine.ts): in an offline run a listed test is expected to
+// fail, so it fails the run only by passing. Every spec imports this fixture, which
+// reporters/quarantine.ts checks.
+const offlineQuarantine = isOfflineRun() ? loadQuarantine() : new Map<string, string>();
+
 export const test = base.extend<BifrostFixtures>({
+	offlineQuarantine: [
+		async ({}, use, testInfo) => {
+			const ticket = offlineQuarantine.get(quarantineKey(relative(E2E_ROOT, testInfo.file), testInfo.titlePath.slice(1).join(" › ")));
+			if (ticket) testInfo.fail(true, `quarantined offline under ${ticket} (tests/e2e/quarantine.json)`);
+			await use();
+		},
+		{ auto: true },
+	],
+
 	serveMonacoLocally: [
 		async ({ context }, use) => {
 			if (existsSync(MONACO_VS_DIR)) {

@@ -32,7 +32,10 @@ test.describe('Pricing Config', () => {
   })
 
   test('should set and save datasheet URL', async ({ configSettingsPage }) => {
-    // Saving checks the URL is reachable, so it has to be a live datasheet.
+    // Saving checks the URL is reachable, so it has to be a live datasheet. The check dials through
+    // an SSRF-safe dialer that refuses loopback, so an offline run cannot serve one (TXE-7395). It
+    // is skipped there rather than quarantined: it passes whenever the URL is already stored.
+    test.skip(process.env.E2E_OFFLINE === '1', 'needs a public datasheet URL; offline runs have none (TXE-7395)')
     const testUrl = 'https://getbifrost.ai/datasheet?source=e2e'
     await configSettingsPage.setPricingDatasheetUrl(testUrl)
 

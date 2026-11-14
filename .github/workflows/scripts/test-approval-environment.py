@@ -32,6 +32,7 @@ GATED_JOBS = {
     ("api-collections-offline.yml", "api-collections-offline"),
     ("codspeed.yml", "benchmarks"),
     ("dependency-review.yml", "dependency-review"),
+    ("e2e-ui-offline.yml", "shard"),
     ("go-unit-tests.yml", "shard"),
     ("go-unit-tests.yml", "fixture-folders"),
     ("workflow-lint.yml", "check-egress-allowlist"),

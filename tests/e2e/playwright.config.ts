@@ -74,6 +74,8 @@ export default defineConfig({
   reporter: [
     ['html', { outputFolder: 'playwright-report', open: 'never' }],
     ['./reporters/failures.ts', { outputFile: process.env.E2E_RESULTS_FILE || resolve(REPORTS_DIR, 'e2e-results.json') }],
+    // Offline runs only: fails a stale quarantine entry or a spec the quarantine cannot reach (TXE-7385).
+    ['./reporters/quarantine.ts'],
     [process.env.CI ? 'dot' : 'list'],
   ],
 

@@ -7,12 +7,18 @@
 //
 //   node scripts/run-e2e.mjs [--workers n] [--features x,y] [--rerun file.json]
 //                            [--grep re] [--headed] [--ui] [--skip-build] [--keep]
-//                            [--down] [-- <extra playwright args>]
+//                            [--down] [--offline] [--shard i/n] [-- <extra playwright args>]
+//
+// --offline (TXE-7385) runs with no provider keys and no egress: empty pricing datasheets from a
+// loopback server, no MCP library sync, and tests/e2e/quarantine.json applied. --shard i/n runs
+// one of n balanced slices of the selected spec files; the "E2E UI (offline)" job uses both.
 import { spawn, spawnSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:http'
 import net from 'node:net'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { packFiles, shardFiles, shardWeight, specFiles } from './e2e-plan.mjs'
 
 const E2E_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const REPO_ROOT = resolve(E2E_ROOT, '../..')
@@ -57,23 +63,20 @@ function parseArgs(argv) {
     else if (a === '--skip-build') opts.skipBuild = true
     else if (a === '--keep') opts.keep = true
     else if (a === '--down') opts.down = true
+    else if (a === '--offline') opts.offline = true
+    else if (a === '--shard') {
+      const m = /^(\d+)\/(\d+)$/.exec(argv[++i] ?? '')
+      if (!m || Number(m[1]) < 1 || Number(m[1]) > Number(m[2])) fail('--shard takes i/n with 1 <= i <= n, e.g. --shard 1/2')
+      opts.shard = { index: Number(m[1]), total: Number(m[2]) }
+    }
     else fail(`unknown argument: ${a}`)
   }
   return opts
 }
 
-function specFiles(dir = join(E2E_ROOT, 'features')) {
-  return readdirSync(dir, { withFileTypes: true }).flatMap((d) => {
-    const path = join(dir, d.name)
-    // Accessibility audits have their own config (npm run test:a11y).
-    if (d.isDirectory()) return d.name === 'accessibility' ? [] : specFiles(path)
-    return d.name.endsWith('.spec.ts') ? [relative(E2E_ROOT, path)] : []
-  })
-}
-
 // Picks the spec files to run and the Playwright filters (file:line for reruns).
 function selectFiles(opts) {
-  const all = specFiles()
+  const all = specFiles(E2E_ROOT)
   if (opts.rerun) {
     const path = resolve(process.cwd(), opts.rerun)
     if (!existsSync(path)) fail(`rerun file not found: ${opts.rerun}`)
@@ -99,19 +102,12 @@ function selectFiles(opts) {
   return { files: all, filters: [] }
 }
 
-// Longest-first greedy bin packing: each file goes to the currently lightest worker.
-// Weights are last run's durations; unseen files are estimated from their test count.
+// Spreads files over the workers (packFiles in e2e-plan.mjs). Weights are last run's durations;
+// files without one (every file on a fresh CI runner) take the checked-in shard weights.
 function schedule(files, requested) {
   const timings = existsSync(TIMINGS_FILE) ? JSON.parse(readFileSync(TIMINGS_FILE, 'utf8')) : {}
-  const weight = (f) => timings[f] ?? Math.max(5000, (readFileSync(join(E2E_ROOT, f), 'utf8').match(/\btest(\.skip|\.fixme)?\(/g)?.length ?? 1) * 6000)
-  const count = Math.max(1, Math.min(requested, files.length))
-  const workers = Array.from({ length: count }, (_, i) => ({ name: `w${i + 1}`, port: BASE_PORT + i, files: [], estimateMs: 0 }))
-  for (const file of [...files].sort((a, b) => weight(b) - weight(a))) {
-    const w = workers.reduce((min, cur) => (cur.estimateMs < min.estimateMs ? cur : min))
-    w.files.push(file)
-    w.estimateMs += weight(file)
-  }
-  return workers
+  const fallback = shardWeight(E2E_ROOT)
+  return packFiles(files, requested, (f) => timings[f] ?? fallback(f)).map((bin, i) => ({ name: `w${i + 1}`, port: BASE_PORT + i, ...bin }))
 }
 
 function run(cmd, args, options = {}) {
@@ -182,11 +178,35 @@ async function startPostgres(workers) {
 const dbName = (w) => `bifrost_e2e_${w.name}`
 const workerDir = (name) => join(WORK_DIR, 'workers', name)
 
-async function startWorker(w) {
+// --offline (TXE-7385): the gateway downloads its pricing datasheets and the MCP library at startup,
+// and exits when it cannot. An offline run serves both datasheets empty from a loopback server and
+// turns the library sync off, as the offline harness fixtures do (fixtureGatewayConfig in
+// tests/e2e/api/runners/lib/tls-intercept-proxy.mjs).
+async function serveEmptyDatasheets() {
+  const server = createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end('{}')
+  })
+  await new Promise((r) => server.listen(0, '127.0.0.1', r))
+  return { server, origin: `http://127.0.0.1:${server.address().port}` }
+}
+
+function writeWorkerConfig(dir, datasheetOrigin) {
+  const config = JSON.parse(readFileSync(SEED_CONFIG, 'utf8'))
+  if (datasheetOrigin) {
+    config.framework = {
+      ...config.framework,
+      pricing: { ...config.framework?.pricing, pricing_url: `${datasheetOrigin}/pricing.json`, model_parameters_url: `${datasheetOrigin}/model-parameters.json`, mcp_library_sync_interval: 0 },
+    }
+  }
+  writeFileSync(join(dir, 'config.json'), JSON.stringify(config, null, 2))
+}
+
+async function startWorker(w, datasheetOrigin) {
   const dir = workerDir(w.name)
   rmSync(dir, { recursive: true, force: true })
   mkdirSync(dir, { recursive: true })
-  copyFileSync(SEED_CONFIG, join(dir, 'config.json'))
+  writeWorkerConfig(dir, datasheetOrigin)
   const logFile = join(dir, 'bifrost.log')
   const out = openSync(logFile, 'a')
   const child = spawn(BINARY, ['--app-dir', dir, '--port', String(w.port), '--log-level', 'info'], {
@@ -276,7 +296,13 @@ async function main() {
   acquireLock()
   if (opts.down) return down()
 
-  const { files, filters } = selectFiles(opts)
+  const selected = selectFiles(opts)
+  const { filters } = selected
+  // --shard i/n (TXE-7385): this run takes shard i of n (shardFiles in e2e-plan.mjs). It weighs by
+  // test count only: last run's timings differ between runs, so two shards could overlap.
+  const files = opts.shard ? shardFiles(E2E_ROOT, selected.files, opts.shard.index, opts.shard.total) : selected.files
+  if (opts.shard) log(`shard ${opts.shard.index}/${opts.shard.total}: ${files.length} of ${selected.files.length} spec file(s)`)
+  if (!files.length) fail('no spec files selected')
   const requested = opts.workers ?? (Number(process.env.WORKERS) || DEFAULT_WORKERS)
   if (!Number.isInteger(requested) || requested < 1) fail(`WORKERS must be a positive integer, got ${requested}`)
   const workers = schedule(files, requested)
@@ -297,8 +323,10 @@ async function main() {
   process.on('SIGINT', () => { cleanup(); process.exit(130) })
   process.on('SIGTERM', () => { cleanup(); process.exit(143) })
 
+  const datasheets = opts.offline ? await serveEmptyDatasheets() : null
+  if (datasheets) log(`offline: empty pricing datasheets on ${datasheets.origin}, MCP library sync off`)
   try {
-    await Promise.all(workers.map(startWorker))
+    await Promise.all(workers.map((w) => startWorker(w, datasheets?.origin)))
     await Promise.all(workers.map(seedLogs))
   } catch (err) {
     stopWorkers()
@@ -315,13 +343,18 @@ async function main() {
   pwArgs.push(...opts.passthrough)
   log(`npx ${pwArgs.join(' ')}`)
 
-  const pw = spawnSync('npx', pwArgs, {
+  // Asynchronous, not spawnSync: the offline datasheet server lives on this process's event loop,
+  // and a blocked loop would leave a gateway's mid-run datasheet fetch (a force sync) hanging.
+  const pw = spawn('npx', pwArgs, {
     cwd: E2E_ROOT,
     stdio: 'inherit',
     env: {
       ...process.env,
       E2E_PLAN: PLAN_FILE,
-      // Reruns are for debugging, so they keep traces and videos of failures.
+      // Offline runs apply the quarantine (quarantine.ts); other runs ignore it.
+      E2E_OFFLINE: opts.offline ? '1' : '',
+      // A filtered run leaves tests out on purpose, so the quarantine reporter cannot call a missing title stale.
+      E2E_WHOLE_FILES: filters.length || opts.grep || opts.passthrough.length ? '0' : '1',      // Reruns are for debugging, so they keep traces and videos of failures.
       E2E_DEBUG_ARTIFACTS: opts.rerun ? '1' : (process.env.E2E_DEBUG_ARTIFACTS ?? ''),
       // Only full-file runs are representative enough to schedule the next run on.
       E2E_RECORD_TIMINGS: filters.length || opts.grep || opts.passthrough.length ? '0' : '1',
@@ -329,6 +362,11 @@ async function main() {
       BIFROST_ADMIN_PASSWORD: ADMIN_PASSWORD,
     },
   })
+  const pwStatus = await new Promise((res) => {
+    pw.once('error', () => res(1))
+    pw.once('exit', (code) => res(code))
+  })
+  datasheets?.server.close()
 
   if (opts.keep) {
     log('workers left running (--keep):')
@@ -340,7 +378,7 @@ async function main() {
     stopWorkers()
   }
   log(`HTML report: cd tests/e2e && npx playwright show-report`)
-  process.exit(pw.status ?? 1)
+  process.exit(pwStatus ?? 1)
 }
 
 main().catch((err) => {
