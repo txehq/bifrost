@@ -7,6 +7,11 @@ import {
 } from "./logs.data";
 
 test.describe("LLM Logs", () => {
+  // At the default 1280x720 the stats cards and the request-volume chart leave the table room for
+  // its sticky header only, so a click on a row lands on the header (TXE-7392). Video Outputs
+  // already ran this tall; the tests that measure layout at 1440px set their own size.
+  test.use({ viewport: { width: 1280, height: 1400 } });
+
   test.beforeEach(async ({ logsPage }) => {
     await logsPage.goto();
   });
@@ -57,7 +62,8 @@ test.describe("LLM Logs", () => {
           } });
         });
         await logsPage.goto();
-        const table = page.getByTestId("logs-table");
+        // The table carries no logs-table test id; the page object's locator finds it.
+        const table = logsPage.logsTable;
         await expect(table.getByText(scenario.label, { exact: true })).toBeVisible();
         await expect(table.getByRole("img", { name: scenario.label, exact: true })).toHaveAttribute("src", "/images/harness/antigravity.svg");
       });
