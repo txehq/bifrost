@@ -68,15 +68,6 @@
       "Model Limits › should delete a model limit"
     ]
   },
-  "TXE-7396": {
-    "kind": "stale test or product defect, not offline",
-    "file": "features/agent-gateway/agent-gateway.spec.ts",
-    "tests": [
-      "Agent Gateway › registers an agent from its fetched card with its credentials",
-      "Agent Gateway › edits a registration without re-entering its masked credentials",
-      "Agent Gateway › grants and revokes virtual key access"
-    ]
-  },
   "TXE-7397": {
     "kind": "stale test",
     "file": "features/config/config-client-settings.spec.ts",
