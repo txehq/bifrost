@@ -139930,6 +139930,56 @@
             "type": "number",
             "minimum": 0
           },
+          "input_cost_per_token_above_32k_tokens": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Input token cost above 32k context. The largest context tier the prompt passes wins (32k, 100k, 128k, 200k, 256k, 272k, 512k)."
+          },
+          "output_cost_per_token_above_32k_tokens": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Output token cost above 32k context."
+          },
+          "cache_read_input_token_cost_above_32k_tokens": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Cache-read token cost above 32k context."
+          },
+          "cache_read_input_token_cost_above_128k_tokens": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Cache-read token cost above 128k context."
+          },
+          "input_cost_per_token_above_256k_tokens": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Input token cost above 256k context."
+          },
+          "output_cost_per_token_above_256k_tokens": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Output token cost above 256k context."
+          },
+          "cache_read_input_token_cost_above_256k_tokens": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Cache-read token cost above 256k context."
+          },
+          "input_cost_per_token_above_512k_tokens": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Input token cost above 512k context."
+          },
+          "output_cost_per_token_above_512k_tokens": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Output token cost above 512k context."
+          },
+          "cache_read_input_token_cost_above_512k_tokens": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Cache-read token cost above 512k context."
+          },
           "input_cost_per_token_above_100k_tokens_batches": {
             "type": "number",
             "minimum": 0,

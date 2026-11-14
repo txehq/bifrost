@@ -83,6 +83,17 @@ type TableModelPricing struct {
 	InputCostPerAudioTokenBatches                              *float64 `gorm:"default:null;column:input_cost_per_audio_token_batches" json:"input_cost_per_audio_token_batches,omitempty"`
 	InputCostPerImageTokenBatches                              *float64 `gorm:"default:null;column:input_cost_per_image_token_batches" json:"input_cost_per_image_token_batches,omitempty"`
 	OutputCostPerImageTokenBatches                             *float64 `gorm:"default:null;column:output_cost_per_image_token_batches" json:"output_cost_per_image_token_batches,omitempty"`
+	// Costs - 32k, 256k and 512k tiers, and cache reads above 128k (fork, TXE-7355).
+	InputCostPerTokenAbove32kTokens        *float64 `gorm:"default:null;column:input_cost_per_token_above_32k_tokens" json:"input_cost_per_token_above_32k_tokens,omitempty"`
+	OutputCostPerTokenAbove32kTokens       *float64 `gorm:"default:null;column:output_cost_per_token_above_32k_tokens" json:"output_cost_per_token_above_32k_tokens,omitempty"`
+	CacheReadInputTokenCostAbove32kTokens  *float64 `gorm:"default:null;column:cache_read_input_token_cost_above_32k_tokens" json:"cache_read_input_token_cost_above_32k_tokens,omitempty"`
+	CacheReadInputTokenCostAbove128kTokens *float64 `gorm:"default:null;column:cache_read_input_token_cost_above_128k_tokens" json:"cache_read_input_token_cost_above_128k_tokens,omitempty"`
+	InputCostPerTokenAbove256kTokens       *float64 `gorm:"default:null;column:input_cost_per_token_above_256k_tokens" json:"input_cost_per_token_above_256k_tokens,omitempty"`
+	OutputCostPerTokenAbove256kTokens      *float64 `gorm:"default:null;column:output_cost_per_token_above_256k_tokens" json:"output_cost_per_token_above_256k_tokens,omitempty"`
+	CacheReadInputTokenCostAbove256kTokens *float64 `gorm:"default:null;column:cache_read_input_token_cost_above_256k_tokens" json:"cache_read_input_token_cost_above_256k_tokens,omitempty"`
+	InputCostPerTokenAbove512kTokens       *float64 `gorm:"default:null;column:input_cost_per_token_above_512k_tokens" json:"input_cost_per_token_above_512k_tokens,omitempty"`
+	OutputCostPerTokenAbove512kTokens      *float64 `gorm:"default:null;column:output_cost_per_token_above_512k_tokens" json:"output_cost_per_token_above_512k_tokens,omitempty"`
+	CacheReadInputTokenCostAbove512kTokens *float64 `gorm:"default:null;column:cache_read_input_token_cost_above_512k_tokens" json:"cache_read_input_token_cost_above_512k_tokens,omitempty"`
 	// Costs - 128k Tier
 	InputCostPerTokenAbove128kTokens          *float64 `gorm:"default:null;column:input_cost_per_token_above_128k_tokens" json:"input_cost_per_token_above_128k_tokens,omitempty"`
 	InputCostPerImageAbove128kTokens          *float64 `gorm:"default:null;column:input_cost_per_image_above_128k_tokens" json:"input_cost_per_image_above_128k_tokens,omitempty"`

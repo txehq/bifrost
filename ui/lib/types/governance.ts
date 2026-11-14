@@ -551,6 +551,17 @@ export interface PricingOverridePatch {
 	output_cost_per_token?: number;
 	input_cost_per_token_batches?: number;
 	output_cost_per_token_batches?: number;
+	// 32k, 256k and 512k tiers, and cache reads above 128k
+	input_cost_per_token_above_32k_tokens?: number;
+	output_cost_per_token_above_32k_tokens?: number;
+	cache_read_input_token_cost_above_32k_tokens?: number;
+	cache_read_input_token_cost_above_128k_tokens?: number;
+	input_cost_per_token_above_256k_tokens?: number;
+	output_cost_per_token_above_256k_tokens?: number;
+	cache_read_input_token_cost_above_256k_tokens?: number;
+	input_cost_per_token_above_512k_tokens?: number;
+	output_cost_per_token_above_512k_tokens?: number;
+	cache_read_input_token_cost_above_512k_tokens?: number;
 	// Explicit batch rates by token category and context tier
 	input_cost_per_token_above_100k_tokens_batches?: number;
 	output_cost_per_token_above_100k_tokens_batches?: number;

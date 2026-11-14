@@ -1281,6 +1281,16 @@ governance_model_pricing|cache_creation_cost_above_12hr_above_272k_tokens_batche
 governance_model_pricing|input_cost_per_audio_token_batches|NULL|id = 1
 governance_model_pricing|input_cost_per_image_token_batches|NULL|id = 1
 governance_model_pricing|output_cost_per_image_token_batches|NULL|id = 1
+governance_model_pricing|input_cost_per_token_above_32k_tokens|NULL|id = 1
+governance_model_pricing|output_cost_per_token_above_32k_tokens|NULL|id = 1
+governance_model_pricing|cache_read_input_token_cost_above_32k_tokens|NULL|id = 1
+governance_model_pricing|cache_read_input_token_cost_above_128k_tokens|NULL|id = 1
+governance_model_pricing|input_cost_per_token_above_256k_tokens|NULL|id = 1
+governance_model_pricing|output_cost_per_token_above_256k_tokens|NULL|id = 1
+governance_model_pricing|cache_read_input_token_cost_above_256k_tokens|NULL|id = 1
+governance_model_pricing|input_cost_per_token_above_512k_tokens|NULL|id = 1
+governance_model_pricing|output_cost_per_token_above_512k_tokens|NULL|id = 1
+governance_model_pricing|cache_read_input_token_cost_above_512k_tokens|NULL|id = 1
 mcp_tool_logs|user_name|'Migration Test User'|id = 'mcp-log-migration-001'
 mcp_tool_logs|team_name|'Migration Test Team'|id = 'mcp-log-migration-001'
 mcp_tool_logs|customer_name|'Migration Test Customer'|id = 'mcp-log-migration-001'

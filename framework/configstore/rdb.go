@@ -3098,6 +3098,17 @@ var pricingSyncUpdateColumns = []string{
 	"input_cost_per_audio_token_batches",
 	"input_cost_per_image_token_batches",
 	"output_cost_per_image_token_batches",
+	// Fork, TXE-7355: long-context tiers.
+	"input_cost_per_token_above_32k_tokens",
+	"output_cost_per_token_above_32k_tokens",
+	"cache_read_input_token_cost_above_32k_tokens",
+	"cache_read_input_token_cost_above_128k_tokens",
+	"input_cost_per_token_above_256k_tokens",
+	"output_cost_per_token_above_256k_tokens",
+	"cache_read_input_token_cost_above_256k_tokens",
+	"input_cost_per_token_above_512k_tokens",
+	"output_cost_per_token_above_512k_tokens",
+	"cache_read_input_token_cost_above_512k_tokens",
 	// Costs - 128k Tier
 	"input_cost_per_token_above_128k_tokens",
 	"input_cost_per_image_above_128k_tokens",

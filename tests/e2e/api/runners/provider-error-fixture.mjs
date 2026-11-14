@@ -130,6 +130,33 @@ const behaviours = {
 			usage: { prompt_tokens: 250000, completion_tokens: 1000, total_tokens: 251000, prompt_tokens_details: { cached_tokens: 50000 } },
 		}),
 	}),
+	// Folder 562 (TXE-7355): long prompts past tiers the fork had none for. tiers-long-512k is a 600k-token
+	// prompt (100k of it cached) past the 512k tier; tiers-long-128k-cache is a 150k-token prompt whose cache
+	// reads (100k) are past the 128k cache-read tier.
+	"tiers-long-512k": () => ({
+		status: 200,
+		headers: {},
+		body: JSON.stringify({
+			id: "chatcmpl-tiers-long-512k",
+			object: "chat.completion",
+			created: 1,
+			model: "tiers-long-512k",
+			choices: [{ index: 0, message: { role: "assistant", content: "hello" }, finish_reason: "stop" }],
+			usage: { prompt_tokens: 600000, completion_tokens: 1000, total_tokens: 601000, prompt_tokens_details: { cached_tokens: 100000 } },
+		}),
+	}),
+	"tiers-long-128k-cache": () => ({
+		status: 200,
+		headers: {},
+		body: JSON.stringify({
+			id: "chatcmpl-tiers-long-128k-cache",
+			object: "chat.completion",
+			created: 1,
+			model: "tiers-long-128k-cache",
+			choices: [{ index: 0, message: { role: "assistant", content: "hello" }, finish_reason: "stop" }],
+			usage: { prompt_tokens: 150000, completion_tokens: 0, total_tokens: 150000, prompt_tokens_details: { cached_tokens: 100000 } },
+		}),
+	}),
 	"tiers-priority-audio": () => ({
 		status: 200,
 		headers: {},
@@ -457,6 +484,18 @@ const fixturePricing = {
 		input_cost_per_token: 2e-6, output_cost_per_token: 1.2e-5,
 		input_cost_per_token_flex: 1e-6, output_cost_per_token_flex: 6e-6, cache_read_input_token_cost_flex: 2e-7,
 		input_cost_per_token_above_200k_tokens_flex: 2e-6, output_cost_per_token_above_200k_tokens_flex: 9e-6, cache_read_input_token_cost_above_200k_tokens_flex: 4e-7,
+	},
+	// Folder 562 (TXE-7355): minimax/MiniMax-M3's 512k tier and byteplus/seed-2-0-pro-260328's 128k cache-read
+	// tier, as the live datasheet publishes them.
+	"tiers-long-512k": {
+		provider: "openai", mode: "chat",
+		input_cost_per_token: 3e-7, output_cost_per_token: 1.2e-6, cache_read_input_token_cost: 6e-8,
+		input_cost_per_token_above_512k_tokens: 6e-7, output_cost_per_token_above_512k_tokens: 2.4e-6, cache_read_input_token_cost_above_512k_tokens: 1.2e-7,
+	},
+	"tiers-long-128k-cache": {
+		provider: "openai", mode: "chat",
+		input_cost_per_token: 5e-7, output_cost_per_token: 4e-6, input_cost_per_token_above_128k_tokens: 1e-6,
+		cache_read_input_token_cost: 1e-7, cache_read_input_token_cost_above_128k_tokens: 2e-7,
 	},
 	"tiers-priority-audio": {
 		provider: "openai", mode: "chat",

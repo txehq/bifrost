@@ -429,3 +429,56 @@ test.describe("Custom pricing overrides - video clip, mode and video-input rates
 		}
 	});
 });
+
+// TXE-7355: the 32k, 256k and 512k tiers and the 128k cache-read tier are pricing override fields.
+// An override that sets the 512k input rate and the 128k cache-read rate as an explicit zero is
+// saved with both and reopens with them.
+test.describe("Custom pricing overrides - long-context tiers", () => {
+	const name = `e2e-long-context-${Date.now()}`;
+
+	test.afterEach(async ({ request }) => {
+		const res = await request.get("/api/governance/pricing-overrides");
+		if (!res.ok()) return;
+		const body = await res.json();
+		for (const override of body.pricing_overrides ?? []) {
+			if (override.name === name) await request.delete(`/api/governance/pricing-overrides/${override.id}`);
+		}
+	});
+
+	test("saves a 512k input rate and an explicit zero 128k cache-read rate, and reopens with both", async ({ page, request }) => {
+		await page.goto("/workspace/custom-pricing/overrides");
+		await page.getByTestId("pricing-override-create-btn").first().click();
+
+		await page.getByTestId("pricing-override-name-input").fill(name);
+		await page.getByTestId("pricing-override-pattern-input").fill("MiniMax-M3");
+		await page.getByTestId("pricing-override-request-types-btn").click();
+		await page.getByTestId("pricing-override-request-type-checkbox-chat_completion").click();
+		await page.keyboard.press("Escape");
+
+		await page.getByTestId("pricing-field-search").fill(">512k");
+		await page.getByTestId("pricing-field-activate-input_cost_per_token_above_512k_tokens").click();
+		await page.getByTestId("pricing-override-field-input-input_cost_per_token_above_512k_tokens").fill("0.000006");
+		await page.getByTestId("pricing-field-search").fill("cache read / token (>128k)");
+		await page.getByTestId("pricing-field-activate-cache_read_input_token_cost_above_128k_tokens").click();
+		await page.getByTestId("pricing-override-field-input-cache_read_input_token_cost_above_128k_tokens").fill("0");
+
+		await page.getByTestId("pricing-override-save-btn").click();
+		await expect(page.getByTestId("pricing-override-save-btn")).toBeHidden();
+
+		const res = await request.get("/api/governance/pricing-overrides");
+		expect(res.ok()).toBeTruthy();
+		const saved = ((await res.json()).pricing_overrides ?? []).find((o: { name: string }) => o.name === name);
+		expect(saved, "the override was saved").toBeTruthy();
+		const patch = JSON.parse(saved.pricing_patch);
+		expect(patch.input_cost_per_token_above_512k_tokens).toBe(0.000006);
+		expect(patch.cache_read_input_token_cost_above_128k_tokens).toBe(0);
+
+		await page.reload();
+		await page.getByTestId(`pricing-override-actions-btn-${saved.id}`).click();
+		await page.getByTestId(`pricing-override-edit-btn-${saved.id}`).click();
+		await page.getByTestId("pricing-field-search").fill(">512k");
+		await expect(page.getByTestId("pricing-override-field-input-input_cost_per_token_above_512k_tokens")).toHaveValue("0.000006");
+		await page.getByTestId("pricing-field-search").fill("cache read / token (>128k)");
+		await expect(page.getByTestId("pricing-override-field-input-cache_read_input_token_cost_above_128k_tokens")).toHaveValue("0");
+	});
+});

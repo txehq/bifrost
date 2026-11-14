@@ -588,6 +588,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_explicit_batch_pricing_columns"}, run: migrationAddExplicitBatchPricingColumns},
 	{IDs: []string{"add_video_token_clip_mode_pricing_columns"}, run: migrationAddVideoTokenClipModePricingColumns},
 	{IDs: []string{"add_priority_image_token_pricing_column"}, run: migrationAddPriorityImageTokenPricingColumn},
+	{IDs: []string{"add_long_context_tier_pricing_columns"}, run: migrationAddLongContextTierPricingColumns},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -16970,6 +16971,23 @@ var explicitBatchPricingColumns = []string{
 // nothing read from or rewritten in existing rows.
 func migrationAddExplicitBatchPricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	return addPricingColumnsMigration(ctx, db, logger, "add_explicit_batch_pricing_columns", explicitBatchPricingColumns)
+}
+
+// migrationAddLongContextTierPricingColumns adds the 32k, 256k and 512k tier rates and the
+// cache-read rate above 128k (fork, TXE-7355). Expand-only.
+func migrationAddLongContextTierPricingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	return addPricingColumnsMigration(ctx, db, logger, "add_long_context_tier_pricing_columns", []string{
+		"input_cost_per_token_above_32k_tokens",
+		"output_cost_per_token_above_32k_tokens",
+		"cache_read_input_token_cost_above_32k_tokens",
+		"cache_read_input_token_cost_above_128k_tokens",
+		"input_cost_per_token_above_256k_tokens",
+		"output_cost_per_token_above_256k_tokens",
+		"cache_read_input_token_cost_above_256k_tokens",
+		"input_cost_per_token_above_512k_tokens",
+		"output_cost_per_token_above_512k_tokens",
+		"cache_read_input_token_cost_above_512k_tokens",
+	})
 }
 
 // addPricingColumnsMigration runs one expand-only migration that adds nullable

@@ -144,6 +144,8 @@
             "gpt-6-luna-long",
             "tiers-flex-long",
             "tiers-priority-audio",
+            "tiers-long-512k",
+            "tiers-long-128k-cache",
             "decision-emulated",
             "pp-custom-legacy",
             "pp-embedding",

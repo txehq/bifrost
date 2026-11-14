@@ -1,0 +1,444 @@
+{
+  "name": "562. Long-context tiers: the 512k tier and cache reads past 128k are billed at their rates, and the override API keeps every tier rate (long-context tier rates) [SERIAL]",
+  "description": "TXE-7355. The upstream datasheet prices long prompts at thresholds the fork had no tier for: above 512k (minimax/MiniMax-M3 doubles every rate), above 256k (Qwen 3.7 Plus, about 3x), above 32k, and cache reads above 128k (BytePlus Seed 2.0, twice the base read). The fork dropped those keys at sync, so a 600k-token MiniMax M3 prompt billed at half its price. Rows 562.0a and 562.0b run against the fixture: each fixture model answers with a long prompt, the fixture datasheet carries the live rates, and the row reads the logged cost by its request id (expected cost and the old base-rate price are in the row). The remaining rows pin the wire surface: an override carrying every new tier field is stored and read back whole, with each field's own value (before the change the API decoded the patch without them and they were gone). The override is VK-scoped and never used; no provider is called, so the folder also runs against the fixture.",
+  "item": [
+    {
+      "name": "562.0a a 600k-token prompt past the 512k tier takes the 512k rates for input, cache reads and output (fixture) - openai/tiers-long-512k",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.collectionVariables.set('longCtx512Req', 'e2e-tier-rates-1-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the call through the fixture succeeds', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+              "});",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var reqId = pm.collectionVariables.get('longCtx512Req');",
+              "// 500000 uncached x 6e-07 + 100000 cached x 1.2e-07 + 1000 out x 2.4e-06; at the base rates it was 0.1572.",
+              "var want = 0.3144, old = 0.1572;",
+              "function read(tries) {",
+              "  pm.sendRequest({ url: BASE + '/api/logs?request_id=' + reqId + '&limit=1', method: 'GET' }, function (err, res) {",
+              "    var rows = (!err && res.code === 200) ? (res.json().logs || []) : [];",
+              "    var logRow = rows.filter(function (r) { return r.id === reqId; })[0];",
+              "    if ((!logRow || !(logRow.cost > 0)) && tries > 0) { setTimeout(function () { read(tries - 1); }, 300); return; }",
+              "    pm.test('the call was logged under its request id', function () {",
+              "      pm.expect(logRow, err ? String(err) : res.text()).to.not.equal(undefined);",
+              "    });",
+              "    if (!logRow) { return; }",
+              "    pm.test('the cost is priced at the tier rates the datasheet publishes', function () {",
+              "      pm.expect(Math.abs(logRow.cost - want), 'cost ' + logRow.cost + ' vs ' + want + ' (the flat-rate price was ' + old + '); token_usage: ' + JSON.stringify(logRow.token_usage)).to.be.at.most(Math.max(1e-9, want * 1e-6));",
+              "    });",
+              "  });",
+              "}",
+              "read(20);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-request-id",
+            "value": "{{longCtx512Req}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"openai/tiers-long-512k\", \"messages\": [{\"role\": \"user\", \"content\": \"hello\"}]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "562.0b a 150k-token prompt's cache reads past 128k take the 128k cache-read rate (fixture) - openai/tiers-long-128k-cache",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.collectionVariables.set('longCtx128CacheReq', 'e2e-tier-rates-2-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the call through the fixture succeeds', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+              "});",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var reqId = pm.collectionVariables.get('longCtx128CacheReq');",
+              "// 50000 uncached x 1e-06 (the 128k input tier) + 100000 cached x 2e-07; with cache reads at the base 1e-07 it was 0.06.",
+              "var want = 0.07, old = 0.06;",
+              "function read(tries) {",
+              "  pm.sendRequest({ url: BASE + '/api/logs?request_id=' + reqId + '&limit=1', method: 'GET' }, function (err, res) {",
+              "    var rows = (!err && res.code === 200) ? (res.json().logs || []) : [];",
+              "    var logRow = rows.filter(function (r) { return r.id === reqId; })[0];",
+              "    if ((!logRow || !(logRow.cost > 0)) && tries > 0) { setTimeout(function () { read(tries - 1); }, 300); return; }",
+              "    pm.test('the call was logged under its request id', function () {",
+              "      pm.expect(logRow, err ? String(err) : res.text()).to.not.equal(undefined);",
+              "    });",
+              "    if (!logRow) { return; }",
+              "    pm.test('the cost is priced at the tier rates the datasheet publishes', function () {",
+              "      pm.expect(Math.abs(logRow.cost - want), 'cost ' + logRow.cost + ' vs ' + want + ' (the flat-rate price was ' + old + '); token_usage: ' + JSON.stringify(logRow.token_usage)).to.be.at.most(Math.max(1e-9, want * 1e-6));",
+              "    });",
+              "  });",
+              "}",
+              "read(20);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-request-id",
+            "value": "{{longCtx128CacheReq}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"openai/tiers-long-128k-cache\", \"messages\": [{\"role\": \"user\", \"content\": \"hello\"}]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "562.1 Setup - Create VK for the long-context tier override - openai/override-only",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.unset('longCtxRatesVkId');",
+              "pm.request.body.raw = JSON.stringify({",
+              "  name: 'Long Context Tiers VK ' + Date.now(),",
+              "  provider_configs: [{ provider: 'openai', weight: 1.0, allowed_models: ['*'], key_ids: ['*'] }]",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Create VK returns 2xx', function () {",
+              "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299);",
+              "});",
+              "var body = null;",
+              "try { body = pm.response.json(); } catch (e) { body = null; }",
+              "var vk = body && (body.virtual_key || body);",
+              "pm.test('Created VK exposes an id', function () {",
+              "  pm.expect(vk && vk.id, 'id in: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
+              "});",
+              "if (vk && vk.id) { pm.collectionVariables.set('longCtxRatesVkId', vk.id); }"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/virtual-keys",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys"
+          ]
+        }
+      }
+    },
+    {
+      "name": "562.2 [EXPECT-201] a VK-scoped override on every long-context tier rate is stored whole - openai/override-only",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = ['longCtxRatesVkId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+              "pm.collectionVariables.unset('longCtxRatesOverrideId');",
+              "pm.request.body.raw = JSON.stringify({",
+              "  name: 'e2e-long-ctx-tiers-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),",
+              "  // Virtual-key scoped and never used for a request, so nothing in the suite is repriced.",
+              "  scope_kind: 'virtual_key',",
+              "  virtual_key_id: pm.collectionVariables.get('longCtxRatesVkId'),",
+              "  match_type: 'exact',",
+              "  pattern: 'MiniMax-M3',",
+              "  request_types: ['chat_completion'],",
+              "  patch: {\"input_cost_per_token_above_32k_tokens\": 1e-06, \"output_cost_per_token_above_32k_tokens\": 2e-06, \"cache_read_input_token_cost_above_32k_tokens\": 3e-06, \"cache_read_input_token_cost_above_128k_tokens\": 4e-06, \"input_cost_per_token_above_256k_tokens\": 5e-06, \"output_cost_per_token_above_256k_tokens\": 6e-06, \"cache_read_input_token_cost_above_256k_tokens\": 7e-06, \"input_cost_per_token_above_512k_tokens\": 8e-06, \"output_cost_per_token_above_512k_tokens\": 9e-06, \"cache_read_input_token_cost_above_512k_tokens\": 1e-05}",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Override on the long-context tier rates is accepted', function () {",
+              "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.eql(201);",
+              "});",
+              "var body = null;",
+              "try { body = pm.response.json(); } catch (e) { body = null; }",
+              "var ov = body && (body.pricing_override || body);",
+              "if (ov && ov.id) { pm.collectionVariables.set('longCtxRatesOverrideId', ov.id); }",
+              "var expected = {\"input_cost_per_token_above_32k_tokens\": 1e-06, \"output_cost_per_token_above_32k_tokens\": 2e-06, \"cache_read_input_token_cost_above_32k_tokens\": 3e-06, \"cache_read_input_token_cost_above_128k_tokens\": 4e-06, \"input_cost_per_token_above_256k_tokens\": 5e-06, \"output_cost_per_token_above_256k_tokens\": 6e-06, \"cache_read_input_token_cost_above_256k_tokens\": 7e-06, \"input_cost_per_token_above_512k_tokens\": 8e-06, \"output_cost_per_token_above_512k_tokens\": 9e-06, \"cache_read_input_token_cost_above_512k_tokens\": 1e-05};",
+              "var stored = null;",
+              "try { stored = ov && JSON.parse(ov.pricing_patch); } catch (e) { stored = null; }",
+              "pm.test('the stored patch keeps every long-context tier rate', function () {",
+              "  pm.expect(stored, 'pricing_patch in: ' + pm.response.text()).to.be.an('object');",
+              "  Object.keys(expected).forEach(function (k) {",
+              "    pm.expect(stored[k], k + ' in ' + JSON.stringify(stored)).to.eql(expected[k]);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/pricing-overrides",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "pricing-overrides"
+          ]
+        }
+      }
+    },
+    {
+      "name": "562.3 the override reads back with every long-context tier rate - openai/override-only",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = ['longCtxRatesOverrideId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('override read responds', function () {",
+              "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var body = null;",
+              "try { body = pm.response.json(); } catch (e) { body = null; }",
+              "var id = pm.collectionVariables.get('longCtxRatesOverrideId');",
+              "var ov = null;",
+              "((body && body.pricing_overrides) || []).forEach(function (o) { if (o.id === id) { ov = o; } });",
+              "pm.test('the override is listed under its virtual key', function () {",
+              "  pm.expect(ov, 'override ' + id + ' in: ' + pm.response.text()).to.not.equal(null);",
+              "});",
+              "var expected = {\"input_cost_per_token_above_32k_tokens\": 1e-06, \"output_cost_per_token_above_32k_tokens\": 2e-06, \"cache_read_input_token_cost_above_32k_tokens\": 3e-06, \"cache_read_input_token_cost_above_128k_tokens\": 4e-06, \"input_cost_per_token_above_256k_tokens\": 5e-06, \"output_cost_per_token_above_256k_tokens\": 6e-06, \"cache_read_input_token_cost_above_256k_tokens\": 7e-06, \"input_cost_per_token_above_512k_tokens\": 8e-06, \"output_cost_per_token_above_512k_tokens\": 9e-06, \"cache_read_input_token_cost_above_512k_tokens\": 1e-05};",
+              "var stored = null;",
+              "try { stored = ov && JSON.parse(ov.pricing_patch); } catch (e) { stored = null; }",
+              "pm.test('the stored patch keeps every long-context tier rate', function () {",
+              "  pm.expect(stored, 'pricing_patch in: ' + pm.response.text()).to.be.an('object');",
+              "  Object.keys(expected).forEach(function (k) {",
+              "    pm.expect(stored[k], k + ' in ' + JSON.stringify(stored)).to.eql(expected[k]);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/pricing-overrides?scope_kind=virtual_key&virtual_key_id={{longCtxRatesVkId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "pricing-overrides"
+          ],
+          "query": [
+            {
+              "key": "scope_kind",
+              "value": "virtual_key"
+            },
+            {
+              "key": "virtual_key_id",
+              "value": "{{longCtxRatesVkId}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "562.4 Teardown - Delete the long-context tier override - openai/override-only",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = ['longCtxRatesOverrideId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Override deleted', function () {",
+              "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299);",
+              "});",
+              "pm.collectionVariables.unset('longCtxRatesOverrideId');"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/pricing-overrides/{{longCtxRatesOverrideId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "pricing-overrides",
+            "{{longCtxRatesOverrideId}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "562.5 Teardown - Delete VK - openai/override-only",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = ['longCtxRatesVkId'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('VK deleted', function () {",
+              "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299);",
+              "});",
+              "pm.collectionVariables.unset('longCtxRatesVkId');"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/virtual-keys/{{longCtxRatesVkId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "{{longCtxRatesVkId}}"
+          ]
+        }
+      }
+    }
+  ]
+}
