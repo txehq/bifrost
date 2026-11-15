@@ -1,8 +1,8 @@
 {
-  "name": "598. A video job's input images beyond the model's free allowance are billed: a MiniMax-H3 2K clip with eight reference images settles at the clip price plus 3 x input_cost_per_image (video input images) [SERIAL]",
+  "name": "600. A video job's input images beyond the model's free allowance are billed: a MiniMax-H3 2K clip with eight reference images settles at the clip price plus 3 x input_cost_per_image (video input images) [SERIAL]",
   "item": [
     {
-      "name": "598.1 the fixture gateway runs with provider job accounting off; its client config is kept to restore at the end (video input images)",
+      "name": "600.1 the fixture gateway runs with provider job accounting off; its client config is kept to restore at the end (video input images)",
       "request": {
         "method": "GET",
         "header": [
@@ -55,7 +55,7 @@
       ]
     },
     {
-      "name": "598.2 [EXPECT-200] turn provider job accounting on, which starts the video sweeper (video input images)",
+      "name": "600.2 [EXPECT-200] turn provider job accounting on, which starts the video sweeper (video input images)",
       "request": {
         "method": "PUT",
         "header": [
@@ -94,7 +94,7 @@
               "}",
               "var saved = pm.collectionVariables.get('imgAcctClientConfig');",
               "if (!saved) {",
-              "  // 598.1 kept no config: leave the switch alone rather than write a partial one.",
+              "  // 600.1 kept no config: leave the switch alone rather than write a partial one.",
               "  pm.execution.skipRequest();",
               "} else {",
               "  var cc = JSON.parse(saved);",
@@ -118,7 +118,7 @@
       ]
     },
     {
-      "name": "598.3 minimax/fixture-minimax-images POST /v1/videos with eight reference images, resolution 2K and no size is queued (video input images)",
+      "name": "600.3 minimax/fixture-minimax-images POST /v1/videos with eight reference images, resolution 2K and no size is queued (video input images)",
       "request": {
         "method": "POST",
         "header": [
@@ -171,7 +171,7 @@
       ]
     },
     {
-      "name": "598.4 minimax GET /v1/videos/{id} reports the 6 second clip finished, so the job is due for settlement (video input images)",
+      "name": "600.4 minimax GET /v1/videos/{id} reports the 6 second clip finished, so the job is due for settlement (video input images)",
       "request": {
         "method": "GET",
         "header": [],
@@ -217,7 +217,7 @@
       ]
     },
     {
-      "name": "598.5 the settled job is priced at 6 s x $0.13 plus 3 x $0.04 for the images beyond the free five, where main billed no image (video input images)",
+      "name": "600.5 the settled job is priced at 6 s x $0.13 plus 3 x $0.04 for the images beyond the free five, where main billed no image (video input images)",
       "request": {
         "method": "GET",
         "header": [],
@@ -303,7 +303,7 @@
       ]
     },
     {
-      "name": "598.6 [EXPECT-200] teardown: provider job accounting is turned back off with the client config 598.1 kept, whatever the rows above did (video input images)",
+      "name": "600.6 [EXPECT-200] teardown: provider job accounting is turned back off with the client config 600.1 kept, whatever the rows above did (video input images)",
       "request": {
         "method": "PUT",
         "header": [
@@ -342,7 +342,7 @@
               "}",
               "var saved = pm.collectionVariables.get('imgAcctClientConfig');",
               "if (!saved) {",
-              "  // 598.2 did not run either, so accounting was never turned on.",
+              "  // 600.2 did not run either, so accounting was never turned on.",
               "  pm.execution.skipRequest();",
               "} else {",
               "  var cc = JSON.parse(saved);",
