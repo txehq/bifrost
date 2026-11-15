@@ -775,7 +775,9 @@ async function assertLoggingTrace() {
 		throw new Error(`logging trace API returned unexpected id: ${JSON.stringify(log.id)}`);
 	}
 	if (log.status !== "success") {
-		throw new Error(`logging trace API returned unexpected status: ${JSON.stringify(log.status)}`);
+		throw new Error(
+			`logging trace API returned unexpected status: ${JSON.stringify(log.status)}; error_details=${JSON.stringify(log.error_details ?? null)}`,
+		);
 	}
 	if (log.provider !== providerName) {
 		throw new Error(`logging trace API returned unexpected provider: ${JSON.stringify(log.provider)}`);
