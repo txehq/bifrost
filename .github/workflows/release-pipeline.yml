@@ -129,6 +129,11 @@ jobs:
             dl.google.com:443
             api.github.com:443
             azure.archive.ubuntu.com:80
+            *.ec2.archive.ubuntu.com:80
+            archive.ubuntu.com:80
+            archive.ubuntu.com:443
+            security.ubuntu.com:80
+            security.ubuntu.com:443
             esm.ubuntu.com:443
             github.com:443
             ghcr.io:443
@@ -393,6 +398,11 @@ jobs:
             api.tokenfactory.nebius.com:443
             api.x.ai:443
             azure.archive.ubuntu.com:80
+            *.ec2.archive.ubuntu.com:80
+            archive.ubuntu.com:80
+            archive.ubuntu.com:443
+            security.ubuntu.com:80
+            security.ubuntu.com:443
             esm.ubuntu.com:443
             bifrost-gateway-resource.openai.azure.com:443
             bedrock-mantle.us-east-1.api.aws:443
@@ -1025,6 +1035,11 @@ jobs:
           allowed-endpoints: >
             api.github.com:443
             azure.archive.ubuntu.com:80
+            *.ec2.archive.ubuntu.com:80
+            archive.ubuntu.com:80
+            archive.ubuntu.com:443
+            security.ubuntu.com:80
+            security.ubuntu.com:443
             esm.ubuntu.com:443
             github.com:443
             iojs.org:443
@@ -1143,6 +1158,11 @@ jobs:
             api.parasail.io:443
             api.tokenfactory.nebius.com:443
             azure.archive.ubuntu.com:80
+            *.ec2.archive.ubuntu.com:80
+            archive.ubuntu.com:80
+            archive.ubuntu.com:443
+            security.ubuntu.com:80
+            security.ubuntu.com:443
             esm.ubuntu.com:443
             bedrock-runtime.us-east-1.amazonaws.com:443
             bedrock.us-east-1.amazonaws.com:443
@@ -1555,6 +1575,11 @@ jobs:
             api.openai.com:443
             auth.docker.io:443
             azure.archive.ubuntu.com:80
+            *.ec2.archive.ubuntu.com:80
+            archive.ubuntu.com:80
+            archive.ubuntu.com:443
+            security.ubuntu.com:80
+            security.ubuntu.com:443
             codecov.io:443
             dl-cdn.alpinelinux.org:443
             esm.ubuntu.com:443
@@ -1875,6 +1900,11 @@ jobs:
             api.tokenfactory.nebius.com:443
             auth.docker.io:443
             azure.archive.ubuntu.com:80
+            *.ec2.archive.ubuntu.com:80
+            archive.ubuntu.com:80
+            archive.ubuntu.com:443
+            security.ubuntu.com:80
+            security.ubuntu.com:443
             downloads.getmaxim.ai:443
             esm.ubuntu.com:443
             generativelanguage.googleapis.com:443
@@ -3103,6 +3133,11 @@ jobs:
           allowed-endpoints: >
             api.github.com:443
             azure.archive.ubuntu.com:80
+            *.ec2.archive.ubuntu.com:80
+            archive.ubuntu.com:80
+            archive.ubuntu.com:443
+            security.ubuntu.com:80
+            security.ubuntu.com:443
             esm.ubuntu.com:443
             github.com:443
             ghcr.io:443
@@ -3321,6 +3356,11 @@ jobs:
             7defe2860d5ee49a1e667e1eeea34b25.r2.cloudflarestorage.com:443
             api.github.com:443
             azure.archive.ubuntu.com:80
+            *.ec2.archive.ubuntu.com:80
+            archive.ubuntu.com:80
+            archive.ubuntu.com:443
+            security.ubuntu.com:80
+            security.ubuntu.com:443
             esm.ubuntu.com:443
             files.pythonhosted.org:443
             fonts.googleapis.com:443
@@ -4372,6 +4412,11 @@ jobs:
           egress-policy: block
           allowed-endpoints: >
             azure.archive.ubuntu.com:80
+            *.ec2.archive.ubuntu.com:80
+            archive.ubuntu.com:80
+            archive.ubuntu.com:443
+            security.ubuntu.com:80
+            security.ubuntu.com:443
             discord.com:443
             discordapp.com:443
             dl.google.com:443

@@ -3,8 +3,9 @@ set -euo pipefail
 
 # Four guards on harden-runner egress allowlists:
 #
-#   1. every job that runs apt-get under `egress-policy: block` allowlists the
-#      Ubuntu APT hosts it will need;
+#   1. every job that runs apt-get under `egress-policy: block`, in a run step or
+#      in a script a run step calls, allowlists every Ubuntu APT host a hosted
+#      runner's mirror list can send it to;
 #   2. every job that runs the provider harness allowlists each external host
 #      the harness will dial - see the second python block for why that is not
 #      the same set as "the hosts the collection sends requests to";
@@ -41,14 +42,68 @@ else
 fi
 
 python3 - "${FILES[@]}" <<'PY'
+import os
+import re
 import sys
 import yaml
 
-# Hosts apt-get needs on a GitHub-hosted ubuntu runner. azure.archive.ubuntu.com
-# is the Azure-local mirror the runner images point at (plain HTTP), and
-# esm.ubuntu.com serves the Expanded Security Maintenance lists apt refreshes
-# alongside it.
-REQUIRED_APT_HOSTS = ("azure.archive.ubuntu.com:80", "esm.ubuntu.com:443")
+# Every host apt-get can be sent to on a GitHub-hosted ubuntu runner (TXE-7509).
+# The runner image points apt at mirror+file:/etc/apt/apt-mirrors.txt, which
+# actions/runner-images images/ubuntu/scripts/build/configure-apt-sources.sh
+# writes as three mirrors tried in order: http://azure.archive.ubuntu.com,
+# https://archive.ubuntu.com and https://security.ubuntu.com. On a runner that
+# Hosted Compute places on EC2, cloud-init rewrites the Azure entry to the
+# region's mirror, http://<region>.ec2.archive.ubuntu.com (us-east-2 on release
+# run 43753172465, 2026-11-15), and the security pocket still goes to
+# security.ubuntu.com over plain HTTP. A job that allows only the Azure mirror
+# fails whenever its runner lands anywhere else, and the blocked connections
+# read as a mirror outage. esm.ubuntu.com serves the Expanded Security
+# Maintenance lists apt refreshes alongside them. The wildcard covers every
+# region; harden-runner matches `*.` endpoints (as for *.quay.io:443 here).
+REQUIRED_APT_HOSTS = (
+    "azure.archive.ubuntu.com:80",
+    "*.ec2.archive.ubuntu.com:80",
+    "archive.ubuntu.com:80",
+    "archive.ubuntu.com:443",
+    "security.ubuntu.com:80",
+    "security.ubuntu.com:443",
+    "esm.ubuntu.com:443",
+)
+
+REPO_ROOT = os.environ["REPO_ROOT"]
+APT_RE = re.compile(r"\bapt(-get)?\s+(-\S+\s+)*(update|install|upgrade)\b")
+# A script in command position: at the start of a line or after &&, ||, ;, then or do,
+# optionally behind sudo and bash/sh/source/. - never a path named in prose or a string.
+SCRIPT_RE = re.compile(
+    r"(?:^|&&|\|\||;|\bthen\b|\bdo\b)[ \t]*(?:sudo[ \t]+)?"
+    r"(?:(?:bash|sh|source)[ \t]+(?:-\S+[ \t]+)*|\.[ \t]+)?((?:\./)?[A-Za-z0-9_./-]+\.sh)\b",
+    re.MULTILINE,
+)
+
+
+def runs_apt(text, seen, depth=0):
+    """True when text runs apt, directly or through a repository script it calls.
+
+    A job that calls `bash ./.github/workflows/scripts/install-cross-compilers.sh`
+    runs apt as surely as one that writes `apt-get` in its step; build-binaries-x86
+    did, and this check never saw it (TXE-7509). Scripts are followed three deep."""
+    if APT_RE.search(text):
+        return True
+    if depth >= 3:
+        return False
+    for ref in SCRIPT_RE.findall(text):
+        rel = os.path.normpath(ref[2:] if ref.startswith("./") else ref)
+        path = os.path.join(REPO_ROOT, rel)
+        if rel in seen or not os.path.isfile(path):
+            continue
+        seen.add(rel)
+        with open(path, errors="replace") as fh:
+            # Whole-line comments are prose: this script's own header names apt-get.
+            code = "\n".join(l for l in fh.read().splitlines() if not l.lstrip().startswith("#"))
+        if runs_apt(code, seen, depth + 1):
+            return True
+    return False
+
 
 failures = []
 checked = 0
@@ -63,7 +118,7 @@ for path in sys.argv[1:]:
         steps = job.get("steps") or []
 
         uses_apt = any(
-            "apt-get" in (step.get("run") or "")
+            runs_apt(step.get("run") or "", set())
             for step in steps
             if isinstance(step, dict)
         )
