@@ -1,0 +1,411 @@
+{
+  "name": "598. A compressed video download that decodes past the held cap is refused whole, never streamed in part (video-download-decoded-cap) [SERIAL]",
+  "description": "Local fixture regression for TXE-7089, no live provider calls. Run with the provider error fixture and the gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json, whose fixture_video_keys provider is an OpenAI-based custom provider on the fixture, and providerErrorFixture=1; every case is skipped otherwise. [SERIAL]: it lowers client.max_response_body_size_mb to 1 MB, which every other row's answers are read under, so the harness runs it alone and it restores the stored value at the end. The fixture's GET /v1/videos/video_gzipbomb_*/content answers a few KiB of gzip (Content-Encoding: gzip) that decode to 4 MiB. A video download caps the bytes it hands the caller, not the bytes on the wire: an encoded file is read whole and decoded under the tighter of the 256 MiB media cap and client.max_response_body_size_mb, and past it the gateway answers its own refusal naming the decoded limit, with no video bytes. Red before the change: /content streamed a gzip file decoded on the way through with no cap, and the caller received all 4 MiB. Both content routes are covered: the native /v1/videos/{id}/content and the OpenAI integration's /openai/v1/videos/{id}/content.",
+  "item": [
+    {
+      "name": "598.1 fixture hit counters reset",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('counters cleared', function () { pm.expect(j.data[0].reset, pm.response.text()).to.equal(true); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{providerErrorFixtureUrl}}/__reset",
+          "host": [
+            "{{providerErrorFixtureUrl}}"
+          ],
+          "path": [
+            "__reset"
+          ]
+        }
+      }
+    },
+    {
+      "name": "598.2 [EXPECT-200] read the stored client config (video-download-decoded-cap)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('video-download-decoded-cap: read the stored client config', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+              "  var cc = pm.response.json().client_config;",
+              "  pm.expect(cc, pm.response.text()).to.be.an('object');",
+              "  // A fresh install reads back log_retention_days 0, which PUT /api/config refuses (must be >= 1).",
+              "  if (!cc.log_retention_days || cc.log_retention_days < 1) { cc.log_retention_days = 30; }",
+              "  pm.collectionVariables.set('vdcClientConfig', JSON.stringify(cc));",
+              "  pm.collectionVariables.set('vdcOriginal', String(cc.max_response_body_size_mb || 0));",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/config?from_db=true",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "config"
+          ],
+          "query": [
+            {
+              "key": "from_db",
+              "value": "true"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "598.3 [EXPECT-200] lower client.max_response_body_size_mb to 1 MB (video-download-decoded-cap)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "var cc = JSON.parse(pm.collectionVariables.get('vdcClientConfig') || '{}');",
+              "cc.max_response_body_size_mb = 1;",
+              "pm.variables.set('vdcBody', JSON.stringify({ client_config: cc }));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('video-download-decoded-cap: limit lowered to 1 MB', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{{vdcBody}}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/config",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "config"
+          ]
+        }
+      }
+    },
+    {
+      "name": "598.4 [EXPECT-500] /v1/videos/{id}/content on fixture_video_keys: a gzip file that decodes to 4 MiB is refused whole (video-download-decoded-cap)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var text = pm.response.text();",
+              "pm.test('the download fails as the gateway\\'s own refusal', function () {",
+              "  pm.expect(pm.response.code, text).to.be.at.least(500);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.is_bifrost_error, text).to.equal(true);",
+              "});",
+              "pm.test('the refusal names the decoded size against the 1 MiB cap', function () {",
+              "  pm.expect(text).to.include('decoded video exceeds 1048576-byte limit');",
+              "});",
+              "pm.test('no part of the decoded file is passed on', function () {",
+              "  pm.expect(String(pm.response.headers.get('Content-Type') || ''), text.slice(0, 200)).to.not.match(/^video\\//);",
+              "  pm.expect(text.length, 'response is ' + text.length + ' bytes').to.be.below(65536);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "fixture-video-key-a"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/video_gzipbomb_1:fixture_video_keys/content",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "video_gzipbomb_1:fixture_video_keys",
+            "content"
+          ]
+        }
+      }
+    },
+    {
+      "name": "598.5 [EXPECT-500] /openai/v1/videos/{id}/content on fixture_video_keys: a gzip file that decodes to 4 MiB is refused whole (video-download-decoded-cap)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var text = pm.response.text();",
+              "pm.test('the download fails as the gateway\\'s own refusal', function () {",
+              "  pm.expect(pm.response.code, text).to.be.at.least(500);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.is_bifrost_error, text).to.equal(true);",
+              "});",
+              "pm.test('the refusal names the decoded size against the 1 MiB cap', function () {",
+              "  pm.expect(text).to.include('decoded video exceeds 1048576-byte limit');",
+              "});",
+              "pm.test('no part of the decoded file is passed on', function () {",
+              "  pm.expect(String(pm.response.headers.get('Content-Type') || ''), text.slice(0, 200)).to.not.match(/^video\\//);",
+              "  pm.expect(text.length, 'response is ' + text.length + ' bytes').to.be.below(65536);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "fixture-video-key-a"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/videos/video_gzipbomb_2:fixture_video_keys/content",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "videos",
+            "video_gzipbomb_2:fixture_video_keys",
+            "content"
+          ]
+        }
+      }
+    },
+    {
+      "name": "598.6 [EXPECT-200] each refused download reached the fixture once: no retry (video-download-decoded-cap)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var h = pm.response.json().data[0].hits;",
+              "pm.test('two downloads, two vendor calls', function () {",
+              "  pm.expect(h['video.content.gzipbomb'], JSON.stringify(h)).to.equal(2);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{providerErrorFixtureUrl}}/__hits",
+          "host": [
+            "{{providerErrorFixtureUrl}}"
+          ],
+          "path": [
+            "__hits"
+          ]
+        }
+      }
+    },
+    {
+      "name": "598.7 [EXPECT-200] restore client.max_response_body_size_mb (video-download-decoded-cap)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "var cc = JSON.parse(pm.collectionVariables.get('vdcClientConfig') || '{}');",
+              "cc.max_response_body_size_mb = Number(pm.collectionVariables.get('vdcOriginal') || 0);",
+              "pm.variables.set('vdcBody', JSON.stringify({ client_config: cc }));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('video-download-decoded-cap: original limit restored', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{{vdcBody}}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/config",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "config"
+          ]
+        }
+      }
+    },
+    {
+      "name": "598.8 [EXPECT-200] the original limit is stored again (video-download-decoded-cap)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('video-download-decoded-cap: max_response_body_size_mb is back to what it was', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+              "  var cc = pm.response.json().client_config || {};",
+              "  pm.expect(String(cc.max_response_body_size_mb || 0), pm.response.text()).to.equal(pm.collectionVariables.get('vdcOriginal') || '0');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/config?from_db=true",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "config"
+          ],
+          "query": [
+            {
+              "key": "from_db",
+              "value": "true"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

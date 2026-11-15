@@ -1,7 +1,7 @@
 package utils
 
 import (
-	"compress/gzip"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -189,8 +189,9 @@ type MediaStreamOptions struct {
 // it: there is no size cap and no bound on the whole download, only the idle timeout and
 // the context. Dial, request write and the wait for the headers are bounded per hop.
 //
-// A gzip body is decoded on the way through; any other Content-Encoding is refused, since
-// the file would otherwise reach the caller encoded with nothing saying so.
+// A gzip body is read whole and decoded under the held video cap (TXE-7089), never streamed;
+// any other Content-Encoding is refused, since the file would otherwise reach the caller
+// encoded with nothing saying so.
 func FetchMediaStream(ctx context.Context, resourceURL string, opts MediaStreamOptions) (*MediaStream, error) {
 	resp, redacted, err := openFetch(ctx, resourceURL, mediaStreamLimits, opts.Header)
 	if err != nil {
@@ -206,31 +207,27 @@ func FetchMediaStream(ctx context.Context, resourceURL string, opts MediaStreamO
 	case "", "identity":
 		stream.Body = body
 	case "gzip", "x-gzip":
-		// The length on the wire is not the file's. The gzip header is read from the socket
-		// here, through the guarded body, so a vendor that stalls on it is still timed out.
-		stream.ContentLength = -1
-		decoded, err := gzip.NewReader(body)
+		// An encoded file is not streamed (TXE-7089): a stream decoded on the way through has no
+		// cap, and a few KiB of gzip can unfold into gigabytes. It is read whole through the
+		// guarded body, so a vendor that stalls is still timed out, and decoded under the held
+		// video cap; past it the fetch fails with ErrMediaTooLarge and nothing is delivered.
+		encoding := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Encoding")))
+		encoded, err := io.ReadAll(io.LimitReader(body, heldVideoLimit()+1))
+		_ = body.Close()
 		if err != nil {
-			_ = body.Close()
-			return nil, fmt.Errorf("failed to read body from %q: %w", redacted, err)
+			return nil, err
 		}
-		stream.Body = &gzipMediaStreamBody{Reader: decoded, body: body}
+		decoded, err := decodeHeldVideo(encoded, encoding)
+		if err != nil {
+			return nil, fmt.Errorf("resource at %q: %w", redacted, err)
+		}
+		stream.ContentLength = int64(len(decoded))
+		stream.Body = io.NopCloser(bytes.NewReader(decoded))
 	default:
 		_ = body.Close()
 		return nil, fmt.Errorf("resource at %q has unsupported Content-Encoding %q", redacted, resp.Header.Get("Content-Encoding"))
 	}
 	return stream, nil
-}
-
-// gzipMediaStreamBody decodes a gzip media stream and closes the guarded body under it.
-type gzipMediaStreamBody struct {
-	*gzip.Reader
-	body io.Closer
-}
-
-func (g *gzipMediaStreamBody) Close() error {
-	_ = g.Reader.Close()
-	return g.body.Close()
 }
 
 // mediaStreamBody guards a streamed media body: a read that waits longer than the idle

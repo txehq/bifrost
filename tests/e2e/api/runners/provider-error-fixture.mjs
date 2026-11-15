@@ -1776,6 +1776,9 @@ const deepgramAnswer = (req, res, raw) => {
 // reached the vendor, how often, and with which filters.
 const VIDEO_GAP_MS = 1500;
 const VIDEO_HALF = Buffer.alloc(256 * 1024, 0x1a);
+// Folder 598 (TXE-7089): GET /v1/videos/video_gzipbomb_*/content answers this gzip body, a few KiB that decode
+// to 4 MiB, past the 1 MB client.max_response_body_size_mb the folder sets.
+const VIDEO_GZIP_BOMB = gzipSync(Buffer.alloc(4 * 1024 * 1024, 0));
 const videoGapSends = [];
 const bearerOf = (req) => String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
 const listedVideo = (id, status, created_at) => ({ id, object: "video", model: "sora-fixture", status, created_at });
@@ -2755,6 +2758,12 @@ const handleRequest = (req, res) => {
 		query.sort();
 		countHit(`video.list@${bearerOf(req)}?${query.toString()}`);
 		return send(200, {}, JSON.stringify(videoListPage(query.get("after"))));
+	}
+	if (req.method === "GET" && videoMatch && videoMatch[2] && videoMatch[1].startsWith("video_gzipbomb_")) {
+		// Folder 598 (TXE-7089): a few KiB of gzip on the wire that decode to 4 MiB of zeros.
+		countHit("video.content.gzipbomb");
+		res.writeHead(200, { "Content-Type": "video/mp4", "Content-Encoding": "gzip", "Content-Length": VIDEO_GZIP_BOMB.length });
+		return res.end(VIDEO_GZIP_BOMB);
 	}
 	if (req.method === "GET" && videoMatch && videoMatch[2] && videoMatch[1].startsWith("video_gapped_")) {
 		countHit(`video.content@${bearerOf(req)}`);
