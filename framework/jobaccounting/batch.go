@@ -631,18 +631,37 @@ const batchRequestTypeMixed schemas.RequestType = "batch_results_mixed"
 // lineRequestType is the request type one result line prices under. A batch of one operation
 // prices every line as that operation. A mixed batch (schemas.BatchEndpointMixed: lines of
 // different operations, which a native-route caller can create) prices each line by the shape
-// of its own result: an image line carries data, and any other line is a chat line. Leaving a
-// mixed batch unpriced would park it before its spend reached budgets (TXE-7354).
+// of its own result: an embeddings line is a list of embedding objects, an image line carries
+// data, and any other line is a chat line. Leaving a mixed batch unpriced would park it before
+// its spend reached budgets (TXE-7354). An embeddings body also carries data, so it is told
+// apart first: priced as an image, its input tokens would meet image rates (TXE-6637).
 func lineRequestType(endpoint schemas.BatchEndpoint, item schemas.BatchResultItem) schemas.RequestType {
 	if endpoint != schemas.BatchEndpointMixed {
 		return BatchRequestType(endpoint)
 	}
 	if item.Response != nil {
+		if isEmbeddingsResultBody(item.Response.Body) {
+			return schemas.EmbeddingRequest
+		}
 		if _, ok := item.Response.Body["data"]; ok {
 			return schemas.ImageGenerationRequest
 		}
 	}
 	return schemas.ChatCompletionRequest
+}
+
+// isEmbeddingsResultBody reports whether a result line's body is an OpenAI embeddings list:
+// object "list" whose first data item is an "embedding" object.
+func isEmbeddingsResultBody(body map[string]interface{}) bool {
+	if body["object"] != "list" {
+		return false
+	}
+	data, ok := body["data"].([]interface{})
+	if !ok || len(data) == 0 {
+		return false
+	}
+	first, ok := data[0].(map[string]interface{})
+	return ok && first["object"] == "embedding"
 }
 
 // BatchRequestType maps a batch endpoint to the request type its results price
