@@ -54,6 +54,22 @@
     {
       "row": "406.4 [EXPECT-400] gemini embedding-batch: batch retrieve, cancel and results call upstream with the named key only and report it",
       "reason": "live Gemini row: it checks at the real vendor that only the named key is used, and skips itself when providerErrorFixture=1; row 406.8 checks the same on the fixture's wire (TXE-6637)"
+    },
+    {
+      "row": "347.4 [PREVIEW] anthropic/claude-haiku-4-5 an inline OpenAI-shape chat line reaches Anthropic through the sync chat converter (anthropic-batches)",
+      "reason": "live Anthropic [PREVIEW] row: it sends a real inline chat batch to Anthropic, so it needs a vendor key and include_preview=1, which this runner never sets for folder 347 (TXE-6597)"
+    },
+    {
+      "row": "347.5 [EXPECT-401] anthropic batch retrieve, cancel and results call upstream with the named key only and report it (anthropic-batches)",
+      "reason": "live Anthropic row: its live key is env.ANTHROPIC_API_KEY and it counts calls at the real vendor, and skips itself when providerErrorFixture=1 (TXE-6597)"
+    },
+    {
+      "row": "347.6 [EXPECT-400] vertex/claude-opus-4-7 a Claude-on-Vertex line the url names a chat completion goes through the shared converter (anthropic-batches)",
+      "reason": "live Vertex row: it needs a Vertex key that serves claude-opus-4-7, which the fixture config has not, and skips itself when providerErrorFixture=1 (TXE-6597)"
+    },
+    {
+      "row": "347.8 [PREVIEW] anthropic unified batch results for a settled batch are paged OpenAI-shape lines (anthropic-batches)",
+      "reason": "live Anthropic [PREVIEW] row: it reads a real settled batch named by anthropicSettledBatchId, so it needs a vendor key and include_preview=1, which this runner never sets for folder 347; row 347.7 covers the same route on the fixture (TXE-6597)"
     }
   ]
 }
