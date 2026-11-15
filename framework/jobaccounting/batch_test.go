@@ -2625,6 +2625,42 @@ func TestSummarizeResultsPricesAMixedBatchPerLine(t *testing.T) {
 	}
 }
 
+// TXE-6637: an embeddings line in a mixed batch is priced as an embedding. Its body carries
+// data like an image line does, so before it was told apart first, its input tokens met image
+// rates. A non-embedding list and an image line keep their own types.
+func TestLineRequestTypeTellsAnEmbeddingsLineFromAnImageLine(t *testing.T) {
+	line := func(body map[string]interface{}) schemas.BatchResultItem {
+		return schemas.BatchResultItem{Status: schemas.BatchResultStatusSucceeded, Response: &schemas.BatchResultResponse{StatusCode: 200, Body: body}}
+	}
+	embeddings := line(map[string]interface{}{
+		"object": "list",
+		"model":  "gemini-embedding-001",
+		"data":   []interface{}{map[string]interface{}{"object": "embedding", "index": 0, "embedding": []interface{}{0.1, 0.2}}},
+		"usage":  map[string]interface{}{"prompt_tokens": 4, "total_tokens": 4},
+	})
+	image := line(map[string]interface{}{"data": []interface{}{map[string]interface{}{"b64_json": "aW1hZ2U="}}})
+	emptyList := line(map[string]interface{}{"object": "list", "data": []interface{}{}})
+	chat := line(map[string]interface{}{"object": "chat.completion"})
+
+	for name, tc := range map[string]struct {
+		item schemas.BatchResultItem
+		want schemas.RequestType
+	}{
+		"embeddings":                  {embeddings, schemas.EmbeddingRequest},
+		"image":                       {image, schemas.ImageGenerationRequest},
+		"a list with no embedding":    {emptyList, schemas.ImageGenerationRequest},
+		"chat":                        {chat, schemas.ChatCompletionRequest},
+		"no response (a failed line)": {schemas.BatchResultItem{Status: schemas.BatchResultStatusFailed}, schemas.ChatCompletionRequest},
+	} {
+		if got := lineRequestType(schemas.BatchEndpointMixed, tc.item); got != tc.want {
+			t.Errorf("%s: lineRequestType(mixed) = %s, want %s", name, got, tc.want)
+		}
+	}
+	if got := lineRequestType(schemas.BatchEndpointEmbeddings, image); got != schemas.EmbeddingRequest {
+		t.Errorf("a batch of one operation prices every line as it: got %s", got)
+	}
+}
+
 // TXE-7354: an image batch's lines are summed per model for repricing. A line with no modality
 // breakdown counts its output as image tokens, and that count is fixed on the line before the sum:
 // summed beside a line that reports 1290 image tokens, it would otherwise reprice at the text rate.

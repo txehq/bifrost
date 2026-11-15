@@ -862,9 +862,14 @@ func TestGeminiBatchResultsReturnOpenAIShapeLines(t *testing.T) {
 	assert.Equal(t, schemas.BatchEndpointImageGeneration, AccumulateBatchResultsEndpoint("", schemas.BatchEndpointImageGeneration))
 	assert.Equal(t, schemas.BatchEndpointMixed, AccumulateBatchResultsEndpoint(schemas.BatchEndpointMixed, schemas.BatchEndpointChatCompletions), "once mixed, a batch stays mixed")
 	// The echoed endpoint is caller-controlled metadata on the native route: a line cannot name
-	// the mixed sentinel or an operation a generateContent batch does not run.
+	// the mixed sentinel or an operation a Gemini batch does not run.
 	assert.Equal(t, schemas.BatchEndpointChatCompletions, AccumulateBatchResultsEndpoint("", schemas.BatchEndpointMixed))
-	assert.Equal(t, schemas.BatchEndpointChatCompletions, AccumulateBatchResultsEndpoint("", schemas.BatchEndpointEmbeddings))
+	assert.Equal(t, schemas.BatchEndpointChatCompletions, AccumulateBatchResultsEndpoint("", schemas.BatchEndpointResponses))
+	// Embeddings is an operation a Gemini batch runs (asyncBatchEmbedContent, TXE-6637). Its
+	// callers name it only for an EmbedContentResponse line, so it survives the fold, and a
+	// batch of chat and embedding lines is mixed.
+	assert.Equal(t, schemas.BatchEndpointEmbeddings, AccumulateBatchResultsEndpoint("", schemas.BatchEndpointEmbeddings))
+	assert.Equal(t, schemas.BatchEndpointMixed, AccumulateBatchResultsEndpoint(schemas.BatchEndpointChatCompletions, schemas.BatchEndpointEmbeddings))
 	assert.Equal(t, schemas.BatchEndpointChatCompletions, AccumulateBatchResultsEndpoint(AccumulateBatchResultsEndpoint("", schemas.BatchEndpointChatCompletions), "mixed"))
 	assert.False(t, resp.HasMore)
 	assert.Equal(t, []string{"GET /v1beta/batches/abc123"}, vendor.calls, "results are one upstream call")

@@ -794,12 +794,16 @@ func AccumulateBatchResultsEndpoint(current, lineEndpoint schemas.BatchEndpoint)
 	return schemas.BatchEndpointMixed
 }
 
-// batchResultLineOperation reads a result line's echoed endpoint as one of the two operations a
-// generateContent batch runs. The value comes back as the create sent it in the line's
-// metadata, which a native-route caller controls, so anything but image generation is a chat
-// line: a line cannot name the mixed sentinel, or an operation settlement does not price.
+// batchResultLineOperation reads a result line's endpoint as one of the three operations a
+// Gemini batch runs. A generateContent line's endpoint comes back as the create sent it in the
+// line's metadata, which a native-route caller controls, so anything but image generation or
+// embeddings is a chat line: a line cannot name the mixed sentinel, or an operation settlement
+// does not price. Embeddings is kept because its callers name it only for a line whose
+// response is an EmbedContentResponse, or a failed line that carries no usage
+// (geminiFileResultLineToBatchResultItem, geminiInlinedLineEndpoint); a generateContent
+// response whose metadata names embeddings reaches here as chat (TXE-6637).
 func batchResultLineOperation(endpoint schemas.BatchEndpoint) schemas.BatchEndpoint {
-	if endpoint == schemas.BatchEndpointImageGeneration {
+	if endpoint == schemas.BatchEndpointImageGeneration || endpoint == schemas.BatchEndpointEmbeddings {
 		return endpoint
 	}
 	return schemas.BatchEndpointChatCompletions
