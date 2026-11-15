@@ -292,6 +292,32 @@ func mustLLM(t *testing.T, u *schemas.BifrostPassthroughUsage, prompt, completio
 	}
 }
 
+// A Responses passthrough answer keeps the modality split of its cached tokens, streamed or not,
+// so cached audio takes the cached-audio rate rather than the text cache-read rate (TXE-7361).
+// Azure and Vertex's OpenAI-compatible passthrough reach the same builder through
+// ExtractOpenAIPassthroughUsage.
+func TestExtractOpenAIPassthroughUsage_ResponsesKeepsTheCachedModalitySplit(t *testing.T) {
+	usage := `{"input_tokens":1000,"output_tokens":20,"total_tokens":1020,"input_tokens_details":{"cached_tokens":600,"audio_tokens":700,"cached_tokens_details":{"text_tokens":100,"audio_tokens":500}}}`
+	for name, body := range map[string]string{
+		"non-streaming":      `{"usage":` + usage + `}`,
+		"response.completed": `{"type":"response.completed","response":{"usage":` + usage + `}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			u := openai.ExtractOpenAIPassthroughUsage("POST", "/v1/responses", nil, []byte(body))
+			if u == nil || u.LLMUsage == nil || u.LLMUsage.PromptTokensDetails == nil {
+				t.Fatalf("usage = %+v, want prompt token details", u)
+			}
+			d := u.LLMUsage.PromptTokensDetails
+			if d.CachedReadTokens != 600 || d.AudioTokens != 700 {
+				t.Fatalf("cached_read_tokens = %d, audio_tokens = %d, want 600 and 700", d.CachedReadTokens, d.AudioTokens)
+			}
+			if d.CachedReadTokenDetails == nil || d.CachedReadTokenDetails.AudioTokens != 500 || d.CachedReadTokenDetails.TextTokens != 100 {
+				t.Fatalf("cached split = %+v, want audio 500 and text 100", d.CachedReadTokenDetails)
+			}
+		})
+	}
+}
+
 func TestExtractOpenAIPassthroughUsage_ResponsesTopLevelToolUsage(t *testing.T) {
 	for name, body := range map[string]string{
 		"non-streaming":      `{"tool_usage":{"web_search":{"num_requests":3}},"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}`,
