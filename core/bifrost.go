@@ -8882,7 +8882,9 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				if injectedTools != nil {
 					return bifrost.runInjectedTools(provider, config, req, k, injectedTools)
 				}
-				return bifrost.handleProviderRequest(provider, config, req, k, keys)
+				result, bifrostErr := bifrost.handleProviderRequest(provider, config, req, k, keys)
+				attachResponseLimitImageEstimate(&req.BifrostRequest, bifrostErr)
+				return result, bifrostErr
 			}, keyProvider, req.RequestType, provider.GetProviderKey(), model, &req.BifrostRequest, bifrost.logger)
 			if bifrostError != nil && req.RequestType == schemas.ListModelsRequest {
 				if fallback := bifrost.lastKnownListModelsResponse(req.Context, provider.GetProviderKey(), req.BifrostRequest.ListModelsRequest, bifrostError); fallback != nil {

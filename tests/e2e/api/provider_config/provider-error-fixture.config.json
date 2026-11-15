@@ -162,7 +162,8 @@
             "upstream-oversize",
             "upstream-oversize-gzip-500",
             "upstream-ok~rbl-fallback",
-            "upstream-ok~rbl-under"
+            "upstream-ok~rbl-under",
+            "fixture-image-oversize"
           ],
           "use_for_batch_api": true,
           "weight": 1

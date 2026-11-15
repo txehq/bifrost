@@ -351,6 +351,57 @@ func (r *BifrostImageGenerationResponse) fillExpiresAt(provider ModelProvider, n
 
 // getNumInputImagesSizeQualityAndAspectRatioFromRequest extracts request params for cost
 // calculation and logging. Quality is only returned when it is one of low, medium, high, auto.
+// EstimatedImageUsage is what Bifrost estimates the vendor billed for an image request whose
+// answer the response limit (client.max_response_body_size_mb) refused unread (fork, TXE-7302):
+// the images the request asked for, its input images, and the size, quality, resolution tier and
+// inference steps it named. It is never the vendor's count. Core puts it on the refusal's
+// BifrostErrorExtraFields.EstimatedImageUsage, which is never serialised, so the refusal stays
+// bifrost_internal and Tokun does not charge the caller (contract C6); governance charges it to the
+// virtual key's budget under billed_reason estimated_images_on_response_limit.
+type EstimatedImageUsage struct {
+	OutputImages int
+	InputImages  int
+	Size         string
+	Quality      string
+	Resolution   string
+	Steps        *int
+}
+
+// EstimateImageUsageFromRequest returns the usage an image generation, edit or variation
+// request fixes: n images (1 when the request names none, the vendors' default), its input
+// images, and the size, quality, resolution and steps it names, read the way a delivered
+// response's billing reads them (BackfillParams). Any other request is nil: its price is not
+// fixed by the request.
+func EstimateImageUsageFromRequest(req *BifrostRequest) *EstimatedImageUsage {
+	if req == nil {
+		return nil
+	}
+	var n *int
+	switch {
+	case req.ImageGenerationRequest != nil:
+		if p := req.ImageGenerationRequest.Params; p != nil {
+			n = p.N
+		}
+	case req.ImageEditRequest != nil:
+		if p := req.ImageEditRequest.Params; p != nil {
+			n = p.N
+		}
+	case req.ImageVariationRequest != nil:
+		if p := req.ImageVariationRequest.Params; p != nil {
+			n = p.N
+		}
+	default:
+		return nil
+	}
+	estimate := &EstimatedImageUsage{OutputImages: 1}
+	if n != nil && *n > 0 {
+		estimate.OutputImages = *n
+	}
+	estimate.InputImages, estimate.Size, estimate.Quality, _ = getNumInputImagesSizeQualityAndAspectRatioFromRequest(req)
+	estimate.Resolution, estimate.Steps = getImageResolutionAndStepsFromRequest(req)
+	return estimate
+}
+
 func getNumInputImagesSizeQualityAndAspectRatioFromRequest(req *BifrostRequest) (numInputImages int, size string, quality string, aspectRatio string) {
 	if req == nil {
 		return 0, "", "", ""

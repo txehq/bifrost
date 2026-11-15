@@ -636,6 +636,10 @@ const fixturePricing = {
 	// custom provider on an xAI base. Folder 601 sends xAI's own first frame, "image", which only xAI's converter
 	// sends; the capture judged it by the custom name and billed no image.
 	"fixture-xai-images": { provider: "xai_media_proxy", mode: "video_generation", input_cost_per_image: 0.01, output_cost_per_second: 0.08 },
+	// Folder 612 (TXE-7302): an image model priced per image by quality, so an over-limit refusal of 3 high-quality
+	// images charges the budget 3 x $0.17; and the over-limit chat model priced, so a charge for it would show.
+	"fixture-image-oversize": { provider: "openai", mode: "image_generation", output_cost_per_image: 0.04, output_cost_per_image_high_quality: 0.17 },
+	"upstream-oversize": { provider: "openai", mode: "chat", input_cost_per_token: 0.001, output_cost_per_token: 0.002 },
 	// TXE-7356: dall-e-3's live upstream row, which prices an image only by its joint size and quality rate, so folder
 	// 570 can read the price of an hd and a standard image. The fork dropped these keys at sync and billed $0.
 	"fixture-dalle-3": {
@@ -964,6 +968,12 @@ const openAIImageAnswer = (body, bytes, isEdit) => {
 	}
 	const requested = Number.isInteger(body.n) ? body.n : Number(formField(bytes, "n"));
 	const n = Number.isInteger(requested) && requested > 0 ? requested : 1;
+	// fixture-image-oversize answers n images totalling 2 MiB, past the 1 MB response limit folder 612 sets, so
+	// the gateway refuses the answer unread and charges the virtual key its estimate (TXE-7302).
+	if (model === "fixture-image-oversize") {
+		const each = "A".repeat(Math.ceil(OVERSIZE_BYTES / n));
+		return { status: 200, body: JSON.stringify({ created: 1, data: Array.from({ length: n }, () => ({ b64_json: each })), usage: { input_tokens: 12, output_tokens: 272 * n, total_tokens: 12 + 272 * n } }) };
+	}
 	// A streamed request (stream: true in either body) is answered as OpenAI streams it: partial_images previews of
 	// the one image (default 1), numbered by partial_image_index, then the completed event carrying the image and
 	// the token usage, and no image count (TXE-6984).

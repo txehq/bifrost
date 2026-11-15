@@ -53,11 +53,16 @@ type UsageUpdate struct {
 	FallbackIndex int `json:"fallback_index,omitempty"`
 	// ToolCallID is the MCP log id of the tool call this update settles, "" for inference.
 	ToolCallID string `json:"tool_call_id,omitempty"`
-	// BilledReason is auditing metadata only ("success" | "partial_usage_on_error"):
-	// it makes it possible to assert we never bill both a success and a failure
-	// for the same physical call. Not used for dedup.
+	// BilledReason is auditing metadata only ("success" | "partial_usage_on_error" |
+	// billedReasonEstimatedImagesOnResponseLimit): it makes it possible to assert we never
+	// bill both a success and a failure for the same physical call. Not used for dedup.
 	BilledReason string `json:"billed_reason,omitempty"`
 }
+
+// billedReasonEstimatedImagesOnResponseLimit marks a charge that is Bifrost's estimate, not a
+// vendor count: an image answer the response limit refused unread, priced from the images the
+// request asked for (fork, TXE-7302).
+const billedReasonEstimatedImagesOnResponseLimit = "estimated_images_on_response_limit"
 
 // UsageTracker manages VK-level usage tracking and budget management
 type UsageTracker struct {

@@ -10946,3 +10946,48 @@ func TestCalculateCost_LargeResponseUnreadImagePricesTheRequestedImages(t *testi
 	require.Nil(t, result.ImageGenerationResponse.Usage.OutputImages, "an unread answer reports no output_images")
 	assert.InDelta(t, 3*0.17, s.CalculateCost(result, nil), 1e-12)
 }
+
+// TXE-7302: an image answer the response limit refused unread is priced from the request's
+// estimate: n images at the size and quality it named, through the per-image rates a delivered
+// response takes; with no quality, or auto, at the dearest tier. A row priced only per image token
+// has no count to apply.
+func TestCalculateCostForEstimatedImageUsage(t *testing.T) {
+	s := batchStore(t, "openai", "gpt-image-1", "image_generation",
+		`{"provider": "openai", "mode": "image_generation", "output_cost_per_image": 0.04, "output_cost_per_image_high_quality": 0.17}`)
+	got := s.CalculateCostForEstimatedImageUsage(&schemas.EstimatedImageUsage{OutputImages: 3, Size: "1024x1024", Quality: "high"}, schemas.RoutingInfo{Provider: schemas.OpenAI, Model: "gpt-image-1"}, schemas.ImageGenerationRequest, nil)
+	assert.InDelta(t, 3*0.17, got, 1e-12)
+	got = s.CalculateCostForEstimatedImageUsage(&schemas.EstimatedImageUsage{OutputImages: 2, Quality: "low"}, schemas.RoutingInfo{Provider: schemas.OpenAI, Model: "gpt-image-1"}, schemas.ImageGenerationRequest, nil)
+	assert.InDelta(t, 2*0.04, got, 1e-12, "a named quality with no tier of its own takes the base rate")
+	// No quality, or auto: the vendor billed whatever quality it chose, so the estimate takes the
+	// dearest tier the row prices, never the base rate.
+	for _, quality := range []string{"", "auto"} {
+		got = s.CalculateCostForEstimatedImageUsage(&schemas.EstimatedImageUsage{OutputImages: 2, Quality: quality}, schemas.RoutingInfo{Provider: schemas.OpenAI, Model: "gpt-image-1"}, schemas.ImageGenerationRequest, nil)
+		assert.InDelta(t, 2*0.17, got, 1e-12, "quality %q", quality)
+	}
+	assert.Zero(t, s.CalculateCostForEstimatedImageUsage(nil, schemas.RoutingInfo{Provider: schemas.OpenAI, Model: "gpt-image-1"}, schemas.ImageGenerationRequest, nil))
+
+	// The request's input images, resolution tier and steps are part of what it fixes.
+	inputs := batchStore(t, "xai", "grok-imagine-image-quality", "image_generation",
+		`{"provider": "xai", "mode": "image_generation", "output_cost_per_image": 0.07, "input_cost_per_image": 0.002}`)
+	assert.InDelta(t, 2*0.07+3*0.002, inputs.CalculateCostForEstimatedImageUsage(&schemas.EstimatedImageUsage{OutputImages: 2, InputImages: 3, Quality: "low"}, schemas.RoutingInfo{Provider: schemas.XAI, Model: "grok-imagine-image-quality"}, schemas.ImageEditRequest, nil), 1e-12)
+
+	row := pricingRowFromDatasheetJSON(t, "replicate/google/nano-banana-2", replicateNanoBanana2Row)
+	banana := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{makeKey(row.Model, row.Provider, row.Mode): row})
+	assert.InDelta(t, 0.151, banana.CalculateCostForEstimatedImageUsage(&schemas.EstimatedImageUsage{OutputImages: 1, Quality: "low", Resolution: "4K"}, schemas.RoutingInfo{Provider: schemas.Replicate, Model: row.Model}, schemas.ImageGenerationRequest, nil), 1e-12, "the 4K tier the request named")
+	sdxl := pricingRowFromDatasheetJSON(t, "stability.stable-diffusion-xl-v1", bedrockSDXL1Row)
+	steps := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{makeKey(sdxl.Model, sdxl.Provider, sdxl.Mode): sdxl})
+	assert.InDelta(t, 0.08, steps.CalculateCostForEstimatedImageUsage(&schemas.EstimatedImageUsage{OutputImages: 1, Size: "1024x1024", Quality: "low", Steps: schemas.Ptr(60)}, schemas.RoutingInfo{Provider: schemas.Bedrock, Model: sdxl.Model}, schemas.ImageGenerationRequest, nil), 1e-12, "more than 50 steps")
+
+	// No size, or auto, on a row priced only by size and quality tier: the dearest size, never $0.
+	dalle := pricingRowFromDatasheetJSON(t, "azure/dall-e-3", azureDallE3Row)
+	sized := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{makeKey(dalle.Model, dalle.Provider, dalle.Mode): dalle})
+	for _, size := range []string{"", "auto"} {
+		got := sized.CalculateCostForEstimatedImageUsage(&schemas.EstimatedImageUsage{OutputImages: 1, Size: size, Quality: "hd"}, schemas.RoutingInfo{Provider: schemas.Azure, Model: dalle.Model}, schemas.ImageGenerationRequest, nil)
+		assert.InDelta(t, 0.132, got, 1e-12, "size %q prices at the dearest hd size", size)
+	}
+	assert.InDelta(t, 0.088, sized.CalculateCostForEstimatedImageUsage(&schemas.EstimatedImageUsage{OutputImages: 1, Size: "1024x1024", Quality: "hd"}, schemas.RoutingInfo{Provider: schemas.Azure, Model: dalle.Model}, schemas.ImageGenerationRequest, nil), 1e-12, "a named size keeps its own rate")
+
+	tokens := batchStore(t, "gemini", "gemini-2.5-flash-image", "image_generation",
+		`{"provider": "gemini", "mode": "image_generation", "output_cost_per_image_token": 3e-05}`)
+	assert.Zero(t, tokens.CalculateCostForEstimatedImageUsage(&schemas.EstimatedImageUsage{OutputImages: 2}, schemas.RoutingInfo{Provider: schemas.Gemini, Model: "gemini-2.5-flash-image"}, schemas.ImageGenerationRequest, nil))
+}

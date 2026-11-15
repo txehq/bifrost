@@ -266,6 +266,73 @@ func (s *Store) CalculateCostBreakdownForUsage(usage *schemas.BifrostLLMUsage, p
 	)
 }
 
+// CalculateCostForEstimatedImageUsage prices Bifrost's estimate of an image request whose answer
+// the response limit refused unread (fork, TXE-7302): the requested images and the input images at
+// the request's size, quality, resolution and steps, through the same image pricing a delivered
+// response takes. A row priced only per image token has no count to apply and prices to 0 (TXE-7492).
+// routingInfo is the refused request's, resolved key alias included, so an alias whose label is
+// not itself a catalog row is priced at the model it names. Returns 0 when estimate is nil or the
+// model has no pricing.
+func (s *Store) CalculateCostForEstimatedImageUsage(estimate *schemas.EstimatedImageUsage, routingInfo schemas.RoutingInfo, requestType schemas.RequestType, scopes *LookupScopes) float64 {
+	if estimate == nil || estimate.OutputImages <= 0 {
+		return 0
+	}
+	var lookupScopes LookupScopes
+	if scopes != nil {
+		lookupScopes = *scopes
+	}
+	price := func(size, quality string) float64 {
+		outputImages := estimate.OutputImages
+		imageUsage := &schemas.ImageUsage{OutputImages: &outputImages, NumInputImages: estimate.InputImages}
+		// The count image pricing reads, as a delivered response's Data length sets it.
+		populateOutputImageCount(imageUsage, outputImages)
+		breakdown := s.computeCostFromInput(
+			costInput{
+				imageUsage:      imageUsage,
+				imageSize:       size,
+				imageQuality:    quality,
+				imageResolution: estimate.Resolution,
+				imageSteps:      estimate.Steps,
+			},
+			routingInfo,
+			normalizeStreamRequestType(requestType),
+			lookupScopes,
+		)
+		if breakdown == nil {
+			return 0
+		}
+		return breakdown.TotalCost
+	}
+	// A request that names no size or quality, or auto, is billed at whatever the vendor chose,
+	// which only the unread answer would have said. The estimate then takes the dearest tier the row
+	// prices, so the budget is never charged less than the vendor may have billed.
+	sizes := []string{estimate.Size}
+	if estimate.Size == "" || estimate.Size == "auto" {
+		sizes = append(sizes, estimatedImageSizeTiers...)
+	}
+	qualities := []string{estimate.Quality}
+	if estimate.Quality == "" || estimate.Quality == "auto" {
+		qualities = append(qualities, estimatedImageQualityTiers...)
+	}
+	cost := 0.0
+	for _, size := range sizes {
+		for _, quality := range qualities {
+			cost = max(cost, price(size, quality))
+		}
+	}
+	return cost
+}
+
+// estimatedImageQualityTiers are the quality values image pricing distinguishes, and
+// estimatedImageSizeTiers the sizes a vendor picks for a request that names none (the OpenAI and
+// Azure image sizes, up to 1792 pixels); an estimate that names none is priced at the dearest
+// (fork, TXE-7302). Larger sizes are not listed: a vendor does not choose them unasked, and a
+// per-pixel row would be charged many times the image the request most likely got.
+var (
+	estimatedImageQualityTiers = []string{"low", "medium", "high", "standard", "hd", "xhigh", "max"}
+	estimatedImageSizeTiers    = []string{"256x256", "512x512", "1024x1024", "1024x1536", "1536x1024", "1024x1792", "1792x1024"}
+)
+
 // CalculateGuardrailCost computes judge cost when no parent response is available.
 //
 // CalculateCost uses this for normal responses. Logging also calls it directly

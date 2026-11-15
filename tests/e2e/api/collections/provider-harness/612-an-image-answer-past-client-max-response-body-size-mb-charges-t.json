@@ -1,0 +1,414 @@
+{
+  "name": "612. An image answer past client.max_response_body_size_mb charges the virtual key's budget an estimate; a chat answer charges nothing (response-limit-budget) [SERIAL]",
+  "description": "Local fixture regression for TXE-7302, no live provider calls. Run with the provider error fixture and the gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json (openai base_url -> the fixture, the fixture's pricing sheet) and providerErrorFixture=1; every case is skipped otherwise. [SERIAL]: it lowers client.max_response_body_size_mb to 1 MB, which every other row's answers are read under, so the harness runs it alone and it restores the stored value at the end. The vendor may have billed an answer the gateway refuses for its size. For an image request, whose price the request fixes, the gateway charges the virtual key's budget its estimate: fixture-image-oversize answers 3 images totalling 2 MiB, priced $0.17 each at high quality, so the budget moves by $0.51. The refusal stays bifrost_internal and carries no usage on the wire, so the caller is not charged (contract C6). upstream-oversize, a priced chat model answering 2 MiB, is the control: its budget stays at 0.",
+  "item": [
+    {
+      "name": "612.1 [EXPECT-200] read the stored client config (response-limit-budget)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.test('response-limit-budget: read the stored client config', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+              "  var cc = pm.response.json().client_config;",
+              "  pm.expect(cc, pm.response.text()).to.be.an('object');",
+              "  // A fresh install reads back log_retention_days 0, which PUT /api/config refuses (must be >= 1).",
+              "  if (!cc.log_retention_days || cc.log_retention_days < 1) { cc.log_retention_days = 30; }",
+              "  pm.collectionVariables.set('rlbClientConfig', JSON.stringify(cc));",
+              "  pm.collectionVariables.set('rlbOriginal', String(cc.max_response_body_size_mb || 0));",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/config?from_db=true",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "config"
+          ],
+          "query": [
+            {
+              "key": "from_db",
+              "value": "true"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "612.2 [EXPECT-200] lower client.max_response_body_size_mb to 1 MB (response-limit-budget)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "var cc = JSON.parse(pm.collectionVariables.get('rlbClientConfig') || '{}');",
+              "cc.max_response_body_size_mb = 1;",
+              "pm.variables.set('rlbBody', JSON.stringify({ client_config: cc }));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.test('response-limit-budget: limit lowered to 1 MB', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/config",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "config"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{{rlbBody}}"
+        }
+      }
+    },
+    {
+      "name": "612.3 [EXPECT-500] openai image answer past the limit is refused, and the virtual key's budget is charged 3 x $0.17 (response-limit-budget)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "// A run-scoped virtual key with its own budget, so this row's charge is the only one it reads.",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var run = 'harness-response-limit-budget-image-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+              "pm.collectionVariables.set('rlbVk', 'missing');",
+              "pm.sendRequest({ url: BASE + '/api/governance/virtual-keys', method: 'POST', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify({ name: run, provider_configs: [{ provider: 'openai', allowed_models: ['*'], key_ids: ['*'], weight: 1 }], budgets: [{ max_limit: 100, reset_duration: '1h' }] }) } }, function (err, res) {",
+              "  pm.test('response-limit-budget setup: created the virtual key', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code, res.text()).to.eql(200);",
+              "  });",
+              "  var vk = res.json().virtual_key;",
+              "  pm.collectionVariables.set('rlbVk', (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value);",
+              "  pm.collectionVariables.set('rlbId', vk.id);",
+              "  pm.collectionVariables.set('rlbBudget', vk.budgets[0].id);",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "var text = pm.response.text();",
+              "var j = pm.response.json();",
+              "pm.test('the answer past the limit is the gateway\\'s own refusal', function () {",
+              "  pm.expect(pm.response.code, text).to.be.at.least(500);",
+              "  pm.expect(j.is_bifrost_error, text).to.equal(true);",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, text).to.equal('bifrost_internal');",
+              "});",
+              "pm.test('the refusal carries no estimate or billed usage on the wire', function () {",
+              "  pm.expect(j.extra_fields || {}, text).to.not.have.property('billed_usage');",
+              "  pm.expect(text, text).to.not.include('estimated');",
+              "});",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var id = pm.collectionVariables.get('rlbId'), budget = pm.collectionVariables.get('rlbBudget');",
+              "var want = 3 * 0.17;",
+              "function read(tries) {",
+              "  pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id + '?from_memory=true', method: 'GET' }, function (err, key) {",
+              "    var own = ((key.json().virtual_key || {}).budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
+              "    var used = own.current_usage || 0;",
+              "    if (tries > 0 && Math.abs(used - want) > 1e-9) { setTimeout(function () { read(tries - 1); }, 300); return; }",
+              "    pm.test('the budget was read: HTTP 200 and the run-scoped key\\'s own budget', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(key.code, key.text()).to.equal(200); pm.expect(own.id, key.text()).to.equal(budget); });",
+              "    pm.test('the budget is charged the estimate: 3 high-quality images at $0.17', function () { pm.expect(used, JSON.stringify(own)).to.be.closeTo(want, 1e-9); });",
+              "    pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id, method: 'DELETE' }, function () {});",
+              "  });",
+              "}",
+              "read(40);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-vk",
+            "value": "{{rlbVk}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/fixture-image-oversize\",\n  \"prompt\": \"a lighthouse at dusk\",\n  \"n\": 3,\n  \"size\": \"1024x1024\",\n  \"quality\": \"high\"\n}"
+        }
+      }
+    },
+    {
+      "name": "612.4 [EXPECT-500] openai chat answer past the limit is refused, and the virtual key's budget is charged nothing (response-limit-budget)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "// A run-scoped virtual key with its own budget, so this row's charge is the only one it reads.",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var run = 'harness-response-limit-budget-chat-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+              "pm.collectionVariables.set('rlbVk', 'missing');",
+              "pm.sendRequest({ url: BASE + '/api/governance/virtual-keys', method: 'POST', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify({ name: run, provider_configs: [{ provider: 'openai', allowed_models: ['*'], key_ids: ['*'], weight: 1 }], budgets: [{ max_limit: 100, reset_duration: '1h' }] }) } }, function (err, res) {",
+              "  pm.test('response-limit-budget setup: created the virtual key', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code, res.text()).to.eql(200);",
+              "  });",
+              "  var vk = res.json().virtual_key;",
+              "  pm.collectionVariables.set('rlbVk', (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value);",
+              "  pm.collectionVariables.set('rlbId', vk.id);",
+              "  pm.collectionVariables.set('rlbBudget', vk.budgets[0].id);",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "var text = pm.response.text();",
+              "var j = pm.response.json();",
+              "pm.test('the answer past the limit is the gateway\\'s own refusal', function () {",
+              "  pm.expect(pm.response.code, text).to.be.at.least(500);",
+              "  pm.expect(j.is_bifrost_error, text).to.equal(true);",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, text).to.equal('bifrost_internal');",
+              "});",
+              "pm.test('the refusal carries no estimate or billed usage on the wire', function () {",
+              "  pm.expect(j.extra_fields || {}, text).to.not.have.property('billed_usage');",
+              "  pm.expect(text, text).to.not.include('estimated');",
+              "});",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var id = pm.collectionVariables.get('rlbId'), budget = pm.collectionVariables.get('rlbBudget');",
+              "var want = 0;",
+              "function read(tries) {",
+              "  pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id + '?from_memory=true', method: 'GET' }, function (err, key) {",
+              "    var own = ((key.json().virtual_key || {}).budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
+              "    var used = own.current_usage || 0;",
+              "    if (tries > 0) { setTimeout(function () { read(tries - 1); }, 300); return; }",
+              "    pm.test('the budget was read: HTTP 200 and the run-scoped key\\'s own budget', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(key.code, key.text()).to.equal(200); pm.expect(own.id, key.text()).to.equal(budget); });",
+              "    pm.test('the budget is charged nothing: a chat answer\\'s price is not fixed by the request', function () { pm.expect(used, JSON.stringify(own)).to.equal(0); });",
+              "    pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id, method: 'DELETE' }, function () {});",
+              "  });",
+              "}",
+              "read(5);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-vk",
+            "value": "{{rlbVk}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/upstream-oversize\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        }
+      }
+    },
+    {
+      "name": "612.5 [EXPECT-200] restore client.max_response_body_size_mb (response-limit-budget)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "var cc = JSON.parse(pm.collectionVariables.get('rlbClientConfig') || '{}');",
+              "cc.max_response_body_size_mb = Number(pm.collectionVariables.get('rlbOriginal') || 0);",
+              "pm.variables.set('rlbBody', JSON.stringify({ client_config: cc }));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.test('response-limit-budget: original limit restored', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/config",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "config"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{{rlbBody}}"
+        }
+      }
+    },
+    {
+      "name": "612.6 [EXPECT-200] the original limit is stored again (response-limit-budget)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.test('response-limit-budget: max_response_body_size_mb is back to what it was', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+              "  var cc = pm.response.json().client_config || {};",
+              "  pm.expect(String(cc.max_response_body_size_mb || 0), pm.response.text()).to.equal(pm.collectionVariables.get('rlbOriginal') || '0');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/config?from_db=true",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "config"
+          ],
+          "query": [
+            {
+              "key": "from_db",
+              "value": "true"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
