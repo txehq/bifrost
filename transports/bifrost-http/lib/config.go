@@ -8996,6 +8996,10 @@ func (c *Config) RemoveProvider(ctx context.Context, provider schemas.ModelProvi
 		return nil
 	}
 	delete(c.Providers, provider)
+	// AddProvider registered the prefix; core unregisters it only for a provider it has
+	// built, so one removed before its first request (or rolled back after a failed add)
+	// would keep claiming "<provider>/..." model strings. Standard providers stay known.
+	schemas.UnregisterKnownProvider(provider)
 	logger.Info("Removed provider: %s", provider)
 	return nil
 }

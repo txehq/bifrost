@@ -21954,6 +21954,36 @@ func TestAddProvider_RegistersKnownProviderPrefix(t *testing.T) {
 	}
 }
 
+// Removing a provider core never built (a rolled-back add, or a delete before its first
+// request) releases its prefix, and removing a standard provider leaves its prefix known.
+func TestRemoveProvider_UnregistersKnownProviderPrefix(t *testing.T) {
+	initTestLogger()
+	const provider = schemas.ModelProvider("txe-7501-removed")
+	cfg := &Config{Providers: make(map[schemas.ModelProvider]configstore.ProviderConfig)}
+	if err := cfg.AddProvider(context.Background(), provider, configstore.ProviderConfig{
+		CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true},
+	}); err != nil {
+		t.Fatalf("AddProvider: %v", err)
+	}
+	if !schemas.IsKnownProvider(string(provider)) {
+		t.Fatalf("%s is not known after the add", provider)
+	}
+	if err := cfg.RemoveProvider(context.Background(), provider); err != nil {
+		t.Fatalf("RemoveProvider: %v", err)
+	}
+	if schemas.IsKnownProvider(string(provider)) {
+		t.Fatalf("%s is still a known prefix after its removal", provider)
+	}
+
+	cfg.Providers[schemas.OpenAI] = configstore.ProviderConfig{}
+	if err := cfg.RemoveProvider(context.Background(), schemas.OpenAI); err != nil {
+		t.Fatalf("RemoveProvider(openai): %v", err)
+	}
+	if !schemas.IsKnownProvider(string(schemas.OpenAI)) {
+		t.Fatal("removing the openai config unregistered the standard openai prefix")
+	}
+}
+
 func TestAddProvider_AlreadyExistsInMemory(t *testing.T) {
 	initTestLogger()
 	cfg := &Config{
