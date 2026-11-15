@@ -2,7 +2,17 @@ package schemas
 
 import (
 	"encoding/json"
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"go/types"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"reflect"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -1369,4 +1379,468 @@ func TestCachedReadTokenDetailsRoundTrip(t *testing.T) {
 	if nilSplit.CachedAudioTokens() != 0 {
 		t.Fatal("a nil split reads as zero")
 	}
+}
+
+// promptDetailsLintRoots are the module trees whose non-test Go files the prompt-details lint
+// reads: every tree the Go unit tests job covers.
+var promptDetailsLintRoots = []string{"core", "framework", "transports", "plugins"}
+
+// promptDetailsTypes are the unified prompt-detail types, and promptDetailsFields the usage
+// fields that hold them. A value of one of these types is converted with
+// ResponsesResponseInputTokens.ToChatPromptTokensDetails or
+// ChatPromptTokensDetails.ToResponsesInputTokens, and summed with Add, never copied by hand.
+var (
+	promptDetailsTypes  = map[string]bool{"ChatPromptTokensDetails": true, "ResponsesResponseInputTokens": true}
+	promptDetailsFields = map[string]bool{"PromptTokensDetails": true, "InputTokensDetails": true}
+	// promptDetailsJSONKeys are the wire names of the unified prompt details. A Go map built
+	// under one of them is the same hand copy in JSON form.
+	promptDetailsJSONKeys = map[string]bool{"prompt_tokens_details": true, "input_tokens_details": true}
+)
+
+// promptDetailsCopyAllowed are the functions that may copy prompt details field by field:
+// the shared conversions and sums themselves. Keyed by "<path from the repository root>
+// <function>", with a method written "(*Recv).Name". An entry that no longer matches a
+// finding fails the lint, so the list cannot outlive the code it excuses.
+// gemini.ConvertGeminiUsageMetadataToChatUsage, the third shared conversion, needs no entry:
+// it builds from Gemini's vendor fields, which the lint does not treat as a copy.
+var promptDetailsCopyAllowed = map[string]string{
+	"core/schemas/chatcompletions.go (*ChatPromptTokensDetails).ToResponsesInputTokens":   "the shared chat-to-Responses conversion",
+	"core/schemas/chatcompletions.go (*ChatPromptTokensDetails).Add":                      "the shared sum of chat prompt details",
+	"core/schemas/responses.go (*ResponsesResponseInputTokens).ToChatPromptTokensDetails": "the shared Responses-to-chat conversion",
+	"core/schemas/responses.go (*ResponsesResponseInputTokens).Add":                       "the shared sum of Responses input details",
+	// A provider-native parser: BytePlus's own usage struct names its field PromptTokensDetails
+	// (text and image only), which the lint cannot tell from the unified one by name.
+	"core/providers/byteplus/embedding.go (*BytePlusProvider).Embedding": "sums BytePlus's own prompt_tokens_details (text, image), a vendor field",
+}
+
+type promptDetailsFinding struct {
+	pos  token.Position
+	fn   string // enclosing function, as promptDetailsCopyAllowed keys it
+	what string
+}
+
+// TestNoHandCopiedPromptTokenDetails is the class check for TXE-7503. Usage reaches billing
+// through many converters, and several built ChatPromptTokensDetails by hand from another
+// usage's details, copying only the cached totals: each silently dropped every field added
+// later. On TXE-7361 two of them (buildOAIResponsesUsage and vertexNormalizeBatchUsage) billed
+// cached audio at the text cache-read rate. The lint rejects, outside the shared conversions:
+//   - a ChatPromptTokensDetails or ResponsesResponseInputTokens literal with a field read from
+//     another prompt-details value (x.PromptTokensDetails.F, x.InputTokensDetails.F, or a
+//     variable or parameter holding one);
+//   - an assignment that copies such a field into another prompt-details value;
+//   - a Go map built under "prompt_tokens_details" or "input_tokens_details", which is the
+//     same hand copy in JSON form.
+//
+// Building from vendor fields (Anthropic's cache_read_input_tokens, a log column) is not a
+// copy and is not reported. Use ToChatPromptTokensDetails, ToResponsesInputTokens, Add, or
+// gemini.ConvertGeminiUsageMetadataToChatUsage instead.
+func TestNoHandCopiedPromptTokenDetails(t *testing.T) {
+	root := promptDetailsRepoRoot(t)
+	var all []promptDetailsFinding
+	for _, r := range promptDetailsLintRoots {
+		err := filepath.WalkDir(filepath.Join(root, r), func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				name := d.Name()
+				if name == "testdata" || name == "vendor" || name == "node_modules" || (strings.HasPrefix(name, ".") && len(name) > 1) {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			found, err := lintPromptDetailsFile(path, nil)
+			if err != nil {
+				return err
+			}
+			all = append(all, found...)
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	used := map[string]bool{}
+	var b strings.Builder
+	n := 0
+	for _, f := range all {
+		rel, _ := filepath.Rel(root, f.pos.Filename)
+		rel = filepath.ToSlash(rel)
+		key := rel + " " + f.fn
+		if _, ok := promptDetailsCopyAllowed[key]; ok {
+			used[key] = true
+			continue
+		}
+		n++
+		fmt.Fprintf(&b, "\n  %s:%d: %s (in %s)", rel, f.pos.Line, f.what, f.fn)
+	}
+	if n > 0 {
+		t.Errorf("%d hand copy(ies) of prompt token details (TXE-7503). A hand copy drops every field added later, "+
+			"as the cached modality split was on TXE-7361. Convert with ResponsesResponseInputTokens.ToChatPromptTokensDetails "+
+			"or ChatPromptTokensDetails.ToResponsesInputTokens, sum with Add, or build from the vendor's usage with "+
+			"gemini.ConvertGeminiUsageMetadataToChatUsage; a new shared conversion goes in promptDetailsCopyAllowed:%s", n, b.String())
+	}
+	var stale []string
+	for key := range promptDetailsCopyAllowed {
+		if !used[key] {
+			stale = append(stale, key)
+		}
+	}
+	sort.Strings(stale)
+	for _, key := range stale {
+		t.Errorf("promptDetailsCopyAllowed has %q, which no longer copies prompt details: remove the entry", key)
+	}
+}
+
+// TestPromptDetailsLintFixtures checks the lint on testdata/promptdetailslint: every line ending
+// in `// want` is reported and no other line is. The fixture holds the two pre-fix shapes from
+// TXE-7361 (buildOAIResponsesUsage, vertexNormalizeBatchUsage) as they were on main.
+func TestPromptDetailsLintFixtures(t *testing.T) {
+	dir := filepath.Join("testdata", "promptdetailslint")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	want := map[string]bool{}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		found, err := lintPromptDetailsFile(path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range found {
+			got[fmt.Sprintf("%s:%d", e.Name(), f.pos.Line)] = f.what + " (in " + f.fn + ")"
+		}
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, line := range strings.Split(string(src), "\n") {
+			if strings.HasSuffix(strings.TrimSpace(line), "// want") {
+				want[fmt.Sprintf("%s:%d", e.Name(), i+1)] = true
+			}
+		}
+	}
+	if len(want) == 0 {
+		t.Fatal("no `// want` lines in testdata/promptdetailslint")
+	}
+	for l := range want {
+		if _, ok := got[l]; !ok {
+			t.Errorf("%s: not reported", l)
+		}
+	}
+	for l, what := range got {
+		if !want[l] {
+			t.Errorf("%s: reported but not marked `// want`: %s", l, what)
+		}
+	}
+}
+
+func promptDetailsRepoRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.work")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("no go.work above the working directory")
+		}
+		dir = parent
+	}
+}
+
+// lintPromptDetailsFile parses one Go file (src, or the file at path when src is nil) and
+// returns its hand copies of prompt token details.
+func lintPromptDetailsFile(path string, src []byte) ([]promptDetailsFinding, error) {
+	fset := token.NewFileSet()
+	var source any
+	if src != nil {
+		source = src
+	}
+	file, err := parser.ParseFile(fset, path, source, parser.SkipObjectResolution)
+	if err != nil {
+		return nil, err
+	}
+	var out []promptDetailsFinding
+	for _, decl := range file.Decls {
+		fd, ok := decl.(*ast.FuncDecl)
+		if !ok || fd.Body == nil {
+			continue
+		}
+		l := &promptDetailsLint{fset: fset, fn: promptDetailsFuncName(fd), aliases: map[string]bool{}, seen: map[token.Pos]bool{}}
+		l.collectAliases(fd)
+		l.walk(fd.Body)
+		out = append(out, l.findings...)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].pos.Line < out[j].pos.Line })
+	return out, nil
+}
+
+func promptDetailsFuncName(fd *ast.FuncDecl) string {
+	if fd.Recv == nil || len(fd.Recv.List) == 0 {
+		return fd.Name.Name
+	}
+	recv := fd.Recv.List[0].Type
+	star := ""
+	if s, ok := recv.(*ast.StarExpr); ok {
+		star, recv = "*", s.X
+	}
+	if ix, ok := recv.(*ast.IndexExpr); ok {
+		recv = ix.X
+	}
+	name := "?"
+	if id, ok := recv.(*ast.Ident); ok {
+		name = id.Name
+	}
+	return "(" + star + name + ")." + fd.Name.Name
+}
+
+type promptDetailsLint struct {
+	fset *token.FileSet
+	fn   string
+	// aliases are the names in this function that hold a prompt-details value: parameters,
+	// receivers and variables of a prompt-details type, and variables set from
+	// x.PromptTokensDetails or x.InputTokensDetails.
+	aliases  map[string]bool
+	findings []promptDetailsFinding
+	seen     map[token.Pos]bool
+}
+
+func isPromptDetailsType(e ast.Expr) bool {
+	for {
+		switch x := e.(type) {
+		case *ast.StarExpr:
+			e = x.X
+		case *ast.ParenExpr:
+			e = x.X
+		case *ast.Ident:
+			return promptDetailsTypes[x.Name]
+		case *ast.SelectorExpr:
+			return promptDetailsTypes[x.Sel.Name]
+		default:
+			return false
+		}
+	}
+}
+
+func unparenStar(e ast.Expr) ast.Expr {
+	for {
+		switch x := e.(type) {
+		case *ast.ParenExpr:
+			e = x.X
+		case *ast.StarExpr:
+			e = x.X
+		default:
+			return e
+		}
+	}
+}
+
+// detailsValue reports whether e is a prompt-details value, and names it: x.PromptTokensDetails,
+// x.InputTokensDetails, an alias, or a literal of a prompt-details type.
+func (l *promptDetailsLint) detailsValue(e ast.Expr) (string, bool) {
+	e = unparenStar(e)
+	if u, ok := e.(*ast.UnaryExpr); ok && u.Op == token.AND {
+		e = u.X
+	}
+	switch x := e.(type) {
+	case *ast.SelectorExpr:
+		if promptDetailsFields[x.Sel.Name] {
+			return types.ExprString(x), true
+		}
+	case *ast.Ident:
+		if l.aliases[x.Name] {
+			return x.Name, true
+		}
+	case *ast.CompositeLit:
+		if isPromptDetailsType(x.Type) {
+			return "", true
+		}
+	}
+	return "", false
+}
+
+// detailsFieldRead reports whether e reads a field of a prompt-details value, and names the value.
+func (l *promptDetailsLint) detailsFieldRead(e ast.Expr) (string, bool) {
+	sel, ok := unparenStar(e).(*ast.SelectorExpr)
+	if !ok {
+		return "", false
+	}
+	if _, isLit := unparenStar(sel.X).(*ast.CompositeLit); isLit {
+		return "", false
+	}
+	return l.detailsValue(sel.X)
+}
+
+func (l *promptDetailsLint) collectAliases(fd *ast.FuncDecl) {
+	addFields := func(fl *ast.FieldList) {
+		if fl == nil {
+			return
+		}
+		for _, f := range fl.List {
+			if isPromptDetailsType(f.Type) {
+				for _, n := range f.Names {
+					l.aliases[n.Name] = true
+				}
+			}
+		}
+	}
+	addFields(fd.Recv)
+	addFields(fd.Type.Params)
+	addFields(fd.Type.Results)
+	// Two passes, so an alias of an alias resolves whatever the order in the source.
+	for range 2 {
+		ast.Inspect(fd.Body, func(n ast.Node) bool {
+			switch x := n.(type) {
+			case *ast.FuncLit:
+				addFields(x.Type.Params)
+				addFields(x.Type.Results)
+			case *ast.ValueSpec:
+				for i, id := range x.Names {
+					if x.Type != nil && isPromptDetailsType(x.Type) {
+						l.aliases[id.Name] = true
+					} else if len(x.Values) == len(x.Names) {
+						if _, ok := l.detailsValue(x.Values[i]); ok {
+							l.aliases[id.Name] = true
+						}
+					}
+				}
+			case *ast.AssignStmt:
+				if len(x.Lhs) != len(x.Rhs) {
+					return true
+				}
+				for i, lhs := range x.Lhs {
+					id, ok := lhs.(*ast.Ident)
+					if !ok || id.Name == "_" {
+						continue
+					}
+					if _, ok := l.detailsValue(x.Rhs[i]); ok {
+						l.aliases[id.Name] = true
+					}
+				}
+			}
+			return true
+		})
+	}
+}
+
+func (l *promptDetailsLint) report(pos token.Pos, what string) {
+	if l.seen[pos] {
+		return
+	}
+	l.seen[pos] = true
+	l.findings = append(l.findings, promptDetailsFinding{pos: l.fset.Position(pos), fn: l.fn, what: what})
+}
+
+func (l *promptDetailsLint) walk(body ast.Node) {
+	ast.Inspect(body, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.CompositeLit:
+			l.compositeLit(x)
+		case *ast.AssignStmt:
+			l.assign(x)
+		}
+		return true
+	})
+}
+
+func (l *promptDetailsLint) compositeLit(c *ast.CompositeLit) {
+	if isPromptDetailsType(c.Type) {
+		for _, elt := range c.Elts {
+			kv, ok := elt.(*ast.KeyValueExpr)
+			if !ok {
+				continue
+			}
+			if src, field, ok := l.firstFieldRead(kv.Value); ok {
+				l.report(c.Pos(), fmt.Sprintf("%s literal copies %s.%s field by field", promptDetailsTypeName(c.Type), src, field))
+				return
+			}
+		}
+		return
+	}
+	if _, isMap := c.Type.(*ast.MapType); !isMap {
+		return
+	}
+	for _, elt := range c.Elts {
+		kv, ok := elt.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		if key, ok := promptDetailsJSONKey(kv.Key); ok {
+			l.report(kv.Pos(), fmt.Sprintf("map built under %q by hand", key))
+		}
+	}
+}
+
+func (l *promptDetailsLint) assign(a *ast.AssignStmt) {
+	for i, lhs := range a.Lhs {
+		if ix, ok := lhs.(*ast.IndexExpr); ok {
+			if key, ok := promptDetailsJSONKey(ix.Index); ok {
+				l.report(lhs.Pos(), fmt.Sprintf("map entry %q set by hand", key))
+				continue
+			}
+		}
+		if len(a.Lhs) != len(a.Rhs) {
+			continue
+		}
+		dst, ok := l.detailsFieldRead(lhs)
+		if !ok {
+			continue
+		}
+		src, field, ok := l.firstFieldRead(a.Rhs[i])
+		if !ok || (src == dst && dst != "") {
+			continue
+		}
+		l.report(lhs.Pos(), fmt.Sprintf("%s copies %s.%s field by field", types.ExprString(lhs), src, field))
+	}
+}
+
+// firstFieldRead finds a read of a prompt-details field inside e.
+func (l *promptDetailsLint) firstFieldRead(e ast.Expr) (src, field string, found bool) {
+	ast.Inspect(e, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		if _, ok := n.(*ast.FuncLit); ok {
+			return false
+		}
+		sel, ok := n.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		if s, ok := l.detailsFieldRead(sel); ok {
+			src, field, found = s, sel.Sel.Name, true
+			return false
+		}
+		return true
+	})
+	return src, field, found
+}
+
+func promptDetailsJSONKey(e ast.Expr) (string, bool) {
+	lit, ok := e.(*ast.BasicLit)
+	if !ok || lit.Kind != token.STRING {
+		return "", false
+	}
+	s, err := strconv.Unquote(lit.Value)
+	if err != nil || !promptDetailsJSONKeys[s] {
+		return "", false
+	}
+	return s, true
+}
+
+func promptDetailsTypeName(e ast.Expr) string {
+	return types.ExprString(unparenStar(e))
 }
