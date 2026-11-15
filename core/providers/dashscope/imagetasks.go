@@ -11,6 +11,8 @@ import (
 	"path"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
@@ -137,16 +139,40 @@ func wanSameName(a, b string) bool {
 // wanNamesInterleave reports whether name could be one of the interleaved-mode switches to some
 // JSON matcher: its letters, folded, contain "interleave" or "maximages". This fails closed on
 // spellings no exact rule anticipates (an "is" prefix on a boolean, other separators), at the cost
-// of refusing a vendor field that happens to contain those words; there is none documented.
+// of refusing a vendor field that happens to contain those words; there is none documented. A
+// letter outside ASCII is first folded to the ASCII letter of its Unicode case-folding orbit, as
+// Go's encoding/json folds it ("ſ", long s, is s), so it cannot hide a switch by being dropped.
+// It also matches every name wanSameName matches as one of the two switches.
 func wanNamesInterleave(name string) bool {
+	if wanSameName(name, "enable_interleave") || wanSameName(name, "max_images") {
+		return true
+	}
 	var folded strings.Builder
-	for _, r := range strings.ToLower(name) {
+	for _, r := range name {
+		r = asciiFoldRune(r)
+		if r >= 'A' && r <= 'Z' {
+			r += 'a' - 'A'
+		}
 		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
 			folded.WriteRune(r)
 		}
 	}
 	letters := folded.String()
 	return strings.Contains(letters, "interleave") || strings.Contains(letters, "maximages")
+}
+
+// asciiFoldRune returns the ASCII member of r's Unicode simple case-folding orbit ('ſ' and 'S'
+// for 's', the Kelvin sign for 'k'), or r itself when the orbit has none.
+func asciiFoldRune(r rune) rune {
+	if r < utf8.RuneSelf {
+		return r
+	}
+	for next := unicode.SimpleFold(r); next != r; next = unicode.SimpleFold(next) {
+		if next < utf8.RuneSelf {
+			return next
+		}
+	}
+	return r
 }
 
 // wanInterleaveSwitch returns the name of an interleaved-mode switch among the extra params, at
