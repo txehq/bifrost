@@ -130,7 +130,7 @@
             "upstream-503",
             "upstream-429",
             "upstream-429-ms",
-            "upstream-403-content-block",
+            "upstream-403-content-block", "upstream-503~async",
             "upstream-speech-empty",
             "upstream-ok",
             "upstream-gapped",

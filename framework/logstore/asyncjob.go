@@ -187,7 +187,10 @@ func (e *AsyncJobExecutor) executeJob(job *AsyncJob, operation AsyncOperation, c
 	markFailed := func(msg string) {
 		now := time.Now().UTC()
 		expiresAt := now.Add(time.Duration(job.ResultTTL) * time.Second)
-		errJSON, _ := sonic.Marshal(&schemas.BifrostError{Error: &schemas.ErrorField{Message: msg}})
+		// Bifrost's own failure (a panic, a result it could not serialize): bifrost_internal.
+		internalErr := &schemas.BifrostError{IsBifrostError: true, Error: &schemas.ErrorField{Message: msg}}
+		internalErr.ResolveErrorType()
+		errJSON, _ := sonic.Marshal(internalErr)
 		if err := e.logstore.UpdateAsyncJob(ctx, job.ID, map[string]any{
 			"status":       schemas.AsyncJobStatusFailed,
 			"status_code":  fasthttp.StatusInternalServerError,
@@ -227,6 +230,11 @@ func (e *AsyncJobExecutor) executeJob(job *AsyncJob, operation AsyncOperation, c
 	expiresAt := now.Add(time.Duration(job.ResultTTL) * time.Second)
 
 	if bifrostErr != nil {
+		// The stored error is what GET /v1/async/<route>/{job_id} returns, so it carries
+		// extra_fields.error_type exactly as the sync route's error does: the transport resolves it
+		// when it sends an error, and nothing sends this one (contract C6, TXE-7047). Every async
+		// operation's error is stored here, so no route can skip it.
+		bifrostErr.ResolveErrorType()
 		errJSON, err := sonic.Marshal(bifrostErr)
 		if err != nil {
 			e.logger.Warn("failed to marshal bifrost error: %v", err)
