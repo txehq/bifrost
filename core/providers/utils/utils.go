@@ -4293,7 +4293,7 @@ func NewBifrostOperationError(message string, err error) *schemas.BifrostError {
 // The next key would download the same object up to the limit again, and its own error (an
 // authorization failure on a key without access) would replace the refusal the caller is owed
 // (fork, TXE-7301). Every loop over keys calls it at the top of each iteration and breaks, so the
-// code after the loop returns the refusal; TestEveryKeyWalkStopsAtAResponseLimitRefusal fails a
+// code after the loop returns the refusal; TestEveryKeyWalkStopsAtAResponseLimitRefusal (core/bifrost_test.go) fails a
 // loop that does not. Core's retry and fallback already stop on this error; this is the
 // provider-local loop's copy of that rule.
 func StopKeyWalk(err *schemas.BifrostError) bool {

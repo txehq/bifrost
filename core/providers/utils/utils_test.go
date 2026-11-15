@@ -5738,3 +5738,42 @@ func TestCheckContextAndGetRequestBodyConvertsWhenNothingIsStaged(t *testing.T) 
 		t.Errorf("converter calls = %d, want 1", converterCalls)
 	}
 }
+
+// StopKeyWalk stops at the response-limit refusal, however a provider built it, and at nothing
+// else: a key's own failure (a 403, a network error) still moves the walk to the next key.
+func TestStopKeyWalk(t *testing.T) {
+	tooLarge := &network.ResponseBodyTooLargeError{Limit: 1 << 20}
+	for name, tc := range map[string]struct {
+		err  *schemas.BifrostError
+		stop bool
+	}{
+		"no error yet":          {nil, false},
+		"the refusal":           {NewResponseBodyTooLargeError(tooLarge), true},
+		"a wrapped read error":  {NewBifrostOperationError("error reading S3 GET response", tooLarge), true},
+		"a vendor 403":          {NewProviderAPIError("S3 GET failed: AccessDenied", nil, 403, nil, nil), false},
+		"a network error":       {NewBifrostOperationError(schemas.ErrProviderDoRequest, errors.New("dial tcp: connection refused")), false},
+		"a configuration error": {NewConfigurationError("endpoint not set"), false},
+	} {
+		if got := StopKeyWalk(tc.err); got != tc.stop {
+			t.Errorf("%s: StopKeyWalk = %t, want %t", name, got, tc.stop)
+		}
+	}
+}
+
+// BenchmarkStopKeyWalk is what TXE-7301 adds to each iteration of a key walk: a nil check before
+// the first key, and an errors.Is after a key failed.
+func BenchmarkStopKeyWalk(b *testing.B) {
+	failed := NewProviderAPIError("S3 GET failed: AccessDenied", nil, 403, nil, nil)
+	b.Run("first_key", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = StopKeyWalk(nil)
+		}
+	})
+	b.Run("after_a_failed_key", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = StopKeyWalk(failed)
+		}
+	})
+}
