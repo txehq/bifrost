@@ -3059,6 +3059,13 @@ const handleRequest = (req, res) => {
 				const empty = behaviours[speechName]();
 				return send(empty.status, empty.headers, empty.body);
 			}
+			// TXE-7072: a speech stream the vendor cuts off after one audio delta, with no speech.audio.done. Bifrost reports
+			// it as truncated and bills the input's characters on the error, so the log row of a cut-off synthesis has a cost.
+			if (speechName === "upstream-speech-truncated") {
+				if (parsed.stream_format !== "sse") return send(404, {}, errorBody("upstream-speech-truncated only streams", "invalid_request_error", "model_not_found"));
+				res.writeHead(200, { "Content-Type": "text/event-stream", "x-request-id": "fixture-speech-truncated" });
+				return res.end(`data: ${JSON.stringify({ type: "speech.audio.delta", audio: Buffer.from("ID3-truncated").toString("base64") })}\n\n`);
+			}
 			if (speechName !== "upstream-gapped") {
 				return send(404, {}, errorBody(`unknown fixture model ${model}`, "invalid_request_error", "model_not_found"));
 			}

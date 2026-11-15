@@ -1278,3 +1278,36 @@ func TestSpeechStreamInputNotRecordedLeavesErrorsUnbilled(t *testing.T) {
 		t.Fatalf("BilledUsage attached with no speech input recorded: %+v", bifrostErr.ExtraFields.BilledUsage)
 	}
 }
+
+// BenchmarkSpeechStreamInputBilling measures what TXE-7072 adds to the request flow. dispatch is
+// paid once per speech stream (core's SetSpeechStreamInput: a code-point count of the input and one
+// context write); the attach cases are paid once per interrupted stream, never per chunk. A
+// non-speech stream pays only the miss: one context read, and no allocation.
+func BenchmarkSpeechStreamInputBilling(b *testing.B) {
+	req := &schemas.BifrostSpeechRequest{Input: &schemas.SpeechInput{Input: strings.Repeat("héllo wörld ", 84)}} // 1008 code points
+	b.Run("dispatch speech stream 1008 chars", func(b *testing.B) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		b.ReportAllocs()
+		for b.Loop() {
+			SetSpeechStreamInput(ctx, req)
+		}
+	})
+	b.Run("interrupted non-speech stream", func(b *testing.B) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		bifrostErr := &schemas.BifrostError{}
+		b.ReportAllocs()
+		for b.Loop() {
+			attachSpeechStreamInputFromContext(ctx, bifrostErr)
+		}
+	})
+	b.Run("interrupted speech stream", func(b *testing.B) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		SetSpeechStreamInput(ctx, req)
+		bifrostErr := &schemas.BifrostError{}
+		b.ReportAllocs()
+		for b.Loop() {
+			bifrostErr.ExtraFields.BilledUsage = nil // the BilledUsage is the one allocation
+			attachSpeechStreamInputFromContext(ctx, bifrostErr)
+		}
+	})
+}

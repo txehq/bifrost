@@ -1,0 +1,114 @@
+{
+  "name": "605. A speech stream cut off after the vendor accepted it bills its input characters (TXE-7072, provider error fixture)",
+  "item": [
+    {
+      "name": "605.1 openai-based fixture provider: a speech stream cut off after one audio delta logs the cost of its 40 input characters",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); return; }",
+              "var run = Date.now() + '-' + Math.floor(Math.random() * 1e6);",
+              "var provider = 'speech-cut-' + run;",
+              "var model = 'upstream-speech-truncated~' + run;",
+              "pm.variables.set('speechCutProvider', provider);",
+              "pm.variables.set('speechCutModel', model);",
+              "var base = pm.variables.get('baseUrl');",
+              "var headers = { 'Content-Type': 'application/json', 'X-Bifrost-Setup-Token': pm.variables.get('setupToken') || 'bifrost-e2e-setup-token' };",
+              "pm.sendRequest({url: base + '/api/providers', method: 'POST', header: headers, body: {mode: 'raw', raw: JSON.stringify({provider: provider, custom_provider_config: {base_provider_type: 'openai'}, network_config: {base_url: pm.variables.get('providerErrorFixtureUrl'), max_retries: 0, default_request_timeout_in_seconds: 10}})}}, function (err, res) {",
+              "  pm.test('Run-scoped fixture provider created', function () { pm.expect(err).not.to.be.ok; pm.expect(res && res.code, res && res.text()).to.be.below(300); });",
+              "  if (err || res.code >= 300) throw new Error('cannot create fixture provider');",
+              "  pm.sendRequest({url: base + '/api/providers/' + provider + '/keys', method: 'POST', header: headers, body: {mode: 'raw', raw: JSON.stringify({name: 'speech-cut-key', value: 'test-key', models: [model], weight: 1})}}, function (keyErr, keyRes) {",
+              "    pm.test('Fixture key created', function () { pm.expect(keyErr).not.to.be.ok; pm.expect(keyRes && keyRes.code, keyRes && keyRes.text()).to.be.below(300); });",
+              "    if (keyErr || keyRes.code >= 300) throw new Error('cannot create fixture key');",
+              "    pm.sendRequest({url: base + '/api/governance/pricing-overrides', method: 'POST', header: headers, body: {mode: 'raw', raw: JSON.stringify({name: provider, scope_kind: 'global', match_type: 'exact', pattern: model, request_types: ['speech'], patch: {input_cost_per_character: 0.001}})}}, function (priceErr, priceRes) {",
+              "      pm.test('Per-character pricing override created', function () { pm.expect(priceErr).not.to.be.ok; pm.expect(priceRes && priceRes.code, priceRes && priceRes.text()).to.be.below(300); });",
+              "      if (priceErr || priceRes.code >= 300) throw new Error('cannot create pricing override');",
+              "      pm.variables.set('speechCutOverrideID', priceRes.json().pricing_override.id);",
+              "    });",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var provider = pm.variables.get('speechCutProvider');",
+              "var base = pm.variables.get('baseUrl');",
+              "var headers = { 'X-Bifrost-Setup-Token': pm.variables.get('setupToken') || 'bifrost-e2e-setup-token' };",
+              "// 40 characters: the input below.",
+              "var wantCost = 40 * 0.001;",
+              "pm.test('the vendor cut the stream off after one audio delta, and the caller is told', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+              "  var body = pm.response.text();",
+              "  pm.expect(body, 'the delta reached the caller').to.include('speech.audio.delta');",
+              "  pm.expect(body, 'the truncation reached the caller').to.include('error');",
+              "});",
+              "function cleanup() {",
+              "  pm.sendRequest({url: base + '/api/governance/pricing-overrides/' + pm.variables.get('speechCutOverrideID'), method: 'DELETE', header: headers}, function (priceErr, priceRes) {",
+              "    pm.test('Pricing override removed', function () { pm.expect(priceErr).not.to.be.ok; pm.expect(priceRes && priceRes.code, priceRes && priceRes.text()).to.equal(200); });",
+              "  });",
+              "  pm.sendRequest({url: base + '/api/providers/' + provider, method: 'DELETE', header: headers}, function (err, res) {",
+              "    pm.test('Run-scoped provider removed', function () { pm.expect(err).not.to.be.ok; pm.expect(res && res.code, res && res.text()).to.equal(200); });",
+              "  });",
+              "}",
+              "function checkLog(attempt) {",
+              "  pm.sendRequest({url: base + '/api/logs?providers=' + provider + '&limit=10', method: 'GET', header: headers}, function (err, res) {",
+              "    pm.test('Log lookup succeeds', function () { pm.expect(err).not.to.be.ok; pm.expect(res && res.code, res && res.text()).to.equal(200); });",
+              "    if (err || res.code !== 200) { cleanup(); return; }",
+              "    var rows = (res.json().logs || []).filter(function (r) { return r.status !== 'processing'; });",
+              "    if ((!rows.length || rows[0].cost == null) && attempt < 15) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+              "    pm.test('One finished log row for the cut-off speech stream', function () { pm.expect(rows, res.text()).to.have.lengthOf(1); });",
+              "    if (rows.length !== 1) { cleanup(); return; }",
+              "    pm.sendRequest({url: base + '/api/logs/' + rows[0].id, method: 'GET', header: headers}, function (detailErr, detailRes) {",
+              "      pm.test('the cut-off synthesis is billed for its 40 input characters (TXE-7072)', function () {",
+              "        pm.expect(detailErr).not.to.be.ok;",
+              "        pm.expect(detailRes && detailRes.code, detailRes && detailRes.text()).to.equal(200);",
+              "        var row = detailRes.json();",
+              "        var split = row.cost_breakdown || {};",
+              "        pm.expect(row.status, detailRes.text()).to.equal('error');",
+              "        pm.expect(row.cost, 'logged cost: ' + detailRes.text()).to.be.closeTo(wantCost, 1e-9);",
+              "        pm.expect(split.input_cost, detailRes.text()).to.be.closeTo(wantCost, 1e-9);",
+              "        pm.expect(split.output_cost || 0, detailRes.text()).to.equal(0);",
+              "      });",
+              "      cleanup();",
+              "    });",
+              "  });",
+              "}",
+              "checkLog(0);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"{{speechCutProvider}}/{{speechCutModel}}\",\n  \"input\": \"abcdefghijabcdefghijabcdefghijabcdefghij\",\n  \"voice\": \"alloy\",\n  \"stream_format\": \"sse\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      }
+    }
+  ]
+}

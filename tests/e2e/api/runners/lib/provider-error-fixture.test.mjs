@@ -457,6 +457,22 @@ test("upstream-speech-empty answers 200 with an empty audio body and a vendor re
   assert.equal((await res.arrayBuffer()).byteLength, 0);
 });
 
+// upstream-speech-truncated streams one speech.audio.delta and ends with no speech.audio.done, the cut-off
+// synthesis Bifrost bills by input character (TXE-7072, provider-harness folder of that ticket).
+test("upstream-speech-truncated streams one audio delta and no done event", async (t) => {
+  const post = await startFixture(t);
+  const res = await post({ model: "upstream-speech-truncated", input: "hello", voice: "alloy", stream_format: "sse" }, "/v1/audio/speech");
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get("content-type"), "text/event-stream");
+  const body = await res.text();
+  const frames = body.split("\n\n").filter(Boolean);
+  assert.equal(frames.length, 1, body);
+  assert.equal(JSON.parse(frames[0].slice("data: ".length)).type, "speech.audio.delta");
+  assert.ok(!body.includes("speech.audio.done"), body);
+  const bytes = await post({ model: "upstream-speech-truncated", input: "hello", voice: "alloy" }, "/v1/audio/speech");
+  assert.equal(bytes.status, 404, "only the SSE form exists");
+});
+
 // TXE-6528: the openai provider's images API. A JSON or multipart request to /v1/images/generations or
 // /v1/images/edits is recorded on /__wire with its Content-Type, answered with n images and OpenAI's token usage
 // (no image count), and gpt-image-blocked gets OpenAI's moderation block.
