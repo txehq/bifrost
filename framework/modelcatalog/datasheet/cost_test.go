@@ -10914,3 +10914,18 @@ func TestCalculateCostForUsage_CancelledSpeechStreamPricesItsCharacters(t *testi
 	assert.Equal(t, 0.0, s.CalculateCostForUsage(&schemas.BifrostLLMUsage{}, schemas.OpenAI, "tts-1", schemas.SpeechStreamRequest, nil),
 		"a usage with no characters and no tokens still costs nothing")
 }
+
+// A token-priced speech model (Gemini, Vertex) whose interrupted stream already carries the
+// vendor's input tokens is billed on those tokens, not on Bifrost's character count at the
+// token rate (TXE-7072, review on PR 322).
+func TestCalculateCostForUsage_CancelledSpeechStreamKeepsReportedTokens(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gemini-2.5-flash-preview-tts", "gemini", "audio_speech"): {
+			Model: "gemini-2.5-flash-preview-tts", Provider: "gemini", Mode: "audio_speech",
+			InputCostPerToken: bifrost.Ptr(0.0000005),
+		},
+	})
+	withTokens := &schemas.BifrostLLMUsage{PromptTokens: 100, TotalTokens: 100, SpeechInputChars: 400}
+	assert.InDelta(t, 100*0.0000005, s.CalculateCostForUsage(withTokens, schemas.Gemini, "gemini-2.5-flash-preview-tts", schemas.SpeechStreamRequest, nil), 1e-15,
+		"the vendor's 100 tokens, not 400 characters at the token rate")
+}

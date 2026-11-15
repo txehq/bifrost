@@ -2029,13 +2029,7 @@ type BifrostLLMUsage struct {
 	// turn is priced at the requested model's rates.
 	ServerSideFallbackModel *string           `json:"-"`
 	BillingTurns            []BifrostLLMUsage `json:"-"` // Separate provider calls this usage sums; set only by AddBillingTurn
-	// SpeechInputChars is the code-point count of a speech request's input, carried on the
-	// BilledUsage of a speech stream that was cancelled, timed out or cut off after the vendor
-	// accepted it (fork, TXE-7072). It is what SpeechUsage.InputChars is on a clean end, so
-	// the bare-usage billing path prices the interrupted synthesis by character exactly as a
-	// finished one. Bifrost's own count, never a vendor report (that is BilledCharacters);
-	// json:"-" because it is an in-process billing input, not a wire field.
-	SpeechInputChars int `json:"-"`
+	SpeechInputChars        int               `json:"-"` // Bifrost's code-point count of an interrupted speech stream's input (fork, TXE-7072); see SetSpeechStreamInput
 }
 
 // AddBillingTurn returns the sum of total and turn, keeping each provider call it sums in

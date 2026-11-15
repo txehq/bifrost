@@ -5139,6 +5139,11 @@ func attachBilledUsageFromContext(ctx *schemas.BifrostContext, bifrostErr *schem
 // SpeechStreamRequest, so no provider has to remember it (fork, TXE-7072). It counts the
 // way SpeechUsage.InputChars is backfilled on a clean end (BackfillParams), so an
 // interrupted stream and a finished one are priced on the same number.
+//
+// The count travels on BifrostLLMUsage.SpeechInputChars, which is json:"-": an in-process
+// billing input for governance and logging, not a wire field. It is Bifrost's own count,
+// never a vendor report (that is BilledCharacters). Pricing reads it only when the vendor
+// reported no input tokens before the stream ended (CalculateCostBreakdownForUsage).
 func SetSpeechStreamInput(ctx *schemas.BifrostContext, request *schemas.BifrostSpeechRequest) {
 	if ctx == nil || request == nil || request.Input == nil {
 		return
