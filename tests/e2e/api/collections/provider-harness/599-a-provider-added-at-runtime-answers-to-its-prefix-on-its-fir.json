@@ -1,0 +1,269 @@
+{
+  "name": "599. A provider added at runtime answers to its prefix on its first request (prefix-on-add)",
+  "description": "TXE-7501 / PR #339. A custom provider added through POST /api/providers is built by core on its first request, and its name became a known model prefix only then. So the first request naming it, \"<provider>/model\", parsed to no provider: the model catalog sent it to whichever provider claimed the model string, or refused it, and the new provider was reached at best as a fallback.\n\nEach row creates its own run-scoped OpenAI-backed provider with its key in the same POST (adding the key later through /keys builds the provider first and hides the bug), then sends the very first request on it. The row pins that the new provider served it, that the prefix was stripped before routing, and that the upstream received the bare model. Row 1 is /v1/chat/completions, row 2 /v1/responses. Each row deletes its provider; providers an aborted run left behind are swept after ten minutes.",
+  "item": [
+    {
+      "name": "Prefix on add 1: the first chat completion request names a provider added a moment earlier - openai gpt-4o-mini - prefix-on-add",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// ---- in-script management calls (see the folder description) ----",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var PREFIX = 'harness-prefix-on-add-';",
+              "function call(method, path, body, cb) {",
+              "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+              "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+              "  pm.sendRequest(req, function (err, res) {",
+              "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+              "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+              "    cb(res, json);",
+              "  });",
+              "}",
+              "// Providers left by an aborted earlier run carry their run timestamp in their names. Only ones older",
+              "// than ten minutes are swept, so a parallel shard's live provider is never touched.",
+              "function isStale(name) {",
+              "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+              "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+              "}",
+              "function sweepStale(done) {",
+              "  call('GET', '/api/providers', null, function (res, j) {",
+              "    var stale = ((j && j.providers) || []).filter(function (p) { return isStale(p.name); });",
+              "    var i = 0; (function next() { if (i >= stale.length) { return done(); } call('DELETE', '/api/providers/' + encodeURIComponent(stale[i++].name), null, function () { next(); }); })();",
+              "  });",
+              "}",
+              "function deleteProvider(name) {",
+              "  if (!name) { return; }",
+              "  call('DELETE', '/api/providers/' + encodeURIComponent(name), null, function () {});",
+              "}",
+              "// The key goes in with the provider, in the one POST: adding it afterwards through /keys builds",
+              "// the provider in core first, which registers the prefix and hides what this row pins.",
+              "var name = PREFIX + 'run-' + Date.now() + '-' + Math.floor(Math.random() * 1e6);",
+              "pm.collectionVariables.set('prefixOnAdd1Provider', name);",
+              "sweepStale(function () {",
+              "  call('POST', '/api/providers', {",
+              "    provider: name,",
+              "    custom_provider_config: { base_provider_type: 'openai' },",
+              "    keys: [{ name: name + '-key', value: 'env.OPENAI_API_KEY', models: ['*'], weight: 1 }]",
+              "  }, function (res) {",
+              "    pm.test('setup: created the run-scoped OpenAI-backed provider with its key', function () {",
+              "      pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200);",
+              "    });",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// ---- in-script management calls (see the folder description) ----",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var PREFIX = 'harness-prefix-on-add-';",
+              "function call(method, path, body, cb) {",
+              "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+              "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+              "  pm.sendRequest(req, function (err, res) {",
+              "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+              "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+              "    cb(res, json);",
+              "  });",
+              "}",
+              "// Providers left by an aborted earlier run carry their run timestamp in their names. Only ones older",
+              "// than ten minutes are swept, so a parallel shard's live provider is never touched.",
+              "function isStale(name) {",
+              "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+              "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+              "}",
+              "function sweepStale(done) {",
+              "  call('GET', '/api/providers', null, function (res, j) {",
+              "    var stale = ((j && j.providers) || []).filter(function (p) { return isStale(p.name); });",
+              "    var i = 0; (function next() { if (i >= stale.length) { return done(); } call('DELETE', '/api/providers/' + encodeURIComponent(stale[i++].name), null, function () { next(); }); })();",
+              "  });",
+              "}",
+              "function deleteProvider(name) {",
+              "  if (!name) { return; }",
+              "  call('DELETE', '/api/providers/' + encodeURIComponent(name), null, function () {});",
+              "}",
+              "var provider = pm.collectionVariables.get('prefixOnAdd1Provider');",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "var ef = body.extra_fields || {};",
+              "pm.test('the first chat completion request on the new prefix succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "pm.test('the new provider served it, not a provider the catalog picked', function () {",
+              "  pm.expect(ef.provider, pm.response.text()).to.eql(provider);",
+              "});",
+              "pm.test('the prefix was stripped before routing', function () {",
+              "  pm.expect(ef.resolved_model_used, pm.response.text()).to.eql('gpt-4o-mini');",
+              "});",
+              "pm.test('the upstream received the stripped model', function () {",
+              "  pm.expect(String(body.model || ''), pm.response.text()).to.match(/^gpt-4o-mini/);",
+              "});",
+              "deleteProvider(provider);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"{{prefixOnAdd1Provider}}/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Prefix on add 2: the first responses request names a provider added a moment earlier - openai gpt-4o-mini - prefix-on-add",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// ---- in-script management calls (see the folder description) ----",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var PREFIX = 'harness-prefix-on-add-';",
+              "function call(method, path, body, cb) {",
+              "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+              "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+              "  pm.sendRequest(req, function (err, res) {",
+              "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+              "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+              "    cb(res, json);",
+              "  });",
+              "}",
+              "// Providers left by an aborted earlier run carry their run timestamp in their names. Only ones older",
+              "// than ten minutes are swept, so a parallel shard's live provider is never touched.",
+              "function isStale(name) {",
+              "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+              "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+              "}",
+              "function sweepStale(done) {",
+              "  call('GET', '/api/providers', null, function (res, j) {",
+              "    var stale = ((j && j.providers) || []).filter(function (p) { return isStale(p.name); });",
+              "    var i = 0; (function next() { if (i >= stale.length) { return done(); } call('DELETE', '/api/providers/' + encodeURIComponent(stale[i++].name), null, function () { next(); }); })();",
+              "  });",
+              "}",
+              "function deleteProvider(name) {",
+              "  if (!name) { return; }",
+              "  call('DELETE', '/api/providers/' + encodeURIComponent(name), null, function () {});",
+              "}",
+              "// The key goes in with the provider, in the one POST: adding it afterwards through /keys builds",
+              "// the provider in core first, which registers the prefix and hides what this row pins.",
+              "var name = PREFIX + 'run-' + Date.now() + '-' + Math.floor(Math.random() * 1e6);",
+              "pm.collectionVariables.set('prefixOnAdd2Provider', name);",
+              "sweepStale(function () {",
+              "  call('POST', '/api/providers', {",
+              "    provider: name,",
+              "    custom_provider_config: { base_provider_type: 'openai' },",
+              "    keys: [{ name: name + '-key', value: 'env.OPENAI_API_KEY', models: ['*'], weight: 1 }]",
+              "  }, function (res) {",
+              "    pm.test('setup: created the run-scoped OpenAI-backed provider with its key', function () {",
+              "      pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200);",
+              "    });",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// ---- in-script management calls (see the folder description) ----",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var PREFIX = 'harness-prefix-on-add-';",
+              "function call(method, path, body, cb) {",
+              "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+              "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+              "  pm.sendRequest(req, function (err, res) {",
+              "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+              "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+              "    cb(res, json);",
+              "  });",
+              "}",
+              "// Providers left by an aborted earlier run carry their run timestamp in their names. Only ones older",
+              "// than ten minutes are swept, so a parallel shard's live provider is never touched.",
+              "function isStale(name) {",
+              "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+              "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+              "}",
+              "function sweepStale(done) {",
+              "  call('GET', '/api/providers', null, function (res, j) {",
+              "    var stale = ((j && j.providers) || []).filter(function (p) { return isStale(p.name); });",
+              "    var i = 0; (function next() { if (i >= stale.length) { return done(); } call('DELETE', '/api/providers/' + encodeURIComponent(stale[i++].name), null, function () { next(); }); })();",
+              "  });",
+              "}",
+              "function deleteProvider(name) {",
+              "  if (!name) { return; }",
+              "  call('DELETE', '/api/providers/' + encodeURIComponent(name), null, function () {});",
+              "}",
+              "var provider = pm.collectionVariables.get('prefixOnAdd2Provider');",
+              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+              "var ef = body.extra_fields || {};",
+              "pm.test('the first responses request on the new prefix succeeded', function () {",
+              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "pm.test('the new provider served it, not a provider the catalog picked', function () {",
+              "  pm.expect(ef.provider, pm.response.text()).to.eql(provider);",
+              "});",
+              "pm.test('the prefix was stripped before routing', function () {",
+              "  pm.expect(ef.resolved_model_used, pm.response.text()).to.eql('gpt-4o-mini');",
+              "});",
+              "pm.test('the upstream received the stripped model', function () {",
+              "  pm.expect(String(body.model || ''), pm.response.text()).to.match(/^gpt-4o-mini/);",
+              "});",
+              "deleteProvider(provider);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"{{prefixOnAdd2Provider}}/gpt-4o-mini\",\n  \"input\": \"Reply with the single word: ok\",\n  \"max_output_tokens\": 16\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    }
+  ]
+}
