@@ -527,39 +527,21 @@ func vertexConvertRequestsToJSONL(ctx *schemas.BifrostContext, key schemas.Key, 
 			return nil, withBatchLineIndex(err, i)
 		}
 
-		endpointLabel := vertexBatchEndpointLabelValues[lineEndpoint]
-		if item.CustomID != "" || endpointLabel != "" {
-			// Shallow-copy before injecting labels so the caller's map is not mutated.
+		labels, err := vertexBatchLineLabels(body, item.CustomID, lineEndpoint)
+		if err != nil {
+			return nil, withBatchLineIndex(err, i)
+		}
+		if labels != nil {
+			// Shallow-copy before setting labels so the caller's map is not mutated.
 			withLabels := make(map[string]interface{}, len(body)+1)
 			for k, v := range body {
 				withLabels[k] = v
 			}
-			labels := map[string]interface{}{}
-			if existing, ok := withLabels["labels"].(map[string]interface{}); ok {
-				for k, v := range existing {
-					labels[k] = v
-				}
+			if len(labels) == 0 {
+				delete(withLabels, "labels")
+			} else {
+				withLabels["labels"] = labels
 			}
-			if item.CustomID != "" {
-				customIDLabels, err := vertexBatchCustomIDLabels(item.CustomID)
-				if err != nil {
-					return nil, withBatchLineIndex(err, i)
-				}
-				// The line has one identity: a native line's own copy of these labels would
-				// otherwise be read back as part of it.
-				for k := range labels {
-					if isVertexBatchCustomIDLabel(k) {
-						delete(labels, k)
-					}
-				}
-				for k, v := range customIDLabels {
-					labels[k] = v
-				}
-			}
-			if endpointLabel != "" {
-				labels[vertexBatchEndpointLabel] = endpointLabel
-			}
-			withLabels["labels"] = labels
 			body = withLabels
 		}
 
@@ -571,6 +553,51 @@ func vertexConvertRequestsToJSONL(ctx *schemas.BifrostContext, key schemas.Key, 
 		buf.WriteByte('\n')
 	}
 	return buf.Bytes(), nil
+}
+
+// isVertexBatchReservedLabel reports whether key is a request label only the gateway writes:
+// results read a line's custom_id and url back from these labels, so a caller's own copy would
+// be read as the line's identity or operation (fork, TXE-6974).
+func isVertexBatchReservedLabel(key string) bool {
+	return key == vertexBatchEndpointLabel || isVertexBatchCustomIDLabel(key)
+}
+
+// vertexBatchLineLabels returns the labels a Gemini batch line is sent with: the caller's own
+// labels with every reserved label removed, plus the gateway's custom_id and endpoint labels.
+// Reserved labels are removed from every line, native bodies included, so a native line cannot
+// name itself an image generation (and be settled at image rates, or parked unpriced) or take
+// another line's custom_id (fork, TXE-6974). It returns nil when the body's labels stay as they
+// are, and an empty map when the line must be sent with no labels.
+func vertexBatchLineLabels(body map[string]interface{}, customID string, lineEndpoint schemas.BatchEndpoint) (map[string]interface{}, error) {
+	customIDLabels, err := vertexBatchCustomIDLabels(customID)
+	if err != nil {
+		return nil, err
+	}
+	endpointLabel := vertexBatchEndpointLabelValues[lineEndpoint]
+	existing, _ := body["labels"].(map[string]interface{})
+	hasReserved := false
+	for k := range existing {
+		if isVertexBatchReservedLabel(k) {
+			hasReserved = true
+			break
+		}
+	}
+	if len(customIDLabels) == 0 && endpointLabel == "" && !hasReserved {
+		return nil, nil
+	}
+	labels := make(map[string]interface{}, len(existing)+len(customIDLabels)+1)
+	for k, v := range existing {
+		if !isVertexBatchReservedLabel(k) {
+			labels[k] = v
+		}
+	}
+	for k, v := range customIDLabels {
+		labels[k] = v
+	}
+	if endpointLabel != "" {
+		labels[vertexBatchEndpointLabel] = endpointLabel
+	}
+	return labels, nil
 }
 
 // withBatchLineIndex stamps a line error with the line's position in requests.

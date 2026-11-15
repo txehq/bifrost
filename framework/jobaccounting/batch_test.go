@@ -754,6 +754,39 @@ func TestAccountBatchResults_UsesAggregateWriterAndUsageReporter(t *testing.T) {
 	assert.Equal(t, int64(27), reporter.reports[0].TokensUsed)
 }
 
+// TXE-6974: a settled Gemini image batch is priced at the model's image batch rates and its
+// spend reaches governance. Unpriced, the job reported nothing, so a virtual key's budget did
+// not see image batch spend.
+func TestAccountBatchResults_ImageBatchIsPricedAndReportedToGovernance(t *testing.T) {
+	store := newFakeAccountingStore()
+	reporter := &fakeUsageReporter{}
+	imageLine := schemas.BatchResultItem{CustomID: "img-1", Status: schemas.BatchResultStatusSucceeded, Response: &schemas.BatchResultResponse{StatusCode: 200, Body: map[string]interface{}{
+		"model": "gemini-2.5-flash-image",
+		"data":  []interface{}{map[string]interface{}{"b64_json": "aW1hZ2U="}},
+		"usage": map[string]interface{}{
+			"input_tokens": 8, "output_tokens": 1290, "total_tokens": 1298,
+			"output_tokens_details": map[string]interface{}{"image_tokens": 1290},
+		},
+	}}}
+
+	summary, err := AccountBatchResults(context.Background(), store, store, chatAndImageBatchPricing{}, JobRequest{
+		ClaimedBy:     "test-node",
+		Provider:      schemas.Gemini,
+		ProviderJobID: "batches/img-governance",
+		FallbackModel: "gemini-2.5-flash-image",
+		UsageReporter: reporter,
+		Payload:       BatchPayload{Endpoint: schemas.BatchEndpointImageGeneration, Results: []schemas.BatchResultItem{imageLine}},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, summary)
+	assert.True(t, summary.Accounted)
+	// chatAndImageBatchPricing charges 1e-05 a token on an image line, 1e-06 on a chat line.
+	assert.InDelta(t, 1298*1e-05, summary.Cost, 1e-12, "priced at the image batch rate, not as text")
+	require.Len(t, reporter.reports, 1)
+	assert.InDelta(t, 1298*1e-05, reporter.reports[0].Cost, 1e-12)
+	assert.Equal(t, int64(1298), reporter.reports[0].TokensUsed)
+}
+
 func TestAccountBatchResults_RetryAfterCompleteFailureDoesNotReportGovernanceTwice(t *testing.T) {
 	store := newFakeAccountingStore()
 	store.failCompleteOnce = true
