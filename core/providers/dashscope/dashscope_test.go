@@ -1418,6 +1418,8 @@ func TestDashScopeWanImageTaskRefusesInterleavedMode(t *testing.T) {
 		{"an is prefix", map[string]interface{}{"isEnableInterleave": true}, "isEnableInterleave"},
 		{"dotted", map[string]interface{}{"max.images": 3}, "max.images"},
 		{"a long s that folds to s", map[string]interface{}{"max_imageſ": 3}, "max_imageſ"},
+		{"a dotted capital I", map[string]interface{}{"enable_İnterleave": true}, "enable_İnterleave"},
+		{"any name outside ASCII", map[string]interface{}{"wätermark": true}, "wätermark"},
 	}
 	for _, c := range refused {
 		t.Run(c.name, func(t *testing.T) {

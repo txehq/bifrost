@@ -11,7 +11,6 @@ import (
 	"path"
 	"strings"
 	"time"
-	"unicode"
 	"unicode/utf8"
 
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
@@ -118,7 +117,7 @@ func validateDashScopeImageTask(model string, n *int, size, responseFormat *stri
 	}
 	if name := wanInterleaveSwitch(extraParams); name != "" {
 		return nil, schemas.NewUnsupportedParameterError(name, fmt.Sprintf(
-			"dashscope: %s cannot be delivered on the image task routes: Wan's interleaved mode makes up to max_images images whatever n says, and a task create is billed for the images it asks for", name))
+			"dashscope: %s cannot be delivered on the image task routes: it may switch on Wan's interleaved mode, which makes up to max_images images whatever n says, while a task create is billed for the images it asks for (a name outside ASCII is refused for the same reason)", name))
 	}
 	return wanImageTaskSize(size, resolution)
 }
@@ -139,40 +138,27 @@ func wanSameName(a, b string) bool {
 // wanNamesInterleave reports whether name could be one of the interleaved-mode switches to some
 // JSON matcher: its letters, folded, contain "interleave" or "maximages". This fails closed on
 // spellings no exact rule anticipates (an "is" prefix on a boolean, other separators), at the cost
-// of refusing a vendor field that happens to contain those words; there is none documented. A
-// letter outside ASCII is first folded to the ASCII letter of its Unicode case-folding orbit, as
-// Go's encoding/json folds it ("ſ", long s, is s), so it cannot hide a switch by being dropped.
-// It also matches every name wanSameName matches as one of the two switches.
+// of refusing a vendor field that happens to contain those words; there is none documented.
+//
+// A name with any character outside ASCII is treated as one too. Case-folding rules differ between
+// JSON parsers (Go folds "ſ" to s, Java's lower-casing turns "İ" into i), so no single fold can
+// promise to read such a name as DashScope does, and no documented DashScope field has one.
 func wanNamesInterleave(name string) bool {
-	if wanSameName(name, "enable_interleave") || wanSameName(name, "max_images") {
-		return true
-	}
-	var folded strings.Builder
-	for _, r := range name {
-		r = asciiFoldRune(r)
-		if r >= 'A' && r <= 'Z' {
-			r += 'a' - 'A'
+	var letters strings.Builder
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if c >= utf8.RuneSelf {
+			return true
 		}
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
-			folded.WriteRune(r)
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
 		}
-	}
-	letters := folded.String()
-	return strings.Contains(letters, "interleave") || strings.Contains(letters, "maximages")
-}
-
-// asciiFoldRune returns the ASCII member of r's Unicode simple case-folding orbit ('ſ' and 'S'
-// for 's', the Kelvin sign for 'k'), or r itself when the orbit has none.
-func asciiFoldRune(r rune) rune {
-	if r < utf8.RuneSelf {
-		return r
-	}
-	for next := unicode.SimpleFold(r); next != r; next = unicode.SimpleFold(next) {
-		if next < utf8.RuneSelf {
-			return next
+		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
+			letters.WriteByte(c)
 		}
 	}
-	return r
+	folded := letters.String()
+	return strings.Contains(folded, "interleave") || strings.Contains(folded, "maximages")
 }
 
 // wanInterleaveSwitch returns the name of an interleaved-mode switch among the extra params, at
@@ -330,7 +316,7 @@ func wanRawImageTaskBilling(body []byte) (int, *schemas.ImageGenerationResponseP
 		value := strings.TrimSpace(string(member.value))
 		if wanNamesInterleave(member.name) && value != "false" && value != "null" {
 			return 0, nil, schemas.NewUnsupportedParameterError("parameters."+member.name, fmt.Sprintf(
-				"dashscope: parameters.%s cannot be delivered on the image task routes: Wan's interleaved mode makes up to max_images images whatever n says, and a task create is billed for the images it asks for", member.name))
+				"dashscope: parameters.%s cannot be delivered on the image task routes: it may switch on Wan's interleaved mode, which makes up to max_images images whatever n says, while a task create is billed for the images it asks for (a name outside ASCII is refused for the same reason)", member.name))
 		}
 	}
 	count := wanDefaultImageCount
