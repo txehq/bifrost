@@ -266,6 +266,40 @@ func (s *Store) CalculateCostBreakdownForUsage(usage *schemas.BifrostLLMUsage, p
 	)
 }
 
+// CalculateCostForEstimatedImageUsage prices Bifrost's estimate of an image request whose answer
+// the response limit refused unread (fork, TXE-7302): the requested images at the request's size,
+// quality and resolution, through the same image pricing a delivered response takes. A row
+// priced only per image token has no count to apply and prices to 0. Returns 0 when estimate is
+// nil or the model has no pricing.
+func (s *Store) CalculateCostForEstimatedImageUsage(estimate *schemas.EstimatedImageUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *LookupScopes) float64 {
+	if estimate == nil || estimate.OutputImages <= 0 {
+		return 0
+	}
+	var lookupScopes LookupScopes
+	if scopes != nil {
+		lookupScopes = *scopes
+	}
+	outputImages := estimate.OutputImages
+	imageUsage := &schemas.ImageUsage{OutputImages: &outputImages}
+	// The count image pricing reads, as a delivered response's Data length sets it.
+	populateOutputImageCount(imageUsage, outputImages)
+	breakdown := s.computeCostFromInput(
+		costInput{
+			imageUsage:      imageUsage,
+			imageSize:       estimate.Size,
+			imageQuality:    estimate.Quality,
+			imageResolution: estimate.Resolution,
+		},
+		schemas.RoutingInfo{Provider: provider, Model: model},
+		normalizeStreamRequestType(requestType),
+		lookupScopes,
+	)
+	if breakdown == nil {
+		return 0
+	}
+	return breakdown.TotalCost
+}
+
 // CalculateGuardrailCost computes judge cost when no parent response is available.
 //
 // CalculateCost uses this for normal responses. Logging also calls it directly

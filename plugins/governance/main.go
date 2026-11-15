@@ -2055,6 +2055,13 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifro
 				cost = p.modelCatalog.CalculateCostForUsage(billedUsage, provider, model, requestType, pricingScopes)
 			}
 		}
+		// An image answer the response limit refused unread may still have been billed by the
+		// vendor: core attaches its estimate from the request (fork, TXE-7302). It is charged to
+		// the budget under its own reason, so the ledger never reads it as the vendor's count.
+		if result == nil && bifrostErr != nil && bifrostErr.ExtraFields.BilledUsage == nil && bifrostErr.ExtraFields.EstimatedImageUsage != nil && p.modelCatalog != nil {
+			cost = p.modelCatalog.CalculateCostForEstimatedImageUsage(bifrostErr.ExtraFields.EstimatedImageUsage, provider, model, requestType, pricingScopes)
+			billedReason = billedReasonEstimatedImagesOnResponseLimit
+		}
 		if result != nil {
 			tokensUsed = responseTokensUsed(result)
 		}

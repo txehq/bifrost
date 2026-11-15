@@ -129,6 +129,12 @@ func (mc *ModelCatalog) CalculateCostForUsage(usage *schemas.BifrostLLMUsage, pr
 	return mc.datasheet.CalculateCostForUsage(usage, provider, model, requestType, (*datasheet.LookupScopes)(scopes))
 }
 
+// CalculateCostForEstimatedImageUsage prices Bifrost's estimate of an image request the
+// response limit refused unread (BifrostErrorExtraFields.EstimatedImageUsage, fork TXE-7302).
+func (mc *ModelCatalog) CalculateCostForEstimatedImageUsage(estimate *schemas.EstimatedImageUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *PricingLookupScopes) float64 {
+	return mc.datasheet.CalculateCostForEstimatedImageUsage(estimate, provider, model, requestType, (*datasheet.LookupScopes)(scopes))
+}
+
 // CalculateCostBreakdownForUsage computes the per-category cost breakdown from a
 // bare usage object when no full BifrostResponse is available. TotalCost equals
 // what CalculateCostForUsage returns for the same usage.

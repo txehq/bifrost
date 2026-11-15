@@ -351,6 +351,51 @@ func (r *BifrostImageGenerationResponse) fillExpiresAt(provider ModelProvider, n
 
 // getNumInputImagesSizeQualityAndAspectRatioFromRequest extracts request params for cost
 // calculation and logging. Quality is only returned when it is one of low, medium, high, auto.
+// EstimatedImageUsage is what Bifrost estimates the vendor billed for an image request whose
+// answer it refused unread (fork, TXE-7302): the images the request asked for, at the size,
+// quality and resolution tier it named. It is an estimate, never the vendor's count; see
+// BifrostErrorExtraFields.EstimatedImageUsage.
+type EstimatedImageUsage struct {
+	OutputImages int
+	Size         string
+	Quality      string
+	Resolution   string
+}
+
+// EstimateImageUsageFromRequest returns the usage an image generation, edit or variation
+// request fixes: n images (1 when the request names none, the vendors' default), at the
+// request's size, quality and resolution. Any other request is nil: its price is not fixed by
+// the request.
+func EstimateImageUsageFromRequest(req *BifrostRequest) *EstimatedImageUsage {
+	if req == nil {
+		return nil
+	}
+	var n *int
+	var resolution string
+	switch {
+	case req.ImageGenerationRequest != nil:
+		if p := req.ImageGenerationRequest.Params; p != nil {
+			n, resolution = p.N, string(p.Resolution)
+		}
+	case req.ImageEditRequest != nil:
+		if p := req.ImageEditRequest.Params; p != nil {
+			n, resolution = p.N, string(p.Resolution)
+		}
+	case req.ImageVariationRequest != nil:
+		if p := req.ImageVariationRequest.Params; p != nil {
+			n = p.N
+		}
+	default:
+		return nil
+	}
+	estimate := &EstimatedImageUsage{OutputImages: 1, Resolution: resolution}
+	if n != nil && *n > 0 {
+		estimate.OutputImages = *n
+	}
+	_, estimate.Size, estimate.Quality, _ = getNumInputImagesSizeQualityAndAspectRatioFromRequest(req)
+	return estimate
+}
+
 func getNumInputImagesSizeQualityAndAspectRatioFromRequest(req *BifrostRequest) (numInputImages int, size string, quality string, aspectRatio string) {
 	if req == nil {
 		return 0, "", "", ""
