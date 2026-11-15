@@ -1,8 +1,11 @@
 package dashscope
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"path"
@@ -169,11 +172,11 @@ func (provider *DashScopeProvider) ImageGenerationTask(ctx *schemas.BifrostConte
 		return nil, bifrostErr
 	}
 	if rawBody != nil {
-		billed, countErr := wanRawImageTaskCount(rawBody)
+		billed, billedParams, countErr := wanRawImageTaskBilling(rawBody)
 		if countErr != nil {
 			return nil, countErr
 		}
-		return provider.submitImageTask(ctx, key, schemas.ImageGenerationTaskRequest, request.Model, rawBody, billed)
+		return provider.submitImageTask(ctx, key, schemas.ImageGenerationTaskRequest, request.Model, rawBody, billed, billedParams)
 	}
 	var tierSize *string
 	var n *int
@@ -198,7 +201,7 @@ func (provider *DashScopeProvider) ImageGenerationTask(ctx *schemas.BifrostConte
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	return provider.submitImageTask(ctx, key, schemas.ImageGenerationTaskRequest, request.Model, jsonData, wanImageTaskCount(n))
+	return provider.submitImageTask(ctx, key, schemas.ImageGenerationTaskRequest, request.Model, jsonData, wanImageTaskCount(n), nil)
 }
 
 // ImageEditTask creates a Wan image edit task. Input images go in input.messages[].content[].image:
@@ -215,11 +218,11 @@ func (provider *DashScopeProvider) ImageEditTask(ctx *schemas.BifrostContext, ke
 		return nil, bifrostErr
 	}
 	if rawBody != nil {
-		billed, countErr := wanRawImageTaskCount(rawBody)
+		billed, billedParams, countErr := wanRawImageTaskBilling(rawBody)
 		if countErr != nil {
 			return nil, countErr
 		}
-		return provider.submitImageTask(ctx, key, schemas.ImageEditTaskRequest, request.Model, rawBody, billed)
+		return provider.submitImageTask(ctx, key, schemas.ImageEditTaskRequest, request.Model, rawBody, billed, billedParams)
 	}
 	var tierSize *string
 	var n *int
@@ -238,7 +241,7 @@ func (provider *DashScopeProvider) ImageEditTask(ctx *schemas.BifrostContext, ke
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	return provider.submitImageTask(ctx, key, schemas.ImageEditTaskRequest, request.Model, jsonData, wanImageTaskCount(n))
+	return provider.submitImageTask(ctx, key, schemas.ImageEditTaskRequest, request.Model, jsonData, wanImageTaskCount(n), nil)
 }
 
 // wanDefaultImageCount is the number of images Wan makes when a create names no n: Alibaba's Wan
@@ -254,32 +257,127 @@ func wanImageTaskCount(n *int) int {
 	return wanDefaultImageCount
 }
 
-// wanRawImageTaskCount reads parameters.n from a body the caller wrote whole (large payload
-// passthrough). A body whose n Bifrost cannot read is counted at Wan's default. A body that turns
-// on Wan's interleaved mode is refused, as on the converted path (wanInterleaveSwitch).
-func wanRawImageTaskCount(body []byte) (int, *schemas.BifrostError) {
-	var raw struct {
-		Parameters *struct {
-			N                *int            `json:"n"`
-			EnableInterleave json.RawMessage `json:"enable_interleave"`
-			MaxImages        json.RawMessage `json:"max_images"`
-		} `json:"parameters"`
+// wanImageTiers are the parameters.size values Wan takes as a resolution tier rather than as
+// width*height (wan2.7-image-pro also takes 4K).
+var wanImageTiers = []string{"1K", "2K", "4K"}
+
+// wanRawImageTaskBilling reads what a body the caller wrote whole (large payload passthrough) asks
+// Wan to make: parameters.n, or Wan's default count when it names none, and the size or tier in
+// parameters.size, which core cannot read from a request it never parsed. It fails closed: a body
+// that is not one JSON object, that names parameters, n or size more than once in any spelling
+// (a parser that took another copy than Bifrost's would make, and bill, something else), or whose
+// n or size Bifrost cannot read, is refused, as is one that turns on interleaved mode
+// (wanInterleaveSwitch).
+func wanRawImageTaskBilling(body []byte) (int, *schemas.ImageGenerationResponseParameters, *schemas.BifrostError) {
+	top, err := jsonObjectMembers(body)
+	if err != nil {
+		return 0, nil, newDashScopeBadRequest("", "dashscope: the raw request body of an image task must be one JSON object: "+err.Error())
 	}
-	if json.Unmarshal(body, &raw) != nil || raw.Parameters == nil {
-		return wanDefaultImageCount, nil
+	parameters, bifrostErr := onlyMember(top, "parameters", "parameters")
+	if bifrostErr != nil || parameters == nil {
+		return wanDefaultImageCount, nil, bifrostErr
 	}
-	extra := map[string]interface{}{}
-	for name, value := range map[string]json.RawMessage{"enable_interleave": raw.Parameters.EnableInterleave, "max_images": raw.Parameters.MaxImages} {
-		var decoded interface{}
-		if len(value) > 0 && json.Unmarshal(value, &decoded) == nil {
-			extra[name] = decoded
+	members, err := jsonObjectMembers(parameters)
+	if err != nil {
+		return 0, nil, newDashScopeBadRequest("parameters", "dashscope: parameters must be a JSON object: "+err.Error())
+	}
+	for _, member := range members {
+		value := strings.TrimSpace(string(member.value))
+		for _, field := range wanInterleaveSwitches {
+			if schemas.SameJSONFieldName(member.name, field) && value != "false" && value != "null" {
+				return 0, nil, schemas.NewUnsupportedParameterError("parameters."+member.name, fmt.Sprintf(
+					"dashscope: parameters.%s cannot be delivered on the image task routes: Wan's interleaved mode makes up to max_images images whatever n says, and a task create is billed for the images it asks for", member.name))
+			}
 		}
 	}
-	if name := wanInterleaveSwitch(extra); name != "" {
-		return 0, schemas.NewUnsupportedParameterError("parameters."+name, fmt.Sprintf(
-			"dashscope: parameters.%s cannot be delivered on the image task routes: Wan's interleaved mode makes up to max_images images whatever n says, and a task create is billed for the images it asks for", name))
+	count := wanDefaultImageCount
+	nValue, bifrostErr := onlyMember(members, "n", "parameters.n")
+	if bifrostErr != nil {
+		return 0, nil, bifrostErr
 	}
-	return wanImageTaskCount(raw.Parameters.N), nil
+	if nValue != nil {
+		var n int
+		if json.Unmarshal(nValue, &n) != nil || n <= 0 {
+			return 0, nil, newDashScopeBadRequest("parameters.n", "dashscope: parameters.n must be a positive whole number")
+		}
+		count = n
+	}
+	sizeValue, bifrostErr := onlyMember(members, "size", "parameters.size")
+	if bifrostErr != nil || sizeValue == nil {
+		return count, nil, bifrostErr
+	}
+	var size string
+	if json.Unmarshal(sizeValue, &size) != nil {
+		return 0, nil, newDashScopeBadRequest("parameters.size", "dashscope: parameters.size must be a string")
+	}
+	tier := strings.ToUpper(strings.TrimSpace(size))
+	for _, known := range wanImageTiers {
+		if tier == known {
+			return count, &schemas.ImageGenerationResponseParameters{Resolution: tier}, nil
+		}
+	}
+	if dimensions, ok := toDashScopeImageSize(size); ok {
+		return count, &schemas.ImageGenerationResponseParameters{Size: strings.Replace(dimensions, "*", "x", 1)}, nil
+	}
+	return 0, nil, newDashScopeBadRequest("parameters.size", fmt.Sprintf(
+		"dashscope: parameters.size %q is neither a tier (1K, 2K, 4K) nor width*height", schemas.BoundEchoedName(size)))
+}
+
+// jsonMember is one member of a JSON object, in document order.
+type jsonMember struct {
+	name  string
+	value json.RawMessage
+}
+
+// jsonObjectMembers reads data as exactly one JSON object and returns every member in order,
+// duplicates included: encoding/json's own decoding keeps only the last copy of a repeated name,
+// silently.
+func jsonObjectMembers(data []byte) ([]jsonMember, error) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	token, err := decoder.Token()
+	if err != nil {
+		return nil, err
+	}
+	if delim, ok := token.(json.Delim); !ok || delim != '{' {
+		return nil, errors.New("not a JSON object")
+	}
+	var members []jsonMember
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return nil, err
+		}
+		name, _ := token.(string)
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return nil, err
+		}
+		members = append(members, jsonMember{name: name, value: value})
+	}
+	if _, err := decoder.Token(); err != nil {
+		return nil, err
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return nil, errors.New("data after the JSON object")
+	}
+	return members, nil
+}
+
+// onlyMember returns the value of the one member named field, in any spelling SameJSONFieldName
+// treats as it, or nil when there is none. More than one is refused, naming param.
+func onlyMember(members []jsonMember, field, param string) (json.RawMessage, *schemas.BifrostError) {
+	var found json.RawMessage
+	seen := 0
+	for _, member := range members {
+		if schemas.SameJSONFieldName(member.name, field) {
+			seen++
+			found = member.value
+		}
+	}
+	if seen > 1 {
+		return nil, newDashScopeBadRequest(param, fmt.Sprintf("dashscope: %s is named %d times in the raw request body; name it once", param, seen))
+	}
+	return found, nil
 }
 
 // withWanImageTaskSize writes the resolution tier into parameters.size. A size set from the
@@ -297,8 +395,9 @@ func withWanImageTaskSize(body *DashScopeImageRequest, tierSize *string) *DashSc
 
 // submitImageTask sends the one create and returns the task object DashScope's answer gives.
 // billedImages is the number of images the create asks for, which the create is billed for
-// (BifrostImageTaskResponse.BilledImages).
-func (provider *DashScopeProvider) submitImageTask(ctx *schemas.BifrostContext, key schemas.Key, requestType schemas.RequestType, model string, jsonData []byte, billedImages int) (*schemas.BifrostImageTaskResponse, *schemas.BifrostError) {
+// (BifrostImageTaskResponse.BilledImages). billedParams are the pricing dimensions of a raw body, which
+// core cannot read (nil on the converted path, where core reads them from the request).
+func (provider *DashScopeProvider) submitImageTask(ctx *schemas.BifrostContext, key schemas.Key, requestType schemas.RequestType, model string, jsonData []byte, billedImages int, billedParams *schemas.ImageGenerationResponseParameters) (*schemas.BifrostImageTaskResponse, *schemas.BifrostError) {
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 	submittedAt := time.Now().Unix()
@@ -322,6 +421,7 @@ func (provider *DashScopeProvider) submitImageTask(ctx *schemas.BifrostContext, 
 	result.ID = providerUtils.AddVideoIDProviderSuffix(task.Output.TaskID, provider.GetProviderKey())
 	result.Model = model
 	result.BilledImages = billedImages
+	result.BilledParameters = billedParams
 	if result.CreatedAt == 0 {
 		// The create response carries no submit_time; a later query reports the vendor's.
 		result.CreatedAt = submittedAt

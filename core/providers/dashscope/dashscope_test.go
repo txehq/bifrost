@@ -1345,23 +1345,52 @@ func TestDashScopeWanImageTaskBilledImages(t *testing.T) {
 			}
 		})
 	}
-	for body, want := range map[string]int{
-		`{"model":"wan2.6-t2i","parameters":{"n":2}}`:                             2,
-		`{"model":"wan2.6-t2i","parameters":{}}`:                                  wanDefaultImageCount,
-		`{"model":"wan2.6-t2i"}`:                                                  wanDefaultImageCount,
-		`{"model":"wan2.6-t2i","parameters":{"n":"2"}}`:                           wanDefaultImageCount,
-		`{"model":"wan2.6-image","parameters":{"n":1,"enable_interleave":false}}`: 1,
-	} {
-		if got, bifrostErr := wanRawImageTaskCount([]byte(body)); bifrostErr != nil || got != want {
-			t.Errorf("raw body %s: billed images = %d (%+v), want %d", body, got, bifrostErr, want)
+	// A raw passthrough body: its own n and size are what is billed (TXE-7050).
+	read := []struct {
+		body       string
+		count      int
+		size, tier string
+	}{
+		{`{"model":"wan2.6-t2i","parameters":{"n":2,"size":"1280*1280"}}`, 2, "1280x1280", ""},
+		{`{"model":"wan2.6-image","parameters":{"n":1,"size":"2k"}}`, 1, "", "2K"},
+		{`{"model":"wan2.6-t2i","parameters":{}}`, wanDefaultImageCount, "", ""},
+		{`{"model":"wan2.6-t2i"}`, wanDefaultImageCount, "", ""},
+		{`{"model":"wan2.6-image","parameters":{"n":1,"enable_interleave":false,"max_images":null}}`, 1, "", ""},
+	}
+	for _, c := range read {
+		count, params, bifrostErr := wanRawImageTaskBilling([]byte(c.body))
+		if bifrostErr != nil || count != c.count {
+			t.Errorf("raw body %s: billed images = %d (%+v), want %d", c.body, count, bifrostErr, c.count)
+			continue
+		}
+		gotSize, gotTier := "", ""
+		if params != nil {
+			gotSize, gotTier = params.Size, params.Resolution
+		}
+		if gotSize != c.size || gotTier != c.tier {
+			t.Errorf("raw body %s: billed size %q tier %q, want %q %q", c.body, gotSize, gotTier, c.size, c.tier)
 		}
 	}
+	// It fails closed: what Bifrost cannot read the way DashScope would is refused, not counted at
+	// a default. A repeated name in any spelling is one a parser that took the other copy would
+	// read differently.
 	for body, param := range map[string]string{
 		`{"model":"wan2.6-image","parameters":{"n":1,"enable_interleave":true}}`: "parameters.enable_interleave",
 		`{"model":"wan2.6-image","parameters":{"n":1,"max_images":5}}`:           "parameters.max_images",
+		`{"model":"wan2.6-image","parameters":{"n":1,"EnableInterleave":"yes"}}`: "parameters.EnableInterleave",
+		`{"model":"wan2.6-t2i","parameters":{"n":1},"Parameters":{"n":4}}`:       "parameters",
+		`{"model":"wan2.6-t2i","parameters":{"n":1,"n":4}}`:                      "parameters.n",
+		`{"model":"wan2.6-t2i","parameters":{"n":1,"N":4}}`:                      "parameters.n",
+		`{"model":"wan2.6-t2i","parameters":{"size":"1K","Size":"4K"}}`:          "parameters.size",
+		`{"model":"wan2.6-t2i","parameters":{"n":"2"}}`:                          "parameters.n",
+		`{"model":"wan2.6-t2i","parameters":{"n":0}}`:                            "parameters.n",
+		`{"model":"wan2.6-t2i","parameters":{"size":"huge"}}`:                    "parameters.size",
+		`{"model":"wan2.6-t2i","parameters":"n=4"}`:                              "parameters",
+		`{"model":"wan2.6-t2i"} {"parameters":{"n":4}}`:                          "",
+		`["wan2.6-t2i"]`: "",
 	} {
-		if _, bifrostErr := wanRawImageTaskCount([]byte(body)); bifrostErr == nil || bifrostErr.Error.Param != param {
-			t.Errorf("raw body %s: error %+v, want a refusal naming %s", body, bifrostErr, param)
+		if _, _, bifrostErr := wanRawImageTaskBilling([]byte(body)); bifrostErr == nil || bifrostErr.Error.Param != param {
+			t.Errorf("raw body %s: error %+v, want a refusal naming %q", body, bifrostErr, param)
 		}
 	}
 }

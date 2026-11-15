@@ -11234,6 +11234,14 @@ func TestHandleProviderRequest_ImageTaskCreateCarriesItsPricingDimensions(t *tes
 	if p := edit.BilledParameters; p == nil || p.Size != "1280x1280" {
 		t.Fatalf("edit task billed parameters = %+v, want size 1280x1280", p)
 	}
+	// A provider that read the dimensions from a raw body core never parsed keeps them.
+	preset := &schemas.BifrostImageTaskResponse{BilledParameters: &schemas.ImageGenerationResponseParameters{Resolution: "4K"}}
+	preset.BackfillCreateParams(&schemas.BifrostRequest{RequestType: schemas.ImageGenerationTaskRequest, ImageGenerationRequest: &schemas.BifrostImageGenerationRequest{
+		Params: &schemas.ImageGenerationParameters{Resolution: "1K"},
+	}})
+	if preset.BilledParameters.Resolution != "4K" {
+		t.Fatalf("a provider-set tier was replaced: %+v", preset.BilledParameters)
+	}
 	query := dispatch(schemas.BifrostRequest{RequestType: schemas.ImageTaskRetrieveRequest, ImageTaskRetrieveRequest: &schemas.BifrostImageTaskRetrieveRequest{Provider: schemas.DashScope, ID: "t1"}})
 	if query.BilledParameters != nil {
 		t.Fatalf("query billed parameters = %+v, want none", query.BilledParameters)

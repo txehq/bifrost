@@ -61,8 +61,9 @@ type BifrostImageTaskResponse struct {
 // BackfillCreateParams fills BilledParameters from the create request req (an image generation or
 // edit task) with the same reading a sync image response gets (BifrostImageGenerationResponse
 // .BackfillParams). Nothing it writes is serialised: the task object's wire shape is unchanged.
+// A provider that set BilledParameters itself, from a raw body core never parsed, is left alone.
 func (r *BifrostImageTaskResponse) BackfillCreateParams(req *BifrostRequest) {
-	if r == nil || req == nil {
+	if r == nil || req == nil || r.BilledParameters != nil {
 		return
 	}
 	reading := &BifrostImageGenerationResponse{}
