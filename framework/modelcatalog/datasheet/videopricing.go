@@ -510,15 +510,14 @@ func VideoRequestInputImages(provider schemas.ModelProvider, input *schemas.Vide
 // (videoURIDroppedBy) and a provider's own first-frame name (videoNativeFirstFrameNames). For a
 // custom provider the converter is its base provider's, which core resolves only after the plugin
 // pre-hooks run, so a capture made there keeps this and resolves it once the base is known
-// (VideoPricingDimensions.ApplyVideoInputs).
+// (VideoPricingDimensions.ApplyVideoInputs). nativeFirstFrame is nil for nearly every request, so
+// reading the inputs allocates nothing.
 type VideoInputs struct {
-	videoURI        bool // a non-empty input video_uri
-	referenceVideos bool // Seedance's reference_videos extra param
-	firstFrame      bool // a non-empty input_reference
-	// nativeFirstFrame are the providers whose own first-frame name the extra params carry. It is
-	// nil for nearly every request, so reading the inputs allocates nothing.
-	nativeFirstFrame []schemas.ModelProvider
-	images           int // the last frame and the reference images
+	videoURI         bool                    // a non-empty input video_uri
+	referenceVideos  bool                    // Seedance's reference_videos extra param
+	firstFrame       bool                    // a non-empty input_reference
+	nativeFirstFrame []schemas.ModelProvider // providers whose own first-frame name the extra params carry
+	images           int                     // the last frame and the reference images
 }
 
 // ReadVideoInputs reads a video create's inputs; see VideoRequestInputImages for the forms counted.
