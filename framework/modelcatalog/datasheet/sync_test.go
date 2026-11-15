@@ -181,6 +181,10 @@ type upstreamCostKeysSnapshot struct {
 	Source  string            `json:"source"`
 	Fetched string            `json:"fetched"`
 	Keys    map[string]string `json:"keys"`
+	// ProviderSpecificKeys is every key of upstream's provider_specific_entry objects, each with
+	// one model that carries it (fork, TXE-7409). MiniMax's free input images are published only
+	// there, and were dropped at sync.
+	ProviderSpecificKeys map[string]string `json:"provider_specific_keys"`
 }
 
 const upstreamCostKeysSnapshotPath = "testdata/upstream_cost_keys.json"
@@ -235,6 +239,59 @@ func TestEveryUpstreamCostKeyIsParsedOrIgnored(t *testing.T) {
 			t.Errorf("%s is in ignoredUpstreamCostKeys, but upstream no longer publishes it: remove the entry", key)
 		}
 	}
+
+	// The same check for the keys of provider_specific_entry (TXE-7409): each is read into an
+	// Options field (a json tag on providerSpecificEntry) or ignored with its reason.
+	if len(snapshot.ProviderSpecificKeys) == 0 {
+		t.Fatalf("%s lists no provider_specific_entry keys", upstreamCostKeysSnapshotPath)
+	}
+	parsedSpecific := jsonTags(reflect.TypeOf(providerSpecificEntry{}))
+	for _, key := range sortedKeys(snapshot.ProviderSpecificKeys) {
+		reason, ignored := ignoredUpstreamProviderSpecificKeys[key]
+		switch {
+		case parsedSpecific[key] && ignored:
+			t.Errorf("provider_specific_entry.%s is parsed now but still in ignoredUpstreamProviderSpecificKeys (%q): remove the entry", key, reason)
+		case !parsedSpecific[key] && !ignored:
+			t.Errorf("upstream publishes provider_specific_entry.%s (for example on %s), which the fork neither parses nor ignores: a price there is dropped at sync. Read it in Entry.UnmarshalJSON through providerSpecificEntry, or add it to ignoredUpstreamProviderSpecificKeys with the ticket or reason", key, snapshot.ProviderSpecificKeys[key])
+		case ignored && strings.TrimSpace(reason) == "":
+			t.Errorf("provider_specific_entry.%s is in ignoredUpstreamProviderSpecificKeys without a reason", key)
+		}
+	}
+	for _, key := range sortedKeys(ignoredUpstreamProviderSpecificKeys) {
+		if _, published := snapshot.ProviderSpecificKeys[key]; !published {
+			t.Errorf("provider_specific_entry.%s is in ignoredUpstreamProviderSpecificKeys, but upstream no longer publishes it: remove the entry", key)
+		}
+	}
+	for key := range parsedSpecific {
+		if _, published := snapshot.ProviderSpecificKeys[key]; !published {
+			t.Errorf("providerSpecificEntry reads provider_specific_entry.%s, which upstream no longer publishes", key)
+		}
+	}
+}
+
+// jsonTags is the json tag names of a struct type's fields.
+func jsonTags(typ reflect.Type) map[string]bool {
+	keys := map[string]bool{}
+	for i := 0; i < typ.NumField(); i++ {
+		name, _, _ := strings.Cut(typ.Field(i).Tag.Get("json"), ",")
+		if name != "" && name != "-" {
+			keys[name] = true
+		}
+	}
+	return keys
+}
+
+// ignoredUpstreamProviderSpecificKeys are the provider_specific_entry keys the fork does not read,
+// each with its reason or the ticket that decides it (TXE-7409).
+var ignoredUpstreamProviderSpecificKeys = map[string]string{
+	"us":                              "TXE-7422: Anthropic's US inference-geo multiplier; 27 Claude rows publish it only here",
+	"fast":                            "TXE-7422: Anthropic's fast-mode multiplier; two dated Claude rows publish it only here",
+	"realtime_ga_only":                "not a price: marks Azure realtime models served only on the GA API",
+	"bedrock_invocation_schema":       "not a price: the request schema of a Bedrock Titan embedding model",
+	"dashscope_video_reference_input": "not a price: how a DashScope video model takes its reference image",
+	"volcengine_video_frames":         "not a price: the frame size of each Volcengine resolution and aspect ratio",
+	"transcription_json_or_text_only": "not a price: the response formats a transcription model returns",
+	"transcription_usage_duration":    "not a price: that a transcription model reports its usage as a duration",
 }
 
 // entryJSONKeys is every datasheet key Entry decodes: the json tags of Entry and of the structs it
@@ -280,6 +337,7 @@ func writeUpstreamCostKeysSnapshot(t *testing.T, source string) {
 		t.Fatalf("decode %s: %v", source, err)
 	}
 	keys := map[string]string{}
+	specific := map[string]string{}
 	for _, model := range sortedKeys(datasheet) {
 		var fields map[string]json.RawMessage
 		if json.Unmarshal(datasheet[model], &fields) != nil {
@@ -290,11 +348,20 @@ func writeUpstreamCostKeysSnapshot(t *testing.T, source string) {
 				keys[field] = model
 			}
 		}
+		var entry map[string]json.RawMessage
+		if json.Unmarshal(fields["provider_specific_entry"], &entry) == nil {
+			for field := range entry {
+				if _, seen := specific[field]; !seen {
+					specific[field] = model
+				}
+			}
+		}
 	}
 	out, err := json.MarshalIndent(upstreamCostKeysSnapshot{
-		Source:  "https://getbifrost.ai/datasheet",
-		Fetched: os.Getenv("UPSTREAM_DATASHEET_FETCHED"),
-		Keys:    keys,
+		Source:               "https://getbifrost.ai/datasheet",
+		Fetched:              os.Getenv("UPSTREAM_DATASHEET_FETCHED"),
+		Keys:                 keys,
+		ProviderSpecificKeys: specific,
 	}, "", "  ")
 	if err != nil {
 		t.Fatal(err)

@@ -2101,3 +2101,36 @@ func (p overrideBoundPricing) CalculateVideoCostDetails(dims modelcatalog.VideoP
 	}
 	return p.fakePricing.CalculateVideoCostDetails(dims, provider, scopes)
 }
+
+// TestVideoSettle_InputImagesSurviveTheJobRowSettlementAndReprice (TXE-7409): the input images a
+// create sent are kept on the job row, priced at settlement, recorded in video_debug and read back
+// by a reprice. Lost at any step, a MiniMax job with eight images is billed for none of them.
+func TestVideoSettle_InputImagesSurviveTheJobRowSettlementAndReprice(t *testing.T) {
+	dims := generationDims("sora-2-pro", "", 6)
+	dims.InputImages = bifrost.Ptr(8)
+	job := videoJob(t, "vid_minimax_images", dims)
+	pricing := &dimsRecordingPricing{}
+	settlement, err := NewVideoSettler(nil).Settle(context.Background(), pricing, JobRequest{
+		Provider: schemas.MiniMax, ProviderJobID: job.JobID, FallbackModel: job.Model, Job: job,
+		Payload: VideoPayload{Response: &schemas.BifrostVideoGenerationResponse{
+			Status: schemas.VideoStatusCompleted, Seconds: bifrost.Ptr("6"),
+			Videos: []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}},
+		}},
+	})
+	require.NoError(t, err)
+	require.Len(t, pricing.seen, 1)
+	require.NotNil(t, pricing.seen[0].InputImages, "the job row's count reaches settlement pricing")
+	assert.Equal(t, 8, *pricing.seen[0].InputImages)
+
+	entry := &logstore.Log{Model: "sora-2-pro", Provider: string(schemas.MiniMax)}
+	settlement.ApplyDebug(entry)
+	require.NotNil(t, entry.VideoDebugParsed.Accounting.InputImages)
+	assert.Equal(t, 8, *entry.VideoDebugParsed.Accounting.InputImages)
+
+	repricing := &dimsRecordingPricing{}
+	_, err = NewVideoSettler(nil).RepriceFromLog(entry, repricing)
+	require.NoError(t, err)
+	require.Len(t, repricing.seen, 1)
+	require.NotNil(t, repricing.seen[0].InputImages, "a reprice reads the recorded count")
+	assert.Equal(t, 8, *repricing.seen[0].InputImages)
+}

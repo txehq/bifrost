@@ -621,6 +621,7 @@ func videoDebugFor(videoID string, status schemas.VideoStatus, dims modelcatalog
 				Mode:         dims.PricedMode(),
 				VideoInput:   dims.VideoInput,
 				OutputTokens: dims.OutputTokens,
+				InputImages:  dims.InputImages,
 				OutputCount:  dims.OutputCount,
 				Incomplete:   incomplete,
 				RequestType:  videoRequestTypeFor(dims.RequestType),
@@ -720,7 +721,9 @@ func (s *VideoSettler) RepriceFromLog(entry *logstore.Log, pricing PricingManage
 		Mode:         accounting.Mode,
 		VideoInput:   accounting.VideoInput,
 		OutputTokens: accounting.OutputTokens,
-		OutputCount:  accounting.OutputCount,
+		// Input images beyond the free allowance are billed per image (TXE-7409).
+		InputImages: accounting.InputImages,
+		OutputCount: accounting.OutputCount,
 		// The settlement's exemption from the input-video rate, decided by the base provider of a
 		// custom one, which a reprice cannot resolve (TXE-7351).
 		InputVideoRateExempt: accounting.InputVideoRateExempt,

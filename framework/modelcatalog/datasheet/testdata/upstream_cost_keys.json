@@ -289,5 +289,16 @@
     "output_dbu_cost_per_token": "databricks/claude-haiku-4-5",
     "search_context_cost_per_query": "anthropic.claude-fable-5",
     "web_search_cost_per_request": "chat-latest"
+  },
+  "provider_specific_keys": {
+    "bedrock_invocation_schema": "amazon.titan-embed-text-v2:0",
+    "dashscope_video_reference_input": "dashscope/happyhorse-1.0-i2v",
+    "fast": "claude-opus-4-6",
+    "minimax_free_input_images": "minimax/MiniMax-H3",
+    "realtime_ga_only": "azure/gpt-live-transcribe",
+    "transcription_json_or_text_only": "azure/gpt-transcribe",
+    "transcription_usage_duration": "azure/gpt-transcribe",
+    "us": "bedrock/claude_platform/claude-fable-5",
+    "volcengine_video_frames": "volcengine/doubao-seedance-2-0-260128"
   }
 }

@@ -858,7 +858,7 @@ export const PRICING_FIELDS = [
 		key: "input_cost_per_image",
 		label: "Input / image",
 		group: "image",
-		requestTypeGroups: ["image"],
+		requestTypeGroups: ["image", "video"],
 	},
 	{
 		key: "input_cost_per_image_above_128k_tokens",
@@ -1532,6 +1532,12 @@ export const PRICING_FIELDS = [
 	{
 		key: "output_cost_per_video_per_second_standard_audio",
 		label: "Output / video second with audio (standard mode)",
+		group: "video",
+		requestTypeGroups: ["video"],
+	},
+	{
+		key: "free_input_images",
+		label: "Free input images / video job",
 		group: "video",
 		requestTypeGroups: ["video"],
 	},

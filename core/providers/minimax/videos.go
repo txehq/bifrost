@@ -82,28 +82,57 @@ func ToMiniMaxVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationR
 		if len(params.ExtraParams) > 0 {
 			req.ExtraParams = make(map[string]interface{}, len(params.ExtraParams))
 			maps.Copy(req.ExtraParams, params.ExtraParams)
-			if v, ok := req.ExtraParams["last_frame"].(string); ok && v != "" {
-				url, err := schemas.SanitizeImageURL(v)
+		}
+		// The unified last_frame and reference_images (TXE-6518) are read from their typed fields,
+		// else from the copy the handlers keep in the extra params. A Go SDK request sets only the
+		// typed field, and its images reached MiniMax as a text-only job (fork, TXE-7409).
+		// MiniMax takes an image only as a URL or data URL string. Any other form (xAI's {"url": ...}
+		// object, a bare string of reference images) is refused rather than passed through as an
+		// unknown field: settlement counts what a vendor can receive, and a request that is refused
+		// is never billed.
+		lastFrame := string(params.LastFrame)
+		if lastFrame == "" {
+			if raw, present := req.ExtraParams["last_frame"]; present && raw != nil {
+				s, ok := raw.(string)
+				if !ok {
+					return nil, providerUtils.InvalidRequestErrorf("last_frame must be a URL or data URL string")
+				}
+				lastFrame = s
+			}
+		}
+		if lastFrame != "" {
+			delete(req.ExtraParams, "last_frame")
+			url, err := schemas.SanitizeImageURL(lastFrame)
+			if err != nil {
+				return nil, providerUtils.InvalidRequestErrorf("invalid last_frame: %v", err)
+			}
+			req.Content = append(req.Content, MiniMaxVideoContentItem{Type: "image_url", Role: "last_frame", ImageURL: &MiniMaxVideoMediaURL{URL: url}})
+			hasFrameImage = true
+		}
+		refs := []string(params.ReferenceImages)
+		if len(refs) == 0 {
+			if raw, present := req.ExtraParams["reference_images"]; present && raw != nil {
+				fromExtra, err := schemas.ConvertViaJSON[[]string](raw)
 				if err != nil {
-					return nil, providerUtils.InvalidRequestErrorf("invalid last_frame: %v", err)
+					return nil, providerUtils.InvalidRequestErrorf("reference_images must be a list of URL or data URL strings")
 				}
-				req.Content = append(req.Content, MiniMaxVideoContentItem{Type: "image_url", Role: "last_frame", ImageURL: &MiniMaxVideoMediaURL{URL: url}})
-				hasFrameImage = true
-				delete(req.ExtraParams, "last_frame")
+				refs = fromExtra
 			}
-			if refs, err := schemas.ConvertViaJSON[[]string](req.ExtraParams["reference_images"]); err == nil && len(refs) > 0 {
-				if hasFrameImage {
-					return nil, providerUtils.InvalidRequestErrorf("reference_images cannot be combined with first or last frame images")
-				}
-				for _, ref := range refs {
-					url, err := schemas.SanitizeImageURL(ref)
-					if err != nil {
-						return nil, providerUtils.InvalidRequestErrorf("invalid reference image: %v", err)
-					}
-					req.Content = append(req.Content, MiniMaxVideoContentItem{Type: "image_url", Role: "reference_image", ImageURL: &MiniMaxVideoMediaURL{URL: url}})
-				}
-				delete(req.ExtraParams, "reference_images")
+		}
+		if len(refs) > 0 {
+			if hasFrameImage {
+				return nil, providerUtils.InvalidRequestErrorf("reference_images cannot be combined with first or last frame images")
 			}
+			for _, ref := range refs {
+				url, err := schemas.SanitizeImageURL(ref)
+				if err != nil {
+					return nil, providerUtils.InvalidRequestErrorf("invalid reference image: %v", err)
+				}
+				req.Content = append(req.Content, MiniMaxVideoContentItem{Type: "image_url", Role: "reference_image", ImageURL: &MiniMaxVideoMediaURL{URL: url}})
+			}
+			delete(req.ExtraParams, "reference_images")
+		}
+		if len(req.ExtraParams) > 0 {
 			if v, ok := req.ExtraParams["resolution"].(string); ok && v != "" {
 				req.Resolution = v
 				delete(req.ExtraParams, "resolution")
