@@ -50,8 +50,9 @@ jobs:
           # (proxy.golang.org, sum.golang.org), npm ci for ui and tests/e2e (registry.npmjs.org),
           # the e2e Postgres image (Docker Hub) and Playwright's Chromium (cdn.playwright.dev,
           # playwright.download.prss.microsoft.com). The tests themselves dial only loopback.
-          # Docker Hub redirects a blob to one of three CDNs, R2 included, so all three are
-          # allowed: without R2 a pull timed out on harden-runner's block address (TXE-7427).
+          # Docker Hub redirects a blob to one of four hosts, R2 and S3 included, so all four
+          # are allowed: without one, a pull timed out on harden-runner's block address
+          # (TXE-7427 for R2, TXE-7500 for S3).
           # check-egress-allowlist.sh fails a Docker Hub job that omits one.
           allowed-endpoints: >
             api.github.com:443
@@ -63,6 +64,7 @@ jobs:
             playwright.download.prss.microsoft.com:443
             production.cloudflare.docker.com:443
             production.cloudfront.docker.com:443
+            docker-images-prod.s3.dualstack.us-east-1.amazonaws.com:443
             proxy.golang.org:443
             registry-1.docker.io:443
             registry.npmjs.org:443

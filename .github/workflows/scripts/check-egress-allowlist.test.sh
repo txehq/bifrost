@@ -170,10 +170,11 @@ run_case "tld-that-only-ends-like-a-reserved-one" fail "files.unlisted.contest" 
 run_case "example-dot-com-subdomain-is-not-reserved" fail "files.example.com" \
   "$(collection '' '' | sed 's#{\\"model\\": \\"m\\"}#{\\"image_url\\": \\"https://files.example.com/a.png\\"}#')"
 
-# Docker Hub redirects a blob to one of three CDNs, so a blocked job that allows
-# registry-1.docker.io must allow all three, or a pull fails whenever Docker Hub
-# picks the missing one (TXE-7427).
+# Docker Hub redirects a blob to one of four hosts, so a blocked job that allows
+# registry-1.docker.io must allow all four, or a pull fails whenever Docker Hub
+# picks the missing one (TXE-7427, TXE-7500).
 R2="docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com:443"
+S3="docker-images-prod.s3.dualstack.us-east-1.amazonaws.com:443"
 # docker_case <name> <pass|fail> <text expected in the failure, or ""> <policy> <host>...
 docker_case() {
   local name="$1" want="$2" expect="$3" policy="$4"; shift 4
@@ -197,9 +198,11 @@ docker_case() {
   echo "ok   $name"
 }
 docker_case "docker-hub-all-blob-hosts" pass "" block \
-  registry-1.docker.io:443 "$R2" production.cloudflare.docker.com:443 production.cloudfront.docker.com:443
+  registry-1.docker.io:443 "$R2" production.cloudflare.docker.com:443 production.cloudfront.docker.com:443 "$S3"
 docker_case "docker-hub-without-r2" fail "omits $R2" block \
-  registry-1.docker.io:443 production.cloudflare.docker.com:443 production.cloudfront.docker.com:443
+  registry-1.docker.io:443 production.cloudflare.docker.com:443 production.cloudfront.docker.com:443 "$S3"
+docker_case "docker-hub-without-s3" fail "omits $S3" block \
+  registry-1.docker.io:443 "$R2" production.cloudflare.docker.com:443 production.cloudfront.docker.com:443
 docker_case "docker-hub-registry-only" fail "production.cloudfront.docker.com:443" block \
   registry-1.docker.io:443
 docker_case "no-docker-hub-needs-no-blob-hosts" pass "" block github.com:443

@@ -11,7 +11,7 @@ set -euo pipefail
 #   3. every job that builds the release binaries or runs schemasync allowlists
 #      the Go module proxy and checksum database the workspace build verifies
 #      modules against;
-#   4. every job that allows Docker Hub allowlists all three CDNs its blobs are
+#   4. every job that allows Docker Hub allowlists all four hosts its blobs are
 #      served from.
 #
 # harden-runner's `egress-policy: block` drops every destination absent from
@@ -543,14 +543,19 @@ PY
 # 4. Docker Hub blob hosts
 # ---------------------------------------------------------------------------
 #
-# registry-1.docker.io answers a blob request with a redirect to one of three
-# CDNs, and which one varies from pull to pull. A job that pulls from Docker Hub
+# registry-1.docker.io answers a blob request with a redirect to one of four
+# hosts, and which one varies from pull to pull. A job that pulls from Docker Hub
 # under the block policy and allows only some of them fails only when Docker Hub
 # picks a missing one. The pull then times out dialling the address harden-runner
 # answers for a refused domain, 54.185.253.63 (TXE-7427: the E2E UI shards and
 # the image health job each failed that way on some runs and passed on others).
 # Allowing registry-1.docker.io marks a job that pulls from Docker Hub, so such a
-# job must allow every blob host.
+# job must allow every blob host. TXE-7500 added the fourth, an S3 bucket, after the
+# same failure: the harden-runner agent log of the failed job said "domain not
+# allowed: docker-images-prod.s3.dualstack.us-east-1.amazonaws.com." When Docker Hub
+# adds another host, a pull times out dialling 54.185.253.63 again: read the agent
+# log (the "Post Harden Runner" step) for "domain not allowed", add the host to
+# REQUIRED_BLOB_HOSTS below, and this check names every job that must allow it.
 
 python3 - "${FILES[@]}" <<'PY'
 import sys
@@ -561,6 +566,7 @@ REQUIRED_BLOB_HOSTS = (
     "docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com:443",
     "production.cloudflare.docker.com:443",
     "production.cloudfront.docker.com:443",
+    "docker-images-prod.s3.dualstack.us-east-1.amazonaws.com:443",
 )
 
 failures = []
