@@ -4288,6 +4288,18 @@ func NewBifrostOperationError(message string, err error) *schemas.BifrostError {
 	}
 }
 
+// StopKeyWalk reports whether a provider's walk over its keys must stop at err, the last key's
+// error: an answer past the response limit (client.max_response_body_size_mb, NewResponseBodyTooLargeError).
+// The next key would download the same object up to the limit again, and its own error (an
+// authorization failure on a key without access) would replace the refusal the caller is owed
+// (fork, TXE-7301). Every loop over keys calls it at the top of each iteration and breaks, so the
+// code after the loop returns the refusal; TestEveryKeyWalkStopsAtAResponseLimitRefusal fails a
+// loop that does not. Core's retry and fallback already stop on this error; this is the
+// provider-local loop's copy of that rule.
+func StopKeyWalk(err *schemas.BifrostError) bool {
+	return err != nil && err.Error != nil && errors.Is(err.Error.Error, network.ErrResponseBodyTooLarge)
+}
+
 // NewResponseBodyTooLargeError is the error for an upstream response body larger than the
 // gateway holds in memory (client.max_response_body_size_mb, fork TXE-7148). It is Bifrost's
 // own refusal, so it is is_bifrost_error with error_type bifrost_internal (contract C6: Tokun

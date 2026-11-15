@@ -639,6 +639,9 @@ func eachKey[T any](keys []schemas.Key, call func(schemas.Key) (*T, *schemas.Bif
 	}
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		out, err := call(key)
 		if err == nil {
 			return out, nil

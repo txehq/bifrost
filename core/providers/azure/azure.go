@@ -1772,6 +1772,9 @@ func (provider *AzureProvider) FileRetrieve(ctx *schemas.BifrostContext, keys []
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		endpoint := resolveAzureEndpoint(ctx, key)
 		if endpoint == "" {
 			lastErr = providerUtils.NewConfigurationError("endpoint not set")
@@ -1865,6 +1868,9 @@ func (provider *AzureProvider) FileDelete(ctx *schemas.BifrostContext, keys []sc
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		endpoint := resolveAzureEndpoint(ctx, key)
 		if endpoint == "" {
 			lastErr = providerUtils.NewConfigurationError("endpoint not set")
@@ -1987,6 +1993,9 @@ func (provider *AzureProvider) FileContent(ctx *schemas.BifrostContext, keys []s
 	var lastErr *schemas.BifrostError
 
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		endpoint := resolveAzureEndpoint(ctx, key)
 		if endpoint == "" {
 			lastErr = providerUtils.NewConfigurationError("endpoint not set")
@@ -2325,6 +2334,9 @@ func (provider *AzureProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys [
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		endpoint := resolveAzureEndpoint(ctx, key)
 		if endpoint == "" {
 			lastErr = providerUtils.NewConfigurationError("endpoint not set")
@@ -2419,6 +2431,9 @@ func (provider *AzureProvider) BatchCancel(ctx *schemas.BifrostContext, keys []s
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		endpoint := resolveAzureEndpoint(ctx, key)
 		if endpoint == "" {
 			lastErr = providerUtils.NewConfigurationError("endpoint not set")
@@ -2588,6 +2603,9 @@ func (provider *AzureProvider) downloadBlobURL(ctx *schemas.BifrostContext, blob
 	// Plain URL: try each key's storage credentials until one succeeds.
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		token, tokenErr := provider.getBlobStorageTokenForKey(ctx, key)
 		if tokenErr != nil {
 			lastErr = tokenErr
@@ -2735,6 +2753,9 @@ func (provider *AzureProvider) batchResultFileSource(ctx *schemas.BifrostContext
 	return func(offset int64) (*providerUtils.ResultStream, *schemas.BifrostError) {
 		lastErr := providerUtils.NewConfigurationError("no Azure keys available for batch results")
 		for _, key := range keys {
+			if providerUtils.StopKeyWalk(lastErr) {
+				break
+			}
 			endpoint := resolveAzureEndpoint(ctx, key)
 			if endpoint == "" {
 				lastErr = providerUtils.NewConfigurationError("endpoint not set")
@@ -2955,6 +2976,9 @@ func (provider *AzureProvider) ContainerRetrieve(ctx *schemas.BifrostContext, ke
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		if resolveAzureEndpoint(ctx, key) == "" {
 			lastErr = providerUtils.NewConfigurationError("endpoint not set")
 			continue
@@ -3065,6 +3089,9 @@ func (provider *AzureProvider) ContainerDelete(ctx *schemas.BifrostContext, keys
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		if resolveAzureEndpoint(ctx, key) == "" {
 			lastErr = providerUtils.NewConfigurationError("endpoint not set")
 			continue
@@ -3387,6 +3414,9 @@ func (provider *AzureProvider) ContainerFileRetrieve(ctx *schemas.BifrostContext
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		if resolveAzureEndpoint(ctx, key) == "" {
 			lastErr = providerUtils.NewConfigurationError("endpoint not set")
 			continue
@@ -3500,6 +3530,9 @@ func (provider *AzureProvider) ContainerFileContent(ctx *schemas.BifrostContext,
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		if resolveAzureEndpoint(ctx, key) == "" {
 			lastErr = providerUtils.NewConfigurationError("endpoint not set")
 			continue
@@ -3598,6 +3631,9 @@ func (provider *AzureProvider) ContainerFileDelete(ctx *schemas.BifrostContext, 
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		if resolveAzureEndpoint(ctx, key) == "" {
 			lastErr = providerUtils.NewConfigurationError("endpoint not set")
 			continue
