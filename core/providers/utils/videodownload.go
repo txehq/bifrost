@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -144,7 +146,12 @@ func fetchVendorVideoURL(ctx *schemas.BifrostContext, f VideoContentFetch) (*sch
 		}, nil
 	}
 	SetStreamIdleTimeoutIfEmpty(ctx, f.StreamIdleTimeoutSeconds)
-	stream, err := FetchMediaStream(ctx, f.VendorURL, MediaStreamOptions{Header: header, IdleTimeout: GetStreamIdleTimeout(ctx)})
+	byteRange := videoDownloadRange(ctx)
+	opts := MediaStreamOptions{Header: header, IdleTimeout: GetStreamIdleTimeout(ctx)}
+	if byteRange != nil {
+		opts.Range = videoRangeHeader(byteRange)
+	}
+	stream, err := FetchMediaStream(ctx, f.VendorURL, opts)
 	latency := time.Since(start)
 	if err != nil {
 		return nil, failed(err, latency)
@@ -155,10 +162,73 @@ func fetchVendorVideoURL(ctx *schemas.BifrostContext, f VideoContentFetch) (*sch
 		Body:        stream.Body,
 		ExtraFields: schemas.BifrostResponseExtraFields{Latency: latency.Milliseconds(), ProviderResponseHeaders: responseHeaders(stream.Header)},
 	}
+	if byteRange != nil && stream.StatusCode == http.StatusPartialContent {
+		contentRange, err := partialVideoContent(byteRange, stream.Header.Get("Content-Range"), stream.Header.Get("Content-Encoding"))
+		if err != nil {
+			_ = stream.Body.Close()
+			return nil, failed(err, latency)
+		}
+		response.ContentRange = contentRange
+		response.ContentLength = contentRange.Length
+		return response, nil
+	}
 	if stream.ContentLength > 0 {
 		response.ContentLength = stream.ContentLength
 	}
 	return response, nil
+}
+
+// ErrVideoRangeUnusable is a 206 answer to a ranged download whose bytes are not the ones asked
+// for: no Content-Range, a different start, more bytes than asked, or an encoded body. The caller
+// measures the file from a whole download instead (fork, TXE-7391).
+var ErrVideoRangeUnusable = errors.New("the host's partial answer does not match the range asked for")
+
+// videoDownloadRange is the range a streamed download was asked for, nil when none or invalid.
+func videoDownloadRange(ctx *schemas.BifrostContext) *schemas.VideoByteRange {
+	if ctx == nil {
+		return nil
+	}
+	r, _ := ctx.Value(schemas.BifrostContextKeyVideoDownloadRange).(*schemas.VideoByteRange)
+	if r == nil || r.Offset < 0 || r.Length <= 0 || r.Offset > math.MaxInt64-r.Length {
+		return nil
+	}
+	return r
+}
+
+// videoRangeHeader is r as an HTTP Range header value.
+func videoRangeHeader(r *schemas.VideoByteRange) string {
+	return fmt.Sprintf("bytes=%d-%d", r.Offset, r.Offset+r.Length-1)
+}
+
+// partialVideoContent checks a 206 answer against the range asked for: "bytes first-last/total"
+// (total may be "*"), starting where asked, no longer than asked, and not encoded.
+func partialVideoContent(r *schemas.VideoByteRange, contentRange, contentEncoding string) (*schemas.VideoContentRange, error) {
+	if enc := strings.ToLower(strings.TrimSpace(contentEncoding)); enc != "" && enc != "identity" {
+		return nil, fmt.Errorf("%w: the partial body is %s-encoded", ErrVideoRangeUnusable, enc)
+	}
+	spec, ok := strings.CutPrefix(strings.TrimSpace(contentRange), "bytes ")
+	if !ok {
+		return nil, fmt.Errorf("%w: Content-Range %q", ErrVideoRangeUnusable, contentRange)
+	}
+	span, totalSpec, ok := strings.Cut(spec, "/")
+	firstSpec, lastSpec, ok2 := strings.Cut(span, "-")
+	if !ok || !ok2 {
+		return nil, fmt.Errorf("%w: Content-Range %q", ErrVideoRangeUnusable, contentRange)
+	}
+	first, err1 := strconv.ParseInt(strings.TrimSpace(firstSpec), 10, 64)
+	last, err2 := strconv.ParseInt(strings.TrimSpace(lastSpec), 10, 64)
+	if err1 != nil || err2 != nil || first != r.Offset || last < first || last-first+1 > r.Length {
+		return nil, fmt.Errorf("%w: Content-Range %q for %s", ErrVideoRangeUnusable, contentRange, videoRangeHeader(r))
+	}
+	total := int64(-1)
+	if t := strings.TrimSpace(totalSpec); t != "*" {
+		parsed, err := strconv.ParseInt(t, 10, 64)
+		if err != nil || parsed <= last {
+			return nil, fmt.Errorf("%w: Content-Range %q", ErrVideoRangeUnusable, contentRange)
+		}
+		total = parsed
+	}
+	return &schemas.VideoContentRange{Offset: first, Length: last - first + 1, Total: total}, nil
 }
 
 // maxVideoErrorBodyBytes caps how much of a refused download's body is read for its error.
@@ -177,10 +247,15 @@ func FetchVideoContent(ctx *schemas.BifrostContext, f VideoContentFetch) (*schem
 	stream := f.Stream && f.StreamingClient != nil
 	client := f.Client
 	resp := fasthttp.AcquireResponse()
+	var byteRange *schemas.VideoByteRange
 	if stream {
 		client = f.StreamingClient
 		resp.StreamBody = true
 		SetStreamIdleTimeoutIfEmpty(ctx, f.StreamIdleTimeoutSeconds)
+		if byteRange = videoDownloadRange(ctx); byteRange != nil {
+			f.Request.Header.Set("Range", videoRangeHeader(byteRange))
+			f.Request.Header.Set("Accept-Encoding", "identity")
+		}
 	}
 	// A streamed response is released by Body.Close, or by releaseResp on a failure here.
 	releaseResp := func() {
@@ -214,7 +289,8 @@ func FetchVideoContent(ctx *schemas.BifrostContext, f VideoContentFetch) (*schem
 		stream = false
 	}
 
-	if resp.StatusCode() != fasthttp.StatusOK {
+	partial := stream && byteRange != nil && resp.StatusCode() == fasthttp.StatusPartialContent
+	if resp.StatusCode() != fasthttp.StatusOK && !partial {
 		if !stream {
 			defer fasthttp.ReleaseResponse(resp)
 			return nil, SetErrorLatency(f.ParseError(resp), latency)
@@ -265,6 +341,17 @@ func FetchVideoContent(ctx *schemas.BifrostContext, f VideoContentFetch) (*schem
 			return nil, NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
 		}
 		response.Content = append([]byte(nil), body...)
+		return response, nil
+	}
+	if partial {
+		contentRange, err := partialVideoContent(byteRange, string(resp.Header.Peek("Content-Range")), string(resp.Header.Peek("Content-Encoding")))
+		if err != nil {
+			ReleaseStreamingResponse(ctx, resp)
+			return nil, NewBifrostOperationError("failed to download video range", err)
+		}
+		response.ContentRange = contentRange
+		response.ContentLength = contentRange.Length
+		response.Body = WrapStreamingResponseBody(ctx, resp)
 		return response, nil
 	}
 	if encoding != "" && encoding != "identity" {

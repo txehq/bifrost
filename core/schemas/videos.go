@@ -651,6 +651,27 @@ type BifrostVideoDownloadRequest struct {
 	// caller that forwards it never holds the whole file (fork, contract C9 / BF20). A provider
 	// that cannot stream ignores it and fills Content; the caller handles both.
 	Stream bool `json:"-"`
+	// Range asks a streamed download for part of the file only (fork, TXE-7391): the settler
+	// reads an MP4's header boxes this way and never its media. It is sent as an HTTP Range
+	// request wherever the provider fetches the file. A host that honors it answers with
+	// exactly those bytes and BifrostVideoDownloadResponse.ContentRange set; a host that
+	// ignores it, a provider holding the file inline, and a buffered download answer with the
+	// whole file and ContentRange nil, so the caller always checks ContentRange.
+	Range *VideoByteRange `json:"-"`
+}
+
+// VideoByteRange is Length bytes of a file starting at byte Offset.
+type VideoByteRange struct {
+	Offset int64
+	Length int64
+}
+
+// VideoContentRange is the part of a file a ranged download answered with: Length bytes from
+// Offset, of a file of Total bytes (-1 when the host did not say).
+type VideoContentRange struct {
+	Offset int64
+	Length int64
+	Total  int64
 }
 
 type VideoDownloadVariant string
@@ -671,6 +692,9 @@ type BifrostVideoDownloadResponse struct {
 	// none (fork).
 	Body          io.ReadCloser `json:"-"`
 	ContentLength int64         `json:"content_length,omitempty"`
+	// ContentRange is set when the request's Range was honored: Body then holds only those
+	// bytes. Nil means Body or Content is the whole file (fork, TXE-7391).
+	ContentRange *VideoContentRange `json:"-"`
 
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }

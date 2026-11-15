@@ -165,6 +165,8 @@ type MediaStream struct {
 	ContentLength int64
 	// Header is the vendor's response header.
 	Header http.Header
+	// StatusCode is the vendor's status: 200, or 206 for a Range it honored.
+	StatusCode int
 	// Body yields the file as the vendor sends it. A read fails with ErrStreamIdleTimeout
 	// when the vendor sends nothing for the idle timeout, and with the context's error once
 	// the context ends. The caller must Close it, which releases the vendor connection.
@@ -179,6 +181,10 @@ type MediaStreamOptions struct {
 	// IdleTimeout is how long the vendor may send nothing before a read fails. Zero or
 	// less means DefaultStreamIdleTimeout.
 	IdleTimeout time.Duration
+	// Range, when set, is sent as the Range header with Accept-Encoding: identity (fork,
+	// TXE-7391). Unlike Header it carries no credential, so it follows every redirect hop.
+	// A host that honors it answers 206: MediaStream.StatusCode says which answer came.
+	Range string
 }
 
 // FetchMediaStream is FetchMediaURL for a caller that forwards the file instead of holding it
@@ -193,7 +199,7 @@ type MediaStreamOptions struct {
 // any other Content-Encoding is refused, since the file would otherwise reach the caller
 // encoded with nothing saying so.
 func FetchMediaStream(ctx context.Context, resourceURL string, opts MediaStreamOptions) (*MediaStream, error) {
-	resp, redacted, err := openFetch(ctx, resourceURL, mediaStreamLimits, opts.Header)
+	resp, redacted, err := openFetch(ctx, resourceURL, mediaStreamLimits, opts.Header, opts.Range)
 	if err != nil {
 		return nil, err
 	}
@@ -201,6 +207,7 @@ func FetchMediaStream(ctx context.Context, resourceURL string, opts MediaStreamO
 		ContentType:   mediaTypeOf(resp.Header.Get("Content-Type")),
 		ContentLength: resp.ContentLength,
 		Header:        resp.Header,
+		StatusCode:    resp.StatusCode,
 	}
 	body := newMediaStreamBody(ctx, resp.Body, opts.IdleTimeout, redacted)
 	switch strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Encoding"))) {
@@ -333,7 +340,8 @@ func VideoContentTypeOr(contentType, fallback string) string {
 // provider's proxy and the fetch class, sends the GET and returns the 2xx response with its
 // body unread, plus the redacted URL for the caller's own errors. header, when set, is sent
 // to the first host only (see fetchCheckRedirect).
-func openFetch(ctx context.Context, resourceURL string, limits fetchLimits, header http.Header) (*http.Response, string, error) {
+// byteRange, when not empty, is sent as the Range header on every hop (it is no credential).
+func openFetch(ctx context.Context, resourceURL string, limits fetchLimits, header http.Header, byteRange string) (*http.Response, string, error) {
 	// Every error below names the resource by its redacted form only; see
 	// RedactURLForError for why the query and userinfo never make it into a message.
 	redacted := RedactURLForError(resourceURL)
@@ -367,6 +375,10 @@ func openFetch(ctx context.Context, resourceURL string, limits fetchLimits, head
 		req.Header[http.CanonicalHeaderKey(name)] = append([]string(nil), values...)
 	}
 	req.Header.Set("User-Agent", "bifrost-fetch/1")
+	if byteRange != "" {
+		req.Header.Set("Range", byteRange)
+		req.Header.Set("Accept-Encoding", "identity")
+	}
 
 	resp, err := DoHTTPRequest(client, req)
 	if err != nil {
@@ -399,7 +411,7 @@ func fetchURL(ctx context.Context, resourceURL string, limits fetchLimits, heade
 func fetchURLResponse(ctx context.Context, resourceURL string, limits fetchLimits, header http.Header) (mediaType string, body []byte, responseHeader http.Header, err error) {
 	maxBytes := limits.maxBytes
 
-	resp, redacted, err := openFetch(ctx, resourceURL, limits, header)
+	resp, redacted, err := openFetch(ctx, resourceURL, limits, header, "")
 	if err != nil {
 		return "", nil, nil, err
 	}

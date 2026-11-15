@@ -3,6 +3,7 @@ package jobaccounting
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -2133,4 +2134,119 @@ func TestVideoSettle_InputImagesSurviveTheJobRowSettlementAndReprice(t *testing.
 	require.Len(t, repricing.seen, 1)
 	require.NotNil(t, repricing.seen[0].InputImages, "a reprice reads the recorded count")
 	assert.Equal(t, 8, *repricing.seen[0].InputImages)
+}
+
+// rangedVideoRetriever serves video with Range support, as a vendor CDN does (TXE-7391). mode picks
+// the host's behaviour: "honor" answers each range, "ignore" answers the whole file, "unusable" fails
+// every range as unusable, "no-total" answers ranges without the file's size.
+type rangedVideoRetriever struct {
+	fakeVideoRetriever
+	mode     string
+	rangeErr error
+	ranges   [][2]int64 // [offset, offset+length) asked for
+}
+
+func (f *rangedVideoRetriever) DownloadVideoRange(ctx context.Context, job *cstables.TableProviderJob, offset, length int64) (*VideoRange, error) {
+	f.ranges = append(f.ranges, [2]int64{offset, offset + length})
+	if f.rangeErr != nil {
+		return nil, f.rangeErr
+	}
+	switch f.mode {
+	case "ignore":
+		return &VideoRange{Body: io.NopCloser(bytes.NewReader(f.video))}, nil
+	case "unusable":
+		return nil, fmt.Errorf("range: %w", ErrVideoRangeUnusable)
+	}
+	end := min(offset+length, int64(len(f.video)))
+	total := int64(len(f.video))
+	if f.mode == "no-total" {
+		total = -1
+	}
+	return &VideoRange{Body: io.NopCloser(bytes.NewReader(f.video[offset:end])), Partial: true, Offset: offset, Length: end - offset, Total: total}, nil
+}
+
+// topLevelMdatPayloads are the [start, end) extents of an MP4's top-level mdat payloads.
+func topLevelMdatPayloads(t *testing.T, mp4 []byte) [][2]int64 {
+	t.Helper()
+	var out [][2]int64
+	for at := int64(0); at+8 <= int64(len(mp4)); {
+		size, header := int64(binary.BigEndian.Uint32(mp4[at:])), int64(8)
+		if size == 1 {
+			size, header = int64(binary.BigEndian.Uint64(mp4[at+8:])), 16
+		}
+		if size == 0 {
+			size = int64(len(mp4)) - at
+		}
+		if string(mp4[at+4:at+8]) == "mdat" {
+			out = append(out, [2]int64{at + header, at + size})
+		}
+		require.Positive(t, size)
+		at += size
+	}
+	require.NotEmpty(t, out)
+	return out
+}
+
+// A host that honors Range is read for the MP4's header boxes only: faststart (moov first), moov
+// last, and fragmented (a moof before every mdat). No request asks for a byte of media, and the
+// file is never downloaded whole.
+func TestVideoPoll_MeasuresFromRangedHeaderReads(t *testing.T) {
+	for _, fixture := range []string{"twelve-seconds-faststart.mp4", "twelve-seconds.mp4", "twelve-seconds-fragmented.mp4"} {
+		t.Run(fixture, func(t *testing.T) {
+			video, err := os.ReadFile("../videoduration/testdata/" + fixture)
+			require.NoError(t, err)
+			retriever := &rangedVideoRetriever{fakeVideoRetriever: fakeVideoRetriever{resp: silentReplicateResponse("pred_ranged"), video: video}, mode: "honor"}
+			poll, err := NewVideoSettler(retriever).Poll(context.Background(), replicateVideoJob(t, "pred_ranged", 5))
+			require.NoError(t, err)
+			payload := poll.Payload.(VideoPayload)
+			require.NotNil(t, payload.RenderedSeconds, payload.RenderedUnmeasurable)
+			assert.Equal(t, 12, *payload.RenderedSeconds)
+			assert.Zero(t, retriever.downloads, "the file was downloaded whole")
+			require.NotEmpty(t, retriever.ranges)
+			for _, r := range retriever.ranges {
+				for _, media := range topLevelMdatPayloads(t, video) {
+					assert.False(t, r[0] < media[1] && media[0] < r[1], "range [%d, %d) asks for media bytes [%d, %d)", r[0], r[1], media[0], media[1])
+				}
+			}
+		})
+	}
+}
+
+// A host that ignores Range answers the first request with the whole file, which is measured as the
+// stream it is: one request, no second download. One that answers with unusable bytes, or without
+// the file's size, is measured from a streamed download instead.
+func TestVideoPoll_RangedReadFallsBackToTheStream(t *testing.T) {
+	video, err := os.ReadFile("../videoduration/testdata/twelve-seconds.mp4")
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		mode          string
+		wantDownloads int
+	}{
+		{mode: "ignore", wantDownloads: 0},
+		{mode: "unusable", wantDownloads: 1},
+		{mode: "no-total", wantDownloads: 1},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			retriever := &rangedVideoRetriever{fakeVideoRetriever: fakeVideoRetriever{resp: silentReplicateResponse("pred_ranged"), video: video}, mode: tc.mode}
+			poll, err := NewVideoSettler(retriever).Poll(context.Background(), replicateVideoJob(t, "pred_ranged", 5))
+			require.NoError(t, err)
+			payload := poll.Payload.(VideoPayload)
+			require.NotNil(t, payload.RenderedSeconds, payload.RenderedUnmeasurable)
+			assert.Equal(t, 12, *payload.RenderedSeconds)
+			assert.Len(t, retriever.ranges, 1, "only the first range is asked for")
+			assert.Equal(t, tc.wantDownloads, retriever.downloads)
+		})
+	}
+}
+
+// A vendor's refusal of a range request is as final as its refusal of a download: the output is
+// gone, so the job is charged its bound, marked unmeasurable, and not retried.
+func TestVideoPoll_RangedRefusalIsFinal(t *testing.T) {
+	retriever := &rangedVideoRetriever{fakeVideoRetriever: fakeVideoRetriever{resp: silentReplicateResponse("pred_ranged"), video: renderedMP4(t, 12)}, rangeErr: providerErr(404, "output expired")}
+	poll, err := NewVideoSettler(retriever).Poll(context.Background(), replicateVideoJob(t, "pred_ranged", 5))
+	require.NoError(t, err)
+	payload := poll.Payload.(VideoPayload)
+	assert.Nil(t, payload.RenderedSeconds)
+	assert.NotEmpty(t, payload.RenderedUnmeasurable)
+	assert.Zero(t, retriever.downloads)
 }

@@ -279,3 +279,43 @@ func (f *bifrostVideoRetriever) DownloadVideo(ctx context.Context, job *cstables
 	}
 	return io.NopCloser(bytes.NewReader(resp.Content)), nil
 }
+
+// DownloadVideoRange implements jobaccounting.VideoRangeDownloader: the provider's own download of
+// length bytes from offset of a finished job's video, as an HTTP Range request wherever the
+// provider fetches the file (fork, TXE-7391). A host that ignores Range answers with the whole
+// file, which is returned as such; the settler reads it as a stream.
+func (f *bifrostVideoRetriever) DownloadVideoRange(ctx context.Context, job *cstables.TableProviderJob, offset, length int64) (*jobaccounting.VideoRange, error) {
+	if f == nil || f.client == nil {
+		return nil, fmt.Errorf("bifrost client is nil")
+	}
+	if job == nil {
+		return nil, fmt.Errorf("video job is nil")
+	}
+	resp, bifrostErr := f.client.VideoDownloadRequest(internalJobContext(ctx, job.SelectedKeyID), &schemas.BifrostVideoDownloadRequest{
+		Provider: schemas.ModelProvider(job.Provider),
+		ID:       job.JobID,
+		Stream:   true,
+		Range:    &schemas.VideoByteRange{Offset: offset, Length: length},
+	})
+	if bifrostErr != nil {
+		if bifrostErr.Error != nil && errors.Is(bifrostErr.Error.Error, providerUtils.ErrVideoRangeUnusable) {
+			return nil, fmt.Errorf("%w: %s", jobaccounting.ErrVideoRangeUnusable, bifrostErr.GetErrorString())
+		}
+		if bifrostErr.Error != nil && (errors.Is(bifrostErr.Error.Error, network.ErrResponseBodyTooLarge) || errors.Is(bifrostErr.Error.Error, providerUtils.ErrMediaTooLarge)) {
+			return nil, fmt.Errorf("%w: %s", jobaccounting.ErrVideoDurationUnmeasurable, bifrostErr.GetErrorString())
+		}
+		return nil, jobaccounting.NewProviderCallError(bifrostErr)
+	}
+	if resp == nil {
+		return nil, fmt.Errorf("video download returned nil response for job %s", job.ID)
+	}
+	body := resp.Body
+	if body == nil {
+		body = io.NopCloser(bytes.NewReader(resp.Content))
+	}
+	answer := &jobaccounting.VideoRange{Body: body}
+	if cr := resp.ContentRange; cr != nil {
+		answer.Partial, answer.Offset, answer.Length, answer.Total = true, cr.Offset, cr.Length, cr.Total
+	}
+	return answer, nil
+}
