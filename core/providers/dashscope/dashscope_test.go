@@ -1363,11 +1363,12 @@ func TestDashScopeWanImageTaskBilledImages(t *testing.T) {
 			t.Errorf("raw body %s: billed images = %d (%+v), want %d", c.body, count, bifrostErr, c.count)
 			continue
 		}
-		gotSize, gotTier := "", ""
-		if params != nil {
-			gotSize, gotTier = params.Size, params.Resolution
+		// Always set, so core never prices a raw body from the parsed request's params.
+		if params == nil {
+			t.Errorf("raw body %s: no billed parameters", c.body)
+			continue
 		}
-		if gotSize != c.size || gotTier != c.tier {
+		if gotSize, gotTier := params.Size, params.Resolution; gotSize != c.size || gotTier != c.tier {
 			t.Errorf("raw body %s: billed size %q tier %q, want %q %q", c.body, gotSize, gotTier, c.size, c.tier)
 		}
 	}
@@ -1378,6 +1379,8 @@ func TestDashScopeWanImageTaskBilledImages(t *testing.T) {
 		`{"model":"wan2.6-image","parameters":{"n":1,"enable_interleave":true}}`: "parameters.enable_interleave",
 		`{"model":"wan2.6-image","parameters":{"n":1,"max_images":5}}`:           "parameters.max_images",
 		`{"model":"wan2.6-image","parameters":{"n":1,"EnableInterleave":"yes"}}`: "parameters.EnableInterleave",
+		`{"model":"wan2.6-image","parameters":{"n":1,"enable-interleave":true}}`: "parameters.enable-interleave",
+		`{"model":"wan2.6-t2i","parameters":{"n":1},"para-meters":{"n":4}}`:      "parameters",
 		`{"model":"wan2.6-t2i","parameters":{"n":1},"Parameters":{"n":4}}`:       "parameters",
 		`{"model":"wan2.6-t2i","parameters":{"n":1,"n":4}}`:                      "parameters.n",
 		`{"model":"wan2.6-t2i","parameters":{"n":1,"N":4}}`:                      "parameters.n",
@@ -1409,6 +1412,7 @@ func TestDashScopeWanImageTaskRefusesInterleavedMode(t *testing.T) {
 		{"enable_interleave", map[string]interface{}{"enable_interleave": true}, "enable_interleave"},
 		{"max_images", map[string]interface{}{"max_images": 5}, "max_images"},
 		{"inside parameters", map[string]interface{}{"parameters": map[string]interface{}{"enableInterleave": true}}, "parameters.enableInterleave"},
+		{"hyphenated", map[string]interface{}{"enable-interleave": true}, "enable-interleave"},
 	}
 	for _, c := range refused {
 		t.Run(c.name, func(t *testing.T) {

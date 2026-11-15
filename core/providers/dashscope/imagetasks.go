@@ -127,13 +127,21 @@ func validateDashScopeImageTask(model string, n *int, size, responseFormat *stri
 // create cannot know is refused rather than under-billed.
 var wanInterleaveSwitches = []string{"enable_interleave", "max_images"}
 
+// wanSameName reports whether a and b name the same DashScope field. It is
+// schemas.SameJSONFieldName (case and underscores ignored) with hyphens ignored too: Alibaba's
+// Java services may read JSON with a matcher that folds '-' as well as '_' (fastjson's smart
+// match), so a spelling Bifrost reads as another field could be the switch to DashScope.
+func wanSameName(a, b string) bool {
+	return schemas.SameJSONFieldName(strings.ReplaceAll(a, "-", ""), strings.ReplaceAll(b, "-", ""))
+}
+
 // wanInterleaveSwitch returns the name of an interleaved-mode switch among the extra params, at
 // the top level or inside an extra parameters object (GetExtraParams puts both in parameters),
 // in the caller's spelling; "" when there is none. enable_interleave set to false is not one.
 func wanInterleaveSwitch(extraParams map[string]interface{}) string {
 	check := func(name string, value interface{}) string {
 		for _, field := range wanInterleaveSwitches {
-			if !schemas.SameJSONFieldName(name, field) || value == nil {
+			if !wanSameName(name, field) || value == nil {
 				continue
 			}
 			if on, isBool := value.(bool); isBool && !on {
@@ -144,7 +152,7 @@ func wanInterleaveSwitch(extraParams map[string]interface{}) string {
 		return ""
 	}
 	for name, value := range extraParams {
-		if object, ok := value.(map[string]interface{}); ok && providerUtils.ExtraParamNamesField(name, "parameters") {
+		if object, ok := value.(map[string]interface{}); ok && wanSameName(name, "parameters") {
 			for nested, nestedValue := range object {
 				if found := check(nested, nestedValue); found != "" {
 					return name + "." + found
@@ -275,7 +283,7 @@ func wanRawImageTaskBilling(body []byte) (int, *schemas.ImageGenerationResponseP
 	}
 	parameters, bifrostErr := onlyMember(top, "parameters", "parameters")
 	if bifrostErr != nil || parameters == nil {
-		return wanDefaultImageCount, nil, bifrostErr
+		return wanDefaultImageCount, &schemas.ImageGenerationResponseParameters{}, bifrostErr
 	}
 	members, err := jsonObjectMembers(parameters)
 	if err != nil {
@@ -284,7 +292,7 @@ func wanRawImageTaskBilling(body []byte) (int, *schemas.ImageGenerationResponseP
 	for _, member := range members {
 		value := strings.TrimSpace(string(member.value))
 		for _, field := range wanInterleaveSwitches {
-			if schemas.SameJSONFieldName(member.name, field) && value != "false" && value != "null" {
+			if wanSameName(member.name, field) && value != "false" && value != "null" {
 				return 0, nil, schemas.NewUnsupportedParameterError("parameters."+member.name, fmt.Sprintf(
 					"dashscope: parameters.%s cannot be delivered on the image task routes: Wan's interleaved mode makes up to max_images images whatever n says, and a task create is billed for the images it asks for", member.name))
 			}
@@ -303,8 +311,13 @@ func wanRawImageTaskBilling(body []byte) (int, *schemas.ImageGenerationResponseP
 		count = n
 	}
 	sizeValue, bifrostErr := onlyMember(members, "size", "parameters.size")
-	if bifrostErr != nil || sizeValue == nil {
-		return count, nil, bifrostErr
+	if bifrostErr != nil {
+		return 0, nil, bifrostErr
+	}
+	if sizeValue == nil {
+		// The body names no size: Wan makes its default. The empty, non-nil value keeps core from
+		// pricing the create from the parsed request's params, which a raw body does not follow.
+		return count, &schemas.ImageGenerationResponseParameters{}, nil
 	}
 	var size string
 	if json.Unmarshal(sizeValue, &size) != nil {
@@ -363,13 +376,13 @@ func jsonObjectMembers(data []byte) ([]jsonMember, error) {
 	return members, nil
 }
 
-// onlyMember returns the value of the one member named field, in any spelling SameJSONFieldName
+// onlyMember returns the value of the one member named field, in any spelling wanSameName
 // treats as it, or nil when there is none. More than one is refused, naming param.
 func onlyMember(members []jsonMember, field, param string) (json.RawMessage, *schemas.BifrostError) {
 	var found json.RawMessage
 	seen := 0
 	for _, member := range members {
-		if schemas.SameJSONFieldName(member.name, field) {
+		if wanSameName(member.name, field) {
 			seen++
 			found = member.value
 		}
