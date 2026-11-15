@@ -2626,6 +2626,27 @@ func TestWrapSpeechStreamPostHookRunner(t *testing.T) {
 	if billed.VendorCost.Amount != 9 {
 		t.Fatal("BilledUsage aliases the chunk's vendor cost")
 	}
+
+	// MiniMax reports only characters (extra_info.usage_characters): the error keeps them, so
+	// the bare-usage path prices them per character as the done chunk would have been.
+	vendorChars := 37
+	charsOnly := &schemas.BifrostSpeechStreamResponse{
+		Type:        schemas.SpeechStreamResponseTypeDone,
+		Usage:       &schemas.SpeechUsage{InputChars: 40, BilledCharacters: &vendorChars},
+		ExtraFields: schemas.BifrostResponseExtraFields{Provider: schemas.Minimax, RequestType: schemas.SpeechStreamRequest},
+	}
+	charBilled := run(empty, charsOnly)[1].err.ExtraFields.BilledUsage
+	if charBilled == nil || charBilled.SpeechInputChars != 40 || charBilled.BilledCharacters == nil || *charBilled.BilledCharacters != 37 || charBilled.PromptTokens != 0 {
+		t.Fatalf("BilledUsage = %+v, want the done chunk's 40 input characters and 37 vendor-billed characters", charBilled)
+	}
+	vendorChars = 1
+	if *charBilled.BilledCharacters != 37 {
+		t.Fatal("BilledUsage aliases the chunk's billed characters")
+	}
+
+	if got := run(empty, &schemas.BifrostSpeechStreamResponse{Type: schemas.SpeechStreamResponseTypeDone, Usage: &schemas.SpeechUsage{}})[1].err.ExtraFields.BilledUsage; got != nil {
+		t.Fatalf("a done chunk with empty usage bills nothing, got %+v", got)
+	}
 }
 
 // BenchmarkWrapSpeechStreamPostHookRunner measures what the speech-stream rule adds per chunk of a
