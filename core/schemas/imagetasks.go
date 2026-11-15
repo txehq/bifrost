@@ -15,7 +15,10 @@ package schemas
 // again. The fork's /v1/async/images/* routes, which store jobs in Bifrost's database, are a
 // different thing and are not used by these routes.
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
 // TaskStatus is the status of a task object. Image and video tasks share the six values.
 type TaskStatus = VideoStatus
@@ -85,15 +88,14 @@ func normalizeBilledImageSize(size string) string {
 	if sep <= 0 || sep == len(trimmed)-1 {
 		return size
 	}
-	width, height := trimmed[:sep], trimmed[sep+1:]
-	for _, part := range []string{width, height} {
-		for i := 0; i < len(part); i++ {
-			if part[i] < '0' || part[i] > '9' {
-				return size
-			}
-		}
+	// Parsed as the providers parse it (strconv.Atoi, positive), so "+2048" and "02048" are 2048
+	// here as they are on the wire, and written back in canonical form.
+	width, errW := strconv.Atoi(trimmed[:sep])
+	height, errH := strconv.Atoi(trimmed[sep+1:])
+	if errW != nil || errH != nil || width <= 0 || height <= 0 {
+		return size
 	}
-	return width + "x" + height
+	return strconv.Itoa(width) + "x" + strconv.Itoa(height)
 }
 
 // ImageTaskObject is the value of BifrostImageTaskResponse.Object.
