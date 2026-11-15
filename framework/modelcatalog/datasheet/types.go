@@ -136,21 +136,19 @@ func (a upstreamRateAliases) foldInto(o *Options) {
 // here nor in ignoredUpstreamProviderSpecificKeys, so a price published only in this object is
 // never dropped at sync unnoticed.
 type providerSpecificEntry struct {
-	// MiniMaxFreeInputImages is MiniMax's free input images per video job, read into
-	// Options.FreeInputImages.
-	MiniMaxFreeInputImages *float64 `json:"minimax_free_input_images"`
-	// US is Anthropic's US inference-geo multiplier (1.1), read into
-	// Options.InferenceGeoUSMultiplier (TXE-7422). 27 Claude rows publish it only here.
-	US *float64 `json:"us"`
-	// Fast is Anthropic's fast-mode multiplier on the standard token and cache rates (6 on Opus
-	// 4.6 to 4.8), read into each *_fast rate the row leaves out (TXE-7422). Two dated Opus rows
-	// publish it only here.
-	Fast *float64 `json:"fast"`
+	MiniMaxFreeInputImages *float64 `json:"minimax_free_input_images"` // MiniMax's free input images per video job
+	US                     *float64 `json:"us"`                        // Anthropic's US inference-geo multiplier
+	Fast                   *float64 `json:"fast"`                      // Anthropic's fast-mode multiplier
 }
 
-// applyTo fills the Options fields read from provider_specific_entry. A flat field the row
-// publishes wins: on claude-opus-4-8 the explicit fast rates are 2x while fast says 6, and the
-// explicit rate is the more specific statement.
+// applyTo fills the Options fields read from provider_specific_entry:
+//   - minimax_free_input_images fills FreeInputImages.
+//   - us (1.1) fills InferenceGeoUSMultiplier. 27 Claude rows publish it only here (TXE-7422).
+//   - fast (6 on Opus 4.6 to 4.8) fills each *_fast token and cache rate the row leaves out, as the
+//     multiplier times the standard rate. Two dated Opus rows publish it only here (TXE-7422).
+//
+// A flat field the row publishes wins: on claude-opus-4-8 the explicit fast rates are 2x while
+// fast says 6, and the explicit rate is the more specific statement.
 func (pse *providerSpecificEntry) applyTo(o *Options) {
 	if pse == nil {
 		return
