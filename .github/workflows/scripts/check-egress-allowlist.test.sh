@@ -208,6 +208,77 @@ docker_case "docker-hub-registry-only" fail "production.cloudfront.docker.com:44
 docker_case "no-docker-hub-needs-no-blob-hosts" pass "" block github.com:443
 docker_case "audit-policy-is-not-checked" pass "" audit registry-1.docker.io:443
 
+# apt on a hosted runner follows /etc/apt/apt-mirrors.txt: the Azure mirror, or the
+# region's EC2 mirror when the runner is on EC2, then archive.ubuntu.com and
+# security.ubuntu.com. A job that allows only the Azure mirror failed build-binaries-x86
+# on release run 43753172465, and the check passed it twice over: the hosts were
+# Azure-only, and the job ran apt through a script it never read (TXE-7509).
+APT_ALL=(azure.archive.ubuntu.com:80 "*.ec2.archive.ubuntu.com:80" archive.ubuntu.com:80 archive.ubuntu.com:443
+  security.ubuntu.com:80 security.ubuntu.com:443 esm.ubuntu.com:443)
+APT_AZURE_ONLY=(azure.archive.ubuntu.com:80 esm.ubuntu.com:443)
+# apt_case <name> <pass|fail> <text expected in the failure, or ""> <policy> <run line> <host>...
+# The throwaway root holds the check and install-tools.sh, which runs apt-get, so a run
+# line can reach apt directly or through that script.
+apt_case() {
+  local name="$1" want="$2" expect="$3" policy="$4" run="$5"; shift 5
+  local root="$WORK/apt-$name" out status=0
+  mkdir -p "$root/.github/workflows/scripts" "$root/tests/e2e/api/collections/provider-harness" \
+    "$root/tests/integrations/python"
+  cp "$SCRIPT_DIR/check-egress-allowlist.sh" "$root/.github/workflows/scripts/"
+  # The harness rule reads these; empty, they name no host.
+  printf '{"info":{"name":"apt"},"item":[]}\n' > "$root/tests/e2e/api/collections/provider-harness/fixture.json"
+  printf '{"providers":{}}\n' > "$root/tests/integrations/python/config.json"
+  printf '{}\n' > "$root/.github/workflows/provider-default-hosts.json"
+  printf '#!/usr/bin/env bash\n# apt-get update is what this script is for.\nsudo apt-get update\nsudo apt-get install -y musl-tools\n' \
+    > "$root/.github/workflows/scripts/install-tools.sh"
+  printf '#!/usr/bin/env bash\necho "see install-tools.sh for the apt step"\n' > "$root/.github/workflows/scripts/notes.sh"
+  {
+    printf 'jobs:\n  build:\n    runs-on: ubuntu-24.04\n    steps:\n'
+    printf '      - uses: step-security/harden-runner@v2\n        with:\n'
+    printf '          egress-policy: %s\n          allowed-endpoints: >\n' "$policy"
+    printf '            %s\n' "$@"
+    printf '      - run: %s\n' "$run"
+  } > "$root/.github/workflows/build.yml"
+  out="$(bash "$root/.github/workflows/scripts/check-egress-allowlist.sh" "$root/.github/workflows/build.yml" 2>&1)" || status=$?
+  if [[ "$want" == "pass" && $status -ne 0 ]]; then
+    echo "FAIL $name: expected the check to pass, it failed:"; echo "$out" | sed 's/^/    /'
+    failures=$((failures + 1)); return
+  fi
+  if [[ "$want" == "fail" ]] && { [[ $status -eq 0 ]] || ! grep -qF -- "$expect" <<<"$out"; }; then
+    echo "FAIL $name: expected the check to fail naming $expect:"; echo "$out" | sed 's/^/    /'
+    failures=$((failures + 1)); return
+  fi
+  echo "ok   $name"
+}
+apt_case "apt-inline-every-mirror" pass "" block "sudo apt-get update" "${APT_ALL[@]}"
+apt_case "apt-inline-azure-only" fail "omits *.ec2.archive.ubuntu.com:80, archive.ubuntu.com:80, archive.ubuntu.com:443, security.ubuntu.com:80, security.ubuntu.com:443" \
+  block "sudo apt-get update" "${APT_AZURE_ONLY[@]}"
+apt_case "apt-inline-without-security-https" fail "omits security.ubuntu.com:443" block "sudo apt-get install -y jq" \
+  azure.archive.ubuntu.com:80 "*.ec2.archive.ubuntu.com:80" archive.ubuntu.com:80 archive.ubuntu.com:443 security.ubuntu.com:80 esm.ubuntu.com:443
+apt_case "apt-through-a-script-azure-only" fail "job 'build' runs apt-get" \
+  block "bash ./.github/workflows/scripts/install-tools.sh" "${APT_AZURE_ONLY[@]}"
+apt_case "apt-through-a-script-every-mirror" pass "" \
+  block "./.github/workflows/scripts/install-tools.sh && echo done" "${APT_ALL[@]}"
+apt_case "script-named-in-prose-is-not-followed" pass "" \
+  block "./.github/workflows/scripts/notes.sh" "${APT_AZURE_ONLY[@]}"
+apt_case "apt-in-a-quoted-string-is-not-run" pass "" \
+  block "printf 'sudo apt-get update\\n' > fixture.sh" "${APT_AZURE_ONLY[@]}"
+# apt""-get: bash joins it back to apt-get, and this file, which the lint job scans with
+# the rest of the repository, never holds an apt command after && itself.
+apt_case "apt-after-and-and-is-run" fail "job 'build' runs apt-get" \
+  block "cd /tmp && DEBIAN_FRONTEND=noninteractive sudo apt""-get install -y jq" "${APT_AZURE_ONLY[@]}"
+apt_case "apt-audit-policy-is-not-checked" pass "" audit "sudo apt-get update" "${APT_AZURE_ONLY[@]}"
+
+# The workflow-lint job runs the check on the whole repository, this file included. A
+# fixture line that the check reads as apt fails that job on every PR (connector P1 on
+# #346), and no fixture case above would show it.
+if out="$(bash "$SCRIPT_DIR/check-egress-allowlist.sh" 2>&1)"; then
+  echo "ok   whole-repository-passes"
+else
+  echo "FAIL whole-repository-passes: the check fails on this checkout:"; echo "$out" | grep -E "FAIL|::error" | sed 's/^/    /'
+  failures=$((failures + 1))
+fi
+
 # The check reads files outside .github/workflows. The workflow that runs it must be
 # triggered by a change to each of them, or a PR that touches only that file merges
 # unchecked and the next PR finds main red (TXE-7139).

@@ -443,6 +443,11 @@ jobs:
             api.github.com:443
             auth.docker.io:443
             azure.archive.ubuntu.com:80
+            *.ec2.archive.ubuntu.com:80
+            archive.ubuntu.com:80
+            archive.ubuntu.com:443
+            security.ubuntu.com:80
+            security.ubuntu.com:443
             downloads.getmaxim.ai:443
             esm.ubuntu.com:443
             getbifrost.ai:443
