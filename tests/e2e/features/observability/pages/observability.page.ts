@@ -200,7 +200,7 @@ export class ObservabilityPage extends BasePage {
     const checked = await switch_.getAttribute('data-state') === 'checked'
     if (!checked) {
       await switch_.click()
-      await this.page.waitForTimeout(400)
+      await expect(switch_).toHaveAttribute('data-state', 'checked')
     }
   }
 

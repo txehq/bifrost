@@ -91,7 +91,16 @@ async function checkServerReady(
         if (await tryInitialize(`http://${host}:${port}${path}`)) return true;
       }
     }
-    await setTimeout(1000);
+    await setTimeout(1000); // sleep-ok: interval between readiness probes; each probe asks the server
+  }
+  return false;
+}
+
+/** Wait until something accepts connections on `port`, probing once a second. */
+async function waitForPort(port: number, attempts = 20): Promise<boolean> {
+  for (let i = 0; i < attempts; i++) {
+    if (await isPortListening(port)) return true;
+    await setTimeout(1000); // sleep-ok: interval between readiness probes; each probe asks the port
   }
   return false;
 }
@@ -178,7 +187,6 @@ async function startHttpServer(
   httpServer.unref();
   MCP_SERVERS.push(httpServer);
 
-  await setTimeout(2000);
   console.log("Waiting for HTTP/SSE server to be ready...");
   const isReady = await checkServerReady(3001, 20);
   if (!isReady) {
@@ -194,8 +202,8 @@ async function startHttpServer(
     );
   }
 
-  await setTimeout(1000);
-  const stillReady = await checkServerReady(3001, 2);
+  // A server that answered once and then exited has an exit code by now.
+  const stillReady = httpServer.exitCode === null && (await checkServerReady(3001, 2));
   if (!stillReady) {
     throw new Error("HTTP server started but then stopped immediately");
   }
@@ -290,7 +298,7 @@ async function runMCPSetup(): Promise<void> {
       if (authServer.pid) {
         authServer.unref();
         MCP_SERVERS.push(authServer);
-        await setTimeout(1000);
+        if (!(await waitForPort(3002))) throw new Error("auth-demo-server did not listen on port 3002");
         console.log("✓ auth-demo-server started on http://localhost:3002/");
       }
     }
@@ -351,7 +359,7 @@ async function runMCPSetup(): Promise<void> {
       if (oauthServer.pid) {
         oauthServer.unref();
         MCP_SERVERS.push(oauthServer);
-        await setTimeout(1000);
+        if (!(await waitForPort(3003))) throw new Error("oauth-demo-server did not listen on port 3003");
         console.log("✓ oauth-demo-server started on http://localhost:3003/");
       }
     }

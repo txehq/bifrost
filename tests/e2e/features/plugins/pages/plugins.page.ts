@@ -375,7 +375,6 @@ export class PluginsPage extends BasePage {
     if (await this.sheet.isVisible()) {
       await this.cancelBtn.click();
       await expect(this.sheet).not.toBeVisible({ timeout: 5000 });
-      await this.page.waitForTimeout(300); // Small delay for animation
     }
     // Double-check it's closed
     await this.ensureSheetClosed();

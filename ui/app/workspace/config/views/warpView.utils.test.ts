@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { WarpBackfillJob } from "@/lib/types/warp";
 import {
+	currentWarpBackfillStatus,
 	requireFiniteNumber,
 	retainedWarpBackfillForSpace,
 	retainFinishedWarpBackfill,
@@ -128,5 +129,35 @@ describe("retainedWarpBackfillForSpace", () => {
 	it("hides the job once the saved space moves off it", () => {
 		expect(retainedWarpBackfillForSpace({ job: completedJob, spaceKey: spaceA }, spaceB)).toBeNull();
 		expect(retainedWarpBackfillForSpace(null, spaceB)).toBeNull();
+	});
+});
+describe("currentWarpBackfillStatus", () => {
+	const runningJob: WarpBackfillJob = { ...completedJob, status: "running", scanned: 60, indexed: 60, skipped: 0 };
+	const released = { id: runningJob.id, releasedAt: 2_000 };
+
+	// The id-less read's cached answer from before the pin still says running.
+	// Acting on it re-pinned the finished job and looped the view (TXE-7508).
+	it("drops a running answer for the released job that was fetched before the release", () => {
+		expect(currentWarpBackfillStatus(runningJob, 1_000, null, released)).toBeUndefined();
+		expect(currentWarpBackfillStatus({ ...runningJob, status: "pending" }, 1_000, null, released)).toBeUndefined();
+		expect(currentWarpBackfillStatus({ ...runningJob, status: "cancelling" }, 1_000, null, released)).toBeUndefined();
+		expect(currentWarpBackfillStatus(runningJob, undefined, null, released)).toBeUndefined();
+	});
+
+	it("keeps an answer fetched after the release, so a resume of the same id is picked up", () => {
+		expect(currentWarpBackfillStatus(runningJob, 3_000, null, released)).toBe(runningJob);
+	});
+
+	it("keeps terminal, idle and other jobs' answers", () => {
+		expect(currentWarpBackfillStatus(completedJob, 1_000, null, released)).toBe(completedJob);
+		expect(currentWarpBackfillStatus({ status: "idle" }, 1_000, null, released)).toEqual({ status: "idle" });
+		const other = { ...runningJob, id: "warp-backfill-9" };
+		expect(currentWarpBackfillStatus(other, 1_000, null, released)).toBe(other);
+	});
+
+	it("passes everything through while a job is pinned or nothing was released", () => {
+		expect(currentWarpBackfillStatus(runningJob, 1_000, runningJob.id, released)).toBe(runningJob);
+		expect(currentWarpBackfillStatus(runningJob, 1_000, null, null)).toBe(runningJob);
+		expect(currentWarpBackfillStatus(undefined, undefined, null, released)).toBeUndefined();
 	});
 });

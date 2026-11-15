@@ -8,34 +8,15 @@ export async function waitForNetworkIdle(page: Page, timeout = 5000): Promise<vo
 }
 
 /**
- * Wait for a specific number of milliseconds
+ * Wait until the page has rendered two more frames. For asserting that something did not
+ * happen after an event the test can observe (a stale response arriving, a request being
+ * released): wait for that event, then for the page to render what it does with it, rather
+ * than for a fixed time that is either too short on a slow runner or wasted on a fast one.
  */
-export async function wait(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms))
-}
-
-/**
- * Retry a function until it succeeds or times out
- */
-export async function retry<T>(
-  fn: () => Promise<T>,
-  options: { retries?: number; delay?: number } = {}
-): Promise<T> {
-  const { retries = 3, delay = 1000 } = options
-  let lastError: Error | undefined
-
-  for (let i = 0; i < retries; i++) {
-    try {
-      return await fn()
-    } catch (error) {
-      lastError = error as Error
-      if (i < retries - 1) {
-        await wait(delay)
-      }
-    }
-  }
-
-  throw lastError
+export async function nextFrames(page: Page): Promise<void> {
+  await page.evaluate(
+    () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))),
+  )
 }
 
 /**
@@ -93,23 +74,6 @@ export async function fillSelect(
 
   // Click the option
   await page.getByRole('option', { name: optionText }).click()
-}
-
-/**
- * Fill a multi-select component
- */
-export async function fillMultiSelect(
-  page: Page,
-  inputSelector: string,
-  values: string[]
-): Promise<void> {
-  const input = page.locator(inputSelector)
-
-  for (const value of values) {
-    await input.fill(value)
-    await page.keyboard.press('Enter')
-    await wait(100) // Small delay between entries
-  }
 }
 
 /**

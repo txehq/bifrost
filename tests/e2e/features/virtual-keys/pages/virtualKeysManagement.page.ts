@@ -25,18 +25,17 @@ export class VirtualKeysManagementPage extends VirtualKeysPage {
   }
 
   async waitForVirtualKeyValueToChange(name: string, oldValue: string): Promise<string> {
-    const deadline = Date.now() + 20000;
     let currentValue = oldValue;
-
-    while (Date.now() < deadline) {
-      await this.page.waitForTimeout(500);
-      currentValue = await this.getDisplayedVirtualKeyValue(name);
-      if (currentValue && currentValue !== oldValue) {
-        return currentValue;
-      }
-    }
-
-    throw new Error(`Virtual key "${name}" value did not change after rotation`);
+    await expect
+      .poll(
+        async () => {
+          currentValue = await this.getDisplayedVirtualKeyValue(name);
+          return !!currentValue && currentValue !== oldValue;
+        },
+        { message: `Virtual key "${name}" value did not change after rotation`, timeout: 20000 },
+      )
+      .toBe(true);
+    return currentValue;
   }
 
   async rotateVirtualKey(name: string): Promise<void> {

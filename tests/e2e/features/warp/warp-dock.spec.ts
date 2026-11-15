@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from '../../core/fixtures/base.fixture'
+import { nextFrames } from '../../core/utils/test-helpers'
 
 // The dock keeps the thread, the conversation id and any pending question
 // across a close, but the in-flight answer used to live in the panel and die
@@ -309,10 +310,13 @@ test.describe('Warp state across a panel unmount', () => {
     await composer.press('Enter')
     await expect(page.getByTestId('warp-message-assistant')).toContainText('Newer answer.')
 
+    const historyResponse = page.waitForResponse((r) => new URL(r.url()).pathname === `/api/warp/conversations/${stored.id}`)
     release()
     await historyLanded
-    // Give a stale load's state updates the chance to render before asserting they did not.
-    await page.waitForTimeout(250)
+    // The stale load's answer has reached the page and the page has rendered what it does
+    // with it; only then is "the newer conversation is still shown" a real assertion.
+    await (await historyResponse).finished()
+    await nextFrames(page)
     await expect(page.getByTestId('warp-message-user')).toHaveText('newer question')
     await expect(page.getByTestId('warp-message-assistant')).toHaveText(/Newer answer\./)
   })

@@ -44,6 +44,7 @@ export default function GovernanceVirtualKeysPage() {
 
 	const {
 		data: virtualKeysData,
+		currentData: listedVirtualKeysData,
 		error: vkError,
 		isLoading: vkLoading,
 	} = useGetVirtualKeysQuery(
@@ -158,6 +159,7 @@ export default function GovernanceVirtualKeysPage() {
 				totalCount={virtualKeysData?.total_count || 0}
 				search={urlState.search}
 				debouncedSearch={debouncedSearch}
+				listedSearch={listedVirtualKeysData ? debouncedSearch : undefined}
 				onSearchChange={handleSearchChange}
 				customerFilter={urlState.customer_id}
 				onCustomerFilterChange={handleCustomerFilterChange}

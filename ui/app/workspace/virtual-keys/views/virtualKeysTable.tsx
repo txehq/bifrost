@@ -415,6 +415,8 @@ interface VirtualKeysTableProps {
 	totalCount: number;
 	search: string;
 	debouncedSearch: string;
+	/** The search the listed rows answer, or undefined while that answer is still loading. */
+	listedSearch?: string;
 	onSearchChange: (value: string) => void;
 	customerFilter: string;
 	onCustomerFilterChange: (value: string) => void;
@@ -440,6 +442,7 @@ export default function VirtualKeysTable({
 	totalCount,
 	search,
 	debouncedSearch,
+	listedSearch,
 	onSearchChange,
 	customerFilter,
 	onCustomerFilterChange,
@@ -1070,7 +1073,14 @@ export default function VirtualKeysTable({
 				</div>
 
 				<div className="mb-2 min-h-0 grow overflow-hidden rounded-sm border">
-					<Table containerClassName="h-full overflow-auto" className="w-full min-w-[1588px] table-fixed" data-testid="vk-table">
+					<Table
+						containerClassName="h-full overflow-auto"
+						className="w-full min-w-[1588px] table-fixed"
+						data-testid="vk-table"
+						// Tests wait on this rather than on time: the search box debounces, so the rows only
+						// answer what was typed once this matches it (TXE-7508).
+						data-listed-search={listedSearch}
+					>
 						<TableHeader className="bg-muted sticky top-0 z-20">
 							<TableRow>
 								<TableHead className="w-[48px]">
