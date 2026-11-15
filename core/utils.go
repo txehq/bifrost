@@ -432,6 +432,33 @@ func layerFallbackIdentity(ctx *schemas.BifrostContext, info *schemas.RoutingInf
 	}
 }
 
+// extraParamsPassthroughSetting is the caller's own extra-params passthrough setting, read
+// before any provider runs (TXE-7222). Several providers always forward the caller's extra
+// fields, and do it by switching BifrostContextKeyPassthroughExtraParams on and leaving it on.
+// A fallback runs on the same context, so without this the fallback vendor would be sent
+// fields only the first vendor knows, although the caller never asked for them to pass.
+// Core puts the caller's setting back before every fallback attempt and when the request
+// returns, so no provider has to remember to restore it, including one added later.
+type extraParamsPassthroughSetting struct {
+	value any
+	set   bool
+}
+
+// callerExtraParamsPassthrough reads the caller's setting. Call it before the first attempt.
+func callerExtraParamsPassthrough(ctx *schemas.BifrostContext) extraParamsPassthroughSetting {
+	value := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams)
+	return extraParamsPassthroughSetting{value: value, set: value != nil}
+}
+
+// restore puts the caller's setting back on ctx, replacing whatever a provider wrote.
+func (s extraParamsPassthroughSetting) restore(ctx *schemas.BifrostContext) {
+	if s.set {
+		ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, s.value)
+		return
+	}
+	ctx.ClearValue(schemas.BifrostContextKeyPassthroughExtraParams)
+}
+
 // clearCtxForFallback clears the ctx values which are not applicable for fallback requests.
 func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyAPIKeyID)

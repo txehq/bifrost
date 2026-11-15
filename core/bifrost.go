@@ -6172,6 +6172,9 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	if ctx == nil {
 		ctx = bifrost.ctx
 	}
+	// Before any provider runs: a provider that forces the extra-params merge leaves it on.
+	callerPassthrough := callerExtraParamsPassthrough(ctx)
+	defer callerPassthrough.restore(ctx)
 
 	// What the caller asked for, before any hook rewrites it: the name under which a session
 	// remembers where these requests were served. Reported back with how the request ended.
@@ -6297,6 +6300,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Trying fallback %d/%d: %s/%s (previous attempt failed: %s)", i+1, len(fallbacks), fallback.Provider, fallback.Model, routingErrorSummary(lastErr)))
 		ctx.SetValue(schemas.BifrostContextKeyFallbackRequestID, uuid.New().String())
 		clearCtxForFallback(ctx)
+		callerPassthrough.restore(ctx)
 		// Re-pin after the clear: RunPreRequestHooks, which commits a target's pin, runs once per request, not per fallback.
 		if keyID := strings.TrimSpace(fallback.KeyID); keyID != "" {
 			ctx.SetFallbackPinnedAPIKeyID(keyID)
@@ -6422,6 +6426,10 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	if ctx == nil {
 		ctx = bifrost.ctx
 	}
+	// Before any provider runs: a provider that forces the extra-params merge leaves it on.
+	// Restored on return too: the stream's request body is already built by then.
+	callerPassthrough := callerExtraParamsPassthrough(ctx)
+	defer callerPassthrough.restore(ctx)
 
 	// What the caller asked for, before any hook rewrites it: the name under which a session
 	// remembers where these requests were served. Reported back with how the request ended.
@@ -6523,6 +6531,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 		ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Trying fallback %d/%d: %s/%s (previous attempt failed: %s)", i+1, len(fallbacks), fallback.Provider, fallback.Model, routingErrorSummary(lastErr)))
 		ctx.SetValue(schemas.BifrostContextKeyFallbackRequestID, uuid.New().String())
 		clearCtxForFallback(ctx)
+		callerPassthrough.restore(ctx)
 		// Re-pin after the clear: RunPreRequestHooks, which commits a target's pin, runs once per request, not per fallback.
 		if keyID := strings.TrimSpace(fallback.KeyID); keyID != "" {
 			ctx.SetFallbackPinnedAPIKeyID(keyID)

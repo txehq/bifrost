@@ -1,0 +1,151 @@
+{
+  "name": "598. A provider's forced extra-params merge stays off for the fallback unless the caller enabled passthrough (TXE-7222) [SERIAL]",
+  "item": [
+    {
+      "name": "598.1 [EXPECT-200] /v1/chat/completions - MiniMax fails, the moonshot fallback is not sent the extra field MiniMax was forced to take (forced-merge-fallback)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"minimax/base-resp-1002\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"fallbacks\": [\n    \"moonshot/txe7222-fallback\"\n  ],\n  \"txe7222_vendor_only_probe\": \"x\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('forced-merge-fallback setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var PROBE = 'txe7222_vendor_only_probe';",
+              "pm.test('the fallback serves the request with 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); });",
+              "  var calls = res.json().data[0].calls;",
+              "  var primary = calls.filter(function (c) { return c.path === '/pp/minimax/v1/chat/completions'; });",
+              "  var fallback = calls.filter(function (c) { return c.path === '/pp/oc/v1/chat/completions'; });",
+              "  pm.test('MiniMax, which always forwards extra fields, was sent the probe', function () {",
+              "    pm.expect(primary, JSON.stringify(calls)).to.have.length(1);",
+              "    pm.expect(primary[0].body).to.include(PROBE);",
+              "  });",
+              "  pm.test('the moonshot fallback carries the probe only when the caller enabled passthrough', function () {",
+              "    pm.expect(fallback, JSON.stringify(calls)).to.have.length(1);",
+              "    pm.expect(fallback[0].body.indexOf(PROBE) !== -1, fallback[0].body).to.equal(false);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "598.2 [EXPECT-200] /v1/chat/completions - with x-bf-passthrough-extra-params the moonshot fallback is sent the extra field (forced-merge-fallback)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"minimax/base-resp-1002\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"fallbacks\": [\n    \"moonshot/txe7222-fallback\"\n  ],\n  \"txe7222_vendor_only_probe\": \"x\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('forced-merge-fallback setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var PROBE = 'txe7222_vendor_only_probe';",
+              "pm.test('the fallback serves the request with 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); });",
+              "  var calls = res.json().data[0].calls;",
+              "  var primary = calls.filter(function (c) { return c.path === '/pp/minimax/v1/chat/completions'; });",
+              "  var fallback = calls.filter(function (c) { return c.path === '/pp/oc/v1/chat/completions'; });",
+              "  pm.test('MiniMax, which always forwards extra fields, was sent the probe', function () {",
+              "    pm.expect(primary, JSON.stringify(calls)).to.have.length(1);",
+              "    pm.expect(primary[0].body).to.include(PROBE);",
+              "  });",
+              "  pm.test('the moonshot fallback carries the probe only when the caller enabled passthrough', function () {",
+              "    pm.expect(fallback, JSON.stringify(calls)).to.have.length(1);",
+              "    pm.expect(fallback[0].body.indexOf(PROBE) !== -1, fallback[0].body).to.equal(true);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
