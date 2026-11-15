@@ -1,6 +1,6 @@
 {
   "name": "421. BFL image tasks and the four image task routes (bfl image tasks)",
-  "description": "Pins TXE-6431 (contract C2, C4 to C7, C9; work item BF16; BFL vendor sheet B2 to B10) on the image task routes. Local fixture regression, no live provider calls: start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json and run with providerErrorFixture=1; every case is skipped otherwise. The config points the bfl provider at the fixture's /pp/bfl, which answers BFL's AsyncResponse to a submit and BFL's ResultResponse to GET /v1/get_result by task id. Row 2 creates a generation task on flux-pro-1.1 and reads the task object: queued, an id {vendor id}:bfl, the credit cost and megapixels; row 3 reads the bytes BFL received: size as width and height, callback_url as webhook_url, an extra field merged unchanged, no unified name left. Row 4 queries the task: completed, the sample link in data[], expires_at ten minutes after BFL's end_time, the settled cost in credits. Row 5 queries a moderated task: failed, the vendor's code, content_filter with BFL's reasons. Rows 6 to 9 are refused with caller_unsupported_parameter before any upstream call: n 2, client_reference_id (BFL has no external id), callback_url on flux-3-image (no webhook_url), a mask on a model other than fill. Row 10 is the cancel route: 400 provider_cancel_unsupported, BFL has no cancel API. Row 11 reads the fixture: exactly one submit arrived and each query once, so no refused request reached BFL. Before the change none of the four routes existed. Per-model conversion, the nine statuses one to one, the id's polling host and the FLUX 3 link lifetime are pinned by core/providers/bfl's Go tests.",
+  "description": "Pins TXE-6431 (contract C2, C4 to C7, C9; work item BF16; BFL vendor sheet B2 to B10) on the image task routes. Local fixture regression, no live provider calls: start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json and run with providerErrorFixture=1; every case is skipped otherwise. The config points the bfl provider at the fixture's /pp/bfl, which answers BFL's AsyncResponse to a submit and BFL's ResultResponse to GET /v1/get_result by task id. Row 2 creates a generation task on flux-pro-1.1 and reads the task object: queued, an id {vendor id}:bfl, the credit cost and megapixels; row 3 reads the bytes BFL received: size as width and height, callback_url as webhook_url, an extra field merged unchanged, no unified name left. Row 4 queries the task: completed, the sample link in data[], expires_at ten minutes after BFL's end_time, the settled cost in credits. Row 5 queries a moderated task: failed, the vendor's code, content_filter with BFL's reasons. Rows 6 to 9 are refused with caller_unsupported_parameter before any upstream call: n 2, client_reference_id (BFL has no external id), callback_url on flux-3-image (no webhook_url), a mask on a model other than fill. Row 10 is the cancel route: 400 provider_cancel_unsupported, BFL has no cancel API. Row 11 reads the fixture: exactly one submit arrived and each query once, so no refused request reached BFL. Before the change none of the four routes existed. Per-model conversion, the nine statuses one to one, the id's polling host and the FLUX 3 link lifetime are pinned by core/providers/bfl's Go tests. Rows 421.13 to 421.15 (TXE-7499): core's C4 check refuses BFL's width and height set through extra params on the image task creates, before a key is chosen; BFL bills an image by its megapixels. Red before: both creates were sent to BFL and answered 200.",
   "item": [
     {
       "name": "421.1 reset the fixture's counters (bfl image tasks)",
@@ -599,6 +599,158 @@
             "type": "text/javascript",
             "exec": [
               "pm.test('the refused creates sent nothing to BFL', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var calls = pm.response.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/bfl/') === 0; });",
+              "  pm.expect(calls.length, JSON.stringify(calls)).to.eql(1);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "421.13 [EXPECT-400] /v1/images/generations/tasks refuses an extra width: BFL bills by megapixels, so the size is set only through size (bfl image tasks)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations/tasks",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations",
+            "tasks"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bfl/flux-pro-1.1\",\n  \"prompt\": \"two foxes\",\n  \"width\": 2048\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('an extra width is refused as caller_unsupported_parameter naming it', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('width');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "421.14 [EXPECT-400] /v1/images/edits/tasks refuses an extra height: BFL bills by megapixels, so the size is set only through size (bfl image tasks)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/edits/tasks",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "edits",
+            "tasks"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bfl/flux-kontext-pro\",\n  \"prompt\": \"make it night\",\n  \"images\": [\n    {\n      \"url\": \"https://example.test/fox.png\"\n    }\n  ],\n  \"height\": 2048\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('an extra height is refused as caller_unsupported_parameter naming it', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('height');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "421.15 BFL still received exactly one submit: the extra width and height reached nothing (bfl image tasks)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{providerErrorFixtureUrl}}/__wire",
+          "host": [
+            "{{providerErrorFixtureUrl}}"
+          ],
+          "path": [
+            "__wire"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the refused task creates sent nothing to BFL', function () {",
               "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
               "  var calls = pm.response.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/bfl/') === 0; });",
               "  pm.expect(calls.length, JSON.stringify(calls)).to.eql(1);",
