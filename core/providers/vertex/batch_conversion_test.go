@@ -965,6 +965,86 @@ func BenchmarkVertexLabelErrorBifrostError(b *testing.B) {
 // lowercase letters, digits, underscores and dashes. Every custom_id a caller wrote comes
 // back unchanged, and none reaches Vertex as a label its rules forbid: one that is a label
 // value travels as it is, any other is base32-encoded across labels (contract C8).
+// TXE-6974: bifrost_endpoint and the bifrost_custom_id labels are the gateway's, on every
+// Gemini line, native bodies included. A native line that carried its own copy kept it, and
+// results read it back: bifrost_endpoint=images_generations reported a text line as image
+// generation (parked unpriced, or priced at image rates), and a custom_id label took another
+// line's identity.
+func TestVertexBatchReservedLabelsAreTheGatewaysOnNativeLines(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	nativeLine := func(customID string) schemas.BatchRequestItem {
+		return schemas.BatchRequestItem{CustomID: customID, Body: map[string]interface{}{
+			"contents": []interface{}{map[string]interface{}{"role": "user", "parts": []interface{}{map[string]interface{}{"text": "hi"}}}},
+			"labels": map[string]interface{}{
+				"team":                    "tokun",
+				"bifrost_endpoint":        "images_generations",
+				"bifrost_custom_id":       "someone-else",
+				"bifrost_custom_id_b32_0": "mfrggzdf",
+			},
+		}}
+	}
+	convert := func(t *testing.T, item schemas.BatchRequestItem) (map[string]interface{}, schemas.BatchResultItem, schemas.BatchEndpoint) {
+		t.Helper()
+		data, err := vertexConvertRequestsToJSONL(ctx, schemas.Key{}, []schemas.BatchRequestItem{item}, "gemini-2.5-flash", schemas.BatchEndpointChatCompletions)
+		require.NoError(t, err)
+		lines := parseVertexJSONLLines(t, data)
+		require.Len(t, lines, 1)
+		request := lines[0]["request"].(map[string]interface{})
+		labels, _ := request["labels"].(map[string]interface{})
+		// Vertex echoes the request, labels included, on the output line.
+		echoed := map[string]string{}
+		for k, v := range labels {
+			echoed[k] = v.(string)
+		}
+		output, err := sonic.Marshal(map[string]interface{}{
+			"status":   "",
+			"request":  map[string]interface{}{"labels": echoed},
+			"response": map[string]interface{}{"candidates": []interface{}{map[string]interface{}{"content": map[string]interface{}{"role": "model", "parts": []interface{}{map[string]interface{}{"text": "ok"}}}, "finishReason": "STOP"}}},
+		})
+		require.NoError(t, err)
+		result, endpoint, err := vertexBatchOutputLineToResultItem(output, false, false)
+		require.NoError(t, err)
+		return labels, result, endpoint
+	}
+
+	t.Run("a native line with a custom_id", func(t *testing.T) {
+		item := nativeLine("line-1")
+		labels, result, endpoint := convert(t, item)
+		assert.Equal(t, map[string]interface{}{"team": "tokun", "bifrost_custom_id": "line-1"}, labels)
+		assert.Equal(t, "line-1", result.CustomID)
+		assert.Equal(t, schemas.BatchEndpointChatCompletions, gemini.AccumulateBatchResultsEndpoint("", endpoint), "a native text line is settled as chat")
+		assert.Contains(t, item.Body["labels"], "bifrost_endpoint", "the caller's map is not mutated")
+	})
+
+	t.Run("a native line with no custom_id", func(t *testing.T) {
+		labels, result, endpoint := convert(t, nativeLine(""))
+		assert.Equal(t, map[string]interface{}{"team": "tokun"}, labels)
+		assert.Empty(t, result.CustomID)
+		assert.Equal(t, schemas.BatchEndpointChatCompletions, gemini.AccumulateBatchResultsEndpoint("", endpoint))
+	})
+
+	t.Run("a native line whose only labels are reserved is sent with none", func(t *testing.T) {
+		item := schemas.BatchRequestItem{Body: map[string]interface{}{
+			"contents": []interface{}{map[string]interface{}{"role": "user", "parts": []interface{}{map[string]interface{}{"text": "hi"}}}},
+			"labels":   map[string]interface{}{"bifrost_endpoint": "images_generations"},
+		}}
+		data, err := vertexConvertRequestsToJSONL(ctx, schemas.Key{}, []schemas.BatchRequestItem{item}, "gemini-2.5-flash", schemas.BatchEndpointChatCompletions)
+		require.NoError(t, err)
+		lines := parseVertexJSONLLines(t, data)
+		require.Len(t, lines, 1)
+		assert.NotContains(t, lines[0]["request"].(map[string]interface{}), "labels")
+	})
+
+	t.Run("a native line with only its own labels passes through unchanged", func(t *testing.T) {
+		item := schemas.BatchRequestItem{Body: map[string]interface{}{
+			"contents": []interface{}{map[string]interface{}{"role": "user", "parts": []interface{}{map[string]interface{}{"text": "hi"}}}},
+			"labels":   map[string]interface{}{"team": "tokun"},
+		}}
+		labels, _, _ := convert(t, item)
+		assert.Equal(t, map[string]interface{}{"team": "tokun"}, labels)
+	})
+}
+
 func TestVertexBatchCustomIDRoundTripsThroughLabels(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	chatLine := func(customID string) schemas.BatchRequestItem {
