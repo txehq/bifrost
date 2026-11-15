@@ -19,9 +19,11 @@ ModelArk uses the BytePlus-hosted international ARK endpoint and shares the same
 | Embeddings | ✅ | ❌ | `/embeddings` |
 | Image Generation | ✅ | ❌ | `/images/generations` |
 | Video Generation | ✅ | ❌ | `/contents/generations/tasks` |
-| Video Retrieve / Download / Delete / List | ✅ | ❌ | `/contents/generations/tasks` |
+| Video Retrieve / Download / Delete / List / Cancel | ✅ | ❌ | `/contents/generations/tasks` |
 | File Upload / List / Retrieve / Delete / Content | ✅ | ❌ | `/files` |
 | Image Edit / Image Variation / Batch | ❌ | ❌ | - |
+
+Video uses Ark's Seedance task API exactly as the BytePlus provider does: a create sends Ark's own body (`content[]`, `duration`, `ratio`, `resolution`), a task reports `completed` with a `WxH` size, seconds and usage, a download fetches the task's `content.video_url` through the SSRF-hardened media fetcher, and cancel is accepted only while the task is queued.
 
 ## Curated Models
 

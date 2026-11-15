@@ -4,11 +4,8 @@ package byteplus
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
-	"net/url"
-	"strconv"
 	"strings"
 	"time"
 
@@ -210,13 +207,20 @@ func (provider *BytePlusProvider) ResponsesStream(ctx *schemas.BifrostContext, p
 
 // doBytePlusRequest sends a JSON request to Ark and returns a copy of the decoded body of a 2xx response.
 func (provider *BytePlusProvider) doBytePlusRequest(ctx *schemas.BifrostContext, key schemas.Key, method, path, rawQuery string, jsonData []byte, sendBackRawRequest, sendBackRawResponse bool) ([]byte, time.Duration, *schemas.BifrostError) {
+	return doArkRequest(ctx, provider.client, provider.networkConfig, key, method, path, rawQuery, jsonData, sendBackRawRequest, sendBackRawResponse)
+}
+
+// doArkRequest sends one JSON call to an Ark API: the base URL plus path through
+// request_path_overrides, the key as a bearer token, and Ark's error envelope parsed on a non-2xx.
+// It returns the decoded body of a 2xx answer.
+func doArkRequest(ctx *schemas.BifrostContext, client *fasthttp.Client, networkConfig schemas.NetworkConfig, key schemas.Key, method, path, rawQuery string, jsonData []byte, sendBackRawRequest, sendBackRawResponse bool) ([]byte, time.Duration, *schemas.BifrostError) {
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-	requestURL := provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, path)
+	providerUtils.SetExtraHeaders(ctx, req, networkConfig.ExtraHeaders, nil)
+	requestURL := networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, path)
 	if rawQuery != "" {
 		requestURL += "?" + rawQuery
 	}
@@ -230,7 +234,7 @@ func (provider *BytePlusProvider) doBytePlusRequest(ctx *schemas.BifrostContext,
 		req.SetBody(jsonData)
 	}
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, client, req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, latency, bifrostErr
@@ -327,221 +331,48 @@ func (provider *BytePlusProvider) doImageRequest(ctx *schemas.BifrostContext, ke
 	return bifrostResp, nil
 }
 
-// VideoGeneration creates a Seedance video generation task. Extra params pass through so Seedance
-// task options such as draft, service_tier and return_last_frame reach the wire.
+// arkVideo is Seedance's task API on this provider's Ark host. Its paths carry /api/v3, since the
+// base URL is the bare host (fork, TXE-7493: volcengine and modelark serve the same API on a base
+// URL that ends in /api/v3).
+func (provider *BytePlusProvider) arkVideo(ctx *schemas.BifrostContext) *ArkVideoAPI {
+	return &ArkVideoAPI{
+		Client:              provider.client,
+		NetworkConfig:       provider.networkConfig,
+		TasksPath:           "/api/v3/contents/generations/tasks",
+		ProviderName:        provider.GetProviderKey(),
+		SendBackRawRequest:  providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		SendBackRawResponse: providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+	}
+}
+
+// VideoGeneration creates a Seedance video generation task.
 func (provider *BytePlusProvider) VideoGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoGenerationRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
-	providerName := provider.GetProviderKey()
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
-	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
-		ctx,
-		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToBytePlusVideoGenerationRequest(request)
-		})
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-
-	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
-	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
-
-	body, latency, bifrostErr := provider.doBytePlusRequest(ctx, key, http.MethodPost, "/api/v3/contents/generations/tasks", "", jsonData, sendBackRawRequest, sendBackRawResponse)
-	if bifrostErr != nil {
-		return nil, markSeedanceContentFilterError(bifrostErr)
-	}
-
-	var taskResp BytePlusVideoTaskCreationResponse
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, body, &taskResp, jsonData, sendBackRawRequest, sendBackRawResponse)
-	if bifrostErr != nil {
-		return nil, providerUtils.SetErrorLatency(bifrostErr, latency)
-	}
-	if taskResp.ID == "" {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("byteplus returned no task id", nil), jsonData, body, sendBackRawRequest, sendBackRawResponse, latency)
-	}
-
-	bifrostResp := &schemas.BifrostVideoGenerationResponse{
-		ID:        providerUtils.AddVideoIDProviderSuffix(taskResp.ID, providerName),
-		Model:     request.Model,
-		Object:    "video",
-		Status:    schemas.VideoStatusQueued,
-		CreatedAt: time.Now().Unix(),
-	}
-	if duration := providerUtils.GetJSONField(jsonData, "duration").Int(); duration > 0 {
-		bifrostResp.Seconds = schemas.Ptr(strconv.FormatInt(duration, 10))
-	}
-	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
-	if sendBackRawRequest {
-		bifrostResp.ExtraFields.RawRequest = rawRequest
-	}
-	if sendBackRawResponse {
-		bifrostResp.ExtraFields.RawResponse = rawResponse
-	}
-	return bifrostResp, nil
+	return provider.arkVideo(ctx).Generate(ctx, key, request)
 }
 
 // VideoRetrieve queries the status of a Seedance video generation task.
 func (provider *BytePlusProvider) VideoRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoRetrieveRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
-	providerName := provider.GetProviderKey()
-	taskID := providerUtils.StripVideoIDProviderSuffix(request.ID, providerName)
-	escapedTaskID, idErr := providerUtils.EscapeResourceID(taskID, "video_id")
-	if idErr != nil {
-		return nil, idErr
-	}
-
-	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
-	body, latency, bifrostErr := provider.doBytePlusRequest(ctx, key, http.MethodGet, "/api/v3/contents/generations/tasks/"+escapedTaskID, "", nil, false, sendBackRawResponse)
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-
-	var task BytePlusVideoTask
-	_, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, body, &task, nil, false, sendBackRawResponse)
-	if bifrostErr != nil {
-		return nil, providerUtils.SetErrorLatency(bifrostErr, latency)
-	}
-
-	bifrostResp, bifrostErr := ToBifrostVideoGenerationResponse(&task)
-	if bifrostErr != nil {
-		return nil, providerUtils.SetErrorLatency(bifrostErr, latency)
-	}
-	if bifrostResp.ID == "" {
-		bifrostResp.ID = taskID
-	}
-	bifrostResp.ID = providerUtils.AddVideoIDProviderSuffix(bifrostResp.ID, providerName)
-	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
-	if sendBackRawResponse {
-		bifrostResp.ExtraFields.RawResponse = rawResponse
-	}
-	return bifrostResp, nil
+	return provider.arkVideo(ctx).Retrieve(ctx, key, request)
 }
 
 // VideoDownload fetches the generated video from the time-limited URL on a succeeded task.
 func (provider *BytePlusProvider) VideoDownload(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoDownloadRequest) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError) {
-	task, bifrostErr := provider.VideoRetrieve(ctx, key, &schemas.BifrostVideoRetrieveRequest{Provider: request.Provider, ID: request.ID})
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-	if task.Status != schemas.VideoStatusCompleted {
-		return nil, providerUtils.NewBifrostOperationError(fmt.Sprintf("video not ready, current status: %s", task.Status), nil)
-	}
-	if len(task.Videos) == 0 || task.Videos[0].URL == nil || *task.Videos[0].URL == "" {
-		return nil, providerUtils.NewBifrostOperationError("video URL not available", nil)
-	}
-
-	// Fork: the URL comes from Ark's task response, so it is fetched through the SSRF-hardened media
-	// fetcher (public addresses only, checked at dial time and on every redirect, the provider's
-	// proxy honored) rather than the provider client, whose dialer admits loopback. No BaseURL is
-	// given: Ark's files are on a storage host, never the API's. No credentials are sent; errors
-	// name the URL without its signed query. A streamed request is forwarded as the file arrives,
-	// with no size cap (TXE-7036); any other is held, within the fetcher's 256 MiB cap.
-	videoURL := *task.Videos[0].URL
-	return providerUtils.FetchVideoContent(ctx, providerUtils.VideoContentFetch{
-		VendorURL:                videoURL,
-		Stream:                   request.Stream,
-		VideoID:                  request.ID,
-		StreamIdleTimeoutSeconds: provider.networkConfig.StreamIdleTimeoutInSeconds,
-		// /v1/videos/{id}/content serves these bytes on the gateway's own origin, so only a
-		// video/* type is passed on; anything else becomes the type the task's output format implies.
-		ContentType: func(upstream string) string {
-			return providerUtils.VideoContentTypeOr(upstream, seedanceVideoContentType(videoURL))
-		},
-	})
+	return provider.arkVideo(ctx).Download(ctx, key, request)
 }
 
 // VideoDelete cancels a queued Seedance task or deletes the record of a finished one.
 func (provider *BytePlusProvider) VideoDelete(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoDeleteRequest) (*schemas.BifrostVideoDeleteResponse, *schemas.BifrostError) {
-	taskID := providerUtils.StripVideoIDProviderSuffix(request.ID, provider.GetProviderKey())
-	escapedTaskID, idErr := providerUtils.EscapeResourceID(taskID, "video_id")
-	if idErr != nil {
-		return nil, idErr
-	}
-
-	_, latency, bifrostErr := provider.doBytePlusRequest(ctx, key, http.MethodDelete, "/api/v3/contents/generations/tasks/"+escapedTaskID, "", nil, false, false)
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-
-	bifrostResp := &schemas.BifrostVideoDeleteResponse{
-		ID:      request.ID,
-		Object:  "video.deleted",
-		Deleted: true,
-	}
-	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
-	return bifrostResp, nil
+	return provider.arkVideo(ctx).Delete(ctx, key, request)
 }
 
-// VideoList lists Seedance tasks. Ark pages by number rather than by cursor: the caller names the
-// page in Ark's own page_num filter (page 1 when absent) and the response's next is the page number
-// to ask for after it. An after cursor is rejected instead of being silently ignored, which would
-// make a paging client loop on the same page. Ark's other filters (filter.status, filter.model,
-// filter.task_ids) travel unchanged like every vendor filter (fork, contract C7 / BF15).
+// VideoList lists Seedance tasks, paged by Ark's page number.
 func (provider *BytePlusProvider) VideoList(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoListRequest) (*schemas.BifrostVideoListResponse, *schemas.BifrostError) {
-	if request.After != nil && *request.After != "" {
-		return nil, providerUtils.NewBifrostBadRequestError("byteplus video list pages by number and does not support an after cursor; send page_num")
-	}
-	values := url.Values{}
-	if request.Limit != nil && *request.Limit > 0 {
-		values.Set("page_size", strconv.Itoa(*request.Limit))
-	}
-	providerUtils.AddVideoListFilters(values, request.Filters)
-	pageNum := 1
-	if raw := values.Get("page_num"); raw != "" {
-		parsed, err := strconv.Atoi(raw)
-		if err != nil || parsed < 1 {
-			return nil, providerUtils.NewBifrostBadRequestError("page_num must be a positive integer")
-		}
-		pageNum = parsed
-	} else {
-		values.Set("page_num", "1")
-	}
-	// Whether a page is the last one is worked out from Ark's total and the page size. Ark's
-	// default size is not something Bifrost knows, so a caller paging past the first page names
-	// the size (limit, or Ark's page_size); it is refused otherwise, not guessed.
-	pageSize := 0
-	if requested, err := strconv.Atoi(values.Get("page_size")); err == nil && requested > 0 {
-		pageSize = requested
-	}
-	if pageNum > 1 && pageSize == 0 {
-		return nil, providerUtils.NewBifrostBadRequestError("byteplus video list needs limit or page_size with a page_num above 1")
-	}
+	return provider.arkVideo(ctx).List(ctx, key, request)
+}
 
-	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
-	body, latency, bifrostErr := provider.doBytePlusRequest(ctx, key, http.MethodGet, "/api/v3/contents/generations/tasks", values.Encode(), nil, false, sendBackRawResponse)
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-
-	var listResp BytePlusVideoTaskListResponse
-	_, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, body, &listResp, nil, false, sendBackRawResponse)
-	if bifrostErr != nil {
-		return nil, providerUtils.SetErrorLatency(bifrostErr, latency)
-	}
-
-	providerName := provider.GetProviderKey()
-	bifrostResp := &schemas.BifrostVideoListResponse{
-		Object: "list",
-		Data:   make([]schemas.VideoObject, 0, len(listResp.Items)),
-	}
-	for i := range listResp.Items {
-		bifrostResp.Data = append(bifrostResp.Data, ToBifrostVideoObject(&listResp.Items[i], providerName))
-	}
-	if n := len(bifrostResp.Data); n > 0 {
-		bifrostResp.FirstID = schemas.Ptr(bifrostResp.Data[0].ID)
-		bifrostResp.LastID = schemas.Ptr(bifrostResp.Data[n-1].ID)
-	}
-	// Ark reports the total across all pages. The tasks before this page are counted by the page
-	// size the caller named (required above for every page after the first, where this page's
-	// own length would miscount a partly filled last page), and an empty page is always the last.
-	hasMore := len(listResp.Items) > 0 && (pageNum-1)*pageSize+len(listResp.Items) < listResp.Total
-	bifrostResp.HasMore = schemas.Ptr(hasMore)
-	if hasMore {
-		bifrostResp.Next = schemas.Ptr(strconv.Itoa(pageNum + 1))
-	}
-	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
-	if sendBackRawResponse {
-		bifrostResp.ExtraFields.RawResponse = rawResponse
-	}
-	return bifrostResp, nil
+// VideoCancel cancels a Seedance task that is still queued (fork, TXE-6426, contract C7 BF13).
+func (provider *BytePlusProvider) VideoCancel(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoCancelRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	return provider.arkVideo(ctx).Cancel(ctx, key, request)
 }
 
 // Speech is not supported by the BytePlus provider.

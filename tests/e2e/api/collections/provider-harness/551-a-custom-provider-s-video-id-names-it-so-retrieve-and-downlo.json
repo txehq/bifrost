@@ -1,6 +1,6 @@
 {
   "name": "551. A custom provider's video id names it, so retrieve and download reach it with its own key (custom provider video ids) [SERIAL]",
-  "description": "TXE-7085 (Codex P1 on #221). A custom provider on the replicate, volcengine or modelark base reports its own name since TXE-7085, and the video ids it returns carry that name (`<id>:<custom provider>`). The gateway routes a retrieve, download or delete by that suffix, so the call reaches the custom provider, with its own key and base_url. Before, the ids carried the base's suffix (`:replicate`, `:volcengine`, `:modelark`) and those calls went to the built-in provider. The custom providers are the folder-485 ones (tkp_ovr_<base>, base_url /pp/ovr/<base> on the provider error fixture); the fixture answers their default video paths for one prediction (pred_ovr_video) and one Ark task (cgt-ovr-video) and records every call with the name of the key it carried. Replicate serves create and retrieve only; volcengine and modelark also download. An id with the legacy base suffix is routed by the gateway to the built-in provider, so its handling in the custom provider (providerUtils.StripVideoIDProviderSuffixOrBase) is reachable only through the Go SDK and is pinned by Go tests. Red before this change: each create returns the base's suffix.",
+  "description": "TXE-7085 (Codex P1 on #221). A custom provider on the replicate, volcengine or modelark base reports its own name since TXE-7085, and the video ids it returns carry that name (`<id>:<custom provider>`). The gateway routes a retrieve, download or delete by that suffix, so the call reaches the custom provider, with its own key and base_url. Before, the ids carried the base's suffix (`:replicate`, `:volcengine`, `:modelark`) and those calls went to the built-in provider. The custom providers are the folder-485 ones (tkp_ovr_<base>, base_url /pp/ovr/<base> on the provider error fixture); the fixture answers their default video paths for one prediction (pred_ovr_video) and one Ark task (cgt-ovr-video) and records every call with the name of the key it carried. Replicate serves create and retrieve only; volcengine and modelark also download: the task is read with the custom provider's key, and its content.video_url is fetched through the hardened media fetcher (the media tunnel, their proxy_config) with no credential, since Ark serves no content endpoint (TXE-7493). An id with the legacy base suffix is routed by the gateway to the built-in provider, so its handling in the custom provider (providerUtils.StripVideoIDProviderSuffixOrBase) is reachable only through the Go SDK and is pinned by Go tests. Red before this change: each create returns the base's suffix.",
   "item": [
     {
       "name": "[NO-CONTENT] tkp_ovr_replicate video create: POST /v1/videos returns an id that names tkp_ovr_replicate (custom provider video ids)",
@@ -273,6 +273,11 @@
               "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
               "  pm.expect(body.id, pm.response.text()).to.equal('cgt-ovr-video:tkp_ovr_volcengine');",
               "});",
+              "pm.test('Ark\\'s succeeded task reads completed, with the WxH size and seconds Ark reported (TXE-7493: before, in_progress with neither)', function () {",
+              "  pm.expect(body.status, pm.response.text()).to.equal('completed');",
+              "  pm.expect(body.size, pm.response.text()).to.equal('1280x720');",
+              "  pm.expect(body.seconds, pm.response.text()).to.equal('5');",
+              "});",
               "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
               "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
               "  var calls = res.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/ovr/') === 0; });",
@@ -341,11 +346,11 @@
               "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
               "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
               "  var calls = res.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/ovr/') === 0; });",
-              "  pm.test('one call reached the custom provider\\'s upstream: GET /pp/ovr/volcengine/contents/generations/tasks/cgt-ovr-video/content', function () {",
-              "    pm.expect(calls.map(function (c) { return c.method + ' ' + c.path; }), JSON.stringify(calls)).to.eql(['GET /pp/ovr/volcengine/contents/generations/tasks/cgt-ovr-video/content']);",
+              "  pm.test('the task was read with the custom provider\\'s key, then its content.video_url was fetched with no credential (TXE-7493: Ark serves no content endpoint)', function () {",
+              "    pm.expect(calls.map(function (c) { return c.method + ' ' + c.path; }), JSON.stringify(calls)).to.eql(['GET /pp/ovr/volcengine/contents/generations/tasks/cgt-ovr-video', 'GET /pp/ovr/volcengine/files/video.mp4']);",
               "  });",
-              "  pm.test('it carried the custom provider\\'s key tk-key-ovr-volcengine', function () {",
-              "    pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(calls)).to.eql(['tk-key-ovr-volcengine']);",
+              "  pm.test('the task read carried the custom provider\\'s key tk-key-ovr-volcengine and the file fetch carried none', function () {",
+              "    pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(calls)).to.eql(['tk-key-ovr-volcengine', 'unknown']);",
               "  });",
               "});"
             ]
@@ -481,6 +486,11 @@
               "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
               "  pm.expect(body.id, pm.response.text()).to.equal('cgt-ovr-video:tkp_ovr_modelark');",
               "});",
+              "pm.test('Ark\\'s succeeded task reads completed, with the WxH size and seconds Ark reported (TXE-7493: before, in_progress with neither)', function () {",
+              "  pm.expect(body.status, pm.response.text()).to.equal('completed');",
+              "  pm.expect(body.size, pm.response.text()).to.equal('1280x720');",
+              "  pm.expect(body.seconds, pm.response.text()).to.equal('5');",
+              "});",
               "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
               "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
               "  var calls = res.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/ovr/') === 0; });",
@@ -549,11 +559,11 @@
               "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
               "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
               "  var calls = res.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/ovr/') === 0; });",
-              "  pm.test('one call reached the custom provider\\'s upstream: GET /pp/ovr/modelark/contents/generations/tasks/cgt-ovr-video/content', function () {",
-              "    pm.expect(calls.map(function (c) { return c.method + ' ' + c.path; }), JSON.stringify(calls)).to.eql(['GET /pp/ovr/modelark/contents/generations/tasks/cgt-ovr-video/content']);",
+              "  pm.test('the task was read with the custom provider\\'s key, then its content.video_url was fetched with no credential (TXE-7493: Ark serves no content endpoint)', function () {",
+              "    pm.expect(calls.map(function (c) { return c.method + ' ' + c.path; }), JSON.stringify(calls)).to.eql(['GET /pp/ovr/modelark/contents/generations/tasks/cgt-ovr-video', 'GET /pp/ovr/modelark/files/video.mp4']);",
               "  });",
-              "  pm.test('it carried the custom provider\\'s key tk-key-ovr-modelark', function () {",
-              "    pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(calls)).to.eql(['tk-key-ovr-modelark']);",
+              "  pm.test('the task read carried the custom provider\\'s key tk-key-ovr-modelark and the file fetch carried none', function () {",
+              "    pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(calls)).to.eql(['tk-key-ovr-modelark', 'unknown']);",
               "  });",
               "});"
             ]

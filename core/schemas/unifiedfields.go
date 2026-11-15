@@ -215,6 +215,13 @@ var vendorPriceFieldNames = func() []VendorPriceFieldName {
 		// Written at the top level, not read (TXE-7295).
 		{BytePlus, "duration", "seconds", video},
 		{BytePlus, "generate_audio", "audio", video},
+		// VolcEngine and ModelArk serve Ark's task API through byteplus's converter (TXE-7493).
+		{Volcengine, "ratio", "aspect_ratio", video},
+		{Volcengine, "duration", "seconds", video},
+		{Volcengine, "generate_audio", "audio", video},
+		{ModelArk, "ratio", "aspect_ratio", video},
+		{ModelArk, "duration", "seconds", video},
+		{ModelArk, "generate_audio", "audio", video},
 		{MiniMax, "width", "size", imageGeneration},
 		{MiniMax, "height", "size", imageGeneration},
 		{Nebius, "width", "size", imageGeneration},

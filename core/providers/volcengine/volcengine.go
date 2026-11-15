@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/capsohq/bifrost/core/providers/byteplus"
 	"github.com/capsohq/bifrost/core/providers/openai"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	schemas "github.com/capsohq/bifrost/core/schemas"
@@ -925,78 +926,50 @@ func (provider *VolcengineProvider) ImageVariation(ctx *schemas.BifrostContext, 
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageVariationRequest, provider.GetProviderKey())
 }
 
+// arkVideo is Seedance's task API on this provider's Ark host (fork, TXE-7493). VolcEngine and
+// ModelArk serve the same task API as BytePlus, so video goes through byteplus's Ark converters:
+// Ark's request body, its task states, the size from its resolution and ratio, its usage, and the
+// download of the task's content.video_url. The base URL ends in /api/v3, so the task path does
+// not repeat it, and request_path_overrides apply to it as to every other call. Before, these
+// providers sent OpenAI's video shape to Ark, and a task Ark reported succeeded read back as
+// in_progress with no seconds, size or usage.
+func (provider *VolcengineProvider) arkVideo(ctx *schemas.BifrostContext) *byteplus.ArkVideoAPI {
+	return &byteplus.ArkVideoAPI{
+		Client:              provider.client,
+		NetworkConfig:       provider.networkConfig,
+		TasksPath:           volcenginePathVideos,
+		ProviderName:        provider.GetProviderKey(),
+		BaseProvider:        provider.providerKey,
+		SendBackRawRequest:  providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		SendBackRawResponse: providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+	}
+}
+
+// SupportedUnifiedFields declares the unified fields video create delivers, as byteplus does for the
+// same Ark API, so core refuses any other with caller_unsupported_parameter before a key is chosen.
+func (provider *VolcengineProvider) SupportedUnifiedFields(requestType schemas.RequestType) ([]string, bool) {
+	return byteplus.SeedanceSupportedUnifiedFields(requestType)
+}
+
 func (provider *VolcengineProvider) VideoGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoGenerationRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
 	if err := provider.allowed(schemas.VideoGenerationRequest); err != nil {
 		return nil, err
 	}
-	return openai.HandleOpenAIVideoGenerationRequest(
-		ctx,
-		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, volcenginePathVideos),
-		request,
-		key,
-		provider.networkConfig.ExtraHeaders,
-		nil,
-		provider.GetProviderKey(),
-		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
-		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
-		provider.logger,
-	)
+	return provider.arkVideo(ctx).Generate(ctx, key, request)
 }
 
 func (provider *VolcengineProvider) VideoRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoRetrieveRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
 	if err := provider.allowed(schemas.VideoRetrieveRequest); err != nil {
 		return nil, err
 	}
-	videoID := providerUtils.StripVideoIDProviderSuffixOrBase(request.ID, provider.GetProviderKey(), provider.providerKey)
-	escapedVideoID, idErr := providerUtils.EscapeResourceID(videoID, "video_id")
-	if idErr != nil {
-		return nil, idErr
-	}
-	return openai.HandleOpenAIVideoRetrieveRequest(
-		ctx,
-		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, fmt.Sprintf("%s/%s", volcenginePathVideos, escapedVideoID)),
-		request,
-		key,
-		provider.networkConfig.ExtraHeaders,
-		nil,
-		provider.GetProviderKey(),
-		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
-		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
-		provider.VideoDownload,
-		provider.logger,
-	)
+	return provider.arkVideo(ctx).Retrieve(ctx, key, request)
 }
 
 func (provider *VolcengineProvider) VideoDownload(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoDownloadRequest) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError) {
 	if err := provider.allowed(schemas.VideoDownloadRequest); err != nil {
 		return nil, err
 	}
-	videoID := providerUtils.StripVideoIDProviderSuffixOrBase(request.ID, provider.GetProviderKey(), provider.providerKey)
-	escapedVideoID, idErr := providerUtils.EscapeResourceID(videoID, "video_id")
-	if idErr != nil {
-		return nil, idErr
-	}
-	req := fasthttp.AcquireRequest()
-	defer fasthttp.ReleaseRequest(req)
-
-	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, fmt.Sprintf("%s/%s/content", volcenginePathVideos, escapedVideoID)))
-	req.Header.SetMethod(http.MethodGet)
-	if key.Value.GetValue() != "" {
-		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
-	}
-
-	response, bifrostErr := providerUtils.FetchVideoContent(ctx, providerUtils.VideoContentFetch{
-		Request:                  req,
-		Client:                   provider.client,
-		StreamingClient:          provider.streamingClient,
-		Stream:                   request.Stream,
-		VideoID:                  providerUtils.AddVideoIDProviderSuffix(videoID, provider.GetProviderKey()),
-		StreamIdleTimeoutSeconds: provider.networkConfig.StreamIdleTimeoutInSeconds,
-		ParseError:               openai.ParseOpenAIError,
-	})
+	response, bifrostErr := provider.arkVideo(ctx).Download(ctx, key, request)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -1009,43 +982,22 @@ func (provider *VolcengineProvider) VideoDelete(ctx *schemas.BifrostContext, key
 	if err := provider.allowed(schemas.VideoDeleteRequest); err != nil {
 		return nil, err
 	}
-	videoID := providerUtils.StripVideoIDProviderSuffixOrBase(request.ID, provider.GetProviderKey(), provider.providerKey)
-	escapedVideoID, idErr := providerUtils.EscapeResourceID(videoID, "video_id")
-	if idErr != nil {
-		return nil, idErr
-	}
-	return openai.HandleOpenAIVideoDeleteRequest(
-		ctx,
-		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, fmt.Sprintf("%s/%s", volcenginePathVideos, escapedVideoID)),
-		videoID,
-		key,
-		provider.networkConfig.ExtraHeaders,
-		nil,
-		provider.GetProviderKey(),
-		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
-		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
-		provider.logger,
-	)
+	return provider.arkVideo(ctx).Delete(ctx, key, request)
 }
 
 func (provider *VolcengineProvider) VideoList(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoListRequest) (*schemas.BifrostVideoListResponse, *schemas.BifrostError) {
 	if err := provider.allowed(schemas.VideoListRequest); err != nil {
 		return nil, err
 	}
-	return openai.HandleOpenAIVideoListRequest(
-		ctx,
-		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, volcenginePathVideos),
-		request,
-		key,
-		provider.networkConfig.ExtraHeaders,
-		nil,
-		provider.GetProviderKey(),
-		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
-		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
-		provider.logger,
-	)
+	return provider.arkVideo(ctx).List(ctx, key, request)
+}
+
+// VideoCancel cancels a Seedance task that is still queued, as byteplus does (contract C7 BF13).
+func (provider *VolcengineProvider) VideoCancel(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoCancelRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	if err := provider.allowed(schemas.VideoCancelRequest); err != nil {
+		return nil, err
+	}
+	return provider.arkVideo(ctx).Cancel(ctx, key, request)
 }
 
 // VideoRemix is not supported by Volcengine provider.

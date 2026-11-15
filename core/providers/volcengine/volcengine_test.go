@@ -1,7 +1,11 @@
 package volcengine_test
 
 import (
+	"encoding/json"
+	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"sync"
@@ -9,8 +13,11 @@ import (
 
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/internal/llmtests"
+	"github.com/capsohq/bifrost/core/network/proxytest"
+	"github.com/capsohq/bifrost/core/providers/byteplus"
 	"github.com/capsohq/bifrost/core/providers/volcengine"
 	"github.com/capsohq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -130,7 +137,8 @@ func TestVolcengineResourceIDsStayOnExpectedEndpoint(t *testing.T) {
 			_, bifrostErr := provider.VideoRetrieve(newCtx(), key, &schemas.BifrostVideoRetrieveRequest{ID: id})
 			return bifrostErr
 		}},
-		{"GET video content", "GET /contents/generations/tasks/", "/content", func(id string) *schemas.BifrostError {
+		// Ark has no content endpoint: a download reads the task, then fetches its content.video_url (TXE-7493).
+		{"GET video content", "GET /contents/generations/tasks/", "", func(id string) *schemas.BifrostError {
 			_, bifrostErr := provider.VideoDownload(newCtx(), key, &schemas.BifrostVideoDownloadRequest{ID: id})
 			return bifrostErr
 		}},
@@ -164,6 +172,160 @@ func TestVolcengineResourceIDsStayOnExpectedEndpoint(t *testing.T) {
 			}
 			received = nil
 			mu.Unlock()
+		}
+	}
+}
+
+// TestArkVideoIsTheSameTaskOnEveryArkProvider is TXE-7493: volcengine and modelark serve
+// Seedance's task API, the one byteplus serves, so one Ark task reads back as the same task
+// object on all three. The create body is Ark's (content[], duration), not OpenAI's multipart; a
+// succeeded task is completed with its WxH size, seconds and usage; the download fetches the
+// task's content.video_url through the hardened media fetcher with no credential; and cancel,
+// list and delete go to the task path. Red before: volcengine and modelark sent an OpenAI
+// multipart body, and the same succeeded task read back as in_progress with no seconds, size or
+// usage.
+func TestArkVideoIsTheSameTaskOnEveryArkProvider(t *testing.T) {
+	const taskID = "cgt-ark-1"
+	const videoURL = "http://203.0.113.10/files/v.mp4"
+	videoProxy := proxytest.ForwardProxy(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Host != "203.0.113.10" || r.URL.Path != "/files/v.mp4" || r.Header.Get("Authorization") != "" {
+			http.Error(w, "unexpected download "+r.URL.String(), http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "video/mp4")
+		_, _ = w.Write([]byte("mp4data"))
+	})
+	type call struct{ method, path, contentType, body string }
+	var mu sync.Mutex
+	var calls []call
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		calls = append(calls, call{r.Method, r.URL.Path, r.Header.Get("Content-Type"), string(body)})
+		mu.Unlock()
+		tasks := strings.TrimPrefix(r.URL.Path, "/api/v3")
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && tasks == "/contents/generations/tasks":
+			_, _ = w.Write([]byte(`{"id":"` + taskID + `"}`))
+		case r.Method == http.MethodGet && tasks == "/contents/generations/tasks/"+taskID:
+			_, _ = w.Write([]byte(`{"id":"` + taskID + `","model":"doubao-seedance-1-0-pro-250528","status":"succeeded","content":{"video_url":"` + videoURL + `"},"usage":{"completion_tokens":108900,"total_tokens":108900},"resolution":"720p","ratio":"16:9","duration":5,"created_at":100,"updated_at":200}`))
+		case r.Method == http.MethodGet && tasks == "/contents/generations/tasks":
+			_, _ = w.Write([]byte(`{"items":[{"id":"` + taskID + `","model":"doubao-seedance-1-0-pro-250528","status":"queued","created_at":100}],"total":1}`))
+		case r.Method == http.MethodDelete && tasks == "/contents/generations/tasks/"+taskID:
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.Error(w, `{"error":{"code":"NotFound","message":"no route"}}`, http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
+	config := func(base string) *schemas.ProviderConfig {
+		return &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: base, AllowPrivateNetwork: true}}
+	}
+	bp, err := byteplus.NewBytePlusProvider(config(srv.URL), logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ve, err := volcengine.NewVolcengineProvider(config(srv.URL+"/api/v3"), logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ma, err := volcengine.NewModelArkProvider(config(srv.URL+"/api/v3"), logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type videoProvider interface {
+		GetProviderKey() schemas.ModelProvider
+		VideoGeneration(*schemas.BifrostContext, schemas.Key, *schemas.BifrostVideoGenerationRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError)
+		VideoRetrieve(*schemas.BifrostContext, schemas.Key, *schemas.BifrostVideoRetrieveRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError)
+		VideoDownload(*schemas.BifrostContext, schemas.Key, *schemas.BifrostVideoDownloadRequest) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError)
+		VideoList(*schemas.BifrostContext, schemas.Key, *schemas.BifrostVideoListRequest) (*schemas.BifrostVideoListResponse, *schemas.BifrostError)
+		VideoCancel(*schemas.BifrostContext, schemas.Key, *schemas.BifrostVideoCancelRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError)
+		VideoDelete(*schemas.BifrostContext, schemas.Key, *schemas.BifrostVideoDeleteRequest) (*schemas.BifrostVideoDeleteResponse, *schemas.BifrostError)
+	}
+	key := schemas.Key{Value: *schemas.NewSecretVar("ark-key")}
+	newCtx := func() *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyProviderProxyConfig, &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(videoProxy.URL)})
+		return ctx
+	}
+	// The task object as each provider reports it, with its own suffix taken off the ids.
+	normalized := func(p videoProvider, resp *schemas.BifrostVideoGenerationResponse) string {
+		copied := *resp
+		copied.ID = strings.TrimSuffix(copied.ID, ":"+string(p.GetProviderKey()))
+		copied.ExtraFields = schemas.BifrostResponseExtraFields{}
+		out, _ := json.Marshal(copied)
+		return string(out)
+	}
+	var want string
+	for _, p := range []videoProvider{bp, ve, ma} {
+		name := string(p.GetProviderKey())
+		calls = nil
+		created, bifrostErr := p.VideoGeneration(newCtx(), key, &schemas.BifrostVideoGenerationRequest{
+			Provider: p.GetProviderKey(),
+			Model:    "doubao-seedance-1-0-pro-250528",
+			Input:    &schemas.VideoGenerationInput{Prompt: "a dog"},
+			Params:   &schemas.VideoGenerationParameters{Seconds: schemas.Ptr("5")},
+		})
+		if bifrostErr != nil {
+			t.Fatalf("%s create: %+v", name, bifrostErr.Error)
+		}
+		if created.ID != taskID+":"+name || created.Status != schemas.VideoStatusQueued {
+			t.Fatalf("%s create = %+v", name, created)
+		}
+		if len(calls) != 1 || calls[0].contentType != "application/json" || gjson.Get(calls[0].body, "content.0.text").String() != "a dog" || gjson.Get(calls[0].body, "duration").Int() != 5 {
+			t.Fatalf("%s create sent %+v, want Ark's JSON body with content[] and duration", name, calls)
+		}
+
+		retrieved, bifrostErr := p.VideoRetrieve(newCtx(), key, &schemas.BifrostVideoRetrieveRequest{Provider: p.GetProviderKey(), ID: created.ID})
+		if bifrostErr != nil {
+			t.Fatalf("%s retrieve: %+v", name, bifrostErr.Error)
+		}
+		if retrieved.Status != schemas.VideoStatusCompleted || retrieved.Size != "1280x720" || retrieved.Seconds == nil || *retrieved.Seconds != "5" {
+			t.Fatalf("%s retrieve = status %q size %q seconds %v, want completed 1280x720 5", name, retrieved.Status, retrieved.Size, retrieved.Seconds)
+		}
+		got := normalized(p, retrieved)
+		if want == "" {
+			want = got
+		} else if got != want {
+			t.Fatalf("%s reads the task as\n%s\nbyteplus reads it as\n%s", name, got, want)
+		}
+
+		downloaded, bifrostErr := p.VideoDownload(newCtx(), key, &schemas.BifrostVideoDownloadRequest{Provider: p.GetProviderKey(), ID: created.ID})
+		if bifrostErr != nil {
+			t.Fatalf("%s download: %+v", name, bifrostErr.Error)
+		}
+		if string(downloaded.Content) != "mp4data" || downloaded.ContentType != "video/mp4" {
+			t.Fatalf("%s download = %q %q", name, downloaded.Content, downloaded.ContentType)
+		}
+
+		listed, bifrostErr := p.VideoList(newCtx(), key, &schemas.BifrostVideoListRequest{Provider: p.GetProviderKey(), Limit: schemas.Ptr(2)})
+		if bifrostErr != nil {
+			t.Fatalf("%s list: %+v", name, bifrostErr.Error)
+		}
+		if len(listed.Data) != 1 || listed.Data[0].ID != taskID+":"+name || listed.Data[0].Status != schemas.VideoStatusQueued {
+			t.Fatalf("%s list = %+v", name, listed.Data)
+		}
+
+		// The task reads completed, so cancel is refused before any DELETE is sent.
+		calls = nil
+		if _, bifrostErr := p.VideoCancel(newCtx(), key, &schemas.BifrostVideoCancelRequest{Provider: p.GetProviderKey(), ID: created.ID}); bifrostErr == nil {
+			t.Fatalf("%s cancelled a completed task", name)
+		}
+		for _, c := range calls {
+			if c.method == http.MethodDelete {
+				t.Fatalf("%s cancel of a completed task sent DELETE", name)
+			}
+		}
+
+		// The gateway hands the provider the bare task id; the answer names the task with the
+		// provider's suffix either way, as the create did.
+		for _, id := range []string{created.ID, taskID} {
+			deleted, bifrostErr := p.VideoDelete(newCtx(), key, &schemas.BifrostVideoDeleteRequest{Provider: p.GetProviderKey(), ID: id})
+			if bifrostErr != nil || !deleted.Deleted || deleted.ID != created.ID {
+				t.Fatalf("%s delete of %q = %+v, %+v", name, id, deleted, bifrostErr)
+			}
 		}
 	}
 }
