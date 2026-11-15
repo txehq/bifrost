@@ -279,7 +279,7 @@ func (s *Store) CalculateCostForEstimatedImageUsage(estimate *schemas.EstimatedI
 	if scopes != nil {
 		lookupScopes = *scopes
 	}
-	price := func(quality string) float64 {
+	price := func(size, quality string) float64 {
 		outputImages := estimate.OutputImages
 		imageUsage := &schemas.ImageUsage{OutputImages: &outputImages, NumInputImages: estimate.InputImages}
 		// The count image pricing reads, as a delivered response's Data length sets it.
@@ -287,7 +287,7 @@ func (s *Store) CalculateCostForEstimatedImageUsage(estimate *schemas.EstimatedI
 		breakdown := s.computeCostFromInput(
 			costInput{
 				imageUsage:      imageUsage,
-				imageSize:       estimate.Size,
+				imageSize:       size,
 				imageQuality:    quality,
 				imageResolution: estimate.Resolution,
 				imageSteps:      estimate.Steps,
@@ -301,22 +301,35 @@ func (s *Store) CalculateCostForEstimatedImageUsage(estimate *schemas.EstimatedI
 		}
 		return breakdown.TotalCost
 	}
-	if estimate.Quality != "" && estimate.Quality != "auto" {
-		return price(estimate.Quality)
+	// A request that names no size or quality, or auto, is billed at whatever the vendor chose,
+	// which only the unread answer would have said. The estimate then takes the dearest tier the row
+	// prices, so the budget is never charged less than the vendor may have billed.
+	sizes := []string{estimate.Size}
+	if estimate.Size == "" || estimate.Size == "auto" {
+		sizes = append(sizes, estimatedImageSizeTiers...)
 	}
-	// A request that names no quality, or auto, is billed at whatever quality the vendor chose,
-	// which the unread answer would have said. The estimate takes the dearest tier the row prices,
-	// so the budget is never charged less than the vendor may have billed.
-	cost := price(estimate.Quality)
-	for _, quality := range estimatedImageQualityTiers {
-		cost = max(cost, price(quality))
+	qualities := []string{estimate.Quality}
+	if estimate.Quality == "" || estimate.Quality == "auto" {
+		qualities = append(qualities, estimatedImageQualityTiers...)
+	}
+	cost := 0.0
+	for _, size := range sizes {
+		for _, quality := range qualities {
+			cost = max(cost, price(size, quality))
+		}
 	}
 	return cost
 }
 
-// estimatedImageQualityTiers are the quality values image pricing distinguishes; an estimate with
-// no quality is priced at the dearest of them (fork, TXE-7302).
-var estimatedImageQualityTiers = []string{"low", "medium", "high", "standard", "hd", "xhigh", "max"}
+// estimatedImageQualityTiers are the quality values image pricing distinguishes, and
+// estimatedImageSizeTiers the sizes a vendor picks for a request that names none (the OpenAI and
+// Azure image sizes, up to 1792 pixels); an estimate that names none is priced at the dearest
+// (fork, TXE-7302). Larger sizes are not listed: a vendor does not choose them unasked, and a
+// per-pixel row would be charged many times the image the request most likely got.
+var (
+	estimatedImageQualityTiers = []string{"low", "medium", "high", "standard", "hd", "xhigh", "max"}
+	estimatedImageSizeTiers    = []string{"256x256", "512x512", "1024x1024", "1024x1536", "1536x1024", "1024x1792", "1792x1024"}
+)
 
 // CalculateGuardrailCost computes judge cost when no parent response is available.
 //

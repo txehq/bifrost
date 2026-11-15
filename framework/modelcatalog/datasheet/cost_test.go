@@ -10978,6 +10978,15 @@ func TestCalculateCostForEstimatedImageUsage(t *testing.T) {
 	steps := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{makeKey(sdxl.Model, sdxl.Provider, sdxl.Mode): sdxl})
 	assert.InDelta(t, 0.08, steps.CalculateCostForEstimatedImageUsage(&schemas.EstimatedImageUsage{OutputImages: 1, Size: "1024x1024", Quality: "low", Steps: schemas.Ptr(60)}, schemas.Bedrock, sdxl.Model, schemas.ImageGenerationRequest, nil), 1e-12, "more than 50 steps")
 
+	// No size, or auto, on a row priced only by size and quality tier: the dearest size, never $0.
+	dalle := pricingRowFromDatasheetJSON(t, "azure/dall-e-3", azureDallE3Row)
+	sized := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{makeKey(dalle.Model, dalle.Provider, dalle.Mode): dalle})
+	for _, size := range []string{"", "auto"} {
+		got := sized.CalculateCostForEstimatedImageUsage(&schemas.EstimatedImageUsage{OutputImages: 1, Size: size, Quality: "hd"}, schemas.Azure, dalle.Model, schemas.ImageGenerationRequest, nil)
+		assert.InDelta(t, 0.132, got, 1e-12, "size %q prices at the dearest hd size", size)
+	}
+	assert.InDelta(t, 0.088, sized.CalculateCostForEstimatedImageUsage(&schemas.EstimatedImageUsage{OutputImages: 1, Size: "1024x1024", Quality: "hd"}, schemas.Azure, dalle.Model, schemas.ImageGenerationRequest, nil), 1e-12, "a named size keeps its own rate")
+
 	tokens := batchStore(t, "gemini", "gemini-2.5-flash-image", "image_generation",
 		`{"provider": "gemini", "mode": "image_generation", "output_cost_per_image_token": 3e-05}`)
 	assert.Zero(t, tokens.CalculateCostForEstimatedImageUsage(&schemas.EstimatedImageUsage{OutputImages: 2}, schemas.Gemini, "gemini-2.5-flash-image", schemas.ImageGenerationRequest, nil))
