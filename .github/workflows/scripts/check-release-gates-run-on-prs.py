@@ -72,6 +72,9 @@ COUNTERPARTS = {
         {"workflow": "go-unit-tests.yml", "job": "migrations", "release": "run-migration-tests.sh postgres", "pr": "run-migration-tests.sh postgres"},
         {"workflow": "go-unit-tests.yml", "job": "migrations", "release": "run-migration-tests.sh sqlite", "pr": "run-migration-tests.sh sqlite"},
     ],
+    "test-cost-accuracy": [
+        {"workflow": "go-unit-tests.yml", "job": "cost-accuracy", "release": "cost-accuracy-test.sh", "pr": "cost-accuracy-test.sh"},
+    ],
 }
 
 # Keyless gates that do not run on pull requests, and why.
@@ -81,8 +84,6 @@ NOT_MOVED = {
     "resolve-cli-versions": "not a test: picks the CLI versions test-cli-harness runs, which needs vendor keys",
     "approve-flaky-test-core": "a manual approval, run only after test-core (vendor keys) failed",
     "approve-memory-regression": "a manual approval, run only after test-memory failed",
-    "test-cost-accuracy": "TXE-7452: builds its mocker and hitter from an unpinned checkout of maximhq/bifrost-benchmarking; "
-    "pin it to a commit before PR code runs it",
 }
 
 SECRET = re.compile(r"secrets\.([A-Za-z0-9_]+)")
