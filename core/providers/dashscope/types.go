@@ -66,20 +66,19 @@ type DashScopeTaskResponse struct {
 }
 
 // DashScopeTaskOutput is a task's output object. The three times are "2006-01-02 15:04:05.000"
-// in UTC+8. code and message are set on a FAILED task.
+// in UTC+8. code and message are set on a FAILED task. choices carries a Wan image task's image
+// links in choices[].message.content[].image, as the synchronous image endpoint returns them.
 type DashScopeTaskOutput struct {
-	TaskID        string `json:"task_id,omitempty"`
-	TaskStatus    string `json:"task_status,omitempty"`
-	SubmitTime    string `json:"submit_time,omitempty"`
-	ScheduledTime string `json:"scheduled_time,omitempty"`
-	EndTime       string `json:"end_time,omitempty"`
-	OrigPrompt    string `json:"orig_prompt,omitempty"`
-	VideoURL      string `json:"video_url,omitempty"`
-	Code          string `json:"code,omitempty"`
-	Message       string `json:"message,omitempty"`
-	// Choices holds a Wan image task's results (TXE-7050): the image links in
-	// choices[].message.content[].image, as the synchronous image endpoint returns them.
-	Choices []DashScopeImageChoice `json:"choices,omitempty"`
+	TaskID        string                 `json:"task_id,omitempty"`
+	TaskStatus    string                 `json:"task_status,omitempty"`
+	SubmitTime    string                 `json:"submit_time,omitempty"`
+	ScheduledTime string                 `json:"scheduled_time,omitempty"`
+	EndTime       string                 `json:"end_time,omitempty"`
+	OrigPrompt    string                 `json:"orig_prompt,omitempty"`
+	VideoURL      string                 `json:"video_url,omitempty"`
+	Code          string                 `json:"code,omitempty"`
+	Message       string                 `json:"message,omitempty"`
+	Choices       []DashScopeImageChoice `json:"choices,omitempty"` // a Wan image task's results (TXE-7050)
 }
 
 // DashScopeImageTaskResponse is a Wan image task: the create answer or a query (TXE-7050). usage
