@@ -52,8 +52,7 @@ jobs:
           # playwright.download.prss.microsoft.com). The tests themselves dial only loopback.
           # Docker Hub redirects a blob to one of three CDNs, R2 included, so all three are
           # allowed: without R2 a pull timed out on harden-runner's block address (TXE-7427).
-          # This job pulls under the block policy; the Go unit tests' service container is
-          # pulled before any step runs.
+          # check-egress-allowlist.sh fails a Docker Hub job that omits one.
           allowed-endpoints: >
             api.github.com:443
             auth.docker.io:443
