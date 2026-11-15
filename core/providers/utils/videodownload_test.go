@@ -862,6 +862,10 @@ func BenchmarkFetchVideoContent(b *testing.B) {
 	file := bytes.Repeat([]byte("v"), 64<<10)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "video/mp4")
+		if r.Header.Get("Range") != "" {
+			http.ServeContent(w, r, "clip.mp4", time.Time{}, bytes.NewReader(file))
+			return
+		}
 		_, _ = w.Write(file)
 	}))
 	b.Cleanup(srv.Close)
@@ -869,6 +873,32 @@ func BenchmarkFetchVideoContent(b *testing.B) {
 	streamingClient := BuildStreamingClient(&fasthttp.Client{})
 	parse := func(resp *fasthttp.Response) *schemas.BifrostError { return NewBifrostOperationError("refused", nil) }
 	sink := make([]byte, 32<<10)
+
+	// A ranged read (TXE-7391): the header bytes the settler asks for, checked against Content-Range.
+	b.Run("ranged", func(b *testing.B) {
+		byteRange := &schemas.VideoByteRange{Offset: 1000, Length: 16}
+		b.ReportAllocs()
+		for b.Loop() {
+			req := fasthttp.AcquireRequest()
+			req.SetRequestURI(srv.URL + "/clip")
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyVideoDownloadRange, byteRange)
+			resp, bifrostErr := FetchVideoContent(ctx, VideoContentFetch{
+				Request: req, Client: client, StreamingClient: streamingClient, Stream: true, VideoID: "v:openai", ParseError: parse,
+			})
+			fasthttp.ReleaseRequest(req)
+			if bifrostErr != nil {
+				b.Fatal(bifrostErr.Error.Message)
+			}
+			if resp.ContentRange == nil {
+				b.Fatal("the range was not honored")
+			}
+			if _, err := io.CopyBuffer(io.Discard, resp.Body, sink); err != nil {
+				b.Fatal(err)
+			}
+			_ = resp.Body.Close()
+		}
+	})
 
 	for _, stream := range []bool{false, true} {
 		name := "buffered"
@@ -911,5 +941,187 @@ func BenchmarkAddVideoListFilters(b *testing.B) {
 				AddVideoListFilters(values, f)
 			}
 		})
+	}
+}
+
+// TestFetchVideoContentRange is TXE-7391's download half: a streamed download asked for a range sends
+// it as an HTTP Range request, on the provider's own client and on the media fetcher for an address
+// the vendor named. A host that honors it answers exactly those bytes with ContentRange set; one that
+// ignores it answers the whole file with ContentRange nil; one that answers other bytes is
+// ErrVideoRangeUnusable. A buffered download, and a download asked for no range, send no Range.
+func TestFetchVideoContentRange(t *testing.T) {
+	file := make([]byte, 64<<10)
+	for i := range file {
+		file[i] = byte(i * 7)
+	}
+	var gotRange, gotEncoding atomic.Value
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		gotRange.Store(r.Header.Get("Range"))
+		gotEncoding.Store(r.Header.Get("Accept-Encoding"))
+		switch r.URL.Path {
+		case "/ranged.mp4":
+			w.Header().Set("Content-Type", "video/mp4")
+			http.ServeContent(w, r, "ranged.mp4", time.Time{}, bytes.NewReader(file))
+		case "/gzip-range.mp4":
+			// A 206 of a gzip-encoded representation, despite Accept-Encoding: identity: the first
+			// bytes of a gzip stream, which cannot be decoded on their own.
+			var gz bytes.Buffer
+			zw := gzip.NewWriter(&gz)
+			_, _ = zw.Write(file)
+			_ = zw.Close()
+			w.Header().Set("Content-Encoding", "gzip")
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes 1000-1023/%d", gz.Len()))
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write(gz.Bytes()[1000:1024])
+		case "/elsewhere.mp4":
+			// A 206 for bytes the request did not ask for.
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes 0-99/%d", len(file)))
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write(file[:100])
+		default: // ignores Range
+			w.Header().Set("Content-Type", "video/mp4")
+			w.Header().Set("Content-Length", strconv.Itoa(len(file)))
+			_, _ = w.Write(file)
+		}
+	}
+	byteRange := &schemas.VideoByteRange{Offset: 1000, Length: 24}
+
+	server := httptest.NewServer(http.HandlerFunc(handler))
+	t.Cleanup(server.Close)
+	providerFetch := func(path string, stream bool, r *schemas.VideoByteRange) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError) {
+		req := fasthttp.AcquireRequest()
+		defer fasthttp.ReleaseRequest(req)
+		req.SetRequestURI(server.URL + path)
+		req.Header.SetMethod(http.MethodGet)
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if r != nil {
+			ctx.SetValue(schemas.BifrostContextKeyVideoDownloadRange, r)
+		}
+		return FetchVideoContent(ctx, VideoContentFetch{
+			Request: req, Client: &fasthttp.Client{}, StreamingClient: BuildStreamingClient(&fasthttp.Client{}),
+			Stream: stream, VideoID: "video_1",
+			ParseError: func(resp *fasthttp.Response) *schemas.BifrostError {
+				return NewProviderAPIError(string(resp.Body()), nil, resp.StatusCode(), nil, nil)
+			},
+		})
+	}
+	vendorFetch := func(path string, stream bool, r *schemas.VideoByteRange) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError) {
+		proxy := proxytest.NewOriginTunnel(t, handler)
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyProviderProxyConfig, &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(proxy.URL)})
+		if r != nil {
+			ctx.SetValue(schemas.BifrostContextKeyVideoDownloadRange, r)
+		}
+		return FetchVideoContent(ctx, VideoContentFetch{
+			VendorURL: "http://203.0.113.10" + path, Stream: stream, VideoID: "task_1",
+			ParseError: func(resp *fasthttp.Response) *schemas.BifrostError {
+				return NewBifrostOperationError(fmt.Sprintf("failed to download video: HTTP %d", resp.StatusCode()), nil)
+			},
+		})
+	}
+	readBody := func(t *testing.T, resp *schemas.BifrostVideoDownloadResponse) []byte {
+		t.Helper()
+		if resp.Body == nil {
+			return resp.Content
+		}
+		defer resp.Body.Close()
+		got, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+
+	for name, fetch := range map[string]func(string, bool, *schemas.VideoByteRange) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError){
+		"provider client": providerFetch,
+		"vendor URL":      vendorFetch,
+	} {
+		t.Run(name+"/honored", func(t *testing.T) {
+			resp, bifrostErr := fetch("/ranged.mp4", true, byteRange)
+			if bifrostErr != nil {
+				t.Fatalf("FetchVideoContent: %v", bifrostErr.Error)
+			}
+			if got := gotRange.Load(); got != "bytes=1000-1023" || gotEncoding.Load() != "identity" {
+				t.Fatalf("sent Range %q, Accept-Encoding %q", got, gotEncoding.Load())
+			}
+			want := schemas.VideoContentRange{Offset: 1000, Length: 24, Total: int64(len(file))}
+			if resp.ContentRange == nil || *resp.ContentRange != want || resp.ContentLength != 24 {
+				t.Fatalf("ContentRange %+v, length %d; want %+v", resp.ContentRange, resp.ContentLength, want)
+			}
+			if got := readBody(t, resp); !bytes.Equal(got, file[1000:1024]) {
+				t.Fatalf("got %d bytes, not the range asked for", len(got))
+			}
+		})
+		t.Run(name+"/ignored", func(t *testing.T) {
+			resp, bifrostErr := fetch("/whole.mp4", true, byteRange)
+			if bifrostErr != nil {
+				t.Fatalf("FetchVideoContent: %v", bifrostErr.Error)
+			}
+			if resp.ContentRange != nil {
+				t.Fatalf("ContentRange %+v for a host that ignored Range", resp.ContentRange)
+			}
+			if got := readBody(t, resp); !bytes.Equal(got, file) {
+				t.Fatalf("got %d bytes, want the whole %d-byte file", len(got), len(file))
+			}
+		})
+		t.Run(name+"/other bytes", func(t *testing.T) {
+			_, bifrostErr := fetch("/elsewhere.mp4", true, byteRange)
+			if bifrostErr == nil || bifrostErr.Error == nil || !errors.Is(bifrostErr.Error.Error, ErrVideoRangeUnusable) {
+				t.Fatalf("got %+v, want ErrVideoRangeUnusable", bifrostErr)
+			}
+		})
+		t.Run(name+"/encoded partial", func(t *testing.T) {
+			_, bifrostErr := fetch("/gzip-range.mp4", true, byteRange)
+			if bifrostErr == nil || bifrostErr.Error == nil || !errors.Is(bifrostErr.Error.Error, ErrVideoRangeUnusable) {
+				t.Fatalf("got %+v, want ErrVideoRangeUnusable so the caller downloads the whole file", bifrostErr)
+			}
+		})
+		t.Run(name+"/no range asked", func(t *testing.T) {
+			resp, bifrostErr := fetch("/ranged.mp4", true, nil)
+			if bifrostErr != nil {
+				t.Fatalf("FetchVideoContent: %v", bifrostErr.Error)
+			}
+			if got := gotRange.Load(); got != "" || resp.ContentRange != nil {
+				t.Fatalf("sent Range %q, ContentRange %+v", got, resp.ContentRange)
+			}
+			_ = readBody(t, resp)
+		})
+		t.Run(name+"/buffered", func(t *testing.T) {
+			resp, bifrostErr := fetch("/ranged.mp4", false, byteRange)
+			if bifrostErr != nil {
+				t.Fatalf("FetchVideoContent: %v", bifrostErr.Error)
+			}
+			if got := gotRange.Load(); got != "" || resp.ContentRange != nil || !bytes.Equal(readBody(t, resp), file) {
+				t.Fatalf("a buffered download sent Range %q, ContentRange %+v", got, resp.ContentRange)
+			}
+		})
+	}
+}
+
+func TestPartialVideoContent(t *testing.T) {
+	r := &schemas.VideoByteRange{Offset: 10, Length: 8}
+	for header, want := range map[string]*schemas.VideoContentRange{
+		"bytes 10-17/100": {Offset: 10, Length: 8, Total: 100},
+		"bytes 10-13/14":  {Offset: 10, Length: 4, Total: 14}, // cut short by the file's end
+		"bytes 10-17/*":   {Offset: 10, Length: 8, Total: -1},
+		"bytes 0-7/100":   nil, // another start
+		"bytes 10-30/100": nil, // more than asked
+		"bytes 10-17/17":  nil, // a total the range runs past
+		"10-17/100":       nil,
+		"":                nil,
+	} {
+		got, err := partialVideoContent(r, header, "")
+		if want == nil {
+			if err == nil || !errors.Is(err, ErrVideoRangeUnusable) {
+				t.Errorf("%q: got %+v, %v; want ErrVideoRangeUnusable", header, got, err)
+			}
+			continue
+		}
+		if err != nil || *got != *want {
+			t.Errorf("%q: got %+v, %v; want %+v", header, got, err, want)
+		}
+	}
+	if _, err := partialVideoContent(r, "bytes 10-17/100", "gzip"); !errors.Is(err, ErrVideoRangeUnusable) {
+		t.Errorf("a gzip-encoded partial body: got %v, want ErrVideoRangeUnusable", err)
 	}
 }

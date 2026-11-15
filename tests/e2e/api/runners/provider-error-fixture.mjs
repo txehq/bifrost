@@ -69,9 +69,41 @@ const RENDERED_VIDEOS = {
 	// charged up to the provider's 30-second bound, the other up to an override's.
 	"rendered-unreadable": Buffer.from("<html>not a video</html>"),
 	"rendered-unreadable-override": Buffer.from("<html>not a video</html>"),
+	// TXE-7391 (folder 520): the oversized clip again, its moov after 2 MiB of media, on a host that honors
+	// Range. The settler reads its header boxes with Range requests and never asks for a media byte.
+	"rendered-ranged": inflateMdat(RENDERED_LONGER_MP4, 2 << 20),
 };
 // The rendered videos whose output the poll names on another origin (TXE-7386).
 const RENDERED_FOREIGN = new Set(["rendered-foreign"]);
+// The rendered videos served with Range support (TXE-7391); every other one ignores Range and answers the
+// whole file, as a host that does not support it would, so the settler's stream fallback stays pinned.
+const RENDERED_RANGED = new Set(["rendered-ranged"]);
+// mdatPayloads are the [start, end) extents of mp4's top-level mdat payloads.
+const mdatPayloads = (mp4) => {
+	const out = [];
+	for (let at = 0; at + 8 <= mp4.length; ) {
+		let size = mp4.readUInt32BE(at);
+		let header = 8;
+		if (size === 1) { size = Number(mp4.readBigUInt64BE(at + 8)); header = 16; }
+		if (size === 0) size = mp4.length - at;
+		if (mp4.toString("latin1", at + 4, at + 8) === "mdat") out.push([at + header, at + size]);
+		at += size;
+	}
+	return out;
+};
+// rangeAnswer is the 206 answer to a "bytes=first-last" Range header, or undefined for one it does not
+// parse (the whole file is answered then, as RFC 9110 allows). mediaBytes is how many of the bytes asked
+// for are media: what a folder 520 row asserts is zero.
+const rangeAnswer = (video, header) => {
+	const m = /^bytes=(\d+)-(\d+)$/.exec(String(header || "").trim());
+	if (!m) return undefined;
+	const first = Number(m[1]);
+	const last = Math.min(Number(m[2]), video.length - 1);
+	if (first > last) return undefined;
+	let mediaBytes = 0;
+	for (const [start, end] of mdatPayloads(video)) mediaBytes += Math.max(0, Math.min(end, last + 1) - Math.max(start, first));
+	return { first, last, mediaBytes, body: video.subarray(first, last + 1) };
+};
 
 // Per-model behaviour for POST /v1/chat/completions. The model name in the request
 // body selects the response, so one fixture serves every case. A model may carry a
@@ -490,6 +522,7 @@ const fixturePricing = {
 	"replicate/fixture/rendered-oversized": { provider: "replicate", mode: "video_generation", output_cost_per_video_per_second: 0.1 },
 	"replicate/fixture/rendered-reordered": { provider: "replicate", mode: "video_generation", output_cost_per_video_per_second: 0.1 },
 	"replicate/fixture/rendered-foreign": { provider: "replicate", mode: "video_generation", output_cost_per_video_per_second: 0.1 },
+	"replicate/fixture/rendered-ranged": { provider: "replicate", mode: "video_generation", output_cost_per_video_per_second: 0.1 },
 	"replicate/fixture/rendered-unreadable": { provider: "replicate", mode: "video_generation", output_cost_per_video_per_second: 0.1 },
 	"replicate/fixture/rendered-unreadable-override": { provider: "replicate", mode: "video_generation", output_cost_per_video_per_second: 0.1 },
 	"turns-tiered": { provider: "openai_turns", ...turnRates },
@@ -2562,6 +2595,14 @@ const handleRequest = (req, res) => {
 	const renderedFile = /^\/pp\/replicate\/v1\/files\/([a-z-]+)\.mp4$/.exec(path);
 	if (req.method === "GET" && renderedFile && RENDERED_VIDEOS[renderedFile[1]]) {
 		const video = RENDERED_VIDEOS[renderedFile[1]];
+		const ranged = RENDERED_RANGED.has(renderedFile[1]) ? rangeAnswer(video, req.headers.range) : undefined;
+		if (ranged) {
+			// Each Range request is kept in /__wire with the bytes it asked for and how many were media.
+			countHit(`replicate.${renderedFile[1]}.range`);
+			wireCalls.push({ method: "GET", path, query: "", body: "", range: req.headers.range, length: ranged.body.length, media_bytes: ranged.mediaBytes, file_bytes: video.length });
+			res.writeHead(206, { "Content-Type": "video/mp4", "Content-Length": ranged.body.length, "Content-Range": `bytes ${ranged.first}-${ranged.last}/${video.length}`, "Accept-Ranges": "bytes" });
+			return res.end(ranged.body);
+		}
 		countHit(`replicate.${renderedFile[1]}.download`);
 		res.writeHead(200, { "Content-Type": "video/mp4", "Content-Length": video.length });
 		return res.end(video);

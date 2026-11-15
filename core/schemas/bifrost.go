@@ -472,6 +472,7 @@ const (
 	BifrostContextKeyUserRoleID                          BifrostContextKey = "bifrost-user-role-id"
 	BifrostContextKeyRuntimeVersion                      BifrostContextKey = "bifrost-runtime-version" // string (this build's version; set at server bootstrap - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyVideoOutputRequested                BifrostContextKey = "bifrost-video-output-requested"
+	BifrostContextKeyVideoDownloadRange                  BifrostContextKey = "bifrost-video-download-range"               // *VideoByteRange (set by bifrost from BifrostVideoDownloadRequest.Range - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyValidateKeys                        BifrostContextKey = "bifrost-validate-keys"                      // bool (triggers additional key validation during provider add/update)
 	BifrostContextKeyProviderResponseHeaders             BifrostContextKey = "bifrost-provider-response-headers"          // map[string]string (set by provider handlers for response header forwarding)
 	BifrostContextKeyDroppedUnsupportedTools             BifrostContextKey = "bifrost-dropped-unsupported-tools"          // []string (set by provider request builders — tool type strings silently dropped because the target provider/model doesn't support them)

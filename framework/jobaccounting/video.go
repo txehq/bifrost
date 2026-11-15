@@ -247,6 +247,135 @@ type VideoDownloader interface {
 	DownloadVideo(ctx context.Context, job *cstables.TableProviderJob) (io.ReadCloser, error)
 }
 
+// VideoRangeDownloader is implemented by a VideoDownloader that can fetch part of a finished job's
+// video with an HTTP Range request (fork, TXE-7391). The settler then reads the MP4's header boxes
+// and steps over its media, instead of streaming the whole file past. The caller closes Body. Its
+// errors are classified as DownloadVideo's; an error wrapping ErrVideoRangeUnusable sends the
+// settler to DownloadVideo instead.
+type VideoRangeDownloader interface {
+	DownloadVideoRange(ctx context.Context, job *cstables.TableProviderJob, offset, length int64) (*VideoRange, error)
+}
+
+// VideoRange is a ranged download's answer. Partial says the host honored the range: Body holds
+// Length bytes from Offset of a file of Total bytes (-1 when the host did not say). Otherwise Body
+// is the whole file, as DownloadVideo would have answered.
+type VideoRange struct {
+	Body    io.ReadCloser
+	Partial bool
+	Offset  int64
+	Length  int64
+	Total   int64
+}
+
+// ErrVideoRangeUnusable marks a ranged download whose answer cannot be used as a range (bytes from
+// elsewhere in the file, an encoded body): the file is measured from a whole download instead.
+var ErrVideoRangeUnusable = errors.New("the video host's ranged answer is unusable")
+
+// errRangedFallback sends a measurement to the streamed download: the host ignored Range, gave no
+// file size, answered with other bytes, or the file needs more requests than maxRangedRequests.
+var errRangedFallback = errors.New("measure the video from a streamed download")
+
+// maxRangedRequests bounds the Range requests one measurement sends. Each is a provider download,
+// which for some providers re-reads the job first (Replicate polls the prediction), so a file built
+// of many tiny top-level boxes must not turn one job into thousands of upstream calls. A generated
+// clip is a handful of boxes (ftyp, moov, an mdat, a moof per fragment); a file needing more is
+// measured from one streamed download instead, as before ranged reads.
+const maxRangedRequests = 64
+
+// measureRangedVideo measures a job's video from Range requests. It returns the duration, or a
+// body to read as a stream when the first answer was the whole file, or errRangedFallback.
+func measureRangedVideo(ctx context.Context, downloader VideoRangeDownloader, job *cstables.TableProviderJob) (videoduration.Duration, io.ReadCloser, error) {
+	// The first request asks for the first box header only, so a host that ignores Range is known
+	// before anything else is asked, and the file's size arrives with it.
+	const probe = 8
+	first, err := downloader.DownloadVideoRange(ctx, job, 0, probe)
+	if err != nil {
+		if errors.Is(err, ErrVideoRangeUnusable) {
+			return videoduration.Duration{}, nil, errRangedFallback
+		}
+		return videoduration.Duration{}, nil, err
+	}
+	if first == nil || first.Body == nil {
+		return videoduration.Duration{}, nil, errRangedFallback
+	}
+	if !first.Partial {
+		// The whole file is already coming: read it as the stream it is.
+		return videoduration.Duration{}, first.Body, nil
+	}
+	head, err := readRangeBody(first, 0, probe)
+	if err != nil || first.Total <= 0 {
+		return videoduration.Duration{}, nil, errRangedFallback
+	}
+	r := &rangedVideo{ctx: ctx, downloader: downloader, job: job, head: head, total: first.Total, requests: 1}
+	duration, err := videoduration.ReadRanged(ctx, r, first.Total, videoduration.DefaultReadLimits)
+	if errors.Is(err, errRangedFallback) || errors.Is(err, ErrVideoRangeUnusable) {
+		return videoduration.Duration{}, nil, errRangedFallback
+	}
+	return duration, nil, err
+}
+
+// readRangeBody reads a partial answer's body whole, checking it holds exactly [offset,
+// offset+length) or that range cut short by the file's end.
+func readRangeBody(answer *VideoRange, offset, length int64) ([]byte, error) {
+	defer answer.Body.Close()
+	want := length
+	if answer.Total > 0 && offset+length > answer.Total {
+		want = answer.Total - offset
+	}
+	if !answer.Partial || answer.Offset != offset || answer.Length != want || want <= 0 {
+		return nil, errRangedFallback
+	}
+	buf := make([]byte, want)
+	if _, err := io.ReadFull(answer.Body, buf); err != nil {
+		return nil, err
+	}
+	return buf, nil
+}
+
+// rangedVideo is a job's video read at offsets, each ReadAt one Range request. head is the first
+// request's bytes, which the box walk reads first.
+type rangedVideo struct {
+	ctx        context.Context
+	downloader VideoRangeDownloader
+	job        *cstables.TableProviderJob
+	head       []byte
+	total      int64
+	requests   int
+}
+
+func (r *rangedVideo) ReadAt(p []byte, off int64) (int, error) {
+	if off < 0 || off >= r.total {
+		return 0, io.EOF
+	}
+	if off+int64(len(p)) <= int64(len(r.head)) {
+		return copy(p, r.head[off:]), nil
+	}
+	if r.requests >= maxRangedRequests {
+		return 0, errRangedFallback
+	}
+	r.requests++
+	answer, err := r.downloader.DownloadVideoRange(r.ctx, r.job, off, int64(len(p)))
+	if err != nil {
+		return 0, err
+	}
+	if answer == nil || answer.Body == nil {
+		return 0, errRangedFallback
+	}
+	if answer.Total > 0 && answer.Total != r.total {
+		_ = answer.Body.Close()
+		return 0, errRangedFallback // the file changed between requests
+	}
+	data, err := readRangeBody(answer, off, int64(len(p)))
+	if err != nil {
+		return 0, err
+	}
+	n := copy(p, data)
+	if n < len(p) {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
 // maxRenderedVideoBytes and renderedVideoTimeout bound one measurement, media included: the media is
 // read past, never held, but the sweeper settles one job at a time, so a measurement must end
 // quickly whatever the file. A file past either is unmeasurable, final, and charged its floor; it is
@@ -429,20 +558,45 @@ func (s *VideoSettler) measureRenderedVideo(ctx context.Context, job *cstables.T
 	// The measurement's own deadline running out is final; the sweeper's context ending (a
 	// shutdown) is not.
 	outOfTime := func() bool { return ctx.Err() == nil && errors.Is(callCtx.Err(), context.DeadlineExceeded) }
-	body, err := downloader.DownloadVideo(callCtx, job)
-	if err != nil && outOfTime() {
-		return 0, fmt.Errorf("download video: no answer within %v: %w", renderedVideoTimeout, err)
-	}
-	if err != nil {
+	downloadFailed := func(err error) error {
+		if outOfTime() {
+			return fmt.Errorf("download video: no answer within %v: %w", renderedVideoTimeout, err)
+		}
 		// A file past the size limit, or a download the vendor refuses (the output expired, the
 		// key was revoked), is final; anything else may pass on a later poll.
 		if errors.Is(err, ErrVideoDurationUnmeasurable) || videoUnreachableReason(err) != "" {
-			return 0, fmt.Errorf("download video: %w", err)
+			return fmt.Errorf("download video: %w", err)
 		}
-		return 0, fmt.Errorf("%w: download video for job %s: %w", errRenderedDurationRetry, job.ID, err)
+		return fmt.Errorf("%w: download video for job %s: %w", errRenderedDurationRetry, job.ID, err)
 	}
-	defer body.Close()
-	duration, err := videoduration.ReadStream(callCtx, body, videoduration.DefaultReadLimits, maxRenderedVideoBytes)
+	// Ranged first (TXE-7391): only the MP4's header boxes are read. The stream below is the
+	// fallback for a host that does not honor Range.
+	var body io.ReadCloser
+	var duration videoduration.Duration
+	var err error
+	measured := false
+	if ranged, ok := downloader.(VideoRangeDownloader); ok {
+		duration, body, err = measureRangedVideo(callCtx, ranged, job)
+		switch {
+		case errors.Is(err, errRangedFallback):
+			err = nil
+		case err != nil && errors.Is(err, videoduration.ErrUnmeasurable):
+			return 0, err
+		case err != nil:
+			return 0, downloadFailed(err)
+		case body == nil:
+			measured = true
+		}
+	}
+	if !measured {
+		if body == nil {
+			if body, err = downloader.DownloadVideo(callCtx, job); err != nil {
+				return 0, downloadFailed(err)
+			}
+		}
+		defer body.Close()
+		duration, err = videoduration.ReadStream(callCtx, body, videoduration.DefaultReadLimits, maxRenderedVideoBytes)
+	}
 	if err != nil {
 		if errors.Is(err, videoduration.ErrUnmeasurable) {
 			return 0, err

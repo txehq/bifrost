@@ -9772,6 +9772,13 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		}
 		response.VideoGenerationResponse = videoRetrieveResponse
 	case schemas.VideoDownloadRequest:
+		// Every provider's download goes through providerUtils.FetchVideoContent, which reads the
+		// range here, so no provider has to pass it on (fork, TXE-7391).
+		if r := req.BifrostRequest.VideoDownloadRequest.Range; r != nil && req.BifrostRequest.VideoDownloadRequest.Stream {
+			req.Context.SetValue(schemas.BifrostContextKeyVideoDownloadRange, r)
+		} else {
+			req.Context.ClearValue(schemas.BifrostContextKeyVideoDownloadRange)
+		}
 		videoDownloadResponse, bifrostError := provider.VideoDownload(req.Context, key, req.BifrostRequest.VideoDownloadRequest)
 		if bifrostError != nil {
 			return nil, bifrostError

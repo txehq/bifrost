@@ -155,3 +155,162 @@ func TestSparseFileReadAt(t *testing.T) {
 type failing struct{ err error }
 
 func (f failing) Read([]byte) (int, error) { return 0, f.err }
+
+// recordingReaderAt is a file read at offsets, as over HTTP Range requests: it records every read.
+type recordingReaderAt struct {
+	r     io.ReaderAt
+	reads [][2]int64 // [offset, end)
+	bytes int64
+	err   error // returned by every read when set
+}
+
+func (r *recordingReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	if r.err != nil {
+		return 0, r.err
+	}
+	n, err := r.r.ReadAt(p, off)
+	r.reads = append(r.reads, [2]int64{off, off + int64(len(p))})
+	r.bytes += int64(n)
+	return n, err
+}
+
+// TestReadRangedMatchesRead: every fixture read at offsets reads as Read reads it held whole, and no
+// read asks for a byte of media: faststart (moov first), moov last, and fragmented (a moof before
+// every mdat) alike (TXE-7391).
+func TestReadRangedMatchesRead(t *testing.T) {
+	for _, path := range []string{fixtureMoovLast, fixtureFaststart, fixtureSilent, fixtureFragmented} {
+		data := readFixture(t, path)
+		want, err := Read(context.Background(), bytes.NewReader(data), int64(len(data)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec := &recordingReaderAt{r: bytes.NewReader(data)}
+		got, err := ReadRanged(context.Background(), rec, int64(len(data)), DefaultReadLimits)
+		if err != nil || got != want {
+			t.Fatalf("%s: got %+v, %v; want %+v", path, got, err, want)
+		}
+		for _, read := range rec.reads {
+			for _, media := range mdatPayloads(t, data) {
+				if read[0] < media[1] && media[0] < read[1] {
+					t.Fatalf("%s: read [%d, %d) asks for media bytes [%d, %d)", path, read[0], read[1], media[0], media[1])
+				}
+			}
+		}
+		if mediaBytes := func() (n int64) {
+			for _, m := range mdatPayloads(t, data) {
+				n += m[1] - m[0]
+			}
+			return
+		}(); rec.bytes > int64(len(data))-mediaBytes {
+			t.Fatalf("%s: read %d bytes of a %d-byte file with %d media bytes", path, rec.bytes, len(data), mediaBytes)
+		}
+	}
+}
+
+// inflatedReaderAt is inflatedMoovLast read at offsets: n zero bytes of media are never stored.
+type inflatedReaderAt struct {
+	prefix, suffix []byte
+	zeros          int64
+}
+
+func (f *inflatedReaderAt) size() int64 { return int64(len(f.prefix)) + f.zeros + int64(len(f.suffix)) }
+
+func (f *inflatedReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	n := 0
+	for n < len(p) && off+int64(n) < f.size() {
+		at := off + int64(n)
+		switch {
+		case at < int64(len(f.prefix)):
+			n += copy(p[n:], f.prefix[at:])
+		case at < int64(len(f.prefix))+f.zeros:
+			k := min(int64(len(p)-n), int64(len(f.prefix))+f.zeros-at)
+			clear(p[n : n+int(k)])
+			n += int(k)
+		default:
+			n += copy(p[n:], f.suffix[at-int64(len(f.prefix))-f.zeros:])
+		}
+	}
+	if n < len(p) {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+// TestReadRangedReadsOnlyTheHeaderOfALargeFile: a moov-last file whose mdat runs to 6 GiB (a 64-bit
+// box size) is measured from a few kilobytes, its media never read.
+func TestReadRangedReadsOnlyTheHeaderOfALargeFile(t *testing.T) {
+	data := readFixture(t, fixtureMoovLast)
+	boxes, err := mp4.ExtractBox(bytes.NewReader(data), nil, mp4.BoxPath{mp4.BoxTypeMdat()})
+	if err != nil || len(boxes) != 1 || boxes[0].HeaderSize != 8 {
+		t.Fatalf("find mdat: %v %+v", err, boxes)
+	}
+	m := boxes[0]
+	// The mdat is rewritten with a 64-bit size, 8 bytes longer, so the chunk offsets in moov move
+	// by 8: the clip is measured from moov's timing, which does not depend on them, but checkChunks
+	// would refuse offsets outside mdat, so the media is padded at the end, after the samples.
+	const extra = 6 << 30
+	head := append([]byte(nil), data[:m.Offset]...)
+	large := make([]byte, 16)
+	binary.BigEndian.PutUint32(large[0:4], 1)
+	copy(large[4:8], "mdat")
+	binary.BigEndian.PutUint64(large[8:16], m.Size+8+extra)
+	head = append(head, large...)
+	head = append(head, data[m.Offset+8:m.Offset+m.Size]...)
+	f := &inflatedReaderAt{prefix: head, zeros: extra, suffix: shiftChunkOffsets(t, data[m.Offset+m.Size:], 8)}
+	rec := &recordingReaderAt{r: f}
+	got, err := ReadRanged(context.Background(), rec, f.size(), DefaultReadLimits)
+	if err != nil || got.VideoMS != 12000 {
+		t.Fatalf("a %d-byte file: got %+v, %v; want video 12000 ms", f.size(), got, err)
+	}
+	if rec.bytes > 64<<10 {
+		t.Fatalf("measuring a %d GiB file read %d bytes", f.size()>>30, rec.bytes)
+	}
+}
+
+// shiftChunkOffsets returns moov with every stco entry moved by delta bytes.
+func shiftChunkOffsets(t *testing.T, moov []byte, delta uint32) []byte {
+	t.Helper()
+	out := append([]byte(nil), moov...)
+	boxes, err := mp4.ExtractBox(bytes.NewReader(out), nil, mp4.BoxPath{mp4.BoxTypeMoov(), mp4.BoxTypeTrak(), mp4.BoxTypeMdia(), mp4.BoxTypeMinf(), mp4.BoxTypeStbl(), mp4.BoxTypeStco()})
+	if err != nil || len(boxes) == 0 {
+		t.Fatalf("find stco: %v %+v", err, boxes)
+	}
+	for _, b := range boxes {
+		// full box header (4), entry count (4), then 4-byte offsets.
+		p := out[b.Offset+b.HeaderSize:]
+		count := binary.BigEndian.Uint32(p[4:8])
+		for i := uint32(0); i < count; i++ {
+			at := 8 + 4*i
+			binary.BigEndian.PutUint32(p[at:], binary.BigEndian.Uint32(p[at:])+delta)
+		}
+	}
+	return out
+}
+
+// A file cut short is unmeasurable, and a read error is the caller's, returned as it is.
+func TestReadRangedRefusesWhatItCannotMeasure(t *testing.T) {
+	data := readFixture(t, fixtureMoovLast)
+	for _, cut := range []int{len(data) - 1, len(data) - 200, len(data) / 2, 600, 40, 7} {
+		// The size is the whole file's, as a Content-Range total says, but the bytes stop at cut.
+		if got, err := ReadRanged(context.Background(), bytes.NewReader(data[:cut]), int64(len(data)), DefaultReadLimits); !errors.Is(err, ErrUnmeasurable) {
+			t.Fatalf("first %d of %d bytes: got %+v, %v; want ErrUnmeasurable", cut, len(data), got, err)
+		}
+	}
+	if _, err := ReadRanged(context.Background(), bytes.NewReader(data), 0, DefaultReadLimits); !errors.Is(err, ErrUnmeasurable) {
+		t.Fatalf("an empty file: got %v, want ErrUnmeasurable", err)
+	}
+	boom := errors.New("range request failed")
+	if _, err := ReadRanged(context.Background(), &recordingReaderAt{err: boom}, int64(len(data)), DefaultReadLimits); !errors.Is(err, boom) || errors.Is(err, ErrUnmeasurable) {
+		t.Fatalf("a failing read: got %v, want the read's own error", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := ReadRanged(ctx, bytes.NewReader(data), int64(len(data)), DefaultReadLimits); !errors.Is(err, context.Canceled) {
+		t.Fatalf("a cancelled context: got %v, want context.Canceled", err)
+	}
+	tight := DefaultReadLimits
+	tight.MaxHeaderBytes = 100
+	if _, err := ReadRanged(context.Background(), bytes.NewReader(data), int64(len(data)), tight); !errors.Is(err, errVideoReadLimit) {
+		t.Fatalf("a header past MaxHeaderBytes: got %v, want a read-limit ErrUnmeasurable", err)
+	}
+}

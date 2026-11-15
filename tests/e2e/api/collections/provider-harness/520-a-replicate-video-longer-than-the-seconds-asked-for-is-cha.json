@@ -622,6 +622,169 @@
           }
         }
       ]
+    },
+    {
+      "name": "520.13 replicate/fixture/rendered-ranged POST /v1/videos asking for 5 seconds; its 12-second output has its moov after 2 MiB of media, on a host that honors Range (rendered video duration)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"replicate/fixture/rendered-ranged\",\n  \"prompt\": \"a paper boat drifting down a rain gutter\",\n  \"seconds\": \"5\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the create is a queued task for the fixture prediction', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, pm.response.text()).to.include('pred_rendered_ranged');",
+              "  pm.variables.set('renderedVideoId', j.id);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "520.14 the sweeper measures the ranged video from its header boxes and settles it at the 12 seconds it rendered, $1.20 (rendered video duration)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-Bifrost-Setup-Token",
+            "value": "{{setupToken}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/logs?providers=replicate&limit=1",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "logs"
+          ],
+          "query": [
+            {
+              "key": "providers",
+              "value": "replicate"
+            },
+            {
+              "key": "limit",
+              "value": "1"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// TXE-7391: the host honors Range, so the settler reads ftyp, the mdat header and the trailing moov with",
+              "// Range requests and steps over the 2 MiB of media. The length read is the same 12 seconds.",
+              "var CryptoJS = require('crypto-js');",
+              "function uuidv5(namespace, name) {",
+              "  var hash = CryptoJS.SHA1(CryptoJS.enc.Hex.parse(namespace.replace(/-/g, '')).concat(CryptoJS.enc.Utf8.parse(name))).toString();",
+              "  var b = hash.slice(0, 32).split('');",
+              "  b[12] = '5';",
+              "  b[16] = ((parseInt(b[16], 16) & 0x3) | 0x8).toString(16);",
+              "  var s = b.join('');",
+              "  return s.slice(0, 8) + '-' + s.slice(8, 12) + '-' + s.slice(12, 16) + '-' + s.slice(16, 20) + '-' + s.slice(20, 32);",
+              "}",
+              "var videoId = pm.variables.get('renderedVideoId');",
+              "var logId = uuidv5('b1e0f7c4-2a63-4d18-9f5b-6c0a3d8e41d7', 'replicate:' + videoId);",
+              "var token = pm.variables.get('setupToken');",
+              "var last = '';",
+              "function check(attempt) {",
+              "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + logId, method: 'GET', header: { 'X-Bifrost-Setup-Token': token } }, function (err, res) {",
+              "    if (!err && res.code === 200 && res.json().cost !== undefined) {",
+              "      var j = res.json();",
+              "      pm.test('the ranged video is charged for the 12 seconds it rendered', function () {",
+              "        pm.expect(j.cost, JSON.stringify(j)).to.be.closeTo(1.2, 1e-9);",
+              "        var accounting = j.video_debug && j.video_debug.accounting;",
+              "        pm.expect(accounting, JSON.stringify(j.video_debug)).to.be.ok;",
+              "        pm.expect(accounting.seconds, JSON.stringify(accounting)).to.eql(12);",
+              "        pm.expect(accounting.incomplete, JSON.stringify(accounting)).to.not.be.ok;",
+              "      });",
+              "      return;",
+              "    }",
+              "    last = err ? String(err) : (res.code + ' ' + res.text().slice(0, 300));",
+              "    if (attempt < 120) { setTimeout(function () { check(attempt + 1); }, 1000); return; }",
+              "    pm.test('the settlement row appeared', function () { pm.expect.fail('settlement row ' + logId + ' for ' + videoId + ' never appeared: ' + last); });",
+              "  });",
+              "}",
+              "check(0);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "520.15 every Range request the settler sent for the ranged video asked for header bytes only, and the file was never downloaded whole (rendered video duration)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{videoSettlementFixtureUrl}}/__wire",
+          "host": [
+            "{{videoSettlementFixtureUrl}}"
+          ],
+          "path": [
+            "__wire"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the fixture answered /__wire', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+              "var ranges = pm.response.json().data[0].calls.filter(function (c) { return c.path === '/pp/replicate/v1/files/rendered-ranged.mp4'; });",
+              "pm.test('the header boxes were read with Range requests that asked for no media byte', function () {",
+              "  pm.expect(ranges.length, JSON.stringify(ranges)).to.be.within(3, 16);",
+              "  ranges.forEach(function (c) { pm.expect(c.media_bytes, JSON.stringify(c)).to.eql(0); });",
+              "});",
+              "pm.test('a few kilobytes of a file over 2 MiB were read', function () {",
+              "  var read = ranges.reduce(function (n, c) { return n + c.length; }, 0);",
+              "  pm.expect(ranges[0].file_bytes, JSON.stringify(ranges[0])).to.be.above(2 << 20);",
+              "  pm.expect(read, JSON.stringify(ranges)).to.be.below(64 << 10);",
+              "});",
+              "pm.sendRequest({ url: pm.variables.get('videoSettlementFixtureUrl') + '/__hits', method: 'GET' }, function (err, res) {",
+              "  pm.test('the ranged video was never downloaded whole', function () {",
+              "    pm.expect(err, String(err)).to.not.be.ok;",
+              "    var hits = res.json().data[0].hits;",
+              "    pm.expect(hits['replicate.rendered-ranged.download'], JSON.stringify(hits)).to.not.be.ok;",
+              "    pm.expect(hits['replicate.rendered-ranged.range'], JSON.stringify(hits)).to.eql(ranges.length);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
     }
   ]
 }
