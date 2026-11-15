@@ -650,14 +650,8 @@ type BifrostVideoDownloadRequest struct {
 	// Stream asks for the file as BifrostVideoDownloadResponse.Body instead of Content, so a
 	// caller that forwards it never holds the whole file (fork, contract C9 / BF20). A provider
 	// that cannot stream ignores it and fills Content; the caller handles both.
-	Stream bool `json:"-"`
-	// Range asks a streamed download for part of the file only (fork, TXE-7391): the settler
-	// reads an MP4's header boxes this way and never its media. It is sent as an HTTP Range
-	// request wherever the provider fetches the file. A host that honors it answers with
-	// exactly those bytes and BifrostVideoDownloadResponse.ContentRange set; a host that
-	// ignores it, a provider holding the file inline, and a buffered download answer with the
-	// whole file and ContentRange nil, so the caller always checks ContentRange.
-	Range *VideoByteRange `json:"-"`
+	Stream bool            `json:"-"`
+	Range  *VideoByteRange `json:"-"` // part of the file only, on a streamed download; see providerUtils.FetchVideoContent (fork, TXE-7391)
 }
 
 // VideoByteRange is Length bytes of a file starting at byte Offset.
@@ -690,11 +684,9 @@ type BifrostVideoDownloadResponse struct {
 	// give one. It reads the file from the vendor as it arrives; the caller must Close it, which
 	// releases the upstream response. ContentLength is its size, or 0 when the vendor stated
 	// none (fork).
-	Body          io.ReadCloser `json:"-"`
-	ContentLength int64         `json:"content_length,omitempty"`
-	// ContentRange is set when the request's Range was honored: Body then holds only those
-	// bytes. Nil means Body or Content is the whole file (fork, TXE-7391).
-	ContentRange *VideoContentRange `json:"-"`
+	Body          io.ReadCloser      `json:"-"`
+	ContentLength int64              `json:"content_length,omitempty"`
+	ContentRange  *VideoContentRange `json:"-"` // set when Range was honored and Body holds only those bytes; nil for the whole file
 
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }

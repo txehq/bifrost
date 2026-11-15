@@ -240,6 +240,15 @@ const maxVideoErrorBodyBytes = 512 * 1024
 // (fork, contract C9 / BF20). Closing Body releases the vendor response. Every provider's
 // VideoDownload builds its response through this function or NewVideoContentResponse; a test
 // keeps it that way.
+//
+// A streamed download may ask for part of the file only (BifrostVideoDownloadRequest.Range, fork,
+// TXE-7391): the video settler reads an MP4's header boxes this way and never its media. Core puts
+// the range on the context (BifrostContextKeyVideoDownloadRange), so no provider passes it on, and
+// it is sent as an HTTP Range request on the provider's client and on the media fetcher alike. A
+// host that honors it answers exactly those bytes, with the response's ContentRange set; a host
+// that ignores it, a file the provider holds inline, and a buffered download answer with the whole
+// file and ContentRange nil, so the caller always checks ContentRange. A partial answer for other
+// bytes, or an encoded one, is ErrVideoRangeUnusable.
 func FetchVideoContent(ctx *schemas.BifrostContext, f VideoContentFetch) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError) {
 	if f.VendorURL != "" && !(f.BaseURL != "" && f.Client != nil && sameOrigin(f.VendorURL, f.BaseURL)) {
 		return fetchVendorVideoURL(ctx, f)

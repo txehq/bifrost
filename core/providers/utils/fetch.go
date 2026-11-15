@@ -164,9 +164,8 @@ type MediaStream struct {
 	// encoded the body.
 	ContentLength int64
 	// Header is the vendor's response header.
-	Header http.Header
-	// StatusCode is the vendor's status: 200, or 206 for a Range it honored.
-	StatusCode int
+	Header     http.Header
+	StatusCode int // 200, or 206 for a Range the vendor honored
 	// Body yields the file as the vendor sends it. A read fails with ErrStreamIdleTimeout
 	// when the vendor sends nothing for the idle timeout, and with the context's error once
 	// the context ends. The caller must Close it, which releases the vendor connection.
@@ -181,10 +180,7 @@ type MediaStreamOptions struct {
 	// IdleTimeout is how long the vendor may send nothing before a read fails. Zero or
 	// less means DefaultStreamIdleTimeout.
 	IdleTimeout time.Duration
-	// Range, when set, is sent as the Range header with Accept-Encoding: identity (fork,
-	// TXE-7391). Unlike Header it carries no credential, so it follows every redirect hop.
-	// A host that honors it answers 206: MediaStream.StatusCode says which answer came.
-	Range string
+	Range       string // a Range header value, sent on every redirect hop; see FetchMediaStream (fork, TXE-7391)
 }
 
 // FetchMediaStream is FetchMediaURL for a caller that forwards the file instead of holding it
@@ -198,6 +194,11 @@ type MediaStreamOptions struct {
 // A gzip body is read whole and decoded under the held video cap (TXE-7089), never streamed;
 // any other Content-Encoding is refused, since the file would otherwise reach the caller
 // encoded with nothing saying so.
+//
+// opts.Range, when set, is sent as the Range header with Accept-Encoding: identity (fork,
+// TXE-7391). Unlike opts.Header it carries no credential, so it follows every redirect hop. A
+// host that honors it answers 206, which MediaStream.StatusCode reports; a 206 whose body is
+// encoded anyway is ErrVideoRangeUnusable, so the caller downloads the whole file instead.
 func FetchMediaStream(ctx context.Context, resourceURL string, opts MediaStreamOptions) (*MediaStream, error) {
 	resp, redacted, err := openFetch(ctx, resourceURL, mediaStreamLimits, opts.Header, opts.Range)
 	if err != nil {
@@ -209,8 +210,14 @@ func FetchMediaStream(ctx context.Context, resourceURL string, opts MediaStreamO
 		Header:        resp.Header,
 		StatusCode:    resp.StatusCode,
 	}
+	encoding := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Encoding")))
+	if opts.Range != "" && resp.StatusCode == http.StatusPartialContent && encoding != "" && encoding != "identity" {
+		// A slice of an encoded file cannot be decoded on its own; the caller falls back to the whole file.
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("%w: the partial body from %q is %s-encoded", ErrVideoRangeUnusable, redacted, encoding)
+	}
 	body := newMediaStreamBody(ctx, resp.Body, opts.IdleTimeout, redacted)
-	switch strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Encoding"))) {
+	switch encoding {
 	case "", "identity":
 		stream.Body = body
 	case "gzip", "x-gzip":
@@ -218,7 +225,6 @@ func FetchMediaStream(ctx context.Context, resourceURL string, opts MediaStreamO
 		// cap, and a few KiB of gzip can unfold into gigabytes. It is read whole through the
 		// guarded body, so a vendor that stalls is still timed out, and decoded under the held
 		// video cap; past it the fetch fails with ErrMediaTooLarge and nothing is delivered.
-		encoding := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Encoding")))
 		encoded, err := io.ReadAll(io.LimitReader(body, heldVideoLimit()+1))
 		_ = body.Close()
 		if err != nil {
