@@ -27,8 +27,8 @@ func newTestProvider(t *testing.T, network schemas.NetworkConfig) *DashScopeProv
 }
 
 // TestDashScopeBases pins which base each operation family uses: the Singapore site by
-// default, the configured regional base when set, and the workspace base for video and
-// Qwen3-ASR transcription.
+// default, the configured regional base when set, and the workspace base for video, Wan image
+// tasks and Qwen3-ASR transcription.
 func TestDashScopeBases(t *testing.T) {
 	const workspace = "https://ws-1.ap-southeast-1.maas.aliyuncs.com"
 	cases := []struct {
@@ -42,7 +42,7 @@ func TestDashScopeBases(t *testing.T) {
 		{name: "workspace base for video and transcription", network: schemas.NetworkConfig{WorkspaceBaseURL: workspace + "/"}, wantRegional: DefaultBaseURL, wantWorkspace: workspace},
 	}
 	regional := []schemas.RequestType{schemas.ImageGenerationRequest, schemas.ImageEditRequest, schemas.SpeechRequest, schemas.SpeechStreamRequest}
-	video := []schemas.RequestType{schemas.TranscriptionRequest, schemas.VideoGenerationRequest, schemas.VideoRetrieveRequest, schemas.VideoCancelRequest, schemas.VideoDownloadRequest, schemas.VideoListRequest, schemas.VideoDeleteRequest}
+	video := []schemas.RequestType{schemas.ImageGenerationTaskRequest, schemas.ImageEditTaskRequest, schemas.ImageTaskRetrieveRequest, schemas.ImageTaskCancelRequest, schemas.TranscriptionRequest, schemas.VideoGenerationRequest, schemas.VideoRetrieveRequest, schemas.VideoCancelRequest, schemas.VideoDownloadRequest, schemas.VideoListRequest, schemas.VideoDeleteRequest}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			provider := newTestProvider(t, tc.network)
@@ -1224,8 +1224,9 @@ func BenchmarkDashScopeASRResponse(b *testing.B) {
 	}
 }
 
-// newMockDashScopeImageTasks serves the routes on the regional base, where Wan image tasks go
-// (TXE-7050). The workspace base points nowhere: an image task call that used it would fail.
+// newMockDashScopeImageTasks serves the routes on the workspace base, where Wan image tasks go
+// (TXE-7050; Alibaba's Wan reference names the workspace host for the async create and the task
+// query). The regional base points nowhere: an image task call that used it would fail.
 func newMockDashScopeImageTasks(t *testing.T, routes map[string]mockResponse) (*DashScopeProvider, *mockDashScope) {
 	t.Helper()
 	mock := &mockDashScope{}
@@ -1248,7 +1249,7 @@ func newMockDashScopeImageTasks(t *testing.T, routes map[string]mockResponse) (*
 	}))
 	t.Cleanup(server.Close)
 	provider := newTestProvider(t, schemas.NetworkConfig{
-		BaseURL: server.URL, WorkspaceBaseURL: "http://127.0.0.1:1",
+		BaseURL: "http://127.0.0.1:1", WorkspaceBaseURL: server.URL,
 		DefaultRequestTimeoutInSeconds: 10, AllowPrivateNetwork: true,
 	})
 	return provider, mock
@@ -1257,7 +1258,7 @@ func newMockDashScopeImageTasks(t *testing.T, routes map[string]mockResponse) (*
 const wanImageTaskCreated = `{"request_id":"r-1","output":{"task_id":"wan-img-1","task_status":"PENDING"}}`
 
 // TestDashScopeWanImageTaskCreate is TXE-7050 B6 and B9: a Wan text-to-image task and a Wan edit
-// task are each one async POST to image-generation/generation on the regional base, in the body
+// task are each one async POST to image-generation/generation on the workspace base, in the body
 // the synchronous converter builds. resolution reaches parameters.size verbatim, a size as
 // width*height. An edit sends a link unchanged and bytes as a base64 data URI. The answer is a
 // queued image task with the provider's suffix.
@@ -1270,7 +1271,7 @@ func TestDashScopeWanImageTaskCreate(t *testing.T) {
 		Provider: schemas.DashScope,
 		Model:    "wan2.6-t2i",
 		Input:    &schemas.ImageGenerationInput{Prompt: "a lighthouse at dusk"},
-		Params:   &schemas.ImageGenerationParameters{N: schemas.Ptr(2), Resolution: "2K", Seed: schemas.Ptr(7), ExtraParams: map[string]interface{}{"prompt_extend": false}},
+		Params:   &schemas.ImageGenerationParameters{N: schemas.Ptr(2), Size: schemas.Ptr("1280x1280"), Seed: schemas.Ptr(7), ExtraParams: map[string]interface{}{"prompt_extend": false}},
 	})
 	if bifrostErr != nil {
 		t.Fatalf("ImageGenerationTask: %+v", bifrostErr.Error)
@@ -1287,7 +1288,7 @@ func TestDashScopeWanImageTaskCreate(t *testing.T) {
 	}
 	assertJSONEqual(t, got.Body, `{"model":"wan2.6-t2i",
 		"input":{"messages":[{"role":"user","content":[{"text":"a lighthouse at dusk"}]}]},
-		"parameters":{"n":2,"size":"2K","seed":7,"prompt_extend":false}}`)
+		"parameters":{"n":2,"size":"1280*1280","seed":7,"prompt_extend":false}}`)
 
 	mock.requests = nil
 	_, bifrostErr = provider.ImageEditTask(imageTestContext(t), imageTestKey(), &schemas.BifrostImageEditRequest{
@@ -1297,7 +1298,7 @@ func TestDashScopeWanImageTaskCreate(t *testing.T) {
 			Prompt: "make it night",
 			Images: []schemas.ImageInput{{URL: "https://example.com/a.png"}, {Image: []byte("\x89PNG\r\n\x1a\n")}},
 		},
-		Params: &schemas.ImageEditParameters{N: schemas.Ptr(1), Size: schemas.Ptr("1024x1024")},
+		Params: &schemas.ImageEditParameters{N: schemas.Ptr(1), Resolution: "2K"},
 	})
 	if bifrostErr != nil {
 		t.Fatalf("ImageEditTask: %+v", bifrostErr.Error)
@@ -1308,7 +1309,7 @@ func TestDashScopeWanImageTaskCreate(t *testing.T) {
 	}
 	assertJSONEqual(t, got.Body, `{"model":"wan2.6-image",
 		"input":{"messages":[{"role":"user","content":[{"image":"https://example.com/a.png"},{"image":"data:image/png;base64,iVBORw0KGgo="},{"text":"make it night"}]}]},
-		"parameters":{"n":1,"size":"1024*1024"}}`)
+		"parameters":{"n":1,"size":"2K"}}`)
 }
 
 // TestDashScopeWanImageTaskRetrieve is the query: GET /api/v1/tasks/{id}, DashScope's six states
@@ -1440,7 +1441,7 @@ func BenchmarkDashScopeWanImageTask(b *testing.B) {
 		Provider: schemas.DashScope,
 		Model:    "wan2.6-t2i",
 		Input:    &schemas.ImageGenerationInput{Prompt: "a lighthouse at dusk"},
-		Params:   &schemas.ImageGenerationParameters{N: schemas.Ptr(2), Resolution: "2K", Seed: schemas.Ptr(7)},
+		Params:   &schemas.ImageGenerationParameters{N: schemas.Ptr(2), Size: schemas.Ptr("1280x1280"), Seed: schemas.Ptr(7)},
 	}
 	b.Run("create", func(b *testing.B) {
 		b.ReportAllocs()

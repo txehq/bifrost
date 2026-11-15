@@ -31,7 +31,7 @@ Wan video is implemented: create, query, list, cancel and download. Image genera
 The provider has two bases:
 
 - `network_config.base_url` is the regional DashScope site. It defaults to the Singapore (international) site, `https://dashscope-intl.aliyuncs.com`.
-- `network_config.workspace_base_url` is your Model Studio workspace address, `https://{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com`. Video and transcription use it. When it is unset they use `base_url`.
+- `network_config.workspace_base_url` is your Model Studio workspace address, `https://{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com`. Video, Wan image tasks and transcription use it. When it is unset they use `base_url`.
 
 Both are checked the same way when written through the management API: no credentials, query or fragment in the URL, an authenticated admin session when dashboard auth is bypassed, and no private-network destination unless `allow_private_network` is set.
 
@@ -219,7 +219,7 @@ Each link in `output.choices[].message.content[].image` becomes one `data[]` ite
 
 ## Wan images on the image task routes
 
-Wan's image API is task-based, so Wan text-to-image and Wan image edit are served on the image task routes, not the synchronous ones. Each route makes one call to DashScope, on `base_url`:
+Wan's image API is task-based, so Wan text-to-image and Wan image edit are served on the image task routes, not the synchronous ones. Each route makes one call to DashScope, on `workspace_base_url` (Alibaba's Wan reference names the workspace host for the create and the task query; `base_url` when it is unset):
 
 | Route | DashScope call |
 |---|---|
@@ -235,13 +235,13 @@ curl -X POST http://localhost:8080/v1/images/generations/tasks \
     "model": "dashscope/wan2.6-t2i",
     "prompt": "a lighthouse at dusk",
     "n": 2,
-    "resolution": "2K"
+    "size": "1280x1280"
   }'
 ```
 
 The body is Wan's image protocol, the one the synchronous routes send: one user message with the input images in order, then the prompt, and `parameters`. Fields map as follows:
 
-- **`resolution`** is sent verbatim as `parameters.size` (Wan takes `1K`, `2K`, and `4K` on `wan2.7-image-pro`).
+- **`resolution`** is sent verbatim as `parameters.size`, for the Wan image models that take a tier there (`1K`, `2K`, and `4K` on `wan2.7-image-pro`). `wan2.6-t2i` takes only width\*height, with total pixels from 1280\*1280 to 1440\*1440: send `size`.
 - **`size`** is sent as width\*height in `parameters.size`. Sending both `resolution` and `size` is a 400.
 - **`n`** is sent as `parameters.n`. Wan generates 4 images when `n` is left out, and each is billed, so send `n`.
 - **Edit images:** a link is sent unchanged, and bytes as a base64 data URI.
