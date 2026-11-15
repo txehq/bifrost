@@ -3056,6 +3056,11 @@ const handleRequest = (req, res) => {
 			}
 			// TXE-6517: a 200 with no audio and no error object, which Bifrost turns into 502 provider_empty_result.
 			if (speechName === "upstream-speech-empty") {
+				// TXE-7021: the SSE form ends with speech.audio.done and no audio delta before it.
+				if (parsed.stream_format === "sse") {
+					res.writeHead(200, { "Content-Type": "text/event-stream", "x-request-id": "fixture-speech-empty" });
+					return res.end(`data: ${JSON.stringify({ type: "speech.audio.done", usage: { input_tokens: 2, output_tokens: 0, total_tokens: 2 } })}\n\n`);
+				}
 				const empty = behaviours[speechName]();
 				return send(empty.status, empty.headers, empty.body);
 			}

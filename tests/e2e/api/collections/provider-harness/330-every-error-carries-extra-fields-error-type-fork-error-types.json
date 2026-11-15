@@ -307,6 +307,61 @@
       ]
     },
     {
+      "name": "330.9 [EXPECT-502] openai upstream speech stream (stream_format sse) that ends with no audio is provider_empty_result, not a speech.audio.done (fork error types)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/upstream-speech-empty\",\n  \"input\": \"hi\",\n  \"voice\": \"alloy\",\n  \"stream_format\": \"sse\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('an SSE speech stream with no audio is the vendor\\'s fault: 502 provider_empty_result before any frame (TXE-7021)', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(502);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('provider_empty_result');",
+              "  pm.expect(pm.response.headers.get('x-bifrost-error-type'), 'header').to.eql('provider_empty_result');",
+              "  pm.expect(pm.response.headers.get('x-request-id'), 'vendor header lost').to.eql('fixture-speech-empty');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
       "name": "330.5 fixture hit counts prove a 403 content block made one upstream call (fork error types)",
       "request": {
         "method": "GET",

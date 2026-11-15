@@ -946,6 +946,44 @@ func isPromptOptionalVideoEditType(t *string) bool {
 	)
 }
 
+// wrapSpeechStreamPostHookRunner holds every speech stream to contract C6 (TXE-7021): a vendor
+// that ends the stream with no audio sent a 200 with no output and no error object, which is
+// 502 provider_empty_result, never a speech.audio.done. Core wraps the post-hook runner once per
+// speech-stream attempt, so no provider can skip it. It watches the chunks on their way to the
+// post-hooks and, when the final chunk arrives with no audio before or in it, hands the
+// post-hooks that error in place of the done response: governance and logging record a failure,
+// and the client gets an error frame with no done event (a synchronous 502 when nothing was
+// forwarded yet, through the first-chunk check). The done chunk's token usage and vendor cost
+// (ElevenLabs credits) stay on the error's BilledUsage, since a vendor may bill an empty synthesis. The error is never retried
+// (FailureClassUnknown): a second call is a second charge.
+func wrapSpeechStreamPostHookRunner(postHookRunner schemas.PostHookRunner) schemas.PostHookRunner {
+	sawAudio := false
+	return func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		if result == nil || result.SpeechStreamResponse == nil {
+			return postHookRunner(ctx, result, bifrostErr)
+		}
+		chunk := result.SpeechStreamResponse
+		if len(chunk.Audio) > 0 {
+			sawAudio = true
+			return postHookRunner(ctx, result, bifrostErr)
+		}
+		if final, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); !final || sawAudio {
+			return postHookRunner(ctx, result, bifrostErr)
+		}
+		emptyErr := schemas.NewProviderEmptyResultError("speech stream ended with no audio")
+		emptyErr.ExtraFields = schemas.ErrorExtraFieldsFromResponse(chunk.ExtraFields, schemas.ErrorTypeProviderEmptyResult)
+		if u := chunk.Usage; u != nil && (u.InputTokens > 0 || u.OutputTokens > 0 || u.TotalTokens > 0 || u.VendorCost != nil) {
+			billed := &schemas.BifrostLLMUsage{PromptTokens: u.InputTokens, CompletionTokens: u.OutputTokens, TotalTokens: u.TotalTokens}
+			if u.VendorCost != nil {
+				vendorCost := *u.VendorCost
+				billed.VendorCost = &vendorCost
+			}
+			emptyErr.ExtraFields.BilledUsage = billed
+		}
+		return postHookRunner(ctx, nil, emptyErr)
+	}
+}
+
 // wrapConvertedStreamPostHookRunner wraps a PostHookRunner so that streaming
 // responses produced by a type-converted request are converted back to the
 // caller's original type before the post-hook runs. Each converted chunk is

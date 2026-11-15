@@ -1079,7 +1079,10 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 
 		// Send final "done" response only if we received the [DONE] marker from the provider.
 		// Without [DONE], the stream ended abnormally (e.g., clean EOF without proper SSE termination).
-		if chunkIndex >= 0 && doneReceived {
+		// A [DONE] with no audio before it still sends the done chunk: core's speech-stream rule turns
+		// it into 502 provider_empty_result (TXE-7021). It used to send nothing at all, so the
+		// post-hooks never saw the stream end.
+		if doneReceived {
 			finalResponse := schemas.BifrostSpeechStreamResponse{
 				Type: schemas.SpeechStreamResponseTypeDone,
 				ExtraFields: schemas.BifrostResponseExtraFields{
