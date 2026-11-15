@@ -494,9 +494,12 @@ async function assertOtelReceived() {
 	assertBufferContainsNone("OTEL trace export", entry.body, ["hello world"]);
 }
 
+// The exporter pushes every second from the moment the plugin is enabled, so the first
+// non-empty export can predate the chat call's counters. Wait for an export that carries
+// every expected series (the counters are cumulative, so each later export keeps them), and
+// on timeout name what the latest export still lacks.
 async function assertOtelMetricsReceived() {
-	const entry = await poll("OTEL metrics receiver", 30000, () => state.otelMetricRequests.find((item) => item.bytes > 0));
-	assertBufferContainsAll("OTEL metrics export", entry.body, [
+	const expected = [
 		"bifrost-e2e",
 		"bifrost_upstream_requests_total",
 		"bifrost_success_requests_total",
@@ -512,7 +515,23 @@ async function assertOtelMetricsReceived() {
 		modelName,
 		"method",
 		"chat_completion",
-	]);
+	];
+	await poll("OTEL metrics receiver", 30000, () => {
+		const exports = state.otelMetricRequests.filter((item) => item.bytes > 0);
+		if (exports.length === 0) {
+			return false;
+		}
+		for (const entry of exports) {
+			try {
+				assertBufferContainsAll("OTEL metrics export", entry.body, expected);
+				return entry;
+			} catch {
+				// An earlier export without the call's series; try the next one.
+			}
+		}
+		assertBufferContainsAll("OTEL metrics export", exports[exports.length - 1].body, expected);
+		return false;
+	});
 }
 
 // abortMidFlight sends a request against the stalling upstream and drops the client
@@ -756,7 +775,9 @@ async function assertLoggingTrace() {
 		throw new Error(`logging trace API returned unexpected id: ${JSON.stringify(log.id)}`);
 	}
 	if (log.status !== "success") {
-		throw new Error(`logging trace API returned unexpected status: ${JSON.stringify(log.status)}`);
+		throw new Error(
+			`logging trace API returned unexpected status: ${JSON.stringify(log.status)}; error_details=${JSON.stringify(log.error_details ?? null)}`,
+		);
 	}
 	if (log.provider !== providerName) {
 		throw new Error(`logging trace API returned unexpected provider: ${JSON.stringify(log.provider)}`);
