@@ -27,7 +27,7 @@ Copyright 2021-2024 ByteDance Inc.
 Copyright 2024 CloudWeGo Authors
 ```
 
-Modified: `register.go` serializes JIT module registration (TXE-7504), and `register_test.go` adds its regression tests. `third_party/sonic-loader/PATCHED.md` describes the change; the full license text is in `third_party/sonic-loader/LICENSE`.
+Modified: `register.go` serializes JIT module registration (TXE-7504), and `register_test.go` adds its regression tests. `third_party/sonic-loader/README.md` describes the change; the full license text is in `third_party/sonic-loader/LICENSE`.
 
 ## MPL-2.0 components — Go (compiled into the binary)
 

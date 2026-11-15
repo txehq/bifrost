@@ -61,7 +61,7 @@ func readGoMod(ctx context.Context, modPath string) (goModDirectives, error) {
 // patchedLoaderVersion reads the upstream version the patched copy was taken from.
 func patchedLoaderVersion(t *testing.T, root string) string {
 	t.Helper()
-	notes := filepath.Join(root, patchedLoaderDir, "PATCHED.md")
+	notes := filepath.Join(root, patchedLoaderDir, "README.md")
 	data, err := os.ReadFile(notes)
 	if err != nil {
 		t.Fatalf("reading %s: %v", notes, err)
@@ -82,7 +82,7 @@ func loaderRequirementProblems(mod goModDirectives, modDir, patchedDir, wantVers
 			requires = true
 			if r.Version != wantVersion {
 				problems = append(problems, fmt.Sprintf(
-					"requires %s %s, but %s was patched from %s: re-vendor and re-patch it (see its PATCHED.md) or hold the version",
+					"requires %s %s, but %s was patched from %s: re-vendor and re-patch it (see its README.md) or hold the version",
 					sonicLoaderModule, r.Version, patchedLoaderDir, wantVersion))
 			}
 		}
