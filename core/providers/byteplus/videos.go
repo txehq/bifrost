@@ -405,6 +405,10 @@ func ToBifrostVideoGenerationResponse(task *BytePlusVideoTask) (*schemas.Bifrost
 		Model:     task.Model,
 		CreatedAt: task.CreatedAt,
 		Size:      seedanceVideoSize(task.Resolution, task.Ratio),
+		// Ark's own tier and ratio, verbatim (TXE-7045): size is derived from them and is empty
+		// for a ratio such as "adaptive", which Bifrost cannot turn into pixels.
+		Resolution:  schemas.TolerantString(task.Resolution),
+		AspectRatio: schemas.TolerantString(task.Ratio),
 	}
 	// status and provider_status come from the same Ark string (contract C7 BF11).
 	seedanceVideoStatuses.Apply(resp, string(task.Status))
@@ -452,12 +456,14 @@ func seedanceVideoContentType(videoURL string) string {
 // ToBifrostVideoObject converts a listed Seedance task to a Bifrost video list entry.
 func ToBifrostVideoObject(task *BytePlusVideoTask, providerName schemas.ModelProvider) schemas.VideoObject {
 	obj := schemas.VideoObject{
-		ID:        providerUtils.AddVideoIDProviderSuffix(task.ID, providerName),
-		Object:    "video",
-		Model:     task.Model,
-		Status:    bytePlusVideoStatus(task.Status),
-		CreatedAt: task.CreatedAt,
-		Size:      seedanceVideoSize(task.Resolution, task.Ratio),
+		ID:          providerUtils.AddVideoIDProviderSuffix(task.ID, providerName),
+		Object:      "video",
+		Model:       task.Model,
+		Status:      bytePlusVideoStatus(task.Status),
+		CreatedAt:   task.CreatedAt,
+		Size:        seedanceVideoSize(task.Resolution, task.Ratio),
+		Resolution:  schemas.TolerantString(task.Resolution),
+		AspectRatio: schemas.TolerantString(task.Ratio),
 	}
 	if task.Duration > 0 {
 		obj.Seconds = schemas.Ptr(strconv.Itoa(task.Duration))

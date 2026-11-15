@@ -6434,6 +6434,14 @@
                       "type": "string",
                       "description": "Resolution of the generated video (e.g., \"1920x1080\")"
                     },
+                    "resolution": {
+                      "type": "string",
+                      "description": "The provider's own resolution tier for the task, verbatim (e.g. Seedance `720p`). Absent\nwhen the provider reports none. `size` is derived from it where Bifrost knows the pixels.\n"
+                    },
+                    "aspect_ratio": {
+                      "type": "string",
+                      "description": "The provider's own aspect ratio for the task, verbatim, `adaptive` included (e.g.\nSeedance `16:9`). Absent when the provider reports none.\n"
+                    },
                     "created_at": {
                       "type": "integer",
                       "format": "int64",
@@ -6763,6 +6771,14 @@
                             "type": "string",
                             "description": "Resolution of the generated video (e.g., \"1920x1080\")"
                           },
+                          "resolution": {
+                            "type": "string",
+                            "description": "The provider's own resolution tier for the task, verbatim (e.g. Seedance `720p`). Absent\nwhen the provider reports none. `size` is derived from it where Bifrost knows the pixels.\n"
+                          },
+                          "aspect_ratio": {
+                            "type": "string",
+                            "description": "The provider's own aspect ratio for the task, verbatim, `adaptive` included (e.g.\nSeedance `16:9`). Absent when the provider reports none.\n"
+                          },
                           "created_at": {
                             "type": "integer",
                             "format": "int64",
@@ -6947,6 +6963,14 @@
                     "size": {
                       "type": "string",
                       "description": "Resolution of the generated video (e.g., \"1920x1080\")"
+                    },
+                    "resolution": {
+                      "type": "string",
+                      "description": "The provider's own resolution tier for the task, verbatim (e.g. Seedance `720p`). Absent\nwhen the provider reports none. `size` is derived from it where Bifrost knows the pixels.\n"
+                    },
+                    "aspect_ratio": {
+                      "type": "string",
+                      "description": "The provider's own aspect ratio for the task, verbatim, `adaptive` included (e.g.\nSeedance `16:9`). Absent when the provider reports none.\n"
                     },
                     "created_at": {
                       "type": "integer",
@@ -7438,6 +7462,14 @@
                       "type": "string",
                       "description": "Resolution of the generated video (e.g., \"1920x1080\")"
                     },
+                    "resolution": {
+                      "type": "string",
+                      "description": "The provider's own resolution tier for the task, verbatim (e.g. Seedance `720p`). Absent\nwhen the provider reports none. `size` is derived from it where Bifrost knows the pixels.\n"
+                    },
+                    "aspect_ratio": {
+                      "type": "string",
+                      "description": "The provider's own aspect ratio for the task, verbatim, `adaptive` included (e.g.\nSeedance `16:9`). Absent when the provider reports none.\n"
+                    },
                     "created_at": {
                       "type": "integer",
                       "format": "int64",
@@ -7721,6 +7753,14 @@
                     "size": {
                       "type": "string",
                       "description": "Resolution of the generated video (e.g., \"1920x1080\")"
+                    },
+                    "resolution": {
+                      "type": "string",
+                      "description": "The provider's own resolution tier for the task, verbatim (e.g. Seedance `720p`). Absent\nwhen the provider reports none. `size` is derived from it where Bifrost knows the pixels.\n"
+                    },
+                    "aspect_ratio": {
+                      "type": "string",
+                      "description": "The provider's own aspect ratio for the task, verbatim, `adaptive` included (e.g.\nSeedance `16:9`). Absent when the provider reports none.\n"
                     },
                     "created_at": {
                       "type": "integer",
@@ -8124,6 +8164,14 @@
                     "size": {
                       "type": "string",
                       "description": "Resolution of the generated video (e.g., \"1920x1080\")"
+                    },
+                    "resolution": {
+                      "type": "string",
+                      "description": "The provider's own resolution tier for the task, verbatim (e.g. Seedance `720p`). Absent\nwhen the provider reports none. `size` is derived from it where Bifrost knows the pixels.\n"
+                    },
+                    "aspect_ratio": {
+                      "type": "string",
+                      "description": "The provider's own aspect ratio for the task, verbatim, `adaptive` included (e.g.\nSeedance `16:9`). Absent when the provider reports none.\n"
                     },
                     "created_at": {
                       "type": "integer",

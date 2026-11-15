@@ -533,6 +533,12 @@
               "  pm.expect(j.videos && j.videos.length, 'videos: ' + pm.response.text()).to.eql(1);",
               "  pm.expect(j.videos[0].type, 'videos[0].type: ' + pm.response.text()).to.eql('url');",
               "  pm.expect(j.videos[0].url, 'videos[0].url: ' + pm.response.text()).to.eql('https://fixture.invalid/seedance/video.mp4');",
+              "});",
+              "pm.test('Ark\\'s own resolution and ratio travel verbatim beside the size derived from them (TXE-7045)', function () {",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.resolution, 'resolution: ' + pm.response.text()).to.eql('720p');",
+              "  pm.expect(j.aspect_ratio, 'aspect_ratio: ' + pm.response.text()).to.eql('16:9');",
+              "  pm.expect(j.size, 'size: ' + pm.response.text()).to.eql('1280x720');",
               "});"
             ]
           }

@@ -278,7 +278,7 @@ Other extra params are sent to Ark unchanged. That covers `draft`, `return_last_
 
 To work from a draft, create a task with `draft: true` at `480p`, then create a second task with `extra_params.draft_task_id` set to the draft's ID as Bifrost returned it. Drafts are valid for 7 days.
 
-A task reports its `size` as `WIDTHxHEIGHT`, built from the resolution tier and ratio Ark returns: `720p` at `16:9` is `1280x720`. It is the nominal size of the tier, not the exact pixel grid Seedance renders, and it is what selects a per-resolution video rate. When Ark reports no ratio or `adaptive`, no `size` is returned and pricing uses the `size` of the original request, if it had one.
+A task reports its `size` as `WIDTHxHEIGHT`, built from the resolution tier and ratio Ark returns: `720p` at `16:9` is `1280x720`. It is the nominal size of the tier, not the exact pixel grid Seedance renders, and it is what selects a per-resolution video rate. When Ark reports no ratio or `adaptive`, no `size` is returned and pricing uses the `size` of the original request, if it had one. The task also carries Ark's own values verbatim as `resolution` and `aspect_ratio` (in a query and in the list), `adaptive` included, so they can be read even when no `size` is derived. Each is absent when Ark reports none.
 
 ## Task object
 
