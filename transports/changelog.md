@@ -1,113 +1,22 @@
 ## 🍴 Fork changes (txehq/bifrost)
 
-- chore: v2.4.0-sync.10 is a prerelease on top of v2.4.0-sync.9 with no upstream commits taken. It carries the fork tickets merged since v2.4.0-sync.9. v2.3.5 stays the stable release and `latest`. The Helm chart is 2.1.52-sync.10.
-- fork: **TXE-7363** (#280) text messages a client sends into an xAI realtime voice session are billed per message.
-- fork: **TXE-7349** (#274) a video job is priced at its resolution band's rate from the datasheet.
-- fork: **TXE-7356** (#276) the image size, quality, resolution-tier and step variants the sync dropped are priced.
-- fork: **TXE-7334** (#275) a rendered video past the body limit or with reordered frames is measured right.
-- fork: **TXE-7365** (#281) Bedrock guardrail policy units are reported in usage and billed per unit.
-- fork: **TXE-7354** (#282) batch lines are priced at the explicit batch rates upstream publishes.
-- fork: **TXE-7357** (#283) video tokens, per-clip prices, Kling's mode, Seedance's video input and Vertex's embedding intervals are priced.
-- fork: **TXE-7367** (#286) a realtime voice turn the vendor reports by duration is billed per second.
-- fork: **TXE-7372** (#284) priority-served images are priced at the priority image token rate.
-- fork: **TXE-7383** (#287) xAI realtime text messages are billed once sent, and settled even when admission refuses the session.
-- fork: **TXE-7390** (#294) Bedrock guardrail units are billed when the request's model has no pricing row.
-- fork: **TXE-7351** (#290) a video job's input-video rate is never billed on its output seconds (MiniMax-H3 paid an extra $0.08 per output second).
-- fork: **TXE-7355** (#299) the 32k, 256k and 512k tiers and cache reads above 128k are priced from the datasheet (new `model_pricing` columns).
-- fork: **TXE-7401** (#296) a rendered video the settler cannot measure is charged up to a bound the caller cannot choose: the model's `unmeasured_video_seconds`, else 30 seconds (new `model_pricing` column).
-- fork: **TXE-7408** (#301) a video embedding sent through `/genai_passthrough` is billed at its video rates.
-- fork: **TXE-7353** (#277) service-tier and 12-hour cache-write rates are priced from the datasheet (new `model_pricing` columns).
-- fork: **TXE-7306** (#273) video jobs with generated audio are priced at the band's audio rate the datasheet publishes (new `model_pricing` columns).
-- fork: **TXE-7329** (#271) a silent video job is priced on the length it rendered.
-- fork: **TXE-7297** (#260) a video job created without `seconds` settles priced or is refused: Kling's fractional lengths are read, Runway records the duration it sent, BFL converts credits to USD, and Replicate requires `seconds`.
-- fork: **TXE-7118** (#234) every provider that implements video is settled, or exempt with a reason.
-- fork: **TXE-7081** (#212) embeddings are priced per billed character, so `billed_characters` advances cost and dollar budgets.
-- fork: **TXE-7014** (#210) governance token limits charge `processed_tokens` when the vendor reports both.
-- fork: **TXE-6967** (#124) chat and Responses usage carry `vendor_cost` from xAI's `cost_in_usd_ticks`.
-- fork: **TXE-6987** (#209) Perplexity's native `/v1/responses` usage carries per-tool counts and `vendor_cost`; chat usage carries `vendor_cost`.
-- fork: **TXE-6986** (#155) Cohere Responses usage reports billed units.
-- fork: **TXE-6636** (#150) Gemini and Vertex embeddings report only the usage Google bills.
-- fork: **TXE-6535** (#137) Gemini and Vertex chat report video, document and tool-prompt tokens and keep the block reason; Vertex delivers or refuses `service_tier` and forwards URLs.
-- fork: **TXE-7043** (#197) xAI chat reports server-side tool usage and refuses undeliverable cache fields; Responses takes `max_turns`.
-- fork: **TXE-6984** (#163) OpenAI image edit refuses undeliverable fields; a streamed image reports `usage.output_images`.
-- fork: **TXE-6439** (#160) StepFun `cached_tokens` are decoded; Tencent, StepFun and Xiaomi chat channels are pinned.
-- fork: **TXE-7124** (#240) a price-affecting field nested inside an extra param is refused (400 `caller_unsupported_parameter`).
-- fork: **TXE-7065** (#194) a vendor's own name for a price-affecting field is checked like the unified field.
-- fork: **TXE-7295** (#259) price fields that converters write under a vendor's top-level name are refused.
-- fork: **TXE-7076** (#204) Gemini's embedding `taskType` is checked as the price-affecting `task_type`.
-- fork: **TXE-7080** (#211) Bedrock Cohere embeddings take `task_type` and add no default `input_type`.
-- fork: **TXE-6994** (#192) Responses, Perplexity and Hugging Face refuse a `service_tier` they cannot deliver; Responses and Bedrock Converse send the output cap as sent.
-- fork: **TXE-6960** (#179) xAI image generation refuses `size` and every field xAI does not take.
-- fork: **TXE-7126** (#239) a multipart `/openai/v1/videos` request delivers every field or refuses it.
-- fork: **TXE-7077** (#205) a unified speech field a provider has mapped is not forwarded again as an extra param.
-- fork: **TXE-6532** (#168) Sora 2 on Azure refuses undeliverable fields and reports the task object.
-- fork: **TXE-6541** (#144) Google Cloud Text-to-Speech provider, `text:synthesize` on `/v1/audio/speech`.
-- fork: **TXE-6542** (#145) Azure AI Speech provider (`azurespeech`), SSML speech and fast transcription.
-- fork: **TXE-6435** (#161) AssemblyAI provider, transcription on the Sync API.
-- fork: **TXE-6434** (#165) Deepgram provider, Nova-3 transcription.
-- fork: **TXE-6436** (#148) native Voyage text embeddings.
-- fork: **TXE-6430** (#175) Kling video provider on the Bifrost-Tokun contract.
-- fork: **TXE-6432** (#176) DashScope Wan video: create, query, list, cancel, download.
-- fork: **TXE-6607** (#180) DashScope Qwen-Image and Z-Image generation and edit on the sync endpoint.
-- fork: **TXE-6433** (#178) DashScope Qwen3-TTS speech and Qwen3-ASR transcription.
-- fork: **TXE-6533** (#164) first-generation sora on Azure's video generation jobs API.
-- fork: **TXE-6538** (#172) Gemini Omni video on the Interactions API, for gemini and vertex.
-- fork: **TXE-6429** (#169) xAI video, text to speech and speech to text meet the contract.
-- fork: **TXE-6617** (#196) BFL FLUX 3 video create, query and download.
-- fork: **TXE-6605** (#142) Seedream image generation and edit meet the contract.
-- fork: **TXE-6540** (#189) Vertex Gemini text-to-speech, buffered and streamed, through `generateContent`.
-- fork: **TXE-6595** (#114) MiniMax chat sensitivity flags, native Responses and Messages.
-- fork: **TXE-6548** (#122) DeepSeek messages pass through to its Anthropic endpoint.
-- fork: **TXE-6664** (#151) xAI batches and files on the unified routes.
-- fork: **TXE-6426** (#166) BytePlus Seedance video meets the task contract.
-- fork: **TXE-6587** (#167) `/content` is streamed from the vendor; the video list is filtered and paged.
-- fork: **TXE-7051** (#198) a sync image response says when its links expire.
-- fork: **TXE-7366** (#279) a video delete the vendor accepted answers `deleted: true` whatever its 2xx body was.
-- fork: **TXE-6971** (#184) a Vertex batch `custom_id` that cannot be a request label is encoded, and comes back unchanged.
-- fork: **TXE-6665** (#156) batch and file calls on an OpenAI-based custom provider honour `request_path_overrides`.
-- fork: **TXE-7020** (#215) model, video, container and stored-response calls on an OpenAI-based custom provider honour `request_path_overrides`.
-- fork: **TXE-7084** (#216) an xai-based custom provider's batch and file calls follow its `request_path_overrides`.
-- fork: **TXE-7085** (#221) batch and file calls on the anthropic, gemini, modelark, volcengine and replicate bases follow `request_path_overrides`; a custom provider on the replicate, modelark or volcengine base reports its own name, and video ids it returned before still resolve.
-- fork: **TXE-7097** (#225) a custom provider on the deepseek, glm, moonshot or qwen base reports its own name.
-- fork: **TXE-7032** (#217) one virtual-key ownership check for every file a request names.
-- fork: **TXE-7105** (#238) output locations and every URL form of a stored object pass the virtual-key ownership check.
-- fork: **TXE-7119** (#241) a batch, video or image task with no owner on record is not found for a virtual key.
-- fork: **TXE-7088** (#248) a virtual key can be limited to storage prefixes and Pub/Sub topics (new `governance_virtual_keys` columns).
-- fork: **TXE-7121** (#252) batch output folders belong to the virtual key that first writes there.
-- fork: **TXE-7259** (#255) operators list and release storage folder claims; no bucket-root output without a storage list (one-time `backfill_batch_output_folders`).
-- fork: **TXE-7230** (#251) a raw-body prompt that is exactly a Pub/Sub topic name is not read as a topic.
-- fork: **TXE-7036** (#224) every video download of a vendor-named URL streams through the SSRF-hardened media fetcher.
-- fork: **TXE-7090** (#228) a request to an address a vendor's response names leaves on the SSRF-hardened client.
-- fork: **TXE-7142** (#247) a refusal echoes at most a bounded amount of the caller's input.
-- fork: **TXE-7370** (#292) core enforces a custom provider's `allowed_requests` for every request type and every base, before a key is chosen, checking the operation sent upstream.
-- fork: **TXE-7368** (#295) a provider whose full-URL `request_path_overrides` reach another provider's upstream shares that upstream's file, batch, video and container ownership checks, so one virtual key cannot read or delete another's object through an override.
-- fork: **TXE-7386** (#293) the video settler fetches a rendered video only from a host the provider declares or its base URL origin; any other video is charged its requested seconds as a floor and marked incomplete.
-- fork: **TXE-7423** (#314) live, realtime and WebSocket sessions that `allowed_requests` leaves out are refused with code `unsupported_operation`, as before TXE-7370.
-- fork: **TXE-7062** (#201) BFL `webhook_secret` from the key configuration (new `config_keys` column).
-- fork: **TXE-7310** (#265) a BFL key's `webhook_secret` signs only trusted callback destinations (new `config_keys` column).
-- fork: **TXE-7148** (#256) every buffered upstream response body is read under one limit, `client.max_response_body_size_mb` (default 512 MB; new `config_client` column).
-- fork: **TXE-7264** (#253) a stream whose idle timer fired never ends as a clean response.
-- fork: **TXE-6985** (#152) headers-placement stream error frames keep `error_type`.
-- fork: **TXE-7082** (#213) one rule decides when a large body may skip conversion.
-- fork: **TXE-7070** (#200) a client config read from `/api/config` saves back unchanged.
-- chore: **TXE-7060** (#190) chart values `bifrost.client.enforceVkObjectOwnership` and `bifrost.client.a2aStoreRawRequestResponse`; with TXE-7148, `bifrost.client.maxResponseBodySizeMb`. Each renders only when set.
-- breaking (operators, security): **TXE-7310** a BFL key that has `webhook_secret` but no `webhook_url_prefixes` no longer sends its secret to any `callback_url`. List the receiver, for example `"webhook_url_prefixes": ["https://hooks.tokun.sh/"]`. Other callbacks still go to BFL, unsigned by the key.
-- breaking: **TXE-7259** a virtual key with no `allowed_storage_prefixes` that names a bucket root (`gs://b/`, `s3://b`) as a batch output folder or task output location gets 400 before any provider call.
-- breaking: **TXE-7297** a Replicate video create without `seconds` gets 400 `caller_unsupported_parameter` naming `seconds`.
-- breaking: **TXE-7119** for a virtual key, a batch, video or image task with no owner on record is 404 and left out of list pages; a batch or video create through passthrough is 403; a batch or video list with no config store is 403.
-- breaking: **TXE-7124** an extra param that sets a nested price field (41 body paths across gemini, vertex, replicate, bedrock, google-cloud-tts, minimax, byteplus, elevenlabs) is 400 `caller_unsupported_parameter`; it was served before.
-- breaking: **TXE-6426** BytePlus video: fractional or out-of-range `seconds` and an inexact `size` are 400 instead of rounded.
-- breaking: **TXE-7032** a request that cannot be read in full (bad raw JSON, nesting over 32) or names more than 128 distinct storage objects is 400 before lookup.
-- breaking: **TXE-7148** a buffered upstream response body above `client.max_response_body_size_mb` (default 512 MB) fails with `bifrost_internal`.
-- breaking (operators, security): **TXE-7370** a custom provider's `allowed_requests` now refuses every request type it does not list, with 400 `unsupported_operation` and no upstream call. Newly refused: chat on the deepseek, glm, moonshot, qwen and xai bases, xai model retrieve, every volcengine call, Replicate file calls, and WebSocket Responses, realtime and live sessions. A chat routed to the Responses API is checked as `responses`. List every type a provider serves. The provider-job accounting sweeper's polls are exempt.
-- breaking (operators, security): **TXE-7368** a full-URL file override makes every provider on that base share ownership checks: an id another virtual key recorded on any provider of the base is refused. URLs are compared after normalizing case, trailing slashes and default ports. An id two keys both recorded on one upstream is refused to both.
-- breaking (operators): **TXE-7085** a `bedrock`-based custom provider with a `request_path_overrides` entry for a batch or file call is refused when it is written.
-- migrations: seventeen configstore migrations, all additive: fifteen column adds (`add_bfl_key_config_columns`, `add_bfl_webhook_url_prefixes_column`, `add_client_config_max_response_body_size_mb_column`, `add_explicit_batch_pricing_columns`, `add_guardrail_unit_rate_columns`, `add_image_variant_pricing_columns`, `add_input_cost_per_text_message_column`, `add_long_context_tier_pricing_columns`, `add_output_cost_per_second_resolution_band_columns`, `add_priority_image_token_pricing_column`, `add_service_tier_and_12h_cache_pricing_columns`, `add_unmeasured_video_seconds_column`, `add_video_audio_rate_columns`, `add_video_token_clip_mode_pricing_columns`, `add_virtual_key_allowed_cloud_resource_columns`), `add_storage_prefix_indexes` (indexes built concurrently) and `backfill_batch_output_folders` (inserts folder claims; its rollback is a no-op). The logstore has none.
-- ci: **TXE-7067** (#195), **TXE-7074** (#202), **TXE-7066** (#203), **TXE-7079** (#206), **TXE-7083** (#214), **TXE-7039** (#174), **TXE-7091** (#222), **TXE-7099** (#226), **TXE-7104** (#229), **TXE-7109** (#231), **TXE-7111** (#233), **TXE-7078** (#207), **TXE-7139** (#245), **TXE-7136** (#244), **TXE-7128** (#246), **TXE-7276** (#254), **TXE-7285** (#258), **TXE-7296** (#257), **TXE-7299** (#262), **TXE-7315** (#263), **TXE-7289** (#264), **TXE-7319** (#267), **TXE-7290** (#266), **TXE-7308** (#261), **TXE-7326** (#269), **TXE-7322** (#270), **TXE-7348** (#272), **TXE-7371** (#291), **TXE-7385** (#297): offline Go unit tests on every PR, the harness stored one file per folder, offline runs refuse non-loopback egress, fixture-folder checks, sleep and wait lints, the OpenAPI agreement check, the ui vitest suite in the required offline job, and the Playwright UI suite offline in two shards. **TXE-7463** (#320): the azurespeech secret-redaction row no longer puts an Azure alias sub-config on its key, and the offline suite fails a row whose alias carries another provider's sub-config.
+- chore: v2.4.0-sync.11 is a prerelease on top of v2.4.0-sync.10 with no upstream commits taken. It carries the fork tickets merged since v2.4.0-sync.10. v2.3.5 stays the stable release and `latest`. The Helm chart is 2.1.52-sync.11.
+- fork: **TXE-7361** (#303) cached audio input is priced at the cached-audio rate, by tier and in a batch (new `model_pricing` columns).
+- fork: **TXE-7409** (#302) a video job's input images beyond the model's free allowance are billed at `input_cost_per_image` (new `free_input_images` column); MiniMax sends the typed `last_frame` and `reference_images`, and video input is captured with or without params.
+- fork: **TXE-7362** (#340) Gemini grounding with Google Maps is billed per grounded prompt, native `/genai_passthrough` included (new `google_maps_grounding_cost_per_query` column).
+- fork: **TXE-7503** (#341) usage conversion keeps video, document and cached-video prompt token details, and a check fails code that hand-copies prompt token details.
+- fork: **TXE-7434** (#342) video capture judges a custom provider's inputs by its base provider, so a custom xAI provider's first frame is billed.
+- fork: **TXE-7422** (#343) Anthropic's US 1.1x and fast 6x multipliers published under `provider_specific_entry` are billed.
+- fork: **TXE-7504** (#344) sonic's JIT loader registers modules safely; a loader race could end the gateway process on amd64.
+- fork: **TXE-7089** (#329) every video download caps the decoded bytes it hands the caller, at the tighter of 256 MiB and `client.max_response_body_size_mb`; an encoded download is never streamed uncapped.
+- fork: **TXE-7501** (#339) a custom provider added at runtime is a model prefix from the moment it is added.
+- breaking: **TXE-7089** a gzip, deflate, br or zstd video download whose decoded size passes the cap is refused (`ErrMediaTooLarge`, final for the video settler) before any byte is delivered; before, a streamed gzip download had no cap.
+- breaking: **TXE-7409** a MiniMax video request with a `reference_images` form MiniMax cannot take (an object, or a bare string) is refused instead of passed through as an unknown field.
+- migrations: three configstore migrations, all additive, each adding only nullable `governance_model_pricing` columns: `add_cached_audio_pricing_columns`, `add_free_input_images_column` and `add_google_maps_grounding_pricing_column`. The logstore has none.
+- ci: **TXE-7427** (#315), **TXE-7424** (#316), **TXE-7451** (#317), **TXE-7452** (#318), **TXE-7464** (#319), **TXE-7500** (#338), **TXE-7112** (#232): Docker Hub's R2 and S3 blob hosts in every job that allows Docker Hub, with an egress check; the GPT Live fake suite, the Agent Gateway e2e, the migration tests, the cost accuracy test and the api-management collection in the required Go unit check; the action runtime check asks again without the token when a pin lookup is refused.
 - test: each ticket ships unit tests in the packages it changes and provider-harness cases validated offline. No live provider run is part of this release (`--skip-core-test`).
-- note: not in this release: TXE-7042 (repeated query parameters through transport plugins, open) and the remaining pricing tickets TXE-7358, TXE-7361 and TXE-7362, which go in v2.4.0-sync.11
-- preserved: everything v2.4.0-sync.9 and earlier releases listed under Fork changes
+- preserved: everything v2.4.0-sync.10 and earlier releases listed under Fork changes
 - note: module versions. This fork publishes no core, framework or plugin module versions: their module paths stay `github.com/capsohq/bifrost/...`, their version files and the transport's requires are unchanged, and the workspace builds them from source
-- chore: the Helm chart is 2.1.52-sync.10, a prerelease; `appVersion` is 2.4.0-sync.10, so an empty `image.tag` selects `v2.4.0-sync.10`. It adds `bifrost.client.enforceVkObjectOwnership`, `bifrost.client.a2aStoreRawRequestResponse` (TXE-7060) and `bifrost.client.maxResponseBodySizeMb` (TXE-7148), each rendered only when set
+- chore: the Helm chart is 2.1.52-sync.11, a prerelease; `appVersion` is 2.4.0-sync.11, so an empty `image.tag` selects `v2.4.0-sync.11`. Its templates and values are unchanged from 2.1.52-sync.10
 - note: the CLI and Migration CLI are unchanged: v1.0.1 and v0.1.1 remain their stable releases
 - note: the image and the OCI chart are private packages, so pulling them needs a token with `read:packages`
