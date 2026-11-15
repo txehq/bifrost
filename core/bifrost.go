@@ -10056,7 +10056,8 @@ func (bifrost *Bifrost) handleProviderStreamRequest(provider schemas.Provider, c
 		// Recorded here, once, so every provider's cancel, timeout and truncation path bills
 		// the characters the vendor already accepted (TXE-7072).
 		providerUtils.SetSpeechStreamInput(req.Context, req.BifrostRequest.SpeechRequest)
-		return provider.SpeechStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.SpeechRequest)
+		// A stream that ends with no audio is 502 provider_empty_result on every provider (TXE-7021).
+		return provider.SpeechStream(req.Context, wrapSpeechStreamPostHookRunner(postHookRunner), postHookSpanFinalizer, key, req.BifrostRequest.SpeechRequest)
 	case schemas.TranscriptionStreamRequest:
 		return provider.TranscriptionStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.TranscriptionRequest)
 	case schemas.ImageGenerationStreamRequest:

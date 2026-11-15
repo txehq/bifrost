@@ -2,7 +2,13 @@ package lib
 
 import (
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io/fs"
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/capsohq/bifrost/core/schemas"
@@ -170,5 +176,108 @@ func BenchmarkWriteSpeechAudioResponse(b *testing.B) {
 				WriteSpeechAudioResponse(&ctx, tc.resp, "mp3")
 			}
 		})
+	}
+}
+
+// A vendor 200 with no audio is 502 provider_empty_result (contract C6, TXE-7021). The writer
+// writes nothing for it: no body, no audio Content-Type, and the success usage header a caller set
+// beforehand is removed. It returns the error, carrying the response's routing fields, for the
+// caller to send in its route's shape.
+func TestWriteSpeechAudioResponseRefusesMissingAudio(t *testing.T) {
+	for name, resp := range map[string]*schemas.BifrostSpeechResponse{
+		"nil response": nil,
+		"no audio":     {ExtraFields: schemas.BifrostResponseExtraFields{Provider: schemas.Elevenlabs, RequestType: schemas.SpeechRequest}},
+		"empty audio":  {Audio: []byte{}, ExtraFields: schemas.BifrostResponseExtraFields{Provider: schemas.OpenAI, RequestType: schemas.SpeechRequest}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var ctx fasthttp.RequestCtx
+			SetSpeechUsageHeader(&ctx, &schemas.SpeechUsage{InputChars: 5})
+			emptyErr := WriteSpeechAudioResponse(&ctx, resp, "mp3")
+			if emptyErr == nil {
+				t.Fatal("no error for a response without audio")
+			}
+			if got := emptyErr.ResolveErrorType(); got != schemas.ErrorTypeProviderEmptyResult {
+				t.Fatalf("error_type = %q, want provider_empty_result", got)
+			}
+			if got := emptyErr.EffectiveHTTPStatus(); got != fasthttp.StatusBadGateway {
+				t.Fatalf("status = %d, want 502", got)
+			}
+			if resp != nil && emptyErr.ExtraFields.Provider != resp.ExtraFields.Provider {
+				t.Fatalf("provider = %q, want %q", emptyErr.ExtraFields.Provider, resp.ExtraFields.Provider)
+			}
+			if len(ctx.Response.Body()) != 0 || ctx.Response.Header.Peek("Content-Disposition") != nil {
+				t.Fatalf("the writer wrote a response: body %q", ctx.Response.Body())
+			}
+			if ctx.Response.Header.Peek(HeaderBifrostUsage) != nil {
+				t.Fatal("x-bifrost-usage kept on an error")
+			}
+		})
+	}
+	var ctx fasthttp.RequestCtx
+	if err := WriteSpeechAudioResponse(&ctx, &schemas.BifrostSpeechResponse{Audio: []byte("ID3")}, "mp3"); err != nil {
+		t.Fatalf("audio refused: %+v", err)
+	}
+}
+
+// Every caller of WriteSpeechAudioResponse must send the provider_empty_result error it returns;
+// a caller that drops it answers 200 with an empty body, which is the gap TXE-7021 closed on the
+// /openai speech routes. This walks the transport's Go sources and fails a call whose result is
+// discarded, as a statement or assigned to _.
+func TestEveryWriteSpeechAudioResponseCallerSendsTheEmptyResult(t *testing.T) {
+	root := ".." // transports/bifrost-http
+	calls := 0
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		fset := token.NewFileSet()
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			return err
+		}
+		isWriter := func(e ast.Expr) bool {
+			call, ok := e.(*ast.CallExpr)
+			if !ok {
+				return false
+			}
+			switch fn := call.Fun.(type) {
+			case *ast.SelectorExpr:
+				return fn.Sel.Name == "WriteSpeechAudioResponse"
+			case *ast.Ident:
+				return fn.Name == "WriteSpeechAudioResponse"
+			}
+			return false
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			switch x := n.(type) {
+			case *ast.CallExpr:
+				if isWriter(x) {
+					calls++
+				}
+			case *ast.ExprStmt:
+				if isWriter(x.X) {
+					t.Errorf("%s: WriteSpeechAudioResponse's provider_empty_result error is discarded", fset.Position(x.Pos()))
+				}
+			case *ast.AssignStmt:
+				for i, rhs := range x.Rhs {
+					if isWriter(rhs) && i < len(x.Lhs) {
+						if id, ok := x.Lhs[i].(*ast.Ident); ok && id.Name == "_" {
+							t.Errorf("%s: WriteSpeechAudioResponse's provider_empty_result error is assigned to _", fset.Position(x.Pos()))
+						}
+					}
+				}
+			}
+			return true
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls < 2 {
+		t.Fatalf("found %d calls of WriteSpeechAudioResponse; the walk no longer sees the speech handler and the integration router", calls)
 	}
 }

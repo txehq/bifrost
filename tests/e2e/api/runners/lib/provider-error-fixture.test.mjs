@@ -455,6 +455,12 @@ test("upstream-speech-empty answers 200 with an empty audio body and a vendor re
   assert.equal(res.headers.get("content-type"), "audio/mpeg");
   assert.equal(res.headers.get("x-request-id"), "fixture-speech-empty");
   assert.equal((await res.arrayBuffer()).byteLength, 0);
+  // TXE-7021: with stream_format "sse" it is a stream that ends with speech.audio.done and no delta.
+  const sse = await post({ model: "upstream-speech-empty", input: "hi", voice: "alloy", stream_format: "sse" }, "/v1/audio/speech");
+  assert.equal(sse.status, 200);
+  assert.equal(sse.headers.get("content-type"), "text/event-stream");
+  const frames = (await sse.text()).split("\n\n").filter(Boolean);
+  assert.deepEqual(frames.map((f) => JSON.parse(f.slice("data: ".length)).type), ["speech.audio.done"]);
 });
 
 // upstream-speech-truncated streams one speech.audio.delta and ends with no speech.audio.done, the cut-off

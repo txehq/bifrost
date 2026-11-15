@@ -1814,22 +1814,12 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 }
 
 // writeSpeechAudio writes a buffered speech response's audio through lib.WriteSpeechAudioResponse
-// (Content-Type and filename from the audio actually returned, TXE-6530). A vendor 200 with no
-// audio (an empty body included) and no error object is the vendor's fault, not the caller's:
-// 502 provider_empty_result (contract C6), keeping the vendor's response headers the caller
-// already forwarded but not the success usage header.
+// (Content-Type and filename from the audio actually returned, TXE-6530), and sends the 502
+// provider_empty_result that writer returns for a vendor 200 with no audio (contract C6).
 func writeSpeechAudio(ctx *fasthttp.RequestCtx, resp *schemas.BifrostSpeechResponse, responseFormat string) {
-	if resp == nil || len(resp.Audio) == 0 {
-		ctx.Response.Header.Del(lib.HeaderBifrostUsage)
-		emptyErr := schemas.NewProviderEmptyResultError("Speech response is missing audio data")
-		if resp != nil {
-			emptyErr.ExtraFields = schemas.ErrorExtraFieldsFromResponse(resp.ExtraFields, schemas.ErrorTypeProviderEmptyResult)
-		}
+	if emptyErr := lib.WriteSpeechAudioResponse(ctx, resp, responseFormat); emptyErr != nil {
 		SendBifrostError(ctx, emptyErr)
-		return
 	}
-
-	lib.WriteSpeechAudioResponse(ctx, resp, responseFormat)
 }
 
 // prepareTranscriptionRequest prepares a BifrostTranscriptionRequest from a multipart form.

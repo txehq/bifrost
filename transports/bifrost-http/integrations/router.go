@@ -1373,7 +1373,11 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 			if bifrostReq.SpeechRequest.Params != nil {
 				responseFormat = bifrostReq.SpeechRequest.Params.ResponseFormat
 			}
-			lib.WriteSpeechAudioResponse(ctx, speechResponse, responseFormat)
+			// A vendor 200 with no audio is 502 provider_empty_result in this route's error shape
+			// (contract C6, TXE-7021), never a 200 with an empty body.
+			if emptyErr := lib.WriteSpeechAudioResponse(ctx, speechResponse, responseFormat); emptyErr != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, emptyErr)
+			}
 			return
 		}
 	case bifrostReq.TranscriptionRequest != nil:

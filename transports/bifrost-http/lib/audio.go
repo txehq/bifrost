@@ -39,7 +39,23 @@ func SetSpeechUsageHeader(ctx *fasthttp.RequestCtx, usage *schemas.SpeechUsage) 
 // writes its audio through here so they cannot drift apart. It does not write HeaderBifrostUsage:
 // callers set that once with SetSpeechUsageHeader before their large-response shortcut, so the
 // shortcut carries it too and the usage is serialized only once per response.
-func WriteSpeechAudioResponse(ctx *fasthttp.RequestCtx, resp *schemas.BifrostSpeechResponse, responseFormat string) {
+//
+// A vendor 200 with no audio (an empty body included) and no error object is the vendor's fault,
+// not the caller's: contract C6 makes it 502 provider_empty_result. The rule lives here, in the one
+// writer every raw-audio route uses, so no route can answer 200 with an empty body (TXE-7021). It
+// writes nothing then: it removes the success usage header (an error carries no success usage),
+// keeps the vendor headers the caller already forwarded, and returns the error for the caller to
+// send in its route's error shape. A nil return means the audio was written.
+// TestEveryWriteSpeechAudioResponseCallerSendsTheEmptyResult fails a caller that drops the error.
+func WriteSpeechAudioResponse(ctx *fasthttp.RequestCtx, resp *schemas.BifrostSpeechResponse, responseFormat string) *schemas.BifrostError {
+	if resp == nil || len(resp.Audio) == 0 {
+		ctx.Response.Header.Del(HeaderBifrostUsage)
+		emptyErr := schemas.NewProviderEmptyResultError("Speech response is missing audio data")
+		if resp != nil {
+			emptyErr.ExtraFields = schemas.ErrorExtraFieldsFromResponse(resp.ExtraFields, schemas.ErrorTypeProviderEmptyResult)
+		}
+		return emptyErr
+	}
 	contentType := resp.ContentType
 	if contentType == "" {
 		contentType = SpeechContentType(resp.Audio, responseFormat)
@@ -48,6 +64,7 @@ func WriteSpeechAudioResponse(ctx *fasthttp.RequestCtx, resp *schemas.BifrostSpe
 	ctx.Response.Header.Set("Content-Disposition", "attachment; filename="+speechFilenameForContentType(contentType, responseFormat))
 	ctx.Response.Header.Set("Content-Length", strconv.Itoa(len(resp.Audio)))
 	ctx.Response.SetBody(resp.Audio)
+	return nil
 }
 
 var (

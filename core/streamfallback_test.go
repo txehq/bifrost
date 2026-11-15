@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -2362,14 +2363,22 @@ func TestElevenlabsSpeechStreamDoneWithoutCharacterCostHasNoVendorCost(t *testin
 	}
 }
 
+// Contract C6 (TXE-7021): a vendor that ends a speech stream with no audio sent a 200 with no
+// output, which is 502 provider_empty_result and no speech.audio.done. Nothing was forwarded, so
+// the first-chunk check makes it the request's synchronous error.
 func TestElevenlabsSpeechStreamEmptyResponse(t *testing.T) {
 	client, _ := newElevenlabsStreamClient(t)
-	result := runElevenlabsSpeechStream(t, client, "empty")
-	if len(result.audio) != 0 || result.deltas != 0 {
-		t.Fatalf("empty response produced %d deltas with %d bytes", result.deltas, len(result.audio))
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(10*time.Second))
+	stream, err := client.SpeechStreamRequest(ctx, elevenlabsSpeechStreamRequest("empty"))
+	if err == nil {
+		result := drainElevenlabsSpeechStream(t, stream)
+		t.Fatalf("empty response answered as a stream: %d deltas, done=%v, errors=%v; want a synchronous provider_empty_result", result.deltas, result.done, result.errors)
 	}
-	if !result.done || len(result.errors) != 0 {
-		t.Fatalf("empty response done=%v errors=%v, want done and no error", result.done, result.errors)
+	if got := err.ResolveErrorType(); got != schemas.ErrorTypeProviderEmptyResult {
+		t.Fatalf("error_type = %q, want provider_empty_result: %+v", got, err.Error)
+	}
+	if err.StatusCode == nil || *err.StatusCode != 502 {
+		t.Fatalf("status = %v, want 502", err.StatusCode)
 	}
 }
 
@@ -2437,3 +2446,237 @@ func TestElevenlabsSpeechStreamCancellationClosesUpstream(t *testing.T) {
 		t.Fatal("cancelling the stream did not close the upstream request")
 	}
 }
+
+// speechStreamNoAudio is what each speech-stream provider's vendor sends for a stream that
+// ends cleanly with no audio: its own terminal marker, or an empty body for a raw-audio stream.
+// A provider that serves a speech stream and has no row here fails the sweep below, so a new one
+// is held to contract C6 from its first commit (TXE-7021).
+var speechStreamNoAudio = map[schemas.ModelProvider]struct{ contentType, body string }{
+	schemas.OpenAI:      {"text/event-stream", "data: {\"type\":\"speech.audio.done\",\"usage\":{\"input_tokens\":3,\"output_tokens\":0,\"total_tokens\":3}}\n\n"},
+	schemas.Azure:       {"text/event-stream", "data: {\"type\":\"speech.audio.done\"}\n\ndata: [DONE]\n\n"},
+	schemas.Gemini:      {"text/event-stream", "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":3,\"totalTokenCount\":3}}\n\n"},
+	schemas.Vertex:      {"text/event-stream", "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":3,\"totalTokenCount\":3}}\n\n"},
+	schemas.Minimax:     {"text/event-stream", "data: {\"data\":{\"status\":2,\"audio\":\"\"},\"extra_info\":{\"usage_characters\":3},\"base_resp\":{\"status_code\":0,\"status_msg\":\"success\"}}\n\n"},
+	schemas.Elevenlabs:  {"audio/mpeg", ""},
+	schemas.Sarvam:      {"audio/mpeg", ""},
+	schemas.AzureSpeech: {"audio/mpeg", ""},
+}
+
+// TestEverySpeechStreamWithNoAudioIsProviderEmptyResult dispatches a speech stream through core
+// to every standard provider; the vendor answers 200 and ends the stream with no audio. The
+// post-hooks must see one 502 provider_empty_result and no successful done chunk (contract C6,
+// TXE-7021), whatever the provider's own stream loop does.
+func TestEverySpeechStreamWithNoAudioIsProviderEmptyResult(t *testing.T) {
+	upstream := newGuardUpstream(t)
+	client := &Bifrost{logger: NewNoOpLogger()}
+
+	var served []schemas.ModelProvider
+	for _, providerKey := range schemas.StandardProviders {
+		t.Run(string(providerKey), func(t *testing.T) {
+			answer, known := speechStreamNoAudio[providerKey]
+			upstream.respondTo = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
+				if strings.Contains(r.URL.Path, "token") {
+					return false // an OAuth exchange gets the default answer
+				}
+				w.Header().Set("Content-Type", answer.contentType)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(answer.body))
+				return true
+			}
+			config := &schemas.ProviderConfig{
+				NetworkConfig: schemas.NetworkConfig{BaseURL: "http://" + guardUpstreamHost, DefaultRequestTimeoutInSeconds: 10},
+				ProxyConfig: &schemas.ProxyConfig{
+					Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(upstream.proxyURL), CACertPEM: schemas.NewSecretVar(upstream.caPEM),
+				},
+			}
+			provider, err := client.createBaseProvider(providerKey, config)
+			if err != nil {
+				t.Fatalf("construct %s: %v", providerKey, err)
+			}
+			model := guardModel(providerKey)
+			req := &schemas.BifrostSpeechRequest{
+				Provider: providerKey,
+				Model:    model,
+				Input:    &schemas.SpeechInput{Input: "say this"},
+				Params:   &schemas.SpeechParameters{VoiceConfig: &schemas.SpeechVoiceInput{Voice: schemas.Ptr(guardSpeechVoice(providerKey, model))}},
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			msg := &ChannelMessage{
+				BifrostRequest: schemas.BifrostRequest{RequestType: schemas.SpeechStreamRequest, SpeechRequest: req},
+				Context:        ctx,
+			}
+			var mu sync.Mutex
+			var errs []*schemas.BifrostError
+			var dones int
+			recordHook := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				mu.Lock()
+				defer mu.Unlock()
+				if err != nil {
+					errs = append(errs, err)
+				}
+				if result != nil && result.SpeechStreamResponse != nil && result.SpeechStreamResponse.Type == schemas.SpeechStreamResponseTypeDone {
+					dones++
+				}
+				return result, err
+			}
+			var stream chan *schemas.BifrostStreamChunk
+			var bifrostErr *schemas.BifrostError
+			func() {
+				defer func() { _ = recover() }()
+				stream, bifrostErr = client.handleProviderStreamRequest(provider, config, msg, guardKey(providerKey), recordHook, nil)
+			}()
+			if bifrostErr != nil || stream == nil {
+				return // the provider does not serve a speech stream
+			}
+			served = append(served, providerKey)
+			if !known {
+				t.Fatalf("%s serves a speech stream and has no row in speechStreamNoAudio: add its no-audio stream", providerKey)
+			}
+			deadline := time.After(10 * time.Second)
+		drain:
+			for {
+				select {
+				case _, ok := <-stream:
+					if !ok {
+						break drain
+					}
+				case <-deadline:
+					t.Fatalf("the stream did not end within 10s")
+				}
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if dones != 0 {
+				t.Fatalf("the post-hooks saw %d successful speech.audio.done chunks for a stream with no audio", dones)
+			}
+			if len(errs) != 1 {
+				t.Fatalf("the post-hooks saw %d errors, want one provider_empty_result: %+v", len(errs), errs)
+			}
+			if got := errs[0].ResolveErrorType(); got != schemas.ErrorTypeProviderEmptyResult {
+				t.Fatalf("error_type = %q, want provider_empty_result: %+v", got, errs[0].Error)
+			}
+			if errs[0].StatusCode == nil || *errs[0].StatusCode != 502 {
+				t.Fatalf("status = %v, want 502", errs[0].StatusCode)
+			}
+		})
+	}
+	slices.Sort(served)
+	want := slices.Collect(maps.Keys(speechStreamNoAudio))
+	slices.Sort(want)
+	if !slices.Equal(served, want) {
+		t.Errorf("speech stream is served by %v; speechStreamNoAudio has rows for %v: update the table", served, want)
+	}
+}
+
+// wrapSpeechStreamPostHookRunner (TXE-7021): a final chunk with no audio before or in it reaches
+// the post-hooks as 502 provider_empty_result carrying the done chunk's tokens and vendor cost; a
+// stream that sent audio, and every chunk before the end, pass through unchanged.
+func TestWrapSpeechStreamPostHookRunner(t *testing.T) {
+	type seen struct {
+		result *schemas.BifrostResponse
+		err    *schemas.BifrostError
+	}
+	run := func(chunks ...*schemas.BifrostSpeechStreamResponse) []seen {
+		var got []seen
+		wrapped := wrapSpeechStreamPostHookRunner(func(_ *schemas.BifrostContext, r *schemas.BifrostResponse, e *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+			got = append(got, seen{r, e})
+			return r, e
+		})
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		for i, c := range chunks {
+			if i == len(chunks)-1 {
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			}
+			wrapped(ctx, &schemas.BifrostResponse{SpeechStreamResponse: c}, nil)
+		}
+		return got
+	}
+	delta := &schemas.BifrostSpeechStreamResponse{Type: schemas.SpeechStreamResponseTypeDelta, Audio: []byte("ID3")}
+	empty := &schemas.BifrostSpeechStreamResponse{Type: schemas.SpeechStreamResponseTypeDelta}
+	done := &schemas.BifrostSpeechStreamResponse{
+		Type:        schemas.SpeechStreamResponseTypeDone,
+		Usage:       &schemas.SpeechUsage{InputTokens: 4, TotalTokens: 4, VendorCost: &schemas.VendorCost{Amount: 9, Unit: schemas.VendorCostUnitCredit}},
+		ExtraFields: schemas.BifrostResponseExtraFields{Provider: schemas.Elevenlabs, RequestType: schemas.SpeechStreamRequest},
+	}
+
+	withAudio := run(delta, done)
+	if len(withAudio) != 2 || withAudio[1].err != nil || withAudio[1].result.SpeechStreamResponse != done {
+		t.Fatalf("a stream that sent audio must end on its done chunk: %+v", withAudio)
+	}
+
+	noAudio := run(empty, done)
+	if len(noAudio) != 2 || noAudio[0].err != nil || noAudio[0].result.SpeechStreamResponse != empty {
+		t.Fatalf("a chunk before the end passes through: %+v", noAudio)
+	}
+	last := noAudio[1]
+	if last.result != nil || last.err == nil {
+		t.Fatalf("a final chunk with no audio before it must be an error: %+v", last)
+	}
+	if got := last.err.ResolveErrorType(); got != schemas.ErrorTypeProviderEmptyResult || *last.err.StatusCode != 502 {
+		t.Fatalf("error = %q %v, want 502 provider_empty_result", got, *last.err.StatusCode)
+	}
+	if last.err.ExtraFields.Provider != schemas.Elevenlabs {
+		t.Fatalf("provider = %q, want the chunk's", last.err.ExtraFields.Provider)
+	}
+	billed := last.err.ExtraFields.BilledUsage
+	if billed == nil || billed.PromptTokens != 4 || billed.VendorCost == nil || billed.VendorCost.Amount != 9 {
+		t.Fatalf("BilledUsage = %+v, want the done chunk's tokens and vendor cost", billed)
+	}
+	done.Usage.VendorCost.Amount = 1
+	if billed.VendorCost.Amount != 9 {
+		t.Fatal("BilledUsage aliases the chunk's vendor cost")
+	}
+
+	// MiniMax reports only characters (extra_info.usage_characters): the error keeps them, so
+	// the bare-usage path prices them per character as the done chunk would have been.
+	vendorChars := 37
+	charsOnly := &schemas.BifrostSpeechStreamResponse{
+		Type:        schemas.SpeechStreamResponseTypeDone,
+		Usage:       &schemas.SpeechUsage{InputChars: 40, BilledCharacters: &vendorChars},
+		ExtraFields: schemas.BifrostResponseExtraFields{Provider: schemas.Minimax, RequestType: schemas.SpeechStreamRequest},
+	}
+	charBilled := run(empty, charsOnly)[1].err.ExtraFields.BilledUsage
+	if charBilled == nil || charBilled.SpeechInputChars != 40 || charBilled.BilledCharacters == nil || *charBilled.BilledCharacters != 37 || charBilled.PromptTokens != 0 {
+		t.Fatalf("BilledUsage = %+v, want the done chunk's 40 input characters and 37 vendor-billed characters", charBilled)
+	}
+	vendorChars = 1
+	if *charBilled.BilledCharacters != 37 {
+		t.Fatal("BilledUsage aliases the chunk's billed characters")
+	}
+
+	if got := run(empty, &schemas.BifrostSpeechStreamResponse{Type: schemas.SpeechStreamResponseTypeDone, Usage: &schemas.SpeechUsage{}})[1].err.ExtraFields.BilledUsage; got != nil {
+		t.Fatalf("a done chunk with empty usage bills nothing, got %+v", got)
+	}
+}
+
+// BenchmarkWrapSpeechStreamPostHookRunner measures what the speech-stream rule adds per chunk of a
+// speech stream (TXE-7021): a nil check, a length check and, on the final chunk, a context read.
+// Every other request type is dispatched without it.
+func BenchmarkWrapSpeechStreamPostHookRunner(b *testing.B) {
+	next := func(_ *schemas.BifrostContext, r *schemas.BifrostResponse, e *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return r, e
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	chunk := &schemas.BifrostResponse{SpeechStreamResponse: &schemas.BifrostSpeechStreamResponse{Type: schemas.SpeechStreamResponseTypeDelta, Audio: []byte("ID3-audio")}}
+	b.Run("unwrapped delta", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			next(ctx, chunk, nil)
+		}
+	})
+	b.Run("wrapped delta", func(b *testing.B) {
+		wrapped := wrapSpeechStreamPostHookRunner(next)
+		b.ReportAllocs()
+		for b.Loop() {
+			wrapped(ctx, chunk, nil)
+		}
+	})
+	b.Run("wrap once per stream", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			speechRunnerSink = wrapSpeechStreamPostHookRunner(next) // escapes, as it does to the provider
+		}
+	})
+}
+
+var speechRunnerSink schemas.PostHookRunner
