@@ -43,9 +43,9 @@ Remove this directory once an upstream loader release fixes the race, which mean
 `loader/register.go` links before publishing or serializes registration. Then delete this
 directory, the `replace github.com/bytedance/sonic/loader => …` line in every go.mod, the
 `./third_party/sonic-loader` line in `go.work` and `setup-go-workspace.sh`, the `COPY third_party`
-lines in `transports/Dockerfile*`, the `MODULES` entry in `go-unit-shards.py`, and
-`core/providers/utils/sonicloader_test.go`.
+lines in `transports/Dockerfile*`, the `MODULES` entry in `go-unit-shards.py`, and the sonic
+loader guards in `core/providers/utils/fasthttpreplace_test.go`.
 
-If upstream has not fixed it and a sonic upgrade moves the required loader version,
-`sonicloader_test.go` fails. In that case, copy the new loader version here, re-apply the
-`register.go` patch, and update the version above.
+If upstream has not fixed it and a sonic upgrade moves the required loader version, those
+guards fail. In that case, copy the new loader version here, re-apply the `register.go` patch,
+and update the version above.
