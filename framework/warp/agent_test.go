@@ -1024,6 +1024,23 @@ func TestWarpUsageFromResponsesKeepsTokenDetails(t *testing.T) {
 	require.Nil(t, bare.CompletionTokensDetails)
 }
 
+// BenchmarkWarpUsageFromResponses measures the conversion that runs once per model call of a
+// Warp turn (TXE-7503: the shared ToChatPromptTokensDetails replaced a hand copy).
+func BenchmarkWarpUsageFromResponses(b *testing.B) {
+	usage := &schemas.ResponsesResponseUsage{
+		InputTokens: 1000, OutputTokens: 200, TotalTokens: 1200,
+		InputTokensDetails: &schemas.ResponsesResponseInputTokens{
+			TextTokens: 590, AudioTokens: 10, VideoTokens: 30, DocumentTokens: 40,
+			CachedReadTokens: 400, CachedVideoTokens: 25, CachedWriteTokens: 50,
+		},
+		OutputTokensDetails: &schemas.ResponsesResponseOutputTokens{ReasoningTokens: 150},
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = usageFromResponses(usage)
+	}
+}
+
 // The aggregated cost must keep its breakdown, not just the total.
 //
 // BifrostCost carries InputCost and OutputCost as part of the usage contract,
