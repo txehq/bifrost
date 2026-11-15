@@ -1584,3 +1584,40 @@ func BenchmarkGeminiEmbeddingBatchLineConversion(b *testing.B) {
 		}
 	})
 }
+
+// TXE-6637: a Gemini Embedding 2 line keeps the prompt's split by modality, summed across the
+// responses of a line sent as several requests, so settlement prices video tokens at their own
+// rate (TXE-7357) and not at the text rate the aggregate count alone would get.
+func TestGeminiEmbeddingBatchLineKeepsPromptModalities(t *testing.T) {
+	response := func(text, video int32) *GeminiEmbeddingResponse {
+		details := []*ModalityTokenCount{{Modality: ModalityText, TokenCount: text}}
+		if video > 0 {
+			details = append(details, &ModalityTokenCount{Modality: ModalityVideo, TokenCount: video})
+		}
+		return &GeminiEmbeddingResponse{
+			Embedding:     &GeminiEmbedding{Values: []float64{0.1, 0.2}},
+			UsageMetadata: &GenerateContentResponseUsageMetadata{PromptTokenCount: text + video, TotalTokenCount: text + video, PromptTokensDetails: details},
+		}
+	}
+	promptDetails := func(t *testing.T, item schemas.BatchResultItem) map[string]interface{} {
+		t.Helper()
+		require.Equal(t, schemas.BatchResultStatusSucceeded, item.Status)
+		encoded, err := sonic.Marshal(item.Response.Body["usage"])
+		require.NoError(t, err)
+		var usage map[string]interface{}
+		require.NoError(t, sonic.Unmarshal(encoded, &usage))
+		details, ok := usage["prompt_tokens_details"].(map[string]interface{})
+		require.True(t, ok, "usage carries prompt_tokens_details: %s", encoded)
+		return details
+	}
+
+	single := BatchResultItemFromGeminiEmbedResponses("one", "gemini-embedding-2", []*GeminiEmbeddingResponse{response(4, 258)}, nil, false)
+	details := promptDetails(t, single)
+	assert.EqualValues(t, 4, details["text_tokens"])
+	assert.EqualValues(t, 258, details["video_tokens"])
+
+	several := BatchResultItemFromGeminiEmbedResponses("three", "gemini-embedding-2", []*GeminiEmbeddingResponse{response(4, 258), response(3, 0), response(5, 100)}, nil, false)
+	details = promptDetails(t, several)
+	assert.EqualValues(t, 12, details["text_tokens"], "text tokens are summed across the line's inputs")
+	assert.EqualValues(t, 358, details["video_tokens"], "video tokens are summed across the line's inputs")
+}

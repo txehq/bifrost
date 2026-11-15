@@ -359,6 +359,11 @@ func BatchResultItemFromGeminiEmbedResponses(customID string, model string, nati
 
 	combined := &GeminiEmbeddingResponse{Embeddings: make([]GeminiEmbedding, 0, len(natives))}
 	var promptTokens, totalTokens int32
+	// The prompt split by modality, summed across the line's responses in the order each
+	// modality first appears. Gemini Embedding 2 prices video tokens at their own rate, so
+	// folding the split into the aggregate would settle them at the text rate (TXE-7357).
+	var promptModalities []*ModalityTokenCount
+	modalityIndex := map[Modality]int{}
 	for _, native := range natives {
 		embeddings := geminiResponseEmbeddings(native)
 		if len(embeddings) == 0 {
@@ -373,6 +378,17 @@ func BatchResultItemFromGeminiEmbedResponses(customID string, model string, nati
 		if native.UsageMetadata != nil {
 			promptTokens += native.UsageMetadata.PromptTokenCount
 			totalTokens += native.UsageMetadata.TotalTokenCount
+			for _, detail := range native.UsageMetadata.PromptTokensDetails {
+				if detail == nil {
+					continue
+				}
+				if i, seen := modalityIndex[detail.Modality]; seen {
+					promptModalities[i].TokenCount += detail.TokenCount
+					continue
+				}
+				modalityIndex[detail.Modality] = len(promptModalities)
+				promptModalities = append(promptModalities, &ModalityTokenCount{Modality: detail.Modality, TokenCount: detail.TokenCount})
+			}
 		}
 	}
 	if len(combined.Embeddings) == 0 {
@@ -380,7 +396,7 @@ func BatchResultItemFromGeminiEmbedResponses(customID string, model string, nati
 		return item
 	}
 	if promptTokens > 0 || totalTokens > 0 {
-		combined.UsageMetadata = &GenerateContentResponseUsageMetadata{PromptTokenCount: promptTokens, TotalTokenCount: totalTokens}
+		combined.UsageMetadata = &GenerateContentResponseUsageMetadata{PromptTokenCount: promptTokens, TotalTokenCount: totalTokens, PromptTokensDetails: promptModalities}
 	}
 
 	body, err := batchResultBody(ToBifrostEmbeddingResponse(combined, model))
