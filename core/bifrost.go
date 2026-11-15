@@ -6174,7 +6174,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	}
 	// Before any provider runs: a provider that forces the extra-params merge leaves it on.
 	callerPassthrough := callerExtraParamsPassthrough(ctx)
-	defer callerPassthrough.restore(ctx)
+	defer callerPassthrough.restoreIfChanged(ctx)
 
 	// What the caller asked for, before any hook rewrites it: the name under which a session
 	// remembers where these requests were served. Reported back with how the request ended.
@@ -6429,7 +6429,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	// Before any provider runs: a provider that forces the extra-params merge leaves it on.
 	// Restored on return too: the stream's request body is already built by then.
 	callerPassthrough := callerExtraParamsPassthrough(ctx)
-	defer callerPassthrough.restore(ctx)
+	defer callerPassthrough.restoreIfChanged(ctx)
 
 	// What the caller asked for, before any hook rewrites it: the name under which a session
 	// remembers where these requests were served. Reported back with how the request ended.

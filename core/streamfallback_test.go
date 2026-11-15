@@ -2700,7 +2700,7 @@ type forcedMergeUpstream struct {
 	bodies [][]byte
 }
 
-func newForcedMergeUpstream(t *testing.T, status int) *forcedMergeUpstream {
+func newForcedMergeUpstream(t testing.TB, status int) *forcedMergeUpstream {
 	t.Helper()
 	u := &forcedMergeUpstream{}
 	u.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2914,5 +2914,68 @@ func TestForcedExtraParamsMergeIsOffForTheFallback(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+// BenchmarkCallerExtraParamsPassthrough is the work TXE-7222 adds to a request: one read of the
+// caller's setting before the first attempt and one read at the end. The write happens only where a
+// provider changed the switch: before each fallback attempt, and once at the end.
+func BenchmarkCallerExtraParamsPassthrough(b *testing.B) {
+	b.Run("common request, no switch", func(b *testing.B) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		b.ReportAllocs()
+		for b.Loop() {
+			s := callerExtraParamsPassthrough(ctx)
+			s.restoreIfChanged(ctx)
+		}
+	})
+	b.Run("caller enabled passthrough", func(b *testing.B) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+		b.ReportAllocs()
+		for b.Loop() {
+			s := callerExtraParamsPassthrough(ctx)
+			s.restoreIfChanged(ctx)
+		}
+	})
+	b.Run("provider forced the merge, then a fallback", func(b *testing.B) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		b.ReportAllocs()
+		for b.Loop() {
+			s := callerExtraParamsPassthrough(ctx)
+			ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true) // what the provider does
+			s.restore(ctx)                                                      // before the fallback
+			s.restoreIfChanged(ctx)
+		}
+	})
+}
+
+// BenchmarkChatCompletionNoFallback is a whole buffered chat request with no fallback, through the
+// client to a local OpenAI-shaped upstream: the common path every request takes.
+func BenchmarkChatCompletionNoFallback(b *testing.B) {
+	upstream := newForcedMergeUpstream(b, http.StatusOK)
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 4, 64, upstream.URL)
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "k", Value: *schemas.NewSecretVar("sk-bench"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+	client, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewDefaultLogger(schemas.LogLevelError)})
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(client.Shutdown)
+	req := func() *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI, Model: "gpt-4o-mini",
+			Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+		}
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if _, bifrostErr := client.ChatCompletionRequest(ctx, req()); bifrostErr != nil {
+			b.Fatal(bifrostErr.GetErrorString())
+		}
+		ctx.Cancel()
 	}
 }

@@ -459,6 +459,21 @@ func (s extraParamsPassthroughSetting) restore(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyPassthroughExtraParams)
 }
 
+// restoreIfChanged is restore for the end of a request: the common request, whose provider did not
+// write the switch, costs one read and no write.
+func (s extraParamsPassthroughSetting) restoreIfChanged(ctx *schemas.BifrostContext) {
+	current := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams)
+	if current == nil && !s.set {
+		return
+	}
+	if now, ok := current.(bool); ok {
+		if was, ok := s.value.(bool); ok && now == was {
+			return
+		}
+	}
+	s.restore(ctx)
+}
+
 // clearCtxForFallback clears the ctx values which are not applicable for fallback requests.
 func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyAPIKeyID)
