@@ -497,3 +497,164 @@ func TestGeminiGroundedStreamRoundTripMergesMultiSourceSupports(t *testing.T) {
 			"support %d indices", i)
 	}
 }
+
+// TXE-7362: a response grounded with Google Maps counts one grounded prompt under
+// tool_usage.per_tool.google_maps, which the cost path bills at google_maps_grounding_cost_per_query.
+// Search units, when the same response also ran Google Search, are kept beside it.
+func TestApplyGeminiGroundingUsageCountsMapsGroundedPrompts(t *testing.T) {
+	maps := &GroundingMetadata{GroundingChunks: []*GroundingChunk{
+		{Maps: &GroundingChunkMaps{PlaceID: "places/a", Text: "Cafe A"}},
+		{Maps: &GroundingChunkMaps{PlaceID: "places/b", Text: "Cafe B"}},
+	}}
+	chat := &schemas.BifrostLLMUsage{PromptTokens: 10}
+	applyGeminiSearchQueryChatUsage(chat, maps, "gemini-2.5-flash")
+	require.NotNil(t, chat.ToolUsage)
+	assert.Equal(t, 1, chat.ToolUsage.PerTool[schemas.ToolUsagePerToolGoogleMaps].NumRequests, "billed per grounded prompt, not per place")
+	assert.Nil(t, chat.ToolUsage.WebSearch)
+
+	both := &GroundingMetadata{WebSearchQueries: []string{"coffee near me"}, GoogleMapsWidgetContextToken: "widget/1"}
+	resp := &schemas.ResponsesResponseUsage{InputTokens: 10}
+	applyGeminiSearchQueryResponsesUsage(resp, both, "gemini-2.5-flash")
+	require.NotNil(t, resp.ToolUsage)
+	require.NotNil(t, resp.ToolUsage.WebSearch)
+	assert.Equal(t, 1, resp.ToolUsage.WebSearch.NumRequests)
+	assert.Equal(t, 1, resp.ToolUsage.PerTool[schemas.ToolUsagePerToolGoogleMaps].NumRequests)
+
+	plain := &schemas.BifrostLLMUsage{PromptTokens: 10}
+	applyGeminiSearchQueryChatUsage(plain, &GroundingMetadata{GroundingChunks: []*GroundingChunk{{Web: &GroundingChunkWeb{}}}}, "gemini-2.5-flash")
+	assert.Nil(t, plain.ToolUsage, "a response not grounded with Maps records no Maps prompt")
+}
+
+// mapsGroundedFinishChunk is the finish chunk of a Gemini answer grounded with Google Maps and
+// Google Search: two cited places, one search query, and the final usage.
+func mapsGroundedFinishChunk() *GenerateContentResponse {
+	return &GenerateContentResponse{
+		ResponseID:   "resp-maps",
+		ModelVersion: "gemini-2.5-flash",
+		Candidates: []*Candidate{{
+			FinishReason: FinishReasonStop,
+			Content:      &Content{Role: "model", Parts: []*Part{{Text: "Two cafes nearby."}}},
+			GroundingMetadata: &GroundingMetadata{
+				WebSearchQueries: []string{"cafes near me"},
+				GroundingChunks: []*GroundingChunk{
+					{Maps: &GroundingChunkMaps{PlaceID: "places/a", Text: "Cafe A"}},
+					{Maps: &GroundingChunkMaps{PlaceID: "places/b", Text: "Cafe B"}},
+				},
+			},
+		}},
+		UsageMetadata: &GenerateContentResponseUsageMetadata{PromptTokenCount: 12, CandidatesTokenCount: 8, TotalTokenCount: 20},
+	}
+}
+
+// TXE-7362: every surface that bills a Gemini answer reports a Maps-grounded answer as one grounded
+// prompt under tool_usage.per_tool.google_maps, beside its search units: chat and Responses,
+// streamed and not, and the native :generateContent passthrough, streamed and not. Vertex reaches
+// the same converters (TestVertexMapsGroundingReachesBilling in the vertex package). A route that
+// dropped the grounding metadata or the tool usage before billing fails here.
+func TestGeminiMapsGroundingReachesEveryBilledSurface(t *testing.T) {
+	check := func(t *testing.T, surface string, toolUsage *schemas.ToolUsage) {
+		t.Helper()
+		require.NotNil(t, toolUsage, "%s reports tool usage", surface)
+		assert.Equal(t, 1, toolUsage.PerTool[schemas.ToolUsagePerToolGoogleMaps].NumRequests, "%s: one grounded prompt, not one per place", surface)
+		require.NotNil(t, toolUsage.WebSearch, "%s keeps the search units", surface)
+		assert.Equal(t, 1, toolUsage.WebSearch.NumRequests, surface)
+	}
+
+	t.Run("chat", func(t *testing.T) {
+		resp := mapsGroundedFinishChunk().ToBifrostChatResponse()
+		require.NotNil(t, resp.Usage)
+		check(t, "chat", resp.Usage.ToolUsage)
+	})
+
+	t.Run("chat stream", func(t *testing.T) {
+		state := NewGeminiStreamState()
+		chunks := []*GenerateContentResponse{
+			{ResponseID: "resp-maps", ModelVersion: "gemini-2.5-flash", Candidates: []*Candidate{{
+				Content: &Content{Role: "model", Parts: []*Part{{Text: "Two cafes"}}},
+			}}},
+			mapsGroundedFinishChunk(),
+		}
+		var billed *schemas.ToolUsage
+		for _, chunk := range chunks {
+			resps, bifrostErr, _ := chunk.ToBifrostChatCompletionStream(state)
+			require.Nil(t, bifrostErr)
+			for _, resp := range resps {
+				if resp.Usage != nil && resp.Usage.ToolUsage != nil {
+					billed = resp.Usage.ToolUsage
+				}
+			}
+		}
+		check(t, "chat stream", billed)
+	})
+
+	t.Run("responses", func(t *testing.T) {
+		resp := mapsGroundedFinishChunk().ToResponsesBifrostResponsesResponse()
+		require.NotNil(t, resp.Usage)
+		check(t, "responses", resp.Usage.ToolUsage)
+	})
+
+	t.Run("responses stream", func(t *testing.T) {
+		state := acquireGeminiResponsesStreamState()
+		chunks := []*GenerateContentResponse{
+			{ResponseID: "resp-maps", ModelVersion: "gemini-2.5-flash", Candidates: []*Candidate{{
+				Content: &Content{Role: "model", Parts: []*Part{{Text: "Two cafes"}}},
+			}}},
+			mapsGroundedFinishChunk(),
+		}
+		var billed *schemas.ToolUsage
+		seq := 0
+		for _, chunk := range chunks {
+			resps, bifrostErr := chunk.ToBifrostResponsesStream(seq, state)
+			require.Nil(t, bifrostErr)
+			seq += len(resps)
+			for _, resp := range resps {
+				if resp.Response != nil && resp.Response.Usage != nil && resp.Response.Usage.ToolUsage != nil {
+					billed = resp.Response.Usage.ToolUsage
+				}
+			}
+		}
+		check(t, "responses stream", billed)
+	})
+
+	body, err := json.Marshal(mapsGroundedFinishChunk())
+	require.NoError(t, err)
+	for _, path := range []string{
+		"/v1beta/models/gemini-2.5-flash:generateContent",
+		"/v1beta/models/gemini-2.5-flash:streamGenerateContent",
+	} {
+		t.Run("passthrough "+path, func(t *testing.T) {
+			usage := ExtractGeminiPassthroughUsage(path, nil, body)
+			require.NotNil(t, usage)
+			require.NotNil(t, usage.LLMUsage)
+			check(t, path, usage.LLMUsage.ToolUsage)
+		})
+	}
+
+	t.Run("ungrounded passthrough answer bills no grounding", func(t *testing.T) {
+		usage := ExtractGeminiPassthroughUsage("/v1beta/models/gemini-2.5-flash:generateContent", nil,
+			[]byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":1,"totalTokenCount":4}}`))
+		require.NotNil(t, usage)
+		require.NotNil(t, usage.LLMUsage)
+		assert.Nil(t, usage.LLMUsage.ToolUsage)
+	})
+}
+
+// BenchmarkApplyGeminiGroundingUsage measures the grounding accounting every Gemini and Vertex
+// answer runs on the response path (TXE-7362): an ungrounded answer (the common case, which must
+// stay free), a Search-grounded one, and a Maps-grounded one, which allocates the per-tool map.
+func BenchmarkApplyGeminiGroundingUsage(b *testing.B) {
+	cases := map[string]*GroundingMetadata{
+		"ungrounded": nil,
+		"search":     {WebSearchQueries: []string{"cafes near me"}},
+		"maps":       mapsGroundedFinishChunk().Candidates[0].GroundingMetadata,
+	}
+	for name, metadata := range cases {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				usage := schemas.BifrostLLMUsage{PromptTokens: 12, CompletionTokens: 8, TotalTokens: 20}
+				applyGeminiSearchQueryChatUsage(&usage, metadata, "gemini-2.5-flash")
+			}
+		})
+	}
+}

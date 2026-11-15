@@ -1982,6 +1982,60 @@ func TestVertexGeminiChatCarriesNewUsageAndNativeFinishReason(t *testing.T) {
 	}
 }
 
+// TestVertexMapsGroundingReachesBilling pins TXE-7362 on the vertex provider, which reuses the
+// Gemini converters: a Gemini answer grounded with Google Maps reports one grounded prompt under
+// tool_usage.per_tool.google_maps, beside its search units, on chat and on Responses.
+func TestVertexMapsGroundingReachesBilling(t *testing.T) {
+	const body = `{"candidates":[{"content":{"role":"model","parts":[{"text":"Two cafes nearby."}]},"finishReason":"STOP",` +
+		`"groundingMetadata":{"webSearchQueries":["cafes near me"],"groundingChunks":[{"maps":{"placeId":"places/a","text":"Cafe A"}},{"maps":{"placeId":"places/b","text":"Cafe B"}}]}}],` +
+		`"usageMetadata":{"promptTokenCount":12,"candidatesTokenCount":8,"totalTokenCount":20},"modelVersion":"gemini-2.5-flash"}`
+	check := func(t *testing.T, toolUsage *schemas.ToolUsage) {
+		t.Helper()
+		if toolUsage == nil {
+			t.Fatal("tool usage is missing")
+		}
+		if got := toolUsage.PerTool[schemas.ToolUsagePerToolGoogleMaps].NumRequests; got != 1 {
+			t.Errorf("google_maps grounded prompts = %d, want 1 (per prompt, not per place)", got)
+		}
+		if toolUsage.WebSearch == nil || toolUsage.WebSearch.NumRequests != 1 {
+			t.Errorf("web search = %#v, want 1 search unit kept beside the Maps prompt", toolUsage.WebSearch)
+		}
+	}
+	ctx := func() *schemas.BifrostContext { return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline) }
+
+	t.Run("chat", func(t *testing.T) {
+		fixture := newVertexGeminiFixture(t, body)
+		response, bifrostErr := fixture.provider.ChatCompletion(ctx(), fixture.key("global"), &schemas.BifrostChatRequest{
+			Provider: schemas.Vertex,
+			Model:    "gemini-2.5-flash",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("cafes near me")}}},
+		})
+		if bifrostErr != nil {
+			t.Fatalf("ChatCompletion: %s", bifrostErr.GetErrorString())
+		}
+		if response.Usage == nil {
+			t.Fatal("usage is missing")
+		}
+		check(t, response.Usage.ToolUsage)
+	})
+
+	t.Run("responses", func(t *testing.T) {
+		fixture := newVertexGeminiFixture(t, body)
+		response, bifrostErr := fixture.provider.Responses(ctx(), fixture.key("global"), &schemas.BifrostResponsesRequest{
+			Provider: schemas.Vertex,
+			Model:    "gemini-2.5-flash",
+			Input:    []schemas.ResponsesMessage{{Role: new(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: new("cafes near me")}}},
+		})
+		if bifrostErr != nil {
+			t.Fatalf("Responses: %s", bifrostErr.GetErrorString())
+		}
+		if response.Usage == nil {
+			t.Fatal("usage is missing")
+		}
+		check(t, response.Usage.ToolUsage)
+	})
+}
+
 // BenchmarkResolveVertexServiceTierHeader measures what the service-tier resolution adds to
 // every Vertex Gemini request (TXE-6535): a request without service_tier, the common case,
 // one whose tier is sent as the header, and one that is refused.

@@ -305,11 +305,18 @@ func TestExtractGeminiPassthroughUsage_VideoEmbeddingInputs(t *testing.T) {
 	}
 }
 
-// BenchmarkExtractGeminiPassthroughUsage measures the passthrough embedding extractor (TXE-7408):
-// a text embedding (the common case), Gemini Embedding 2 with a video, and multimodalembedding's
-// video segments with the interval read off the request.
+// BenchmarkExtractGeminiPassthroughUsage measures the passthrough extractor: a text embedding (the
+// common case), Gemini Embedding 2 with a video, and multimodalembedding's video segments with the
+// interval read off the request (TXE-7408); and a :generateContent answer, ungrounded (the common
+// case, which must not pay for the grounding decode) and grounded with Google Maps (TXE-7362).
 func BenchmarkExtractGeminiPassthroughUsage(b *testing.B) {
 	cases := []struct{ name, path, req, resp string }{
+		{"generateContent_ungrounded", "/v1beta/models/gemini-2.5-flash:generateContent",
+			`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`,
+			`{"candidates":[{"content":{"role":"model","parts":[{"text":"Hello there, how can I help?"}]},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":8,"totalTokenCount":11},"modelVersion":"gemini-2.5-flash"}`},
+		{"generateContent_maps", "/v1beta/models/gemini-2.5-flash:generateContent",
+			`{"contents":[{"role":"user","parts":[{"text":"cafes near me"}]}]}`,
+			`{"candidates":[{"content":{"role":"model","parts":[{"text":"Two cafes nearby."}]},"finishReason":"STOP","index":0,"groundingMetadata":{"groundingChunks":[{"maps":{"placeId":"places/a","text":"Cafe A"}},{"maps":{"placeId":"places/b","text":"Cafe B"}}]}}],"usageMetadata":{"promptTokenCount":12,"candidatesTokenCount":8,"totalTokenCount":20},"modelVersion":"gemini-2.5-flash"}`},
 		{"embedContent_text", "/projects/p/locations/us-central1/publishers/google/models/gemini-embedding-2:embedContent",
 			`{"content":{"parts":[{"text":"hi"}]}}`,
 			`{"embedding":{"values":[0.1,0.2]},"usageMetadata":{"promptTokenCount":5,"totalTokenCount":5}}`},

@@ -1295,6 +1295,7 @@ governance_model_pricing|cache_read_input_audio_token_cost|NULL|id = 1
 governance_model_pricing|cache_read_input_audio_token_cost_flex|NULL|id = 1
 governance_model_pricing|cache_read_input_audio_token_cost_priority|NULL|id = 1
 governance_model_pricing|cache_read_input_audio_token_cost_batches|NULL|id = 1
+governance_model_pricing|google_maps_grounding_cost_per_query|NULL|id = 1
 mcp_tool_logs|user_name|'Migration Test User'|id = 'mcp-log-migration-001'
 mcp_tool_logs|team_name|'Migration Test Team'|id = 'mcp-log-migration-001'
 mcp_tool_logs|customer_name|'Migration Test Customer'|id = 'mcp-log-migration-001'

@@ -592,6 +592,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_unmeasured_video_seconds_column"}, run: migrationAddUnmeasuredVideoSecondsColumn},
 	{IDs: []string{"add_cached_audio_pricing_columns"}, run: migrationAddCachedAudioPricingColumns},
 	{IDs: []string{"add_free_input_images_column"}, run: migrationAddFreeInputImagesColumn},
+	{IDs: []string{"add_google_maps_grounding_pricing_column"}, run: migrationAddGoogleMapsGroundingPricingColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -17002,6 +17003,12 @@ func migrationAddCachedAudioPricingColumns(ctx context.Context, db *gorm.DB, log
 		"cache_read_input_audio_token_cost_priority",
 		"cache_read_input_audio_token_cost_batches",
 	})
+}
+
+// migrationAddGoogleMapsGroundingPricingColumn adds the per-prompt Google Maps grounding rate
+// (fork, TXE-7362). Expand-only.
+func migrationAddGoogleMapsGroundingPricingColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	return addPricingColumnsMigration(ctx, db, logger, "add_google_maps_grounding_pricing_column", []string{"google_maps_grounding_cost_per_query"})
 }
 
 // addPricingColumnsMigration runs one expand-only migration that adds nullable
