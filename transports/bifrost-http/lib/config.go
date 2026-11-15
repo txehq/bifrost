@@ -8675,6 +8675,7 @@ func (c *Config) AddProvider(ctx context.Context, provider schemas.ModelProvider
 			if errors.Is(err, configstore.ErrAlreadyExists) {
 				// Provider already exists in DB but not in memory - sync and return
 				c.Providers[provider] = config
+				schemas.RegisterKnownProvider(provider)
 				logger.Info("provider %s already exists in DB, synced to memory", provider)
 				return fmt.Errorf("provider/provider key name %s: %w", provider, ErrAlreadyExists)
 			}
@@ -8682,6 +8683,12 @@ func (c *Config) AddProvider(ctx context.Context, provider schemas.ModelProvider
 		}
 	}
 	c.Providers[provider] = config
+	// Core builds a provider added at runtime lazily, on its first request, and only
+	// then registered it as a known provider. Until that request, "<provider>/model"
+	// did not parse as a prefix, so the first call went to whichever catalog provider
+	// claimed the model and reached this one only as a fallback (TXE-7501). A provider
+	// configured at boot is registered when core prepares it.
+	schemas.RegisterKnownProvider(provider)
 	logger.Info("added provider: %s", provider)
 	return nil
 }
@@ -8989,6 +8996,10 @@ func (c *Config) RemoveProvider(ctx context.Context, provider schemas.ModelProvi
 		return nil
 	}
 	delete(c.Providers, provider)
+	// AddProvider registered the prefix; core unregisters it only for a provider it has
+	// built, so one removed before its first request (or rolled back after a failed add)
+	// would keep claiming "<provider>/..." model strings. Standard providers stay known.
+	schemas.UnregisterKnownProvider(provider)
 	logger.Info("Removed provider: %s", provider)
 	return nil
 }

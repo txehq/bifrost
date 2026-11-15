@@ -1,0 +1,322 @@
+{
+  "name": "599. A provider added at runtime answers to its prefix on its first request (prefix-on-add)",
+  "description": "TXE-7501 / PR #339. A custom provider added through POST /api/providers is built by core on its first request, and its name became a known model prefix only then. So the first request naming it, \"<provider>/model\", parsed to no provider: the model catalog sent it to whichever provider's wildcard key claimed the model string, and the new provider was reached at best as a fallback.\n\nEach row creates its own run-scoped keyless OpenAI-backed provider whose base URL is the provider error fixture, and sends the very first request on it as \"<provider>/upstream-ok~<run tag>\". Keyless, because adding a key through /keys builds the provider in core first and hides the bug. The gateway config of the fixture group has many wildcard keys, the condition under which the first request was misrouted. A row pins that the request succeeded on the new provider with the prefix stripped, and, from the fixture's /__hits, that the fixture received the bare model once and never the prefixed one. Row 1 is a chat completion, row 2 the same as a stream. The rows skip themselves outside a fixture run; each deletes its provider, and providers an aborted run left behind are swept after ten minutes.",
+  "item": [
+    {
+      "name": "599.1 openai keyless custom provider: the first chat completion names a provider added a moment earlier - prefix-on-add",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); return; }",
+              "// ---- in-script management calls (see the folder description) ----",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var PREFIX = 'harness-prefix-on-add-';",
+              "function call(method, path, body, cb) {",
+              "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+              "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+              "  pm.sendRequest(req, function (err, res) {",
+              "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+              "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+              "    cb(res, json);",
+              "  });",
+              "}",
+              "// Providers left by an aborted earlier run carry their run timestamp in their names. Only ones older",
+              "// than ten minutes are swept, so a parallel shard's live provider is never touched.",
+              "function isStale(name) {",
+              "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+              "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+              "}",
+              "function sweepStale(done) {",
+              "  call('GET', '/api/providers', null, function (res, j) {",
+              "    var stale = ((j && j.providers) || []).filter(function (p) { return isStale(p.name); });",
+              "    var i = 0; (function next() { if (i >= stale.length) { return done(); } call('DELETE', '/api/providers/' + encodeURIComponent(stale[i++].name), null, function () { next(); }); })();",
+              "  });",
+              "}",
+              "function deleteProvider(name) {",
+              "  if (!name) { return; }",
+              "  call('DELETE', '/api/providers/' + encodeURIComponent(name), null, function () {});",
+              "}",
+              "// The fixture counts each chat request under the model it received.",
+              "function fixtureHits(cb) {",
+              "  pm.sendRequest({ url: FX + '/__hits', method: 'GET' }, function (err, res) {",
+              "    var h = {}; try { h = ((res.json().data || [])[0] || {}).hits || {}; } catch (e) { h = {}; }",
+              "    cb(err ? null : h);",
+              "  });",
+              "}",
+              "// A keyless provider, so nothing is added after the POST: adding a key through /keys builds the",
+              "// provider in core first, which registers the prefix and would hide what this row pins.",
+              "var run = Date.now() + '-' + Math.floor(Math.random() * 1e6);",
+              "var name = PREFIX + 'run-' + run;",
+              "pm.collectionVariables.set('prefixOnAdd1Provider', name);",
+              "pm.collectionVariables.set('prefixOnAdd1Model', 'upstream-ok~prefix-on-add-1-' + run);",
+              "sweepStale(function () {",
+              "  call('POST', '/api/providers', {",
+              "    provider: name,",
+              "    custom_provider_config: { base_provider_type: 'openai', is_key_less: true, allowed_requests: { chat_completion: true, chat_completion_stream: true } },",
+              "    network_config: { base_url: FX, max_retries: 0, default_request_timeout_in_seconds: 30 }",
+              "  }, function (res) {",
+              "    pm.test('setup: created the run-scoped keyless provider on the fixture', function () {",
+              "      pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200);",
+              "    });",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') { return; }",
+              "// ---- in-script management calls (see the folder description) ----",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var PREFIX = 'harness-prefix-on-add-';",
+              "function call(method, path, body, cb) {",
+              "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+              "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+              "  pm.sendRequest(req, function (err, res) {",
+              "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+              "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+              "    cb(res, json);",
+              "  });",
+              "}",
+              "// Providers left by an aborted earlier run carry their run timestamp in their names. Only ones older",
+              "// than ten minutes are swept, so a parallel shard's live provider is never touched.",
+              "function isStale(name) {",
+              "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+              "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+              "}",
+              "function sweepStale(done) {",
+              "  call('GET', '/api/providers', null, function (res, j) {",
+              "    var stale = ((j && j.providers) || []).filter(function (p) { return isStale(p.name); });",
+              "    var i = 0; (function next() { if (i >= stale.length) { return done(); } call('DELETE', '/api/providers/' + encodeURIComponent(stale[i++].name), null, function () { next(); }); })();",
+              "  });",
+              "}",
+              "function deleteProvider(name) {",
+              "  if (!name) { return; }",
+              "  call('DELETE', '/api/providers/' + encodeURIComponent(name), null, function () {});",
+              "}",
+              "// The fixture counts each chat request under the model it received.",
+              "function fixtureHits(cb) {",
+              "  pm.sendRequest({ url: FX + '/__hits', method: 'GET' }, function (err, res) {",
+              "    var h = {}; try { h = ((res.json().data || [])[0] || {}).hits || {}; } catch (e) { h = {}; }",
+              "    cb(err ? null : h);",
+              "  });",
+              "}",
+              "var provider = pm.collectionVariables.get('prefixOnAdd1Provider');",
+              "var model = pm.collectionVariables.get('prefixOnAdd1Model');",
+              "var txt = pm.response.text() || '';",
+              "var ef = {}; try { ef = (pm.response.json() || {}).extra_fields || {}; } catch (e) { ef = {}; }",
+              "pm.test('599.1 the first request on the new prefix succeeded', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 600)).to.eql(200);",
+              "});",
+              "pm.test('599.1 the new provider served it, not a provider the catalog picked', function () {",
+              "  pm.expect(ef.provider, txt.slice(0, 600)).to.eql(provider);",
+              "});",
+              "pm.test('599.1 the prefix was stripped before routing', function () {",
+              "  pm.expect(ef.resolved_model_used, txt.slice(0, 600)).to.eql(model);",
+              "});",
+              "fixtureHits(function (hits) {",
+              "  pm.test('599.1 the fixture received the bare model, once', function () {",
+              "    pm.expect(hits, 'the fixture /__hits did not answer').to.be.an('object');",
+              "    pm.expect(hits[model], JSON.stringify(hits).slice(0, 600)).to.eql(1);",
+              "  });",
+              "  pm.test('599.1 the fixture never received the prefixed model', function () {",
+              "    pm.expect(hits && hits[provider + '/' + model], 'the prefix reached the upstream').to.equal(undefined);",
+              "  });",
+              "  deleteProvider(provider);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"{{prefixOnAdd1Provider}}/{{prefixOnAdd1Model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "599.2 openai keyless custom provider: the first streamed chat completion names a provider added a moment earlier - prefix-on-add",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); return; }",
+              "// ---- in-script management calls (see the folder description) ----",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var PREFIX = 'harness-prefix-on-add-';",
+              "function call(method, path, body, cb) {",
+              "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+              "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+              "  pm.sendRequest(req, function (err, res) {",
+              "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+              "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+              "    cb(res, json);",
+              "  });",
+              "}",
+              "// Providers left by an aborted earlier run carry their run timestamp in their names. Only ones older",
+              "// than ten minutes are swept, so a parallel shard's live provider is never touched.",
+              "function isStale(name) {",
+              "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+              "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+              "}",
+              "function sweepStale(done) {",
+              "  call('GET', '/api/providers', null, function (res, j) {",
+              "    var stale = ((j && j.providers) || []).filter(function (p) { return isStale(p.name); });",
+              "    var i = 0; (function next() { if (i >= stale.length) { return done(); } call('DELETE', '/api/providers/' + encodeURIComponent(stale[i++].name), null, function () { next(); }); })();",
+              "  });",
+              "}",
+              "function deleteProvider(name) {",
+              "  if (!name) { return; }",
+              "  call('DELETE', '/api/providers/' + encodeURIComponent(name), null, function () {});",
+              "}",
+              "// The fixture counts each chat request under the model it received.",
+              "function fixtureHits(cb) {",
+              "  pm.sendRequest({ url: FX + '/__hits', method: 'GET' }, function (err, res) {",
+              "    var h = {}; try { h = ((res.json().data || [])[0] || {}).hits || {}; } catch (e) { h = {}; }",
+              "    cb(err ? null : h);",
+              "  });",
+              "}",
+              "// A keyless provider, so nothing is added after the POST: adding a key through /keys builds the",
+              "// provider in core first, which registers the prefix and would hide what this row pins.",
+              "var run = Date.now() + '-' + Math.floor(Math.random() * 1e6);",
+              "var name = PREFIX + 'run-' + run;",
+              "pm.collectionVariables.set('prefixOnAdd2Provider', name);",
+              "pm.collectionVariables.set('prefixOnAdd2Model', 'upstream-ok~prefix-on-add-2-' + run);",
+              "sweepStale(function () {",
+              "  call('POST', '/api/providers', {",
+              "    provider: name,",
+              "    custom_provider_config: { base_provider_type: 'openai', is_key_less: true, allowed_requests: { chat_completion: true, chat_completion_stream: true } },",
+              "    network_config: { base_url: FX, max_retries: 0, default_request_timeout_in_seconds: 30 }",
+              "  }, function (res) {",
+              "    pm.test('setup: created the run-scoped keyless provider on the fixture', function () {",
+              "      pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200);",
+              "    });",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') { return; }",
+              "// ---- in-script management calls (see the folder description) ----",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var PREFIX = 'harness-prefix-on-add-';",
+              "function call(method, path, body, cb) {",
+              "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+              "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+              "  pm.sendRequest(req, function (err, res) {",
+              "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+              "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+              "    cb(res, json);",
+              "  });",
+              "}",
+              "// Providers left by an aborted earlier run carry their run timestamp in their names. Only ones older",
+              "// than ten minutes are swept, so a parallel shard's live provider is never touched.",
+              "function isStale(name) {",
+              "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+              "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+              "}",
+              "function sweepStale(done) {",
+              "  call('GET', '/api/providers', null, function (res, j) {",
+              "    var stale = ((j && j.providers) || []).filter(function (p) { return isStale(p.name); });",
+              "    var i = 0; (function next() { if (i >= stale.length) { return done(); } call('DELETE', '/api/providers/' + encodeURIComponent(stale[i++].name), null, function () { next(); }); })();",
+              "  });",
+              "}",
+              "function deleteProvider(name) {",
+              "  if (!name) { return; }",
+              "  call('DELETE', '/api/providers/' + encodeURIComponent(name), null, function () {});",
+              "}",
+              "// The fixture counts each chat request under the model it received.",
+              "function fixtureHits(cb) {",
+              "  pm.sendRequest({ url: FX + '/__hits', method: 'GET' }, function (err, res) {",
+              "    var h = {}; try { h = ((res.json().data || [])[0] || {}).hits || {}; } catch (e) { h = {}; }",
+              "    cb(err ? null : h);",
+              "  });",
+              "}",
+              "var provider = pm.collectionVariables.get('prefixOnAdd2Provider');",
+              "var model = pm.collectionVariables.get('prefixOnAdd2Model');",
+              "var txt = pm.response.text() || '';",
+              "var ef = {}; try { ef = (pm.response.json() || {}).extra_fields || {}; } catch (e) { ef = {}; }",
+              "pm.test('599.2 the first request on the new prefix succeeded', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 600)).to.eql(200);",
+              "});",
+              "pm.test('599.2 the stream carries the fixture answer, not an error', function () {",
+              "  pm.expect(txt, txt.slice(0, 600)).to.include('data:');",
+              "  pm.expect(txt, txt.slice(0, 600)).to.not.include('\"error\"');",
+              "});",
+              "fixtureHits(function (hits) {",
+              "  pm.test('599.2 the fixture received the bare model, once', function () {",
+              "    pm.expect(hits, 'the fixture /__hits did not answer').to.be.an('object');",
+              "    pm.expect(hits[model], JSON.stringify(hits).slice(0, 600)).to.eql(1);",
+              "  });",
+              "  pm.test('599.2 the fixture never received the prefixed model', function () {",
+              "    pm.expect(hits && hits[provider + '/' + model], 'the prefix reached the upstream').to.equal(undefined);",
+              "  });",
+              "  deleteProvider(provider);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"{{prefixOnAdd2Provider}}/{{prefixOnAdd2Model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    }
+  ]
+}

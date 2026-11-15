@@ -509,7 +509,7 @@ async function assertOtelMetricsReceived() {
 		"provider",
 		providerName,
 		"model",
-		requestedModel,
+		modelName,
 		"method",
 		"chat_completion",
 	]);
@@ -702,7 +702,7 @@ async function assertPrometheusScrape() {
 				(line) =>
 					line.startsWith("bifrost_success_requests_total{") &&
 					line.includes(`provider="${providerName}"`) &&
-					(line.includes(`model="${modelName}"`) || line.includes(`model="${requestedModel}"`)),
+					line.includes(`model="${modelName}"`),
 			);
 		if (hasLLMSuccessMetric) {
 			return res.text;
@@ -710,7 +710,7 @@ async function assertPrometheusScrape() {
 		return null;
 	});
 
-	const labels = { provider: providerName, model: requestedModel, method: "chat_completion" };
+	const labels = { provider: providerName, model: modelName, method: "chat_completion" };
 	const successLine = findPrometheusSample(metrics, "bifrost_success_requests_total", labels);
 	const upstreamLine = findPrometheusSample(metrics, "bifrost_upstream_requests_total", labels);
 	const inputLine = findPrometheusSample(metrics, "bifrost_input_tokens_total", labels);
@@ -761,7 +761,7 @@ async function assertLoggingTrace() {
 	if (log.provider !== providerName) {
 		throw new Error(`logging trace API returned unexpected provider: ${JSON.stringify(log.provider)}`);
 	}
-	if (log.model !== modelName && log.model !== requestedModel) {
+	if (log.model !== modelName) {
 		throw new Error(`logging trace API returned unexpected model: ${JSON.stringify(log.model)}`);
 	}
 	if (log.object !== "chat_completion" && log.object !== "chat.completion") {
@@ -802,7 +802,7 @@ async function assertLoggingTrace() {
 // threshold. assertPrometheusScrape and assertLoggingTrace check each side in isolation;
 // only this cross-check catches a drift where both sides individually look "present".
 function assertMetricsMatchLogs(metrics, log) {
-	const labels = { provider: providerName, model: requestedModel, method: "chat_completion" };
+	const labels = { provider: providerName, model: modelName, method: "chat_completion" };
 	const inputLine = findPrometheusSample(metrics, "bifrost_input_tokens_total", labels);
 	const outputLine = findPrometheusSample(metrics, "bifrost_output_tokens_total", labels);
 	if (!inputLine || !outputLine) {
@@ -836,7 +836,7 @@ function assertMockProviderRequest(wantCount = 1) {
 	} catch (err) {
 		throw new Error(`mock provider request body is not JSON: ${err.message}`);
 	}
-	if (body.model !== requestedModel && body.model !== modelName) {
+	if (body.model !== modelName) {
 		throw new Error(`mock provider received unexpected model: ${JSON.stringify(body.model)}`);
 	}
 	if (
@@ -931,7 +931,7 @@ async function main() {
 
 		console.log(`  OTEL trace exports received: ${state.otelTraceRequests.length}`);
 		console.log(`  OTEL metric exports received: ${state.otelMetricRequests.length}`);
-		console.log(`  Prometheus scrape includes provider="${providerName}" model="${requestedModel}"`);
+		console.log(`  Prometheus scrape includes provider="${providerName}" model="${modelName}"`);
 		console.log(`  Metrics/logs token usage reconciled (scrape == logs)`);
 		console.log(`  Logging trace API returned id="${requestID}"`);
 		console.log(`  Error spans carry gen_ai.error.* and error counter has status_code (non-stream and stream).`);

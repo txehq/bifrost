@@ -21921,6 +21921,69 @@ func TestAddProvider_Success(t *testing.T) {
 	}
 }
 
+// A provider added at runtime is a model prefix from the moment it is added, not from
+// its first request (TXE-7501): "<provider>/model" must parse before core has built it.
+func TestAddProvider_RegistersKnownProviderPrefix(t *testing.T) {
+	initTestLogger()
+	cases := []struct {
+		name  string
+		store configstore.ConfigStore
+	}{
+		{"store", NewMockConfigStore()},
+		{"already in DB", &mockConfigStoreAddProvider{MockConfigStore: *NewMockConfigStore(), addProviderErr: configstore.ErrAlreadyExists}},
+		{"no store", nil},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := schemas.ModelProvider(fmt.Sprintf("txe-7501-custom-%d", i))
+			if schemas.IsKnownProvider(string(provider)) {
+				t.Fatalf("%s is already a known provider before the add", provider)
+			}
+			cfg := &Config{Providers: make(map[schemas.ModelProvider]configstore.ProviderConfig), ConfigStore: tc.store}
+			_ = cfg.AddProvider(context.Background(), provider, configstore.ProviderConfig{
+				CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true},
+			})
+			if _, ok := cfg.Providers[provider]; !ok {
+				t.Fatalf("%s is not in the in-memory map after the add", provider)
+			}
+			gotProvider, gotModel := schemas.ParseModelString(string(provider)+"/hello-world", "")
+			if gotProvider != provider || gotModel != "hello-world" {
+				t.Fatalf("ParseModelString(%q) = (%q, %q), want (%q, %q)", string(provider)+"/hello-world", gotProvider, gotModel, provider, "hello-world")
+			}
+		})
+	}
+}
+
+// Removing a provider core never built (a rolled-back add, or a delete before its first
+// request) releases its prefix, and removing a standard provider leaves its prefix known.
+func TestRemoveProvider_UnregistersKnownProviderPrefix(t *testing.T) {
+	initTestLogger()
+	const provider = schemas.ModelProvider("txe-7501-removed")
+	cfg := &Config{Providers: make(map[schemas.ModelProvider]configstore.ProviderConfig)}
+	if err := cfg.AddProvider(context.Background(), provider, configstore.ProviderConfig{
+		CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true},
+	}); err != nil {
+		t.Fatalf("AddProvider: %v", err)
+	}
+	if !schemas.IsKnownProvider(string(provider)) {
+		t.Fatalf("%s is not known after the add", provider)
+	}
+	if err := cfg.RemoveProvider(context.Background(), provider); err != nil {
+		t.Fatalf("RemoveProvider: %v", err)
+	}
+	if schemas.IsKnownProvider(string(provider)) {
+		t.Fatalf("%s is still a known prefix after its removal", provider)
+	}
+
+	cfg.Providers[schemas.OpenAI] = configstore.ProviderConfig{}
+	if err := cfg.RemoveProvider(context.Background(), schemas.OpenAI); err != nil {
+		t.Fatalf("RemoveProvider(openai): %v", err)
+	}
+	if !schemas.IsKnownProvider(string(schemas.OpenAI)) {
+		t.Fatal("removing the openai config unregistered the standard openai prefix")
+	}
+}
+
 func TestAddProvider_AlreadyExistsInMemory(t *testing.T) {
 	initTestLogger()
 	cfg := &Config{
