@@ -97,18 +97,15 @@ type BifrostImageGenerationResponse struct {
 	// the log row's service_tier column so a recalculation reprices at the served tier.
 	ServiceTier *BifrostServiceTier `json:"-"`
 
-	// LargeResponseUnread is set when the vendor's answer was streamed to the caller unchanged in
-	// large-response mode (fork, TXE-7017): Bifrost never read it, so Data is empty and the
-	// vendor's usage, which follows the base64 images, is unknown. Never serialised; see
-	// MarkLargeResponseUnread.
-	LargeResponseUnread bool `json:"-"`
+	LargeResponseUnread bool `json:"-"` // the answer was streamed to the caller unread; see MarkLargeResponseUnread (TXE-7017)
 
 	Usage       *ImageUsage                `json:"usage,omitempty"`
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }
 
 // MarkLargeResponseUnread marks a response whose vendor answer was streamed to the caller unread
-// (large-response mode, fork TXE-7017), before BackfillParams runs. The empty Data is not what the
+// (large-response mode, fork TXE-7017), before BackfillParams runs. Bifrost never read that answer,
+// so Data is empty and the vendor's usage, which follows the base64 images, is unknown. The empty Data is not what the
 // vendor delivered, so usage.output_images is left unset instead of being written as 0, and the
 // cost path is given the images the request asked for (n, 1 when unset) through the internal
 // NImages count, priced at the request's size and quality like any image response. Before, the
