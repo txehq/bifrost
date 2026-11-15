@@ -1128,8 +1128,15 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 	textInputCost := float64(nonCachedPrompt) * inputRate
 
 	cacheReadCost := 0.0
+	cachedAudioTokens := 0
 	if cachedReadTokens > 0 {
 		cacheReadCost = float64(cachedReadTokens) * cacheReadInputRate
+		// Cached audio a vendor reports apart (OpenAI's cached_tokens_details, Gemini's
+		// cacheTokensDetails) takes the cached-audio rate for the served tier (fork, TXE-7361).
+		cachedAudioTokens = min(max(usage.PromptTokensDetails.CachedReadTokenDetails.CachedAudioTokens(), 0), cachedReadTokens)
+		if rate := cachedAudioReadRate(pricing, tier); rate != nil && cachedAudioTokens > 0 {
+			cacheReadCost += float64(cachedAudioTokens) * (*rate - cacheReadInputRate)
+		}
 	}
 
 	cacheWriteCost := 0.0
@@ -1157,6 +1164,8 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 	if usage.CompletionTokensDetails != nil {
 		outputAudioTokens = usage.CompletionTokensDetails.AudioTokens
 	}
+	// audio_tokens counts cached audio too; the cached part is priced with the cache reads above.
+	inputAudioTokens -= cachedAudioTokens
 	if inputAudioTokens < 0 {
 		inputAudioTokens = 0
 	} else if inputAudioTokens > promptTokens {
@@ -1331,6 +1340,12 @@ func computeBatchTokenCost(pricing *configstoreTables.TableModelPricing, usage *
 		// moves them to the audio rate; on an image line, image input tokens move to the image
 		// batch rate, and video input tokens move to the video token batch rate. A row with no audio or image rate keeps them at the text rate.
 		if d := usage.PromptTokensDetails; d != nil {
+			// Cached audio takes the cached-audio batch rate (TXE-7361), and leaves the uncached
+			// audio count, which includes it.
+			cachedAudio := min(max(d.CachedReadTokenDetails.CachedAudioTokens(), 0), cachedReadTokens)
+			if rate, ok := in.rate(pricing.CacheReadInputAudioTokenCostBatches, pricing.CacheReadInputAudioTokenCost); ok && cachedAudio > 0 {
+				inputCost += float64(cachedAudio) * (rate - cacheReadRate)
+			}
 			imageTokens := 0
 			if imageLine {
 				imageTokens = d.ImageTokens
@@ -1340,7 +1355,7 @@ func computeBatchTokenCost(pricing *configstoreTables.TableModelPricing, usage *
 				tokens          int
 				explicit, synch *float64
 			}{
-				{d.AudioTokens, pricing.InputCostPerAudioTokenBatches, pricing.InputCostPerAudioToken},
+				{d.AudioTokens - cachedAudio, pricing.InputCostPerAudioTokenBatches, pricing.InputCostPerAudioToken},
 				{imageTokens, pricing.InputCostPerImageTokenBatches, pricing.InputCostPerImageToken},
 				// Fresh video tokens at the video token batch rate (fork, TXE-7357); cached video is
 				// in CachedReadTokens and already priced at the cache-read batch rate.
@@ -3010,6 +3025,19 @@ func tieredAudioTokenInputRate(pricing *configstoreTables.TableModelPricing, tot
 		return *rate
 	}
 	return tieredInputRate(pricing, totalTokens, tier)
+}
+
+// cachedAudioReadRate returns the cached audio input rate for the served tier (fork, TXE-7361):
+// the flex or priority rate when the row has one, else the standard rate, else nil, which leaves
+// cached audio at the text cache-read rate.
+func cachedAudioReadRate(pricing *configstoreTables.TableModelPricing, tier serviceTier) *float64 {
+	if tier.isFlex && pricing.CacheReadInputAudioTokenCostFlex != nil {
+		return pricing.CacheReadInputAudioTokenCostFlex
+	}
+	if tier.isPriority && pricing.CacheReadInputAudioTokenCostPriority != nil {
+		return pricing.CacheReadInputAudioTokenCostPriority
+	}
+	return pricing.CacheReadInputAudioTokenCost
 }
 
 // audioInputTokenRate returns the audio input token rate for the served tier: the flex or

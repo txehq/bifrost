@@ -1446,6 +1446,15 @@ func TestUsageFromValue_CacheTokenConventions(t *testing.T) {
 		assert.Equal(t, 6000, usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens30m)
 		assert.Equal(t, 2000, usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens12h)
 
+		// TXE-7361: the cached modality split is kept for the cached-audio batch rate.
+		cachedAudio, err := usageFromValue(map[string]interface{}{
+			"prompt_tokens":         1000,
+			"prompt_tokens_details": map[string]interface{}{"cached_tokens": 600, "cached_tokens_details": map[string]interface{}{"audio_tokens": 500}},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, cachedAudio.PromptTokensDetails)
+		assert.Equal(t, 500, cachedAudio.PromptTokensDetails.CachedReadTokenDetails.CachedAudioTokens())
+
 		// A split without a total still counts the writes.
 		split, err := usageFromValue(map[string]interface{}{
 			"prompt_tokens":         10000,

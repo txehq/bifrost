@@ -382,6 +382,7 @@ Any field you set (including `0`) is applied as an override; omitted fields are 
 | `cache_read_input_token_cost_above_272k_tokens_ultrafast` | Cache read above 272k context for ultrafast requests |
 | `cache_read_input_image_token_cost` | Cache read cost for image tokens |
 | `cache_creation_input_audio_token_cost` | Cache creation cost for audio tokens |
+| `cache_read_input_audio_token_cost` | Cache read cost for audio tokens, applied to the cached audio a vendor reports apart (OpenAI `cached_tokens_details`, Gemini `cacheTokensDetails`); `_flex`, `_priority` and `_batches` variants price the served tier and batch lines. Without it, cached audio costs `cache_read_input_token_cost` |
 | `cache_creation_input_token_cost_above_1hr` | Cache creation cost for 1hr+ TTL entries |
 | `cache_creation_input_token_cost_above_12hr` | Cache creation cost for OpenAI 12-hour writes (`ttl_12h_tokens`). Without it, a 12h write costs `cache_creation_input_token_cost_above_1hr` |
 | `cache_creation_input_token_cost_above_12hr_above_272k_tokens` | 12-hour cache creation cost above 272k context |

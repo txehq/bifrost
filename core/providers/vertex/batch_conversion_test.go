@@ -563,6 +563,45 @@ func TestVertexNormalizeBatchUsage_ThinkingTokens(t *testing.T) {
 	}
 }
 
+// A Vertex batch line keeps the cached modality split and the prompt modality counts, under the
+// OpenAI names the batch settlement reads (framework/jobaccounting extractBatchUsage reads
+// prompt_tokens_details.cached_tokens_details), so cached audio takes the cached-audio batch rate
+// instead of the text cache-read rate (TXE-7361). Before, the normalizer copied only cached_tokens.
+func TestVertexNormalizeBatchUsageKeepsTheCachedModalitySplit(t *testing.T) {
+	t.Parallel()
+
+	normalized := vertexNormalizeBatchUsage(map[string]any{
+		"usageMetadata": map[string]any{
+			"promptTokenCount":        1000,
+			"candidatesTokenCount":    20,
+			"totalTokenCount":         1020,
+			"cachedContentTokenCount": 600,
+			"promptTokensDetails": []any{
+				map[string]any{"modality": "TEXT", "tokenCount": 400},
+				map[string]any{"modality": "AUDIO", "tokenCount": 600},
+			},
+			"cacheTokensDetails": []any{
+				map[string]any{"modality": "TEXT", "tokenCount": 100},
+				map[string]any{"modality": "AUDIO", "tokenCount": 500},
+			},
+		},
+	})
+
+	usage, ok := normalized["usage"].(map[string]any)
+	require.True(t, ok)
+	assert.EqualValues(t, 1000, usage["prompt_tokens"])
+	assert.EqualValues(t, 20, usage["completion_tokens"])
+	details, ok := usage["prompt_tokens_details"].(map[string]any)
+	require.True(t, ok, "prompt_tokens_details should be present")
+	assert.EqualValues(t, 600, details["cached_tokens"])
+	assert.EqualValues(t, 600, details["audio_tokens"])
+	assert.EqualValues(t, 400, details["text_tokens"])
+	split, ok := details["cached_tokens_details"].(map[string]any)
+	require.True(t, ok, "cached_tokens_details should be present")
+	assert.EqualValues(t, 500, split["audio_tokens"])
+	assert.EqualValues(t, 100, split["text_tokens"])
+}
+
 // An OpenAI-shape inline line reaches Vertex as the request the Vertex sync route sends for
 // the same body (contract C8, BF17): the line is built by the sync route's own builder, so
 // the two are compared here. Before this, the line kept only messages and dropped

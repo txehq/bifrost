@@ -228,12 +228,9 @@ func buildOAIResponsesUsage(ru *schemas.ResponsesResponseUsage, serviceTier *str
 		CompletionTokens: ru.OutputTokens,
 		TotalTokens:      ru.TotalTokens,
 	}
-	if ru.InputTokensDetails != nil {
-		usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
-			CachedReadTokens:  ru.InputTokensDetails.CachedReadTokens,
-			CachedWriteTokens: ru.InputTokensDetails.CachedWriteTokens,
-		}
-	}
+	// The shared conversion, every field: a hand copy of the cached totals dropped the cached
+	// modality split, so cached audio was billed at the text cache-read rate (TXE-7361).
+	usage.PromptTokensDetails = ru.InputTokensDetails.ToChatPromptTokensDetails()
 	if ru.OutputTokensDetails != nil {
 		usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{
 			ReasoningTokens: ru.OutputTokensDetails.ReasoningTokens,
