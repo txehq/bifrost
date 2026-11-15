@@ -1,6 +1,7 @@
 package volcengine_test
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net"
@@ -328,4 +329,125 @@ func TestArkVideoIsTheSameTaskOnEveryArkProvider(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestArkVideoDraftTaskIDIsSentBare is the Codex P2 on #332 (TXE-7493): a caller finalizing a
+// Seedance draft passes the id Bifrost returned, which carries the provider's suffix. Ark must
+// receive the bare task id in content[].draft_task.id whichever suffix it carries: the built-in
+// provider's, a custom provider's own name, or that custom provider's base. The caller's extra
+// params are left as they were.
+func TestArkVideoDraftTaskIDIsSentBare(t *testing.T) {
+	var mu sync.Mutex
+	var bodies []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, string(body))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"cgt-final"}`))
+	}))
+	t.Cleanup(srv.Close)
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
+	newProvider := func(base schemas.ModelProvider, custom string) *volcengine.VolcengineProvider {
+		config := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: srv.URL + "/api/v3", AllowPrivateNetwork: true}}
+		if custom != "" {
+			config.CustomProviderConfig = &schemas.CustomProviderConfig{CustomProviderKey: custom, BaseProviderType: base}
+		}
+		var p *volcengine.VolcengineProvider
+		var err error
+		if base == schemas.ModelArk {
+			p, err = volcengine.NewModelArkProvider(config, logger)
+		} else {
+			p, err = volcengine.NewVolcengineProvider(config, logger)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	cases := []struct {
+		name     string
+		provider *volcengine.VolcengineProvider
+		draftID  string
+	}{
+		{"volcengine", newProvider(schemas.Volcengine, ""), "cgt-draft-1:volcengine"},
+		{"modelark", newProvider(schemas.ModelArk, ""), "cgt-draft-1:modelark"},
+		{"custom provider's own name", newProvider(schemas.Volcengine, "tkp_ark"), "cgt-draft-1:tkp_ark"},
+		{"custom provider's base", newProvider(schemas.Volcengine, "tkp_ark"), "cgt-draft-1:volcengine"},
+		{"bare", newProvider(schemas.Volcengine, ""), "cgt-draft-1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mu.Lock()
+			bodies = nil
+			mu.Unlock()
+			extra := map[string]interface{}{"draft_task_id": tc.draftID}
+			_, bifrostErr := tc.provider.VideoGeneration(schemas.NewBifrostContext(t.Context(), schemas.NoDeadline), schemas.Key{Value: *schemas.NewSecretVar("k")}, &schemas.BifrostVideoGenerationRequest{
+				Provider: tc.provider.GetProviderKey(),
+				Model:    "doubao-seedance-1-0-pro-250528",
+				Input:    &schemas.VideoGenerationInput{},
+				Params:   &schemas.VideoGenerationParameters{ExtraParams: extra},
+			})
+			if bifrostErr != nil {
+				t.Fatalf("create: %+v", bifrostErr.Error)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if len(bodies) != 1 {
+				t.Fatalf("%d calls reached Ark, want 1", len(bodies))
+			}
+			if got := gjson.Get(bodies[0], `content.#(type=="draft_task").draft_task.id`).String(); got != "cgt-draft-1" {
+				t.Fatalf("Ark received draft_task.id %q, want the bare cgt-draft-1: %s", got, bodies[0])
+			}
+			if extra["draft_task_id"] != tc.draftID {
+				t.Fatalf("the caller's extra params were modified: %v", extra)
+			}
+		})
+	}
+}
+
+// BenchmarkVolcengineVideoRequestPath measures a VolcEngine video create and query end to end
+// through the provider against a loopback Ark server (TXE-7493): request conversion, the HTTP
+// call and the response conversion. The same benchmark runs on main, where the calls went
+// through the OpenAI video handlers, for the before figures in the PR.
+func BenchmarkVolcengineVideoRequestPath(b *testing.B) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost {
+			_, _ = w.Write([]byte(`{"id":"cgt-bench"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"cgt-bench","model":"doubao-seedance-1-0-pro-250528","status":"succeeded","content":{"video_url":"https://x.invalid/v.mp4"},"usage":{"completion_tokens":108900,"total_tokens":108900},"resolution":"720p","ratio":"16:9","duration":5,"created_at":100,"updated_at":200}`))
+	}))
+	b.Cleanup(srv.Close)
+	p, err := volcengine.NewVolcengineProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: srv.URL + "/api/v3", AllowPrivateNetwork: true}}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	if err != nil {
+		b.Fatal(err)
+	}
+	key := schemas.Key{Value: *schemas.NewSecretVar("k")}
+	create := &schemas.BifrostVideoGenerationRequest{
+		Provider: schemas.Volcengine,
+		Model:    "doubao-seedance-1-0-pro-250528",
+		Input:    &schemas.VideoGenerationInput{Prompt: "a paper boat drifting down a rain gutter"},
+		Params:   &schemas.VideoGenerationParameters{Seconds: schemas.Ptr("5")},
+	}
+	retrieve := &schemas.BifrostVideoRetrieveRequest{Provider: schemas.Volcengine, ID: "cgt-bench:volcengine"}
+	b.Run("create", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, bifrostErr := p.VideoGeneration(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), key, create); bifrostErr != nil {
+				b.Fatal(bifrostErr.Error)
+			}
+		}
+	})
+	b.Run("retrieve", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, bifrostErr := p.VideoRetrieve(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), key, retrieve); bifrostErr != nil {
+				b.Fatal(bifrostErr.Error)
+			}
+		}
+	})
 }

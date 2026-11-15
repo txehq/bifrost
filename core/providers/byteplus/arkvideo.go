@@ -2,6 +2,7 @@ package byteplus
 
 import (
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -45,6 +46,31 @@ func (api *ArkVideoAPI) taskID(id string) string {
 	return providerUtils.StripVideoIDProviderSuffix(id, api.ProviderName)
 }
 
+// withBareDraftTaskID is the request with extra_params.draft_task_id as Ark's bare task id. A
+// caller finalizing a draft passes the id Bifrost returned, which carries this provider's suffix
+// (":volcengine", or a custom provider's name, or its base's); the converter strips only
+// ":byteplus". The request is copied only when it names a draft, so the common case allocates
+// nothing; the caller's request and its extra params are never modified.
+func (api *ArkVideoAPI) withBareDraftTaskID(request *schemas.BifrostVideoGenerationRequest) *schemas.BifrostVideoGenerationRequest {
+	if request == nil || request.Params == nil {
+		return request
+	}
+	draftTaskID, ok := request.Params.ExtraParams["draft_task_id"].(string)
+	if !ok || draftTaskID == "" {
+		return request
+	}
+	bare := api.taskID(draftTaskID)
+	if bare == draftTaskID {
+		return request
+	}
+	params := *request.Params
+	params.ExtraParams = maps.Clone(request.Params.ExtraParams)
+	params.ExtraParams["draft_task_id"] = bare
+	copied := *request
+	copied.Params = &params
+	return &copied
+}
+
 // do sends one call to the task API and returns the decoded body of a 2xx answer.
 func (api *ArkVideoAPI) do(ctx *schemas.BifrostContext, key schemas.Key, method, path, rawQuery string, jsonData []byte, sendBackRawRequest, sendBackRawResponse bool) ([]byte, time.Duration, *schemas.BifrostError) {
 	return doArkRequest(ctx, api.Client, api.NetworkConfig, key, method, path, rawQuery, jsonData, sendBackRawRequest, sendBackRawResponse)
@@ -54,6 +80,7 @@ func (api *ArkVideoAPI) do(ctx *schemas.BifrostContext, key schemas.Key, method,
 // task options such as draft, service_tier and return_last_frame reach the wire.
 func (api *ArkVideoAPI) Generate(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoGenerationRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
 	providerName := api.ProviderName
+	request = api.withBareDraftTaskID(request)
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
