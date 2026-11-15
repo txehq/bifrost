@@ -1,6 +1,7 @@
 package gemini
 
 import (
+	"bytes"
 	"strconv"
 	"strings"
 
@@ -117,14 +118,23 @@ func HasGeminiPassthroughUsage(event []byte) bool {
 
 type geminiPassthroughResp struct {
 	UsageMetadata *GenerateContentResponseUsageMetadata `json:"usageMetadata"`
-	// The grounding metadata of the first candidate and the served model, so a grounded answer
-	// bills its Google Search units and Google Maps grounded prompt as the chat route does
-	// (TXE-7362). Only these fields are decoded; the candidate's content is skipped.
+}
+
+// geminiPassthroughGrounding is the grounding metadata of the first candidate and the served
+// model, so a grounded answer bills its Google Search units and Google Maps grounded prompt as the
+// chat route does (TXE-7362). It is decoded only when the body names groundingMetadata, so an
+// ungrounded answer, the common case, pays nothing for it.
+type geminiPassthroughGrounding struct {
 	Candidates []struct {
 		GroundingMetadata *GroundingMetadata `json:"groundingMetadata"`
 	} `json:"candidates"`
 	ModelVersion string `json:"modelVersion"`
 }
+
+// groundingMetadataKey is probed without its quotes: a probe that starts with '"' stops at every
+// quote in the body and costs about 10x as much (measured 108 ns against 10 ns on a 230-byte
+// answer). A false hit only costs the decode, which then finds no grounding.
+var groundingMetadataKey = []byte(`groundingMetadata`)
 
 // extractGeminiGenerateContentUsage routes to the correct BifrostPassthroughUsage shape
 // based on output modality from the response's candidatesTokensDetails:
@@ -200,8 +210,11 @@ func extractGeminiGenerateContentUsage(body []byte) *schemas.BifrostPassthroughU
 	// Grounding is billed through the chat route's helper, so native passthrough charges the
 	// Google Search units and the Maps grounded prompt the converted routes do. A streamed
 	// answer carries its grounding metadata on the finish event, the one with the final usage.
-	if len(resp.Candidates) > 0 {
-		applyGeminiSearchQueryChatUsage(usage, resp.Candidates[0].GroundingMetadata, resp.ModelVersion)
+	if bytes.Contains(body, groundingMetadataKey) {
+		var grounding geminiPassthroughGrounding
+		if err := sonic.Unmarshal(body, &grounding); err == nil && len(grounding.Candidates) > 0 {
+			applyGeminiSearchQueryChatUsage(usage, grounding.Candidates[0].GroundingMetadata, grounding.ModelVersion)
+		}
 	}
 
 	return &schemas.BifrostPassthroughUsage{LLMUsage: usage}
