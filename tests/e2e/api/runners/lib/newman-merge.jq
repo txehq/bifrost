@@ -82,23 +82,36 @@ def dedupe_retries:
   | map(del(.__i));
 
 . as $reports
-| ([$reports[].run.executions[]? | sanitize] | dedupe_retries) as $execs
-# Surviving ids that are still failing after supersession. A failure entry whose item recovered on
-# retry has to go, otherwise `analyze-failures.mjs` still reports it and the run still reads red.
-| ([$execs[] | select(failed) | .item.id?] | map(select(. != null)) | unique) as $failedids
+# Each execution carries the index of the report it came from (__r), so a failure entry can be
+# matched to the attempt it belongs to. Removed before output.
+| ([range(0; $reports | length) as $r | $reports[$r].run.executions[]? | sanitize | . + {__r: $r}] | dedupe_retries) as $tagged
+| ($tagged | map(del(.__r))) as $execs
+# The report each surviving id's execution came from.
+| ([$tagged[] | select(.item.id? != null) | {key: .item.id, value: .__r}] | from_entries) as $survivorreport
+# Failures kept: no resolvable source id (they cannot be matched against the surviving set, and
+# dropping them would hide real errors rather than superseded ones); a source whose surviving
+# execution still fails; and any failure of the surviving attempt itself, matched by report. The
+# last case keeps a script that threw outside pm.test on a 200: newman records that only under
+# run.failures, the execution has no failed assertion, and the `failed` predicate cannot see it
+# (TXE-7103). A failure from an attempt a later report superseded (a 429 its retry recovered) is
+# from another report, so it still goes, otherwise `analyze-failures.mjs` reports it and the run
+# reads red.
+| ([range(0; $reports | length) as $r | $reports[$r].run.failures[]? | . + {__r: $r}]) as $allfailures
+| ([$execs[] | select(failed) | .item.id?] | map(select(. != null)) | unique) as $assertfailedids
+| [$allfailures[]
+   | select((.source.id? == null)
+            or (.source.id as $id | $assertfailedids | index($id))
+            or (.source.id as $id | $survivorreport[$id] == .__r))
+   | del(.__r)] as $failures
+# Surviving ids that are still failing: a failed execution, or a kept failure entry on its source.
+| ($assertfailedids + [$failures[] | .source.id? | select(. != null)] | unique) as $failedids
 |
 {
   collection: ($reports[0].collection // {}),
   environment: ($reports[0].environment // {}),
   run: {
     executions: $execs,
-    # Failures without a resolvable source id are kept: they cannot be matched against the
-    # surviving set, and dropping them would hide real errors rather than superseded ones.
-    failures: [
-      $reports[].run.failures[]?
-      | select((.source.id? == null) or (.source.id as $id | $failedids | index($id)))
-      | slimfailure
-    ],
+    failures: [$failures[] | slimfailure],
     stats: {
       iterations: {total: 1, pending: 0, failed: 0},
       # Recomputed from the deduped executions rather than summed across reports: summing would
@@ -106,7 +119,9 @@ def dedupe_retries:
       items: {total: ($execs | length)},
       requests: {
         total: ($execs | length),
-        failed: ([$execs[] | select(failed)] | length)
+        # A failing execution, or one whose surviving attempt has a kept failure entry (a script
+        # error on a 200, TXE-7103). Executions without an id count by the predicate alone.
+        failed: ([$execs[] | select(failed or ((.item.id? != null) and (.item.id as $id | $failedids | index($id))))] | length)
       }
     },
     timings: ($reports[0].run.timings // {})
