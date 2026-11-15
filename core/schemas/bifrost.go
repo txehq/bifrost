@@ -2454,7 +2454,7 @@ type BifrostErrorExtraFields struct {
 	// post-LLM hooks (governance billing, logging cost) can charge for tokens
 	// the provider actually billed us for. Nil when the failure consumed no
 	// tokens (e.g. 401/403/429 before the model ran).
-	BilledUsage *BifrostLLMUsage `json:"billed_usage,omitempty"`
+	BilledUsage         *BifrostLLMUsage     `json:"billed_usage,omitempty"`
 	EstimatedImageUsage *EstimatedImageUsage `json:"-"` // Bifrost's estimate for a refused image answer, never the vendor's count (TXE-7302)
 	NativeErrorResponse json.RawMessage      `json:"-"` // provider error body verbatim for native drop-in routes; never serialized
 
