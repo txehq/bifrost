@@ -42,6 +42,13 @@ type BifrostImageTaskResponse struct {
 	ContentFilter  *ContentFilterInfo `json:"content_filter,omitempty"`  // required when the vendor blocked the task (contract C6)
 	Usage          *ImageUsage        `json:"usage,omitempty"`           // what the vendor reported: vendor_cost, megapixels
 
+	// BilledImages is the number of images a create asked the vendor for, which the vendor bills
+	// (TXE-7050): Bifrost's own count, never serialised, since usage carries only what the vendor
+	// reported (contract C5). The cost path bills a create for this many images when it is more
+	// than the delivered ones. 0 when the provider makes one image per task (BFL refuses n != 1).
+	// A provider whose create takes n, or makes several images by default, must set it.
+	BilledImages int `json:"-"`
+
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }
 

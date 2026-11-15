@@ -1,6 +1,7 @@
 package dashscope
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -126,10 +127,12 @@ func (provider *DashScopeProvider) ImageGenerationTask(ctx *schemas.BifrostConte
 		return nil, bifrostErr
 	}
 	if rawBody != nil {
-		return provider.submitImageTask(ctx, key, schemas.ImageGenerationTaskRequest, request.Model, rawBody)
+		return provider.submitImageTask(ctx, key, schemas.ImageGenerationTaskRequest, request.Model, rawBody, wanRawImageTaskCount(rawBody))
 	}
 	var tierSize *string
+	var n *int
 	if p := request.Params; p != nil {
+		n = p.N
 		tierSize, bifrostErr = validateDashScopeImageTask(request.Model, p.N, p.Size, p.ResponseFormat, p.Resolution, p.ExtraParams)
 		if bifrostErr != nil {
 			return nil, bifrostErr
@@ -149,7 +152,7 @@ func (provider *DashScopeProvider) ImageGenerationTask(ctx *schemas.BifrostConte
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	return provider.submitImageTask(ctx, key, schemas.ImageGenerationTaskRequest, request.Model, jsonData)
+	return provider.submitImageTask(ctx, key, schemas.ImageGenerationTaskRequest, request.Model, jsonData, wanImageTaskCount(n))
 }
 
 // ImageEditTask creates a Wan image edit task. Input images go in input.messages[].content[].image:
@@ -166,10 +169,12 @@ func (provider *DashScopeProvider) ImageEditTask(ctx *schemas.BifrostContext, ke
 		return nil, bifrostErr
 	}
 	if rawBody != nil {
-		return provider.submitImageTask(ctx, key, schemas.ImageEditTaskRequest, request.Model, rawBody)
+		return provider.submitImageTask(ctx, key, schemas.ImageEditTaskRequest, request.Model, rawBody, wanRawImageTaskCount(rawBody))
 	}
 	var tierSize *string
+	var n *int
 	if p := request.Params; p != nil {
+		n = p.N
 		tierSize, bifrostErr = validateDashScopeImageTask(request.Model, p.N, p.Size, p.ResponseFormat, p.Resolution, p.ExtraParams)
 		if bifrostErr != nil {
 			return nil, bifrostErr
@@ -183,7 +188,34 @@ func (provider *DashScopeProvider) ImageEditTask(ctx *schemas.BifrostContext, ke
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	return provider.submitImageTask(ctx, key, schemas.ImageEditTaskRequest, request.Model, jsonData)
+	return provider.submitImageTask(ctx, key, schemas.ImageEditTaskRequest, request.Model, jsonData, wanImageTaskCount(n))
+}
+
+// wanDefaultImageCount is the number of images Wan makes when a create names no n: Alibaba's Wan
+// text-to-image reference documents n as defaulting to 4, and each image is billed.
+const wanDefaultImageCount = 4
+
+// wanImageTaskCount is the number of images a Wan task create asks DashScope for, and so bills:
+// n, or Wan's default when the request names none.
+func wanImageTaskCount(n *int) int {
+	if n != nil && *n > 0 {
+		return *n
+	}
+	return wanDefaultImageCount
+}
+
+// wanRawImageTaskCount reads parameters.n from a body the caller wrote whole (large payload
+// passthrough). A body whose n Bifrost cannot read is counted at Wan's default.
+func wanRawImageTaskCount(body []byte) int {
+	var raw struct {
+		Parameters *struct {
+			N *int `json:"n"`
+		} `json:"parameters"`
+	}
+	if json.Unmarshal(body, &raw) != nil || raw.Parameters == nil {
+		return wanDefaultImageCount
+	}
+	return wanImageTaskCount(raw.Parameters.N)
 }
 
 // withWanImageTaskSize writes the resolution tier into parameters.size. A size set from the
@@ -200,7 +232,9 @@ func withWanImageTaskSize(body *DashScopeImageRequest, tierSize *string) *DashSc
 }
 
 // submitImageTask sends the one create and returns the task object DashScope's answer gives.
-func (provider *DashScopeProvider) submitImageTask(ctx *schemas.BifrostContext, key schemas.Key, requestType schemas.RequestType, model string, jsonData []byte) (*schemas.BifrostImageTaskResponse, *schemas.BifrostError) {
+// billedImages is the number of images the create asks for, which the create is billed for
+// (BifrostImageTaskResponse.BilledImages).
+func (provider *DashScopeProvider) submitImageTask(ctx *schemas.BifrostContext, key schemas.Key, requestType schemas.RequestType, model string, jsonData []byte, billedImages int) (*schemas.BifrostImageTaskResponse, *schemas.BifrostError) {
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 	submittedAt := time.Now().Unix()
@@ -223,6 +257,7 @@ func (provider *DashScopeProvider) submitImageTask(ctx *schemas.BifrostContext, 
 	result := toBifrostImageTask(&task)
 	result.ID = providerUtils.AddVideoIDProviderSuffix(task.Output.TaskID, provider.GetProviderKey())
 	result.Model = model
+	result.BilledImages = billedImages
 	if result.CreatedAt == 0 {
 		// The create response carries no submit_time; a later query reports the vendor's.
 		result.CreatedAt = submittedAt

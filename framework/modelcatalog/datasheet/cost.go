@@ -981,16 +981,17 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 		}
 
 	case result.ImageTaskResponse != nil:
-		// Fork (TXE-6431): an image task is billed once, at its create, priced as the one image it
-		// makes (a task makes one image; n must be 1). The vendor charges at submission and reports
-		// that cost on the submit, and the query and cancel are not billed (see computeCost), so the
-		// create is the only response that can carry the charge exactly once.
+		// Fork (TXE-6431): an image task is billed once, at its create. The vendor charges at
+		// submission, and the query and cancel are not billed (see computeCost), so the create is
+		// the only response that can carry the charge exactly once. It is priced as the images the
+		// create asked for: one on BFL (n must be 1), n or Wan's default of 4 on DashScope
+		// (BilledImages, TXE-7050), so an n of 4 is not charged as one image.
 		if result.ImageTaskResponse.Usage != nil {
 			input.imageUsage = result.ImageTaskResponse.Usage.DeepCopy()
 		} else {
 			input.imageUsage = &schemas.ImageUsage{}
 		}
-		populateOutputImageCount(input.imageUsage, max(len(result.ImageTaskResponse.Data), 1))
+		populateOutputImageCount(input.imageUsage, max(len(result.ImageTaskResponse.Data), result.ImageTaskResponse.BilledImages, 1))
 
 	case result.ImageGenerationStreamResponse != nil:
 		// Defensive copy mirrors the non-stream path so CalculateCost never

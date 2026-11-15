@@ -8841,6 +8841,32 @@ func TestCalculateCost_ImageTaskBilledOnceAtCreate(t *testing.T) {
 	assert.Zero(t, s.CalculateCost(task(schemas.ImageTaskCancelRequest, schemas.VideoStatusQueued, nil), nil))
 }
 
+// TXE-7050: a create that asks the vendor for several images (DashScope Wan's n, or its default of
+// 4) is billed for all of them, from the task's BilledImages; it was charged as one image before.
+func TestCalculateCost_ImageTaskBilledForTheImagesItAsksFor(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("wan2.6-t2i", "dashscope", "image_generation"): {
+			InputCostPerToken:  bifrost.Ptr(0.0),
+			OutputCostPerToken: bifrost.Ptr(0.0),
+			OutputCostPerImage: bifrost.Ptr(0.03),
+		},
+	})
+	create := func(requestType schemas.RequestType, billed int) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{ImageTaskResponse: &schemas.BifrostImageTaskResponse{
+			Status:       schemas.VideoStatusQueued,
+			Data:         []schemas.TaskArtifact{},
+			BilledImages: billed,
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: requestType,
+				RoutingInfo: routingInfoFor(schemas.DashScope, "wan2.6-t2i"),
+			},
+		}}
+	}
+	assert.InDelta(t, 0.12, s.CalculateCost(create(schemas.ImageGenerationTaskRequest, 4), nil), 1e-12, "four images asked for, four billed")
+	assert.InDelta(t, 0.06, s.CalculateCost(create(schemas.ImageEditTaskRequest, 2), nil), 1e-12, "an edit task create is billed the same way")
+	assert.InDelta(t, 0.03, s.CalculateCost(create(schemas.ImageGenerationTaskRequest, 0), nil), 1e-12, "no count: one image, as before")
+}
+
 // Cost path for embeddings (TXE-7081): the common token-priced case, and a
 // character-priced Vertex text embedding.
 func BenchmarkComputeEmbeddingCost(b *testing.B) {

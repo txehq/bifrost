@@ -1282,6 +1282,11 @@ func TestDashScopeWanImageTaskCreate(t *testing.T) {
 	if task.CreatedAt < before || task.Data == nil || len(task.Data) != 0 {
 		t.Errorf("created_at %d, data %v: want the submit time and an empty data array", task.CreatedAt, task.Data)
 	}
+	// The create is billed for the n images it asks for, not as one (TXE-7050), and usage stays
+	// what DashScope reported: nothing, on a create.
+	if task.BilledImages != 2 || task.Usage != nil {
+		t.Errorf("billed images %d, usage %+v: want 2 and no usage", task.BilledImages, task.Usage)
+	}
 	got := mock.requests[0]
 	if got.Method != http.MethodPost || got.Path != createPath || got.Async != "enable" || got.Auth != "Bearer sk-dash" {
 		t.Fatalf("request = %+v, want an async POST to %s with the key", got, createPath)
@@ -1310,6 +1315,46 @@ func TestDashScopeWanImageTaskCreate(t *testing.T) {
 	assertJSONEqual(t, got.Body, `{"model":"wan2.6-image",
 		"input":{"messages":[{"role":"user","content":[{"image":"https://example.com/a.png"},{"image":"data:image/png;base64,iVBORw0KGgo="},{"text":"make it night"}]}]},
 		"parameters":{"n":1,"size":"2K"}}`)
+}
+
+// TestDashScopeWanImageTaskBilledImages: a Wan task create is billed for the images it asks
+// DashScope for (TXE-7050). With no n, Wan makes its documented default of 4, each billed, so the
+// create counts 4; a body the caller wrote whole is counted from its own parameters.n.
+func TestDashScopeWanImageTaskBilledImages(t *testing.T) {
+	createPath := "/api/v1/services/aigc/image-generation/generation"
+	provider, _ := newMockDashScopeImageTasks(t, map[string]mockResponse{"POST " + createPath: {http.StatusOK, wanImageTaskCreated}})
+	cases := []struct {
+		name   string
+		params *schemas.ImageGenerationParameters
+		want   int
+	}{
+		{"n given", &schemas.ImageGenerationParameters{N: schemas.Ptr(3)}, 3},
+		{"no n: Wan's default", &schemas.ImageGenerationParameters{}, wanDefaultImageCount},
+		{"no params: Wan's default", nil, wanDefaultImageCount},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			task, bifrostErr := provider.ImageGenerationTask(imageTestContext(t), imageTestKey(), &schemas.BifrostImageGenerationRequest{
+				Provider: schemas.DashScope, Model: "wan2.6-t2i", Input: &schemas.ImageGenerationInput{Prompt: "x"}, Params: c.params,
+			})
+			if bifrostErr != nil {
+				t.Fatalf("ImageGenerationTask: %+v", bifrostErr.Error)
+			}
+			if task.BilledImages != c.want {
+				t.Fatalf("billed images = %d, want %d", task.BilledImages, c.want)
+			}
+		})
+	}
+	for body, want := range map[string]int{
+		`{"model":"wan2.6-t2i","parameters":{"n":2}}`:   2,
+		`{"model":"wan2.6-t2i","parameters":{}}`:        wanDefaultImageCount,
+		`{"model":"wan2.6-t2i"}`:                        wanDefaultImageCount,
+		`{"model":"wan2.6-t2i","parameters":{"n":"2"}}`: wanDefaultImageCount,
+	} {
+		if got := wanRawImageTaskCount([]byte(body)); got != want {
+			t.Errorf("raw body %s: billed images = %d, want %d", body, got, want)
+		}
+	}
 }
 
 // TestDashScopeWanImageTaskRetrieve is the query: GET /api/v1/tasks/{id}, DashScope's six states
