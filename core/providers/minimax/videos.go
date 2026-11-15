@@ -364,24 +364,6 @@ var miniMaxV2SizeTiers = func() map[[2]int]struct{ tier, ratio string } {
 	return sizes
 }()
 
-// MiniMaxV1VideoGenerationRequest is the body for POST /v1/video_generation (the Hailuo models).
-// prompt_optimizer, fast_pretreatment and other vendor switches arrive through the extra-field
-// channel under MiniMax's own names.
-type MiniMaxV1VideoGenerationRequest struct {
-	Model           string                 `json:"model"`
-	Prompt          string                 `json:"prompt,omitempty"`
-	FirstFrameImage *string                `json:"first_frame_image,omitempty"`
-	LastFrameImage  *string                `json:"last_frame_image,omitempty"`
-	Duration        *int                   `json:"duration,omitempty"`
-	Resolution      *string                `json:"resolution,omitempty"`
-	CallbackURL     *string                `json:"callback_url,omitempty"`
-	ExtraParams     map[string]interface{} `json:"-"`
-}
-
-func (r *MiniMaxV1VideoGenerationRequest) GetExtraParams() map[string]interface{} {
-	return r.ExtraParams
-}
-
 // miniMaxV1VideoFields are the unified fields a v1 model takes: it has no ratio, size or reference
 // images.
 var miniMaxV1VideoFields = []string{"last_frame", "resolution", "seconds", schemas.TaskControlFieldCallbackURL}
@@ -559,48 +541,6 @@ func miniMaxVideoUsage(u *MiniMaxVideoTaskUsage) *schemas.VideoUsage {
 		return nil
 	}
 	return usage
-}
-
-// MiniMaxV1VideoQueryResponse is returned by GET /v1/query/video_generation?task_id=.
-type MiniMaxV1VideoQueryResponse struct {
-	TaskID      string           `json:"task_id"`
-	Status      string           `json:"status"`
-	FileID      MiniMaxFileID    `json:"file_id"`
-	VideoWidth  int              `json:"video_width"`
-	VideoHeight int              `json:"video_height"`
-	BaseResp    *MiniMaxBaseResp `json:"base_resp,omitempty"`
-}
-
-// MiniMaxFileID is a MiniMax file id. The v1 query returns it as a string and /v1/files/retrieve as
-// a number, so it decodes either.
-type MiniMaxFileID string
-
-// UnmarshalJSON implements json.Unmarshaler; see MiniMaxFileID.
-func (id *MiniMaxFileID) UnmarshalJSON(data []byte) error {
-	raw := strings.TrimSpace(string(data))
-	if raw == "null" {
-		*id = ""
-		return nil
-	}
-	if unquoted, err := strconv.Unquote(raw); err == nil {
-		*id = MiniMaxFileID(unquoted)
-		return nil
-	}
-	*id = MiniMaxFileID(raw)
-	return nil
-}
-
-// MiniMaxFileRetrieveResponse is returned by GET /v1/files/retrieve?file_id=.
-type MiniMaxFileRetrieveResponse struct {
-	File *struct {
-		FileID      MiniMaxFileID `json:"file_id"`
-		Bytes       int64         `json:"bytes"`
-		CreatedAt   int64         `json:"created_at"`
-		Filename    string        `json:"filename"`
-		Purpose     string        `json:"purpose"`
-		DownloadURL string        `json:"download_url"`
-	} `json:"file"`
-	BaseResp *MiniMaxBaseResp `json:"base_resp,omitempty"`
 }
 
 // ToBifrostV1VideoGenerationResponse converts a v1 query, and for a succeeded task the retrieved
@@ -932,13 +872,6 @@ func (provider *MiniMaxProvider) VideoList(ctx *schemas.BifrostContext, key sche
 		bifrostResp.ExtraFields.RawResponse = rawResponse
 	}
 	return bifrostResp, nil
-}
-
-// MiniMaxVideoTaskListResponse is returned by GET /v2/query/video_generation.
-type MiniMaxVideoTaskListResponse struct {
-	Items    []MiniMaxVideoTask `json:"items"`
-	Total    int                `json:"total"`
-	BaseResp *MiniMaxBaseResp   `json:"base_resp,omitempty"`
 }
 
 var _ schemas.VideoCanceller = (*MiniMaxProvider)(nil)
