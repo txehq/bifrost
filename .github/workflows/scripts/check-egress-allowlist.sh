@@ -71,12 +71,18 @@ REQUIRED_APT_HOSTS = (
 )
 
 REPO_ROOT = os.environ["REPO_ROOT"]
-APT_RE = re.compile(r"\bapt(-get)?\s+(-\S+\s+)*(update|install|upgrade)\b")
-# A script in command position: at the start of a line or after &&, ||, ;, then or do,
-# optionally behind sudo and bash/sh/source/. - never a path named in prose or a string.
+# Command position: the start of a line or after &&, ||, ;, then or do, optionally
+# behind sudo and VAR=value assignments. An apt line or a script path inside a
+# quoted string or prose is not run - the fixtures in check-egress-allowlist.test.sh
+# printf `sudo apt-get update` into temporary files, and their job runs no apt.
+ENV = r"(?:[A-Z_][A-Z0-9_]*=\S*[ \t]+)*"
+CMD_POS = r"(?:^|&&|\|\||;|\bthen\b|\bdo\b)[ \t]*" + ENV + r"(?:sudo[ \t]+(?:-\S+[ \t]+)*)?"
+APT_RE = re.compile(
+    CMD_POS + ENV + r"apt(?:-get)?[ \t]+(?:-\S+[ \t]+)*(?:update|install|upgrade)\b",
+    re.MULTILINE,
+)
 SCRIPT_RE = re.compile(
-    r"(?:^|&&|\|\||;|\bthen\b|\bdo\b)[ \t]*(?:sudo[ \t]+)?"
-    r"(?:(?:bash|sh|source)[ \t]+(?:-\S+[ \t]+)*|\.[ \t]+)?((?:\./)?[A-Za-z0-9_./-]+\.sh)\b",
+    CMD_POS + r"(?:(?:bash|sh|source)[ \t]+(?:-\S+[ \t]+)*|\.[ \t]+)?((?:\./)?[A-Za-z0-9_./-]+\.sh)\b",
     re.MULTILINE,
 )
 

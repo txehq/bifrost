@@ -261,7 +261,23 @@ apt_case "apt-through-a-script-every-mirror" pass "" \
   block "./.github/workflows/scripts/install-tools.sh && echo done" "${APT_ALL[@]}"
 apt_case "script-named-in-prose-is-not-followed" pass "" \
   block "./.github/workflows/scripts/notes.sh" "${APT_AZURE_ONLY[@]}"
+apt_case "apt-in-a-quoted-string-is-not-run" pass "" \
+  block "printf 'sudo apt-get update\\n' > fixture.sh" "${APT_AZURE_ONLY[@]}"
+# apt""-get: bash joins it back to apt-get, and this file, which the lint job scans with
+# the rest of the repository, never holds an apt command after && itself.
+apt_case "apt-after-and-and-is-run" fail "job 'build' runs apt-get" \
+  block "cd /tmp && DEBIAN_FRONTEND=noninteractive sudo apt""-get install -y jq" "${APT_AZURE_ONLY[@]}"
 apt_case "apt-audit-policy-is-not-checked" pass "" audit "sudo apt-get update" "${APT_AZURE_ONLY[@]}"
+
+# The workflow-lint job runs the check on the whole repository, this file included. A
+# fixture line that the check reads as apt fails that job on every PR (connector P1 on
+# #346), and no fixture case above would show it.
+if out="$(bash "$SCRIPT_DIR/check-egress-allowlist.sh" 2>&1)"; then
+  echo "ok   whole-repository-passes"
+else
+  echo "FAIL whole-repository-passes: the check fails on this checkout:"; echo "$out" | grep -E "FAIL|::error" | sed 's/^/    /'
+  failures=$((failures + 1))
+fi
 
 # The check reads files outside .github/workflows. The workflow that runs it must be
 # triggered by a change to each of them, or a PR that touches only that file merges
