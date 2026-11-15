@@ -1172,3 +1172,29 @@ func BenchmarkVertexBatchCustomIDLabels(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkVertexBatchLineLabels is the per-line cost of TXE-6974's reserved-label removal, through
+// the whole line conversion: a native line with only its own labels (the common native case, a
+// scan and no copy), one carrying reserved labels (rebuilt without them), and a chat line (the
+// gateway's custom_id and endpoint labels, as before).
+func BenchmarkVertexBatchLineLabels(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	contents := []interface{}{map[string]interface{}{"role": "user", "parts": []interface{}{map[string]interface{}{"text": "hi"}}}}
+	for name, item := range map[string]schemas.BatchRequestItem{
+		"native_own_labels": {Body: map[string]interface{}{"contents": contents, "labels": map[string]interface{}{"team": "tokun"}}},
+		"native_reserved_labels": {CustomID: "line-1", Body: map[string]interface{}{"contents": contents, "labels": map[string]interface{}{
+			"team": "tokun", "bifrost_endpoint": "images_generations", "bifrost_custom_id": "someone-else",
+		}}},
+		"chat_line": {CustomID: "line-1", URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "gemini-2.5-flash", "messages": []interface{}{map[string]interface{}{"role": "user", "content": "hi"}}}},
+	} {
+		items := []schemas.BatchRequestItem{item}
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				if _, err := vertexConvertRequestsToJSONL(ctx, schemas.Key{}, items, "gemini-2.5-flash", schemas.BatchEndpointChatCompletions); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
