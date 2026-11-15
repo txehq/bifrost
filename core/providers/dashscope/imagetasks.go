@@ -121,11 +121,10 @@ func validateDashScopeImageTask(model string, n *int, size, responseFormat *stri
 	return wanImageTaskSize(size, resolution)
 }
 
-// wanInterleaveSwitches are the extra params that turn on Wan's interleaved text-and-image mode,
-// where max_images, not n, sets how many images are made (and billed). A task create is billed for
+// Wan's interleaved text-and-image mode is switched on by enable_interleave and max_images, and
+// there max_images, not n, sets how many images are made (and billed). A task create is billed for
 // the images it asks for at submission (BilledImages), and the query is not billed, so a count the
-// create cannot know is refused rather than under-billed.
-var wanInterleaveSwitches = []string{"enable_interleave", "max_images"}
+// create cannot know is refused rather than under-billed (wanNamesInterleave).
 
 // wanSameName reports whether a and b name the same DashScope field. It is
 // schemas.SameJSONFieldName (case and underscores ignored) with hyphens ignored too: Alibaba's
@@ -135,21 +134,33 @@ func wanSameName(a, b string) bool {
 	return schemas.SameJSONFieldName(strings.ReplaceAll(a, "-", ""), strings.ReplaceAll(b, "-", ""))
 }
 
+// wanNamesInterleave reports whether name could be one of the interleaved-mode switches to some
+// JSON matcher: its letters, folded, contain "interleave" or "maximages". This fails closed on
+// spellings no exact rule anticipates (an "is" prefix on a boolean, other separators), at the cost
+// of refusing a vendor field that happens to contain those words; there is none documented.
+func wanNamesInterleave(name string) bool {
+	var folded strings.Builder
+	for _, r := range strings.ToLower(name) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			folded.WriteRune(r)
+		}
+	}
+	letters := folded.String()
+	return strings.Contains(letters, "interleave") || strings.Contains(letters, "maximages")
+}
+
 // wanInterleaveSwitch returns the name of an interleaved-mode switch among the extra params, at
 // the top level or inside an extra parameters object (GetExtraParams puts both in parameters),
 // in the caller's spelling; "" when there is none. enable_interleave set to false is not one.
 func wanInterleaveSwitch(extraParams map[string]interface{}) string {
 	check := func(name string, value interface{}) string {
-		for _, field := range wanInterleaveSwitches {
-			if !wanSameName(name, field) || value == nil {
-				continue
-			}
-			if on, isBool := value.(bool); isBool && !on {
-				continue
-			}
-			return name
+		if !wanNamesInterleave(name) || value == nil {
+			return ""
 		}
-		return ""
+		if on, isBool := value.(bool); isBool && !on {
+			return ""
+		}
+		return name
 	}
 	for name, value := range extraParams {
 		if object, ok := value.(map[string]interface{}); ok && wanSameName(name, "parameters") {
@@ -291,11 +302,9 @@ func wanRawImageTaskBilling(body []byte) (int, *schemas.ImageGenerationResponseP
 	}
 	for _, member := range members {
 		value := strings.TrimSpace(string(member.value))
-		for _, field := range wanInterleaveSwitches {
-			if wanSameName(member.name, field) && value != "false" && value != "null" {
-				return 0, nil, schemas.NewUnsupportedParameterError("parameters."+member.name, fmt.Sprintf(
-					"dashscope: parameters.%s cannot be delivered on the image task routes: Wan's interleaved mode makes up to max_images images whatever n says, and a task create is billed for the images it asks for", member.name))
-			}
+		if wanNamesInterleave(member.name) && value != "false" && value != "null" {
+			return 0, nil, schemas.NewUnsupportedParameterError("parameters."+member.name, fmt.Sprintf(
+				"dashscope: parameters.%s cannot be delivered on the image task routes: Wan's interleaved mode makes up to max_images images whatever n says, and a task create is billed for the images it asks for", member.name))
 		}
 	}
 	count := wanDefaultImageCount
