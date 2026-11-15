@@ -9721,21 +9721,21 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
-		imageResponse.BackfillParams(&req.BifrostRequest)
+		backfillImageResponse(req.Context, imageResponse, &req.BifrostRequest)
 		response.ImageGenerationResponse = imageResponse
 	case schemas.ImageEditRequest:
 		imageEditResponse, bifrostError := provider.ImageEdit(req.Context, key, req.BifrostRequest.ImageEditRequest)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
-		imageEditResponse.BackfillParams(&req.BifrostRequest)
+		backfillImageResponse(req.Context, imageEditResponse, &req.BifrostRequest)
 		response.ImageGenerationResponse = imageEditResponse
 	case schemas.ImageVariationRequest:
 		imageVariationResponse, bifrostError := provider.ImageVariation(req.Context, key, req.BifrostRequest.ImageVariationRequest)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
-		imageVariationResponse.BackfillParams(&req.BifrostRequest)
+		backfillImageResponse(req.Context, imageVariationResponse, &req.BifrostRequest)
 		response.ImageGenerationResponse = imageVariationResponse
 	case schemas.VideoGenerationRequest:
 		videoGenerationResponse, bifrostError := provider.VideoGeneration(req.Context, key, req.BifrostRequest.VideoGenerationRequest)
