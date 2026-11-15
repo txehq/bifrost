@@ -1,6 +1,6 @@
 {
   "name": "564. The override API keeps every google maps grounding rate the datasheet publishes (google maps grounding rate) [SERIAL]",
-  "description": "TXE-7362. Google bills Gemini grounding with Google Maps per grounded prompt, and the datasheet prices it (gemini-2.5-flash: google_maps_grounding_cost_per_query $0.025, on 39 models). The fork counted no Maps-grounded prompts and dropped the rate, so the grounding fee was never billed. 564.0 runs against the fixture only: a Gemini answer grounded with two Maps places reports one grounded prompt under tool_usage.per_tool.google_maps (before the change there was no such count). The remaining rows pin that the override API stores the new rate. The override is VK-scoped and never used for a request.",
+  "description": "TXE-7362. Google bills Gemini grounding with Google Maps per grounded prompt, and the datasheet prices it (gemini-2.5-flash: google_maps_grounding_cost_per_query $0.025, on 39 models). The fork counted no Maps-grounded prompts and dropped the rate, so the grounding fee was never billed. 564.0 runs against the fixture only: a Gemini answer grounded with two Maps places reports one grounded prompt under tool_usage.per_tool.google_maps (before the change there was no such count), and 564.0b to 564.0h check its logged cost carries the $0.025 fee on every route that bills it: /v1/chat/completions and /v1/responses, streamed and not, the native /genai route, and /genai_passthrough streamed and not. Vertex reuses the same converters (TestVertexMapsGroundingReachesBilling). The remaining rows pin that the override API stores the new rate. The override is VK-scoped and never used for a request.",
   "item": [
     {
       "name": "564.0 a Gemini answer grounded with Google Maps reports one grounded prompt (fixture) - gemini/pp-maps-grounded",
@@ -130,6 +130,464 @@
             "v1",
             "chat",
             "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "564.0c /v1/responses the Maps-grounded prompt is billed the grounding fee (fixture) - gemini/pp-maps-grounded",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.collectionVariables.set('mapsResponsesReq', 'e2e-maps-0c-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the call through the fixture succeeds', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+              "});",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var reqId = pm.collectionVariables.get('mapsResponsesReq');",
+              "// 12 prompt x 3e-07 + 8 out x 2.5e-06 + one grounded prompt x 0.025. A route that drops the grounding",
+              "// metadata or the tool usage before billing logs 0.0000236.",
+              "var want = 0.0250236;",
+              "function read(tries) {",
+              "  pm.sendRequest({ url: BASE + '/api/logs?request_id=' + reqId + '&limit=1', method: 'GET' }, function (err, res) {",
+              "    var rows = (!err && res.code === 200) ? (res.json().logs || []) : [];",
+              "    var logRow = rows.filter(function (r) { return r.id === reqId; })[0];",
+              "    if ((!logRow || !(logRow.cost > 0)) && tries > 0) { setTimeout(function () { read(tries - 1); }, 300); return; }",
+              "    pm.test('the call was logged under its request id', function () {",
+              "      pm.expect(logRow, err ? String(err) : res.text()).to.not.equal(undefined);",
+              "    });",
+              "    if (!logRow) { return; }",
+              "    pm.test('the grounded prompt is billed the Maps grounding fee', function () {",
+              "      pm.expect(Math.abs(logRow.cost - want), 'cost ' + logRow.cost + ' vs ' + want + '; token_usage: ' + JSON.stringify(logRow.token_usage)).to.be.at.most(Math.max(1e-9, want * 1e-6));",
+              "    });",
+              "  });",
+              "}",
+              "read(20);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-request-id",
+            "value": "{{mapsResponsesReq}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"gemini/pp-maps-grounded\", \"input\": \"Which cafes are open near me?\"}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "564.0d /v1/chat/completions stream the Maps-grounded prompt is billed the grounding fee (fixture) - gemini/pp-maps-grounded",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.collectionVariables.set('mapsChatStreamReq', 'e2e-maps-0d-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the call through the fixture succeeds', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+              "});",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var reqId = pm.collectionVariables.get('mapsChatStreamReq');",
+              "// 12 prompt x 3e-07 + 8 out x 2.5e-06 + one grounded prompt x 0.025. A route that drops the grounding",
+              "// metadata or the tool usage before billing logs 0.0000236.",
+              "var want = 0.0250236;",
+              "function read(tries) {",
+              "  pm.sendRequest({ url: BASE + '/api/logs?request_id=' + reqId + '&limit=1', method: 'GET' }, function (err, res) {",
+              "    var rows = (!err && res.code === 200) ? (res.json().logs || []) : [];",
+              "    var logRow = rows.filter(function (r) { return r.id === reqId; })[0];",
+              "    if ((!logRow || !(logRow.cost > 0)) && tries > 0) { setTimeout(function () { read(tries - 1); }, 300); return; }",
+              "    pm.test('the call was logged under its request id', function () {",
+              "      pm.expect(logRow, err ? String(err) : res.text()).to.not.equal(undefined);",
+              "    });",
+              "    if (!logRow) { return; }",
+              "    pm.test('the grounded prompt is billed the Maps grounding fee', function () {",
+              "      pm.expect(Math.abs(logRow.cost - want), 'cost ' + logRow.cost + ' vs ' + want + '; token_usage: ' + JSON.stringify(logRow.token_usage)).to.be.at.most(Math.max(1e-9, want * 1e-6));",
+              "    });",
+              "  });",
+              "}",
+              "read(20);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-request-id",
+            "value": "{{mapsChatStreamReq}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"gemini/pp-maps-grounded\", \"stream\": true, \"messages\": [{\"role\": \"user\", \"content\": \"Which cafes are open near me?\"}]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "564.0e /v1/responses stream the Maps-grounded prompt is billed the grounding fee (fixture) - gemini/pp-maps-grounded",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.collectionVariables.set('mapsResponsesStreamReq', 'e2e-maps-0e-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the call through the fixture succeeds', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+              "});",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var reqId = pm.collectionVariables.get('mapsResponsesStreamReq');",
+              "// 12 prompt x 3e-07 + 8 out x 2.5e-06 + one grounded prompt x 0.025. A route that drops the grounding",
+              "// metadata or the tool usage before billing logs 0.0000236.",
+              "var want = 0.0250236;",
+              "function read(tries) {",
+              "  pm.sendRequest({ url: BASE + '/api/logs?request_id=' + reqId + '&limit=1', method: 'GET' }, function (err, res) {",
+              "    var rows = (!err && res.code === 200) ? (res.json().logs || []) : [];",
+              "    var logRow = rows.filter(function (r) { return r.id === reqId; })[0];",
+              "    if ((!logRow || !(logRow.cost > 0)) && tries > 0) { setTimeout(function () { read(tries - 1); }, 300); return; }",
+              "    pm.test('the call was logged under its request id', function () {",
+              "      pm.expect(logRow, err ? String(err) : res.text()).to.not.equal(undefined);",
+              "    });",
+              "    if (!logRow) { return; }",
+              "    pm.test('the grounded prompt is billed the Maps grounding fee', function () {",
+              "      pm.expect(Math.abs(logRow.cost - want), 'cost ' + logRow.cost + ' vs ' + want + '; token_usage: ' + JSON.stringify(logRow.token_usage)).to.be.at.most(Math.max(1e-9, want * 1e-6));",
+              "    });",
+              "  });",
+              "}",
+              "read(20);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-request-id",
+            "value": "{{mapsResponsesStreamReq}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"gemini/pp-maps-grounded\", \"stream\": true, \"input\": \"Which cafes are open near me?\"}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "564.0f /genai/v1beta/models/{model}:generateContent the Maps-grounded prompt is billed the grounding fee (fixture) - gemini/pp-maps-grounded",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.collectionVariables.set('mapsGenaiReq', 'e2e-maps-0f-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the call through the fixture succeeds', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+              "});",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var reqId = pm.collectionVariables.get('mapsGenaiReq');",
+              "// 12 prompt x 3e-07 + 8 out x 2.5e-06 + one grounded prompt x 0.025. A route that drops the grounding",
+              "// metadata or the tool usage before billing logs 0.0000236.",
+              "var want = 0.0250236;",
+              "function read(tries) {",
+              "  pm.sendRequest({ url: BASE + '/api/logs?request_id=' + reqId + '&limit=1', method: 'GET' }, function (err, res) {",
+              "    var rows = (!err && res.code === 200) ? (res.json().logs || []) : [];",
+              "    var logRow = rows.filter(function (r) { return r.id === reqId; })[0];",
+              "    if ((!logRow || !(logRow.cost > 0)) && tries > 0) { setTimeout(function () { read(tries - 1); }, 300); return; }",
+              "    pm.test('the call was logged under its request id', function () {",
+              "      pm.expect(logRow, err ? String(err) : res.text()).to.not.equal(undefined);",
+              "    });",
+              "    if (!logRow) { return; }",
+              "    pm.test('the grounded prompt is billed the Maps grounding fee', function () {",
+              "      pm.expect(Math.abs(logRow.cost - want), 'cost ' + logRow.cost + ' vs ' + want + '; token_usage: ' + JSON.stringify(logRow.token_usage)).to.be.at.most(Math.max(1e-9, want * 1e-6));",
+              "    });",
+              "  });",
+              "}",
+              "read(20);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-request-id",
+            "value": "{{mapsGenaiReq}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"contents\": [{\"role\": \"user\", \"parts\": [{\"text\": \"Which cafes are open near me?\"}]}]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/gemini/pp-maps-grounded:generateContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "gemini",
+            "pp-maps-grounded:generateContent"
+          ]
+        }
+      }
+    },
+    {
+      "name": "564.0g /genai_passthrough/v1beta/models/{model}:generateContent the Maps-grounded prompt is billed the grounding fee (fixture) - gemini/pp-maps-grounded",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.collectionVariables.set('mapsPassthroughReq', 'e2e-maps-0g-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the call through the fixture succeeds', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+              "});",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var reqId = pm.collectionVariables.get('mapsPassthroughReq');",
+              "// 12 prompt x 3e-07 + 8 out x 2.5e-06 + one grounded prompt x 0.025. A route that drops the grounding",
+              "// metadata or the tool usage before billing logs 0.0000236.",
+              "var want = 0.0250236;",
+              "function read(tries) {",
+              "  pm.sendRequest({ url: BASE + '/api/logs?request_id=' + reqId + '&limit=1', method: 'GET' }, function (err, res) {",
+              "    var rows = (!err && res.code === 200) ? (res.json().logs || []) : [];",
+              "    var logRow = rows.filter(function (r) { return r.id === reqId; })[0];",
+              "    if ((!logRow || !(logRow.cost > 0)) && tries > 0) { setTimeout(function () { read(tries - 1); }, 300); return; }",
+              "    pm.test('the call was logged under its request id', function () {",
+              "      pm.expect(logRow, err ? String(err) : res.text()).to.not.equal(undefined);",
+              "    });",
+              "    if (!logRow) { return; }",
+              "    pm.test('the grounded prompt is billed the Maps grounding fee', function () {",
+              "      pm.expect(Math.abs(logRow.cost - want), 'cost ' + logRow.cost + ' vs ' + want + '; token_usage: ' + JSON.stringify(logRow.token_usage)).to.be.at.most(Math.max(1e-9, want * 1e-6));",
+              "    });",
+              "  });",
+              "}",
+              "read(20);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-request-id",
+            "value": "{{mapsPassthroughReq}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"contents\": [{\"role\": \"user\", \"parts\": [{\"text\": \"Which cafes are open near me?\"}]}]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai_passthrough/v1beta/models/pp-maps-grounded:generateContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai_passthrough",
+            "v1beta",
+            "models",
+            "pp-maps-grounded:generateContent"
+          ]
+        }
+      }
+    },
+    {
+      "name": "564.0h /genai_passthrough/v1beta/models/{model}:streamGenerateContent the Maps-grounded prompt is billed the grounding fee (fixture) - gemini/pp-maps-grounded",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.collectionVariables.set('mapsPassthroughStreamReq', 'e2e-maps-0h-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the call through the fixture succeeds', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+              "});",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var reqId = pm.collectionVariables.get('mapsPassthroughStreamReq');",
+              "// 12 prompt x 3e-07 + 8 out x 2.5e-06 + one grounded prompt x 0.025. A route that drops the grounding",
+              "// metadata or the tool usage before billing logs 0.0000236.",
+              "var want = 0.0250236;",
+              "function read(tries) {",
+              "  pm.sendRequest({ url: BASE + '/api/logs?request_id=' + reqId + '&limit=1', method: 'GET' }, function (err, res) {",
+              "    var rows = (!err && res.code === 200) ? (res.json().logs || []) : [];",
+              "    var logRow = rows.filter(function (r) { return r.id === reqId; })[0];",
+              "    if ((!logRow || !(logRow.cost > 0)) && tries > 0) { setTimeout(function () { read(tries - 1); }, 300); return; }",
+              "    pm.test('the call was logged under its request id', function () {",
+              "      pm.expect(logRow, err ? String(err) : res.text()).to.not.equal(undefined);",
+              "    });",
+              "    if (!logRow) { return; }",
+              "    pm.test('the grounded prompt is billed the Maps grounding fee', function () {",
+              "      pm.expect(Math.abs(logRow.cost - want), 'cost ' + logRow.cost + ' vs ' + want + '; token_usage: ' + JSON.stringify(logRow.token_usage)).to.be.at.most(Math.max(1e-9, want * 1e-6));",
+              "    });",
+              "  });",
+              "}",
+              "read(20);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-request-id",
+            "value": "{{mapsPassthroughStreamReq}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"contents\": [{\"role\": \"user\", \"parts\": [{\"text\": \"Which cafes are open near me?\"}]}]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai_passthrough/v1beta/models/pp-maps-grounded:streamGenerateContent?alt=sse",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai_passthrough",
+            "v1beta",
+            "models",
+            "pp-maps-grounded:streamGenerateContent"
           ]
         }
       }

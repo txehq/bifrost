@@ -117,6 +117,13 @@ func HasGeminiPassthroughUsage(event []byte) bool {
 
 type geminiPassthroughResp struct {
 	UsageMetadata *GenerateContentResponseUsageMetadata `json:"usageMetadata"`
+	// The grounding metadata of the first candidate and the served model, so a grounded answer
+	// bills its Google Search units and Google Maps grounded prompt as the chat route does
+	// (TXE-7362). Only these fields are decoded; the candidate's content is skipped.
+	Candidates []struct {
+		GroundingMetadata *GroundingMetadata `json:"groundingMetadata"`
+	} `json:"candidates"`
+	ModelVersion string `json:"modelVersion"`
 }
 
 // extractGeminiGenerateContentUsage routes to the correct BifrostPassthroughUsage shape
@@ -189,6 +196,12 @@ func extractGeminiGenerateContentUsage(body []byte) *schemas.BifrostPassthroughU
 			ReasoningTokens: ru.OutputTokensDetails.ReasoningTokens,
 			AudioTokens:     ru.OutputTokensDetails.AudioTokens,
 		}
+	}
+	// Grounding is billed through the chat route's helper, so native passthrough charges the
+	// Google Search units and the Maps grounded prompt the converted routes do. A streamed
+	// answer carries its grounding metadata on the finish event, the one with the final usage.
+	if len(resp.Candidates) > 0 {
+		applyGeminiSearchQueryChatUsage(usage, resp.Candidates[0].GroundingMetadata, resp.ModelVersion)
 	}
 
 	return &schemas.BifrostPassthroughUsage{LLMUsage: usage}
