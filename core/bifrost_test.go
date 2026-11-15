@@ -12804,9 +12804,10 @@ var notPriceFieldNames = map[string]bool{
 // converter reads from the extra params; a key built at run time is not seen.
 func TestConvertersReadNoUnlistedVendorPriceName(t *testing.T) {
 	read := regexp.MustCompile(`(?:ExtraParams|extraParams|extra|ep)\["([A-Za-z0-9_\-]+)"\]`)
-	// A name the converter writes at the top level, through a struct's JSON tag, may be
-	// mapped too (TXE-7295); TestNestedPriceFieldsAreDeclaredAndRefused finds those.
-	tag := regexp.MustCompile("json:\"([A-Za-z0-9_\\-]+)[,\"]")
+	// A name the converter writes at the top level, through a struct's JSON tag or into a
+	// body map (BFL's fields["width"], TXE-7499), may be mapped too (TXE-7295);
+	// TestNestedPriceFieldsAreDeclaredAndRefused finds those.
+	tag := regexp.MustCompile("json:\"([A-Za-z0-9_\\-]+)[,\"]|\\bfields\\[\"([A-Za-z0-9_\\-]+)\"\\]\\s*[,=]")
 	written := map[string]bool{}
 	unified := map[string]bool{}
 	for _, requestType := range []schemas.RequestType{
@@ -12847,7 +12848,7 @@ func TestConvertersReadNoUnlistedVendorPriceName(t *testing.T) {
 			return err
 		}
 		for _, match := range tag.FindAllStringSubmatch(string(source), -1) {
-			written[parts[1]+"/"+match[1]] = true
+			written[parts[1]+"/"+match[1]+match[2]] = true
 		}
 		for _, match := range read.FindAllStringSubmatch(string(source), -1) {
 			name := match[1]
@@ -12913,6 +12914,9 @@ var nestedPriceProbeModels = map[schemas.ModelProvider][]string{
 	// Wan 2.6 and earlier take parameters.size; Wan 2.7 and 3.0 (guardModel) take resolution and ratio.
 	// Qwen-Image takes n and size inside parameters on the sync image endpoint.
 	schemas.DashScope: {"wan2.6-t2v", "qwen-image-" + guardAllowedModel},
+	// BFL's images are served only on the image task routes (TXE-7499): FLUX 3 Klein takes a
+	// size, a resolution tier and an images array; Kontext takes numbered input images.
+	schemas.BFL: {"flux-3-image-klein", "flux-kontext-pro"},
 }
 
 // voicelessVariant asks a probe for its operation with no voice at all. Every speech variant
@@ -12948,6 +12952,8 @@ func nestedPriceProbes() []nestedPriceProbe {
 		{}, {N: schemas.Ptr(3)}, {Size: schemas.Ptr("1024x1024")}, {Quality: schemas.Ptr("high")},
 		{ResponseFormat: schemas.Ptr("b64_json")}, {OutputFormat: schemas.Ptr("jpeg")}, {Background: schemas.Ptr("transparent")},
 	}
+	// An image edit task also takes a resolution tier (DashScope's Wan writes it into parameters.size).
+	taskEdits := append(append([]*schemas.ImageEditParameters(nil), edits...), &schemas.ImageEditParameters{Resolution: "2K"})
 	videos := []*schemas.VideoGenerationParameters{
 		{}, {Seconds: schemas.Ptr("8")}, {Seconds: schemas.Ptr("5")}, {Size: "1280x720"}, {Size: "720x1280"},
 		{Audio: schemas.Ptr(true)}, {AspectRatio: "16:9"}, {Resolution: "1080p"}, {Resolution: "720p"},
@@ -12985,6 +12991,26 @@ func nestedPriceProbes() []nestedPriceProbe {
 			}
 			params := *edits[variant]
 			_, _ = pr.ImageEdit(ctx, key, &schemas.BifrostImageEditRequest{Provider: pr.GetProviderKey(), Model: model, Input: &schemas.ImageEditInput{Prompt: text, Images: []schemas.ImageInput{{Image: []byte("png")}}}, Params: &params})
+			return true
+		}},
+		// The image task creates (TXE-7499), on every provider that implements them. A provider
+		// without them sends nothing; one with them must send a body (imageTaskProbeSent).
+		{schemas.ImageGenerationTaskRequest, func(ctx *schemas.BifrostContext, pr schemas.Provider, key schemas.Key, model string, variant int) bool {
+			taskProvider, ok := pr.(schemas.ImageTaskProvider)
+			if !ok || variant < 0 || variant >= len(images) {
+				return false
+			}
+			params := *images[variant]
+			_, _ = taskProvider.ImageGenerationTask(ctx, key, &schemas.BifrostImageGenerationRequest{Provider: pr.GetProviderKey(), Model: model, Input: &schemas.ImageGenerationInput{Prompt: text}, Params: &params})
+			return true
+		}},
+		{schemas.ImageEditTaskRequest, func(ctx *schemas.BifrostContext, pr schemas.Provider, key schemas.Key, model string, variant int) bool {
+			taskProvider, ok := pr.(schemas.ImageTaskProvider)
+			if !ok || variant < 0 || variant >= len(taskEdits) {
+				return false
+			}
+			params := *taskEdits[variant]
+			_, _ = taskProvider.ImageEditTask(ctx, key, &schemas.BifrostImageEditRequest{Provider: pr.GetProviderKey(), Model: model, Input: &schemas.ImageEditInput{Prompt: text, Images: []schemas.ImageInput{{URL: "https://example.test/a.png"}}}, Params: &params})
 			return true
 		}},
 		{schemas.VideoGenerationRequest, func(ctx *schemas.BifrostContext, pr schemas.Provider, key schemas.Key, model string, variant int) bool {
@@ -13119,9 +13145,9 @@ func nestedPriceRequest(requestType schemas.RequestType, provider schemas.ModelP
 	text := guardOriginalText
 	req := schemas.BifrostRequest{RequestType: requestType}
 	switch requestType {
-	case schemas.ImageGenerationRequest:
+	case schemas.ImageGenerationRequest, schemas.ImageGenerationTaskRequest:
 		req.ImageGenerationRequest = &schemas.BifrostImageGenerationRequest{Provider: provider, Model: model, Input: &schemas.ImageGenerationInput{Prompt: text}, Params: &schemas.ImageGenerationParameters{ExtraParams: extra}}
-	case schemas.ImageEditRequest:
+	case schemas.ImageEditRequest, schemas.ImageEditTaskRequest:
 		req.ImageEditRequest = &schemas.BifrostImageEditRequest{Provider: provider, Model: model, Input: &schemas.ImageEditInput{Prompt: text, Images: []schemas.ImageInput{{Image: []byte("png")}}}, Params: &schemas.ImageEditParameters{ExtraParams: extra}}
 	case schemas.VideoGenerationRequest:
 		req.VideoGenerationRequest = &schemas.BifrostVideoGenerationRequest{Provider: provider, Model: model, Input: &schemas.VideoGenerationInput{Prompt: text}, Params: &schemas.VideoGenerationParameters{ExtraParams: extra}}
@@ -13226,9 +13252,11 @@ func TestNestedPriceFieldsAreDeclaredAndRefused(t *testing.T) {
 
 			var nested, topLevel []nestedField
 			seen, seenTop := map[string]bool{}, map[string]bool{}
+			sentFor := map[schemas.RequestType]bool{}
 			for _, model := range append([]string{guardModel(providerKey)}, nestedPriceProbeModels[providerKey]...) {
 				for _, probe := range probes {
 					bare, bareTop, bareSent, _ := body(probe, model, 0)
+					sentFor[probe.requestType] = sentFor[probe.requestType] || bareSent
 					for variant := 1; ; variant++ {
 						with, withTop, _, more := body(probe, model, variant)
 						if !more {
@@ -13270,6 +13298,15 @@ func TestNestedPriceFieldsAreDeclaredAndRefused(t *testing.T) {
 							seenTop[id] = true
 							topLevel = append(topLevel, nestedField{probe.requestType, name, model, value})
 						}
+					}
+				}
+			}
+			// A provider that implements the image task creates is probed through them, so a new
+			// image task provider cannot pass by sending nothing (TXE-7499).
+			if _, isTaskProvider := provider.(schemas.ImageTaskProvider); isTaskProvider {
+				for _, requestType := range []schemas.RequestType{schemas.ImageGenerationTaskRequest, schemas.ImageEditTaskRequest} {
+					if !sentFor[requestType] {
+						t.Errorf("%s implements schemas.ImageTaskProvider, but no %s probe reached its upstream with a JSON body; add a model it serves to nestedPriceProbeModels", providerKey, requestType)
 					}
 				}
 			}

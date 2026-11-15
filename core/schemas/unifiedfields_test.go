@@ -148,9 +148,9 @@ func extraOnlyRequest(t testing.TB, requestType RequestType, extra map[string]in
 	switch requestType {
 	case EmbeddingRequest:
 		req.EmbeddingRequest = &BifrostEmbeddingRequest{Params: &EmbeddingParameters{ExtraParams: extra}}
-	case ImageGenerationRequest, ImageGenerationStreamRequest:
+	case ImageGenerationRequest, ImageGenerationStreamRequest, ImageGenerationTaskRequest:
 		req.ImageGenerationRequest = &BifrostImageGenerationRequest{Input: &ImageGenerationInput{Prompt: "a cat"}, Params: &ImageGenerationParameters{ExtraParams: extra}}
-	case ImageEditRequest, ImageEditStreamRequest:
+	case ImageEditRequest, ImageEditStreamRequest, ImageEditTaskRequest:
 		req.ImageEditRequest = &BifrostImageEditRequest{Input: &ImageEditInput{Prompt: "a cat"}, Params: &ImageEditParameters{ExtraParams: extra}}
 	case VideoGenerationRequest:
 		req.VideoGenerationRequest = &BifrostVideoGenerationRequest{Input: &VideoGenerationInput{Prompt: "a cat"}, Params: &VideoGenerationParameters{ExtraParams: extra}}

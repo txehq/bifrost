@@ -154,6 +154,11 @@ var priceAffectingUnifiedFields = func() map[RequestType][]string {
 		SpeechStreamRequest:          speech,
 		TranscriptionRequest:         transcription,
 		TranscriptionStreamRequest:   transcription,
+
+		// The image task creates send the sync routes' body (TXE-6431), so their C4 fields
+		// are the same (TXE-7499). The task control fields travel in TaskControl, not Params.
+		ImageGenerationTaskRequest: image,
+		ImageEditTaskRequest:       image,
 	}
 }()
 
@@ -198,6 +203,7 @@ var vendorPriceFieldNames = func() []VendorPriceFieldName {
 	transcription := []RequestType{TranscriptionRequest, TranscriptionStreamRequest}
 	imageGeneration := []RequestType{ImageGenerationRequest, ImageGenerationStreamRequest}
 	image := []RequestType{ImageGenerationRequest, ImageGenerationStreamRequest, ImageEditRequest, ImageEditStreamRequest}
+	imageTask := []RequestType{ImageGenerationTaskRequest, ImageEditTaskRequest}
 	return []VendorPriceFieldName{
 		{Gemini, "taskType", "task_type", []RequestType{EmbeddingRequest}},
 		{BytePlus, "ratio", "aspect_ratio", video},
@@ -222,6 +228,9 @@ var vendorPriceFieldNames = func() []VendorPriceFieldName {
 		{ModelArk, "ratio", "aspect_ratio", video},
 		{ModelArk, "duration", "seconds", video},
 		{ModelArk, "generate_audio", "audio", video},
+		// BFL bills an image by its megapixels, from the width and height it writes for size (TXE-7499).
+		{BFL, "width", "size", imageTask},
+		{BFL, "height", "size", imageTask},
 		{MiniMax, "width", "size", imageGeneration},
 		{MiniMax, "height", "size", imageGeneration},
 		{Nebius, "width", "size", imageGeneration},
@@ -272,7 +281,8 @@ type NestedPriceField struct {
 var nestedPriceFields = func() []NestedPriceField {
 	image := []RequestType{ImageGenerationRequest, ImageGenerationStreamRequest, ImageEditRequest, ImageEditStreamRequest}
 	imageGeneration := []RequestType{ImageGenerationRequest, ImageGenerationStreamRequest}
-	imageSync := []RequestType{ImageGenerationRequest, ImageEditRequest}
+	// DashScope's Wan image task creates build the same body as its sync image routes (TXE-7050).
+	dashScopeImage := []RequestType{ImageGenerationRequest, ImageEditRequest, ImageGenerationTaskRequest, ImageEditTaskRequest}
 	video := []RequestType{VideoGenerationRequest}
 	speech := []RequestType{SpeechRequest, SpeechStreamRequest}
 	transcription := []RequestType{TranscriptionRequest, TranscriptionStreamRequest}
@@ -285,8 +295,8 @@ var nestedPriceFields = func() []NestedPriceField {
 		{Bedrock, "embeddingConfig.outputEmbeddingLength", "dimensions", embedding},
 		{Bedrock, "singleEmbeddingParams.embeddingDimension", "dimensions", embedding},
 		{Bedrock, "singleEmbeddingParams.embeddingPurpose", "task_type", embedding},
-		{DashScope, "parameters.n", "n", imageSync},
-		{DashScope, "parameters.size", "size", append(append([]RequestType(nil), video...), imageSync...)},
+		{DashScope, "parameters.n", "n", dashScopeImage},
+		{DashScope, "parameters.size", "size", append(append([]RequestType(nil), video...), dashScopeImage...)},
 		{DashScope, "parameters.resolution", "resolution", video},
 		{DashScope, "parameters.ratio", "aspect_ratio", video},
 		{DashScope, "parameters.duration", "seconds", video},
