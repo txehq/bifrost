@@ -516,6 +516,10 @@ const fixturePricing = {
 		provider: "bedrock", mode: "guardrail", base_model: "guardrails",
 		guardrail_cost_per_unit: { automatedReasoningPolicyUnits: 0.00017, contentPolicyImageUnits: 0.00075, contentPolicyUnits: 0.00015, contextualGroundingPolicyUnits: 0.0001, sensitiveInformationPolicyFreeUnits: 0, sensitiveInformationPolicyUnits: 0.0001, topicPolicyUnits: 0.00015, wordPolicyUnits: 0 },
 	},
+	// Folder 599 (TXE-7131): Seedance on VolcEngine and ModelArk is priced per video token, as on BytePlus. The ovr
+	// Ark task reports 108900 completion tokens, so a settled job costs $1.089.
+	"volcengine/doubao-seedance-1-0-pro-250528": { provider: "volcengine", mode: "video_generation", output_cost_per_video_token: 0.00001 },
+	"modelark/doubao-seedance-1-0-pro-250528": { provider: "modelark", mode: "video_generation", output_cost_per_video_token: 0.00001 },
 	// Folder 520 (TXE-7329): $0.10 a second, so the 12 rendered seconds settle at $1.20 and the 5 asked for at $0.50.
 	// The sheet's key drops its first segment, as for every provider-prefixed key, leaving the Replicate model name.
 	"replicate/fixture/rendered-longer": { provider: "replicate", mode: "video_generation", output_cost_per_video_per_second: 0.1 },
