@@ -119,7 +119,57 @@ func validateDashScopeImageTask(model string, n *int, size, responseFormat *stri
 		return nil, schemas.NewUnsupportedParameterError(name, fmt.Sprintf(
 			"dashscope: %s cannot be delivered on the image task routes: it may switch on Wan's interleaved mode, which makes up to max_images images whatever n says, while a task create is billed for the images it asks for (a name outside ASCII is refused for the same reason)", name))
 	}
+	if name, field := wanBilledParameterAlias(extraParams); name != "" {
+		return nil, schemas.NewUnsupportedParameterError(name, fmt.Sprintf(
+			"dashscope: extra params cannot set %s: DashScope may read it as parameters.%s, which sets what the task is billed for; send the request's own %s field", name, field, field))
+	}
 	return wanImageTaskSize(size, resolution)
+}
+
+// wanFoldedName is name's ASCII letters and digits in lower case: every separator dropped, the
+// widest reading a JSON matcher on DashScope's side might give it ("s-ize" and "S_I_Z_E" are size).
+func wanFoldedName(name string) string {
+	var folded strings.Builder
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
+			folded.WriteByte(c)
+		}
+	}
+	return folded.String()
+}
+
+// wanBilledParameterAlias returns an extra param, at the top level or inside an extra parameters
+// object (GetExtraParams puts both in parameters), whose folded name is a parameter the task is
+// billed by (n, size), and that parameter; "" when there is none. The exact spellings are refused
+// above and by core; this catches the separators SameJSONFieldName keeps ("s-ize", "-n").
+func wanBilledParameterAlias(extraParams map[string]interface{}) (name, field string) {
+	check := func(candidate string) string {
+		folded := wanFoldedName(candidate)
+		for _, field := range dashScopeImagePriceParameters {
+			if folded == field {
+				return field
+			}
+		}
+		return ""
+	}
+	for key, value := range extraParams {
+		if object, ok := value.(map[string]interface{}); ok && wanFoldedName(key) == "parameters" {
+			for nested := range object {
+				if field := check(nested); field != "" {
+					return key + "." + nested, field
+				}
+			}
+			continue
+		}
+		if field := check(key); field != "" {
+			return key, field
+		}
+	}
+	return "", ""
 }
 
 // Wan's interleaved text-and-image mode is switched on by enable_interleave and max_images, and
@@ -132,7 +182,20 @@ func validateDashScopeImageTask(model string, n *int, size, responseFormat *stri
 // Java services may read JSON with a matcher that folds '-' as well as '_' (fastjson's smart
 // match), so a spelling Bifrost reads as another field could be the switch to DashScope.
 func wanSameName(a, b string) bool {
+	if isASCII(a) && isASCII(b) {
+		// Every separator dropped, not only '_' and '-' (wanFoldedName).
+		return wanFoldedName(a) == wanFoldedName(b)
+	}
 	return schemas.SameJSONFieldName(strings.ReplaceAll(a, "-", ""), strings.ReplaceAll(b, "-", ""))
+}
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= utf8.RuneSelf {
+			return false
+		}
+	}
+	return true
 }
 
 // wanNamesInterleave reports whether name could be one of the interleaved-mode switches to some
@@ -144,20 +207,10 @@ func wanSameName(a, b string) bool {
 // JSON parsers (Go folds "ſ" to s, Java's lower-casing turns "İ" into i), so no single fold can
 // promise to read such a name as DashScope does, and no documented DashScope field has one.
 func wanNamesInterleave(name string) bool {
-	var letters strings.Builder
-	for i := 0; i < len(name); i++ {
-		c := name[i]
-		if c >= utf8.RuneSelf {
-			return true
-		}
-		if c >= 'A' && c <= 'Z' {
-			c += 'a' - 'A'
-		}
-		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
-			letters.WriteByte(c)
-		}
+	if !isASCII(name) {
+		return true
 	}
-	folded := letters.String()
+	folded := wanFoldedName(name)
 	return strings.Contains(folded, "interleave") || strings.Contains(folded, "maximages")
 }
 

@@ -1380,6 +1380,8 @@ func TestDashScopeWanImageTaskBilledImages(t *testing.T) {
 		`{"model":"wan2.6-image","parameters":{"n":1,"max_images":5}}`:           "parameters.max_images",
 		`{"model":"wan2.6-image","parameters":{"n":1,"EnableInterleave":"yes"}}`: "parameters.EnableInterleave",
 		`{"model":"wan2.6-image","parameters":{"n":1,"enable-interleave":true}}`: "parameters.enable-interleave",
+		`{"model":"wan2.6-image","parameters":{"n":1,"-n":4}}`:                   "parameters.n",
+		`{"model":"wan2.6-image","parameters":{"size":"1K","s.ize":"4K"}}`:       "parameters.size",
 		`{"model":"wan2.6-image","parameters":{"n":1,"is_enable_interleave":1}}`: "parameters.is_enable_interleave",
 		"{\"model\":\"wan2.6-image\",\"parameters\":{\"n\":1,\"max_imageſ\":3}}": "parameters.max_imageſ",
 		`{"model":"wan2.6-t2i","parameters":{"n":1},"para-meters":{"n":4}}`:      "parameters",
@@ -1404,6 +1406,40 @@ func TestDashScopeWanImageTaskBilledImages(t *testing.T) {
 // images whatever n says, which a task create, billed at submission for the images it asks for,
 // cannot count. Its switches are refused on both task creates before any upstream call, at the
 // top level and inside an extra parameters object; enable_interleave false is not a switch.
+func TestDashScopeWanImageTaskRefusesBilledParameterAliases(t *testing.T) {
+	// A spelling of n or size that only separators keep apart from it ("s-ize", "-n") may be read
+	// as that parameter by DashScope, while billing sees no such field. Refused on both creates,
+	// at the top level and inside an extra parameters object, before any upstream call.
+	provider, mock := newMockDashScopeImageTasks(t, map[string]mockResponse{"POST /api/v1/services/aigc/image-generation/generation": {http.StatusOK, wanImageTaskCreated}})
+	for _, c := range []struct {
+		extra map[string]interface{}
+		param string
+	}{
+		{map[string]interface{}{"parameters": map[string]interface{}{"s-ize": "2K"}}, "parameters.s-ize"},
+		{map[string]interface{}{"parameters": map[string]interface{}{"-n": 4}}, "parameters.-n"},
+		{map[string]interface{}{"s.ize": "2K"}, "s.ize"},
+		{map[string]interface{}{"para-meters": map[string]interface{}{"n-": 4}}, "para-meters.n-"},
+	} {
+		_, genErr := provider.ImageGenerationTask(imageTestContext(t), imageTestKey(), &schemas.BifrostImageGenerationRequest{
+			Provider: schemas.DashScope, Model: "wan2.6-image", Input: &schemas.ImageGenerationInput{Prompt: "x"},
+			Params: &schemas.ImageGenerationParameters{N: schemas.Ptr(1), ExtraParams: c.extra},
+		})
+		_, editErr := provider.ImageEditTask(imageTestContext(t), imageTestKey(), &schemas.BifrostImageEditRequest{
+			Provider: schemas.DashScope, Model: "wan2.6-image",
+			Input:  &schemas.ImageEditInput{Prompt: "x", Images: []schemas.ImageInput{{URL: "https://example.com/a.png"}}},
+			Params: &schemas.ImageEditParameters{N: schemas.Ptr(1), ExtraParams: c.extra},
+		})
+		for _, bifrostErr := range []*schemas.BifrostError{genErr, editErr} {
+			if bifrostErr == nil || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter || bifrostErr.Error.Param != c.param {
+				t.Fatalf("%v: error = %+v, want caller_unsupported_parameter naming %s", c.extra, bifrostErr, c.param)
+			}
+		}
+	}
+	if len(mock.requests) != 0 {
+		t.Fatalf("%d calls reached DashScope, want none", len(mock.requests))
+	}
+}
+
 func TestDashScopeWanImageTaskRefusesInterleavedMode(t *testing.T) {
 	provider, mock := newMockDashScopeImageTasks(t, map[string]mockResponse{"POST /api/v1/services/aigc/image-generation/generation": {http.StatusOK, wanImageTaskCreated}})
 	refused := []struct {
