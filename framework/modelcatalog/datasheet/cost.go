@@ -992,6 +992,14 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 			input.imageUsage = &schemas.ImageUsage{}
 		}
 		populateOutputImageCount(input.imageUsage, max(len(result.ImageTaskResponse.Data), result.ImageTaskResponse.BilledImages, 1))
+		// The size and tier the create asked for, which core keeps on it (BackfillCreateParams),
+		// pick the per-image rate as they do for a sync image.
+		if params := result.ImageTaskResponse.BilledParameters; params != nil {
+			input.imageSize = params.Size
+			input.imageQuality = params.Quality
+			input.imageResolution = params.Resolution
+			input.imageSteps = params.NumInferenceSteps
+		}
 
 	case result.ImageGenerationStreamResponse != nil:
 		// Defensive copy mirrors the non-stream path so CalculateCost never

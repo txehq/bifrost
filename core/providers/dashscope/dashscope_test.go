@@ -1346,14 +1346,68 @@ func TestDashScopeWanImageTaskBilledImages(t *testing.T) {
 		})
 	}
 	for body, want := range map[string]int{
-		`{"model":"wan2.6-t2i","parameters":{"n":2}}`:   2,
-		`{"model":"wan2.6-t2i","parameters":{}}`:        wanDefaultImageCount,
-		`{"model":"wan2.6-t2i"}`:                        wanDefaultImageCount,
-		`{"model":"wan2.6-t2i","parameters":{"n":"2"}}`: wanDefaultImageCount,
+		`{"model":"wan2.6-t2i","parameters":{"n":2}}`:                             2,
+		`{"model":"wan2.6-t2i","parameters":{}}`:                                  wanDefaultImageCount,
+		`{"model":"wan2.6-t2i"}`:                                                  wanDefaultImageCount,
+		`{"model":"wan2.6-t2i","parameters":{"n":"2"}}`:                           wanDefaultImageCount,
+		`{"model":"wan2.6-image","parameters":{"n":1,"enable_interleave":false}}`: 1,
 	} {
-		if got := wanRawImageTaskCount([]byte(body)); got != want {
-			t.Errorf("raw body %s: billed images = %d, want %d", body, got, want)
+		if got, bifrostErr := wanRawImageTaskCount([]byte(body)); bifrostErr != nil || got != want {
+			t.Errorf("raw body %s: billed images = %d (%+v), want %d", body, got, bifrostErr, want)
 		}
+	}
+	for body, param := range map[string]string{
+		`{"model":"wan2.6-image","parameters":{"n":1,"enable_interleave":true}}`: "parameters.enable_interleave",
+		`{"model":"wan2.6-image","parameters":{"n":1,"max_images":5}}`:           "parameters.max_images",
+	} {
+		if _, bifrostErr := wanRawImageTaskCount([]byte(body)); bifrostErr == nil || bifrostErr.Error.Param != param {
+			t.Errorf("raw body %s: error %+v, want a refusal naming %s", body, bifrostErr, param)
+		}
+	}
+}
+
+// TestDashScopeWanImageTaskRefusesInterleavedMode: Wan's interleaved mode makes up to max_images
+// images whatever n says, which a task create, billed at submission for the images it asks for,
+// cannot count. Its switches are refused on both task creates before any upstream call, at the
+// top level and inside an extra parameters object; enable_interleave false is not a switch.
+func TestDashScopeWanImageTaskRefusesInterleavedMode(t *testing.T) {
+	provider, mock := newMockDashScopeImageTasks(t, map[string]mockResponse{"POST /api/v1/services/aigc/image-generation/generation": {http.StatusOK, wanImageTaskCreated}})
+	refused := []struct {
+		name  string
+		extra map[string]interface{}
+		param string
+	}{
+		{"enable_interleave", map[string]interface{}{"enable_interleave": true}, "enable_interleave"},
+		{"max_images", map[string]interface{}{"max_images": 5}, "max_images"},
+		{"inside parameters", map[string]interface{}{"parameters": map[string]interface{}{"enableInterleave": true}}, "parameters.enableInterleave"},
+	}
+	for _, c := range refused {
+		t.Run(c.name, func(t *testing.T) {
+			_, genErr := provider.ImageGenerationTask(imageTestContext(t), imageTestKey(), &schemas.BifrostImageGenerationRequest{
+				Provider: schemas.DashScope, Model: "wan2.6-image", Input: &schemas.ImageGenerationInput{Prompt: "x"},
+				Params: &schemas.ImageGenerationParameters{N: schemas.Ptr(1), ExtraParams: c.extra},
+			})
+			_, editErr := provider.ImageEditTask(imageTestContext(t), imageTestKey(), &schemas.BifrostImageEditRequest{
+				Provider: schemas.DashScope, Model: "wan2.6-image",
+				Input:  &schemas.ImageEditInput{Prompt: "x", Images: []schemas.ImageInput{{URL: "https://example.com/a.png"}}},
+				Params: &schemas.ImageEditParameters{N: schemas.Ptr(1), ExtraParams: c.extra},
+			})
+			for _, bifrostErr := range []*schemas.BifrostError{genErr, editErr} {
+				if bifrostErr == nil || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter || bifrostErr.Error.Param != c.param {
+					t.Fatalf("error = %+v, want caller_unsupported_parameter naming %s", bifrostErr, c.param)
+				}
+			}
+		})
+	}
+	if len(mock.requests) != 0 {
+		t.Fatalf("%d calls reached DashScope, want none", len(mock.requests))
+	}
+	_, bifrostErr := provider.ImageGenerationTask(imageTestContext(t), imageTestKey(), &schemas.BifrostImageGenerationRequest{
+		Provider: schemas.DashScope, Model: "wan2.6-image", Input: &schemas.ImageGenerationInput{Prompt: "x"},
+		Params: &schemas.ImageGenerationParameters{N: schemas.Ptr(1), ExtraParams: map[string]interface{}{"enable_interleave": false}},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("enable_interleave false: %+v, want the create sent", bifrostErr.Error)
 	}
 }
 

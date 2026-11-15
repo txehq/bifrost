@@ -9836,6 +9836,11 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
+		if req.RequestType != schemas.ImageTaskRetrieveRequest {
+			// The create is the one billed image task response: it is priced at the size and
+			// tier it asked for, as a sync image response is (TXE-7050).
+			imageTaskResponse.BackfillCreateParams(&req.BifrostRequest)
+		}
 		response.ImageTaskResponse = imageTaskResponse
 	case schemas.ImageTaskCancelRequest:
 		// The worker already refused a provider with no cancel API (CheckImageTaskCancelSupported).

@@ -8867,6 +8867,34 @@ func TestCalculateCost_ImageTaskBilledForTheImagesItAsksFor(t *testing.T) {
 	assert.InDelta(t, 0.03, s.CalculateCost(create(schemas.ImageGenerationTaskRequest, 0), nil), 1e-12, "no count: one image, as before")
 }
 
+// TXE-7050: an image task create is priced at the resolution tier it asked for, which core keeps on
+// it (BilledParameters); before, it fell back to the 1K rate, and the unbilled query never made up
+// the difference.
+func TestCalculateCost_ImageTaskCreatePricedAtItsTier(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("wan2.6-image", "dashscope", "image_generation"): {
+			InputCostPerToken:    bifrost.Ptr(0.0),
+			OutputCostPerToken:   bifrost.Ptr(0.0),
+			OutputCostPerImage1K: bifrost.Ptr(0.02),
+			OutputCostPerImage2K: bifrost.Ptr(0.05),
+		},
+	})
+	create := func(params *schemas.ImageGenerationResponseParameters) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{ImageTaskResponse: &schemas.BifrostImageTaskResponse{
+			Status:           schemas.VideoStatusQueued,
+			Data:             []schemas.TaskArtifact{},
+			BilledImages:     2,
+			BilledParameters: params,
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ImageGenerationTaskRequest,
+				RoutingInfo: routingInfoFor(schemas.DashScope, "wan2.6-image"),
+			},
+		}}
+	}
+	assert.InDelta(t, 0.10, s.CalculateCost(create(&schemas.ImageGenerationResponseParameters{Resolution: "2K"}), nil), 1e-12, "two images at the 2K rate")
+	assert.InDelta(t, 0.04, s.CalculateCost(create(nil), nil), 1e-12, "no tier asked for: the 1K rate")
+}
+
 // Cost path for embeddings (TXE-7081): the common token-priced case, and a
 // character-priced Vertex text embedding.
 func BenchmarkComputeEmbeddingCost(b *testing.B) {

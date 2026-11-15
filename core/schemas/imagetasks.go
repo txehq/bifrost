@@ -49,7 +49,25 @@ type BifrostImageTaskResponse struct {
 	// A provider whose create takes n, or makes several images by default, must set it.
 	BilledImages int `json:"-"`
 
+	// BilledParameters are the pricing dimensions a create asked for (size, quality, aspect ratio,
+	// resolution tier, steps), never serialised. Core fills them from the request on every image
+	// task create (BackfillCreateParams), as BackfillParams does for a sync image response, so the
+	// create, the only image task response that is billed, is priced at the tier it asked for.
+	BilledParameters *ImageGenerationResponseParameters `json:"-"`
+
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+}
+
+// BackfillCreateParams fills BilledParameters from the create request req (an image generation or
+// edit task) with the same reading a sync image response gets (BifrostImageGenerationResponse
+// .BackfillParams). Nothing it writes is serialised: the task object's wire shape is unchanged.
+func (r *BifrostImageTaskResponse) BackfillCreateParams(req *BifrostRequest) {
+	if r == nil || req == nil {
+		return
+	}
+	reading := &BifrostImageGenerationResponse{}
+	reading.BackfillParams(req)
+	r.BilledParameters = reading.ImageGenerationResponseParameters
 }
 
 // ImageTaskObject is the value of BifrostImageTaskResponse.Object.

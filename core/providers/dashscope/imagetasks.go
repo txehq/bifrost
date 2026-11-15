@@ -111,7 +111,49 @@ func validateDashScopeImageTask(model string, n *int, size, responseFormat *stri
 			}
 		}
 	}
+	if name := wanInterleaveSwitch(extraParams); name != "" {
+		return nil, schemas.NewUnsupportedParameterError(name, fmt.Sprintf(
+			"dashscope: %s cannot be delivered on the image task routes: Wan's interleaved mode makes up to max_images images whatever n says, and a task create is billed for the images it asks for", name))
+	}
 	return wanImageTaskSize(size, resolution)
+}
+
+// wanInterleaveSwitches are the extra params that turn on Wan's interleaved text-and-image mode,
+// where max_images, not n, sets how many images are made (and billed). A task create is billed for
+// the images it asks for at submission (BilledImages), and the query is not billed, so a count the
+// create cannot know is refused rather than under-billed.
+var wanInterleaveSwitches = []string{"enable_interleave", "max_images"}
+
+// wanInterleaveSwitch returns the name of an interleaved-mode switch among the extra params, at
+// the top level or inside an extra parameters object (GetExtraParams puts both in parameters),
+// in the caller's spelling; "" when there is none. enable_interleave set to false is not one.
+func wanInterleaveSwitch(extraParams map[string]interface{}) string {
+	check := func(name string, value interface{}) string {
+		for _, field := range wanInterleaveSwitches {
+			if !schemas.SameJSONFieldName(name, field) || value == nil {
+				continue
+			}
+			if on, isBool := value.(bool); isBool && !on {
+				continue
+			}
+			return name
+		}
+		return ""
+	}
+	for name, value := range extraParams {
+		if object, ok := value.(map[string]interface{}); ok && providerUtils.ExtraParamNamesField(name, "parameters") {
+			for nested, nestedValue := range object {
+				if found := check(nested, nestedValue); found != "" {
+					return name + "." + found
+				}
+			}
+			continue
+		}
+		if found := check(name, value); found != "" {
+			return found
+		}
+	}
+	return ""
 }
 
 // ImageGenerationTask creates a Wan text-to-image task.
@@ -127,7 +169,11 @@ func (provider *DashScopeProvider) ImageGenerationTask(ctx *schemas.BifrostConte
 		return nil, bifrostErr
 	}
 	if rawBody != nil {
-		return provider.submitImageTask(ctx, key, schemas.ImageGenerationTaskRequest, request.Model, rawBody, wanRawImageTaskCount(rawBody))
+		billed, countErr := wanRawImageTaskCount(rawBody)
+		if countErr != nil {
+			return nil, countErr
+		}
+		return provider.submitImageTask(ctx, key, schemas.ImageGenerationTaskRequest, request.Model, rawBody, billed)
 	}
 	var tierSize *string
 	var n *int
@@ -169,7 +215,11 @@ func (provider *DashScopeProvider) ImageEditTask(ctx *schemas.BifrostContext, ke
 		return nil, bifrostErr
 	}
 	if rawBody != nil {
-		return provider.submitImageTask(ctx, key, schemas.ImageEditTaskRequest, request.Model, rawBody, wanRawImageTaskCount(rawBody))
+		billed, countErr := wanRawImageTaskCount(rawBody)
+		if countErr != nil {
+			return nil, countErr
+		}
+		return provider.submitImageTask(ctx, key, schemas.ImageEditTaskRequest, request.Model, rawBody, billed)
 	}
 	var tierSize *string
 	var n *int
@@ -205,17 +255,31 @@ func wanImageTaskCount(n *int) int {
 }
 
 // wanRawImageTaskCount reads parameters.n from a body the caller wrote whole (large payload
-// passthrough). A body whose n Bifrost cannot read is counted at Wan's default.
-func wanRawImageTaskCount(body []byte) int {
+// passthrough). A body whose n Bifrost cannot read is counted at Wan's default. A body that turns
+// on Wan's interleaved mode is refused, as on the converted path (wanInterleaveSwitch).
+func wanRawImageTaskCount(body []byte) (int, *schemas.BifrostError) {
 	var raw struct {
 		Parameters *struct {
-			N *int `json:"n"`
+			N                *int            `json:"n"`
+			EnableInterleave json.RawMessage `json:"enable_interleave"`
+			MaxImages        json.RawMessage `json:"max_images"`
 		} `json:"parameters"`
 	}
 	if json.Unmarshal(body, &raw) != nil || raw.Parameters == nil {
-		return wanDefaultImageCount
+		return wanDefaultImageCount, nil
 	}
-	return wanImageTaskCount(raw.Parameters.N)
+	extra := map[string]interface{}{}
+	for name, value := range map[string]json.RawMessage{"enable_interleave": raw.Parameters.EnableInterleave, "max_images": raw.Parameters.MaxImages} {
+		var decoded interface{}
+		if len(value) > 0 && json.Unmarshal(value, &decoded) == nil {
+			extra[name] = decoded
+		}
+	}
+	if name := wanInterleaveSwitch(extra); name != "" {
+		return 0, schemas.NewUnsupportedParameterError("parameters."+name, fmt.Sprintf(
+			"dashscope: parameters.%s cannot be delivered on the image task routes: Wan's interleaved mode makes up to max_images images whatever n says, and a task create is billed for the images it asks for", name))
+	}
+	return wanImageTaskCount(raw.Parameters.N), nil
 }
 
 // withWanImageTaskSize writes the resolution tier into parameters.size. A size set from the
