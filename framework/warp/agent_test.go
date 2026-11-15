@@ -1000,13 +1000,20 @@ func TestWarpToolCallEndAlwaysReportsDuration(t *testing.T) {
 func TestWarpUsageFromResponsesKeepsTokenDetails(t *testing.T) {
 	usage := usageFromResponses(&schemas.ResponsesResponseUsage{
 		InputTokens: 1000, OutputTokens: 200, TotalTokens: 1200,
-		InputTokensDetails:  &schemas.ResponsesResponseInputTokens{CachedReadTokens: 400, AudioTokens: 10, TextTokens: 590},
+		InputTokensDetails: &schemas.ResponsesResponseInputTokens{
+			CachedReadTokens: 400, AudioTokens: 10, TextTokens: 590,
+			VideoTokens: 30, DocumentTokens: 40, CachedVideoTokens: 25,
+		},
 		OutputTokensDetails: &schemas.ResponsesResponseOutputTokens{ReasoningTokens: 150, AcceptedPredictionTokens: 20},
 	})
 
 	require.NotNil(t, usage.PromptTokensDetails, "cached reads are what make a turn cheap; losing them overstates cost")
 	require.Equal(t, 400, usage.PromptTokensDetails.CachedReadTokens)
 	require.Equal(t, 10, usage.PromptTokensDetails.AudioTokens)
+	// The hand copy dropped these (TXE-7503); the shared conversion keeps every field.
+	require.Equal(t, 30, usage.PromptTokensDetails.VideoTokens)
+	require.Equal(t, 40, usage.PromptTokensDetails.DocumentTokens)
+	require.Equal(t, 25, usage.PromptTokensDetails.CachedVideoTokens)
 	require.NotNil(t, usage.CompletionTokensDetails)
 	require.Equal(t, 150, usage.CompletionTokensDetails.ReasoningTokens)
 	require.Equal(t, 20, usage.CompletionTokensDetails.AcceptedPredictionTokens)
@@ -1015,6 +1022,23 @@ func TestWarpUsageFromResponsesKeepsTokenDetails(t *testing.T) {
 	bare := usageFromResponses(&schemas.ResponsesResponseUsage{InputTokens: 1, OutputTokens: 1, TotalTokens: 2})
 	require.Nil(t, bare.PromptTokensDetails)
 	require.Nil(t, bare.CompletionTokensDetails)
+}
+
+// BenchmarkWarpUsageFromResponses measures the conversion that runs once per model call of a
+// Warp turn (TXE-7503: the shared ToChatPromptTokensDetails replaced a hand copy).
+func BenchmarkWarpUsageFromResponses(b *testing.B) {
+	usage := &schemas.ResponsesResponseUsage{
+		InputTokens: 1000, OutputTokens: 200, TotalTokens: 1200,
+		InputTokensDetails: &schemas.ResponsesResponseInputTokens{
+			TextTokens: 590, AudioTokens: 10, VideoTokens: 30, DocumentTokens: 40,
+			CachedReadTokens: 400, CachedVideoTokens: 25, CachedWriteTokens: 50,
+		},
+		OutputTokensDetails: &schemas.ResponsesResponseOutputTokens{ReasoningTokens: 150},
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = usageFromResponses(usage)
+	}
 }
 
 // The aggregated cost must keep its breakdown, not just the total.

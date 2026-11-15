@@ -1302,16 +1302,9 @@ func usageFromResponses(usage *schemas.ResponsesResponseUsage) *schemas.BifrostL
 	// the merge in accumulateUsage had nothing to accumulate. It also loses the
 	// cached-read count, which CalculateCostForUsage prices lower than fresh
 	// input - so a cached turn was reported as costing full price.
-	if details := usage.InputTokensDetails; details != nil {
-		converted.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
-			TextTokens:              details.TextTokens,
-			AudioTokens:             details.AudioTokens,
-			ImageTokens:             details.ImageTokens,
-			CachedReadTokens:        details.CachedReadTokens,
-			CachedWriteTokens:       details.CachedWriteTokens,
-			CachedWriteTokenDetails: details.CachedWriteTokenDetails,
-		}
-	}
+	// Every input detail, through the shared conversion: the hand copy that stood
+	// here dropped video, document and cached-video tokens (TXE-7503).
+	converted.PromptTokensDetails = usage.InputTokensDetails.ToChatPromptTokensDetails()
 	if details := usage.OutputTokensDetails; details != nil {
 		converted.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{
 			TextTokens:               details.TextTokens,

@@ -1,6 +1,6 @@
 {
   "name": "276. Warp keeps embedding spaces apart and counts what a turn embedded (warp-preservation) [SERIAL]",
-  "description": "TXE-5543 regression. Local fixture regression: run with warpWire=1 and warpWireFixtureUrl against the gateway of tests/e2e/api/provider_config/warp-wire.config.json, with a logs store and a vector store, and tests/e2e/api/runners/warp-wire-fixture.mjs as the only upstream. A retired namespace holds vectors of a space nothing records, so moving back onto one is refused; clearing the space in place is refused, and clearing it onto a new namespace retires the old one. A turn that searches reports its model calls and each query embedding once: 110 tokens per model call and 7 per embedding on this fixture. Model turns held open, backfill pages, tied timestamps and the chart, trace and search reads cannot be sent from a collection: tests/e2e/api/runners/run-warp-wire.mjs covers them. Run the whole folder in order.",
+  "description": "TXE-5543 regression. Local fixture regression: run with warpWire=1 and warpWireFixtureUrl against the gateway of tests/e2e/api/provider_config/warp-wire.config.json, with a logs store and a vector store, and tests/e2e/api/runners/warp-wire-fixture.mjs as the only upstream. A retired namespace holds vectors of a space nothing records, so moving back onto one is refused; clearing the space in place is refused, and clearing it onto a new namespace retires the old one. A turn that searches reports its model calls and each query embedding once: 110 tokens per model call and 7 per embedding on this fixture. Model turns held open, backfill pages, tied timestamps and the chart, trace and search reads cannot be sent from a collection: tests/e2e/api/runners/run-warp-wire.mjs covers them. Run the whole folder in order. A turn's usage keeps every prompt detail the model reported: video, document, cached-video tokens and the cached modality split (TXE-7503).",
   "item": [
     {
       "name": "[setup] the warp feature flag is on - warp-preservation",
@@ -418,6 +418,72 @@
               "pm.test('warp-preservation: two model calls and two embeddings are reported', function () {",
               "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
               "  pm.expect(body.usage.total_tokens, pm.response.text()).to.equal(234);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "a turn's usage keeps every prompt detail the model reported - warp-preservation",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/api/warp/chat",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"messages\": [{\"role\": \"user\", \"content\": \"anything unusual today? [case:{{warpPresDetailsKey}}]\"}], \"stream\": false, \"timezone\": \"UTC\", \"utc_offset_minutes\": 0}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('warpWire') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "// TXE-7503: Warp converted the model's Responses usage to chat usage by a hand copy that kept",
+              "// text, audio, image and the cached totals, so video, document and cached-video tokens and the",
+              "// cached modality split never reached the turn's usage. Red before: those four are absent.",
+              "var key = pm.variables.get('warpPresA').toLowerCase() + '-details';",
+              "pm.collectionVariables.set('warpPresDetailsKey', key);",
+              "pm.sendRequest({ url: pm.variables.get('warpWireFixtureUrl') + '/__script', method: 'POST', body: JSON.stringify({ key: key, steps: [",
+              "  { text: 'nothing to report.', usage: { input_tokens: 100, output_tokens: 10, total_tokens: 110, input_tokens_details: { text_tokens: 5, video_tokens: 30, document_tokens: 40, cached_tokens: 25, cached_video_tokens: 20, cached_tokens_details: { audio_tokens: 5 } } } },",
+              "] }) }, function (err, res) {",
+              "  pm.test('warp-preservation setup: the model is scripted with every prompt detail', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var body = pm.response.json();",
+              "pm.test('warp-preservation: the turn keeps every prompt detail the model reported', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "  var d = (body.usage || {}).prompt_tokens_details || {};",
+              "  pm.expect(d.video_tokens, pm.response.text()).to.equal(30);",
+              "  pm.expect(d.document_tokens, pm.response.text()).to.equal(40);",
+              "  pm.expect(d.cached_read_tokens, pm.response.text()).to.equal(25);",
+              "  pm.expect(d.cached_video_tokens, pm.response.text()).to.equal(20);",
+              "  pm.expect((d.cached_read_token_details || {}).audio_tokens, pm.response.text()).to.equal(5);",
               "});"
             ]
           }

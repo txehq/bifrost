@@ -11,6 +11,7 @@
 //
 // A step is {tool, args} or {tools: [{tool, args}]} for tool calls, {text}, {text, tool, args} for a
 // message beside a tool call, or {status} for a failure. Past the last step it answers "done.".
+// A step's usage, when given, replaces the default usage of that model call.
 // An embedding input holding "wrong-shape" gets a vector of the wrong size and "refused" a 400.
 import http from "node:http";
 
@@ -50,7 +51,7 @@ function modelResponse(step, model) {
 	for (const call of step.tools ?? []) output.push(toolCall(call));
 	return {
 		id: `resp_${++nextId}`, object: "response", created_at: 1, status: "completed", model, output,
-		usage: { input_tokens: CHAT_INPUT, output_tokens: CHAT_OUTPUT, total_tokens: CHAT_INPUT + CHAT_OUTPUT },
+		usage: step.usage ?? { input_tokens: CHAT_INPUT, output_tokens: CHAT_OUTPUT, total_tokens: CHAT_INPUT + CHAT_OUTPUT },
 	};
 }
 
