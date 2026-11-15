@@ -1,0 +1,15 @@
+---
+title: "v2.1.52-sync.11"
+description: "Helm v2.1.52-sync.11 prerelease changelog - 2026-11-16"
+---
+
+<Update label="Bifrost Helm" description="v2.1.52-sync.11 (prerelease)">
+
+## Changelog
+
+Prerelease of the txehq fork for transport v2.4.0-sync.11; the stable chart stays 2.1.51 until a stable version supersedes it. Install this one with `helm install --devel` or `--version 2.1.52-sync.11`.
+
+- The chart's templates and values are unchanged from 2.1.52-sync.10, so a chart that renders today renders the same `config.json`.
+- `appVersion` is now `2.4.0-sync.11`, so an empty `image.tag` selects `v2.4.0-sync.11`. That transport fixes live billing errors (cached audio, video input images, Gemini Maps grounding, Anthropic US and fast multipliers) and a JIT loader race that could end the gateway process on amd64. Its breaking changes are listed in the transport changelog; read them before upgrading: a compressed video download whose decoded size passes the media cap is refused (TXE-7089), and a MiniMax video request with a `reference_images` form MiniMax cannot take is refused (TXE-7409).
+
+</Update>
