@@ -94,6 +94,10 @@ func validateDashScopeImageTask(model string, n *int, size, responseFormat *stri
 	if bifrostErr := checkDashScopeImageTaskModel(model); bifrostErr != nil {
 		return nil, bifrostErr
 	}
+	if name := wanNonASCIIExtraName(extraParams); name != "" {
+		return nil, schemas.NewUnsupportedParameterError(name, fmt.Sprintf(
+			"dashscope: extra param %q cannot be delivered on the image task routes: a name outside ASCII may be read by DashScope as a field that sets what the task is billed for, and no DashScope field has one", name))
+	}
 	if bifrostErr := validateDashScopeImageParams(dashScopeImageWan, n, size, responseFormat, extraParams); bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -124,6 +128,33 @@ func validateDashScopeImageTask(model string, n *int, size, responseFormat *stri
 			"dashscope: extra params cannot set %s: DashScope may read it as parameters.%s, which sets what the task is billed for; send the request's own %s field", name, field, field))
 	}
 	return wanImageTaskSize(size, resolution)
+}
+
+// wanIsParametersKey reports whether an extra param named key is merged into DashScope's
+// parameters object: as the merge reads it (providerUtils.ExtraParamNamesField, which folds
+// "parameterſ" to parameters), or as DashScope might (wanSameName, which drops separators).
+func wanIsParametersKey(key string) bool {
+	return providerUtils.ExtraParamNamesField(key, "parameters") || wanSameName(key, "parameters")
+}
+
+// wanNonASCIIExtraName returns an extra param name with a character outside ASCII, at the top
+// level or inside an extra parameters object, whatever its value; "" when there is none. JSON
+// parsers fold such names differently (Go reads "ſ" as s, Java lower-cases "İ" to i), so one may
+// be a billed field to DashScope that no check here reads as one. No DashScope field has one.
+func wanNonASCIIExtraName(extraParams map[string]interface{}) string {
+	for key, value := range extraParams {
+		if !isASCII(key) {
+			return key
+		}
+		if object, ok := value.(map[string]interface{}); ok && wanIsParametersKey(key) {
+			for nested := range object {
+				if !isASCII(nested) {
+					return key + "." + nested
+				}
+			}
+		}
+	}
+	return ""
 }
 
 // wanFoldedName is name's ASCII letters and digits in lower case: every separator dropped, the
@@ -157,7 +188,7 @@ func wanBilledParameterAlias(extraParams map[string]interface{}) (name, field st
 		return ""
 	}
 	for key, value := range extraParams {
-		if object, ok := value.(map[string]interface{}); ok && wanFoldedName(key) == "parameters" {
+		if object, ok := value.(map[string]interface{}); ok && wanIsParametersKey(key) {
 			for nested := range object {
 				if field := check(nested); field != "" {
 					return key + "." + nested, field
@@ -228,7 +259,7 @@ func wanInterleaveSwitch(extraParams map[string]interface{}) string {
 		return name
 	}
 	for name, value := range extraParams {
-		if object, ok := value.(map[string]interface{}); ok && wanSameName(name, "parameters") {
+		if object, ok := value.(map[string]interface{}); ok && wanIsParametersKey(name) {
 			for nested, nestedValue := range object {
 				if found := check(nested, nestedValue); found != "" {
 					return name + "." + found

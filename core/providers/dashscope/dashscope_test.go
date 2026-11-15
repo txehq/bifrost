@@ -1419,6 +1419,9 @@ func TestDashScopeWanImageTaskRefusesBilledParameterAliases(t *testing.T) {
 		{map[string]interface{}{"parameters": map[string]interface{}{"-n": 4}}, "parameters.-n"},
 		{map[string]interface{}{"s.ize": "2K"}, "s.ize"},
 		{map[string]interface{}{"para-meters": map[string]interface{}{"n-": 4}}, "para-meters.n-"},
+		// The merge reads "parameterſ" as parameters: its non-ASCII name is refused outright.
+		{map[string]interface{}{"parameterſ": map[string]interface{}{"s-ize": "2K"}}, "parameterſ"},
+		{map[string]interface{}{"parameters": map[string]interface{}{"ſize": "2K"}}, "parameters.ſize"},
 	} {
 		_, genErr := provider.ImageGenerationTask(imageTestContext(t), imageTestKey(), &schemas.BifrostImageGenerationRequest{
 			Provider: schemas.DashScope, Model: "wan2.6-image", Input: &schemas.ImageGenerationInput{Prompt: "x"},
@@ -1456,6 +1459,7 @@ func TestDashScopeWanImageTaskRefusesInterleavedMode(t *testing.T) {
 		{"a long s that folds to s", map[string]interface{}{"max_imageſ": 3}, "max_imageſ"},
 		{"a dotted capital I", map[string]interface{}{"enable_İnterleave": true}, "enable_İnterleave"},
 		{"any name outside ASCII", map[string]interface{}{"wätermark": true}, "wätermark"},
+		{"outside ASCII whatever its value", map[string]interface{}{"wätermark": false}, "wätermark"},
 	}
 	for _, c := range refused {
 		t.Run(c.name, func(t *testing.T) {
