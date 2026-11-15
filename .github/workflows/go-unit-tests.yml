@@ -544,6 +544,7 @@ jobs:
             172.38.0.11:5432
             api.github.com:443
             auth.docker.io:443
+            docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com:443
             github.com:443
             production.cloudflare.docker.com:443
             production.cloudfront.docker.com:443
