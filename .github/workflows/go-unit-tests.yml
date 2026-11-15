@@ -99,6 +99,7 @@ jobs:
             docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com:443
             production.cloudflare.docker.com:443
             production.cloudfront.docker.com:443
+            docker-images-prod.s3.dualstack.us-east-1.amazonaws.com:443
             proxy.golang.org:443
             registry-1.docker.io:443
             registry.npmjs.org:443
@@ -220,6 +221,7 @@ jobs:
             docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com:443
             production.cloudflare.docker.com:443
             production.cloudfront.docker.com:443
+            docker-images-prod.s3.dualstack.us-east-1.amazonaws.com:443
             proxy.golang.org:443
             registry-1.docker.io:443
             registry.npmjs.org:443
@@ -452,6 +454,7 @@ jobs:
             docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com:443
             production.cloudflare.docker.com:443
             production.cloudfront.docker.com:443
+            docker-images-prod.s3.dualstack.us-east-1.amazonaws.com:443
             proxy.golang.org:443
             registry-1.docker.io:443
             registry.npmjs.org:443
@@ -551,6 +554,7 @@ jobs:
             github.com:443
             production.cloudflare.docker.com:443
             production.cloudfront.docker.com:443
+            docker-images-prod.s3.dualstack.us-east-1.amazonaws.com:443
             proxy.golang.org:443
             registry-1.docker.io:443
             release-assets.githubusercontent.com:443
