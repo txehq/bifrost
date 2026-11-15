@@ -1,17 +1,19 @@
 {
   "name": "599. A provider added at runtime answers to its prefix on its first request (prefix-on-add)",
-  "description": "TXE-7501 / PR #339. A custom provider added through POST /api/providers is built by core on its first request, and its name became a known model prefix only then. So the first request naming it, \"<provider>/model\", parsed to no provider: the model catalog sent it to whichever provider claimed the model string, or refused it, and the new provider was reached at best as a fallback.\n\nEach row creates its own run-scoped OpenAI-backed provider with its key in the same POST (adding the key later through /keys builds the provider first and hides the bug), then sends the very first request on it. The row pins that the new provider served it, that the prefix was stripped before routing, and that the upstream received the bare model. Row 1 is /v1/chat/completions, row 2 /v1/responses. Each row deletes its provider; providers an aborted run left behind are swept after ten minutes.",
+  "description": "TXE-7501 / PR #339. A custom provider added through POST /api/providers is built by core on its first request, and its name became a known model prefix only then. So the first request naming it, \"<provider>/model\", parsed to no provider: the model catalog sent it to whichever provider's wildcard key claimed the model string, and the new provider was reached at best as a fallback.\n\nEach row creates its own run-scoped keyless OpenAI-backed provider whose base URL is the provider error fixture, and sends the very first request on it as \"<provider>/upstream-ok~<run tag>\". Keyless, because adding a key through /keys builds the provider in core first and hides the bug. The gateway config of the fixture group has many wildcard keys, the condition under which the first request was misrouted. A row pins that the request succeeded on the new provider with the prefix stripped, and, from the fixture's /__hits, that the fixture received the bare model once and never the prefixed one. Row 1 is a chat completion, row 2 the same as a stream. The rows skip themselves outside a fixture run; each deletes its provider, and providers an aborted run left behind are swept after ten minutes.",
   "item": [
     {
-      "name": "Prefix on add 1: the first chat completion request names a provider added a moment earlier - openai gpt-4o-mini - prefix-on-add",
+      "name": "599.1 openai keyless custom provider: the first chat completion names a provider added a moment earlier - prefix-on-add",
       "event": [
         {
           "listen": "prerequest",
           "script": {
             "type": "text/javascript",
             "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); return; }",
               "// ---- in-script management calls (see the folder description) ----",
               "var BASE = pm.variables.get('baseUrl');",
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
               "var PREFIX = 'harness-prefix-on-add-';",
               "function call(method, path, body, cb) {",
               "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
@@ -38,17 +40,26 @@
               "  if (!name) { return; }",
               "  call('DELETE', '/api/providers/' + encodeURIComponent(name), null, function () {});",
               "}",
-              "// The key goes in with the provider, in the one POST: adding it afterwards through /keys builds",
-              "// the provider in core first, which registers the prefix and hides what this row pins.",
-              "var name = PREFIX + 'run-' + Date.now() + '-' + Math.floor(Math.random() * 1e6);",
+              "// The fixture counts each chat request under the model it received.",
+              "function fixtureHits(cb) {",
+              "  pm.sendRequest({ url: FX + '/__hits', method: 'GET' }, function (err, res) {",
+              "    var h = {}; try { h = ((res.json().data || [])[0] || {}).hits || {}; } catch (e) { h = {}; }",
+              "    cb(err ? null : h);",
+              "  });",
+              "}",
+              "// A keyless provider, so nothing is added after the POST: adding a key through /keys builds the",
+              "// provider in core first, which registers the prefix and would hide what this row pins.",
+              "var run = Date.now() + '-' + Math.floor(Math.random() * 1e6);",
+              "var name = PREFIX + 'run-' + run;",
               "pm.collectionVariables.set('prefixOnAdd1Provider', name);",
+              "pm.collectionVariables.set('prefixOnAdd1Model', 'upstream-ok~prefix-on-add-1-' + run);",
               "sweepStale(function () {",
               "  call('POST', '/api/providers', {",
               "    provider: name,",
-              "    custom_provider_config: { base_provider_type: 'openai' },",
-              "    keys: [{ name: name + '-key', value: 'env.OPENAI_API_KEY', models: ['*'], weight: 1 }]",
+              "    custom_provider_config: { base_provider_type: 'openai', is_key_less: true, allowed_requests: { chat_completion: true, chat_completion_stream: true } },",
+              "    network_config: { base_url: FX, max_retries: 0, default_request_timeout_in_seconds: 30 }",
               "  }, function (res) {",
-              "    pm.test('setup: created the run-scoped OpenAI-backed provider with its key', function () {",
+              "    pm.test('setup: created the run-scoped keyless provider on the fixture', function () {",
               "      pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200);",
               "    });",
               "  });",
@@ -61,8 +72,10 @@
           "script": {
             "type": "text/javascript",
             "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') { return; }",
               "// ---- in-script management calls (see the folder description) ----",
               "var BASE = pm.variables.get('baseUrl');",
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
               "var PREFIX = 'harness-prefix-on-add-';",
               "function call(method, path, body, cb) {",
               "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
@@ -89,22 +102,36 @@
               "  if (!name) { return; }",
               "  call('DELETE', '/api/providers/' + encodeURIComponent(name), null, function () {});",
               "}",
+              "// The fixture counts each chat request under the model it received.",
+              "function fixtureHits(cb) {",
+              "  pm.sendRequest({ url: FX + '/__hits', method: 'GET' }, function (err, res) {",
+              "    var h = {}; try { h = ((res.json().data || [])[0] || {}).hits || {}; } catch (e) { h = {}; }",
+              "    cb(err ? null : h);",
+              "  });",
+              "}",
               "var provider = pm.collectionVariables.get('prefixOnAdd1Provider');",
-              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
-              "var ef = body.extra_fields || {};",
-              "pm.test('the first chat completion request on the new prefix succeeded', function () {",
-              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "var model = pm.collectionVariables.get('prefixOnAdd1Model');",
+              "var txt = pm.response.text() || '';",
+              "var ef = {}; try { ef = (pm.response.json() || {}).extra_fields || {}; } catch (e) { ef = {}; }",
+              "pm.test('599.1 the first request on the new prefix succeeded', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 600)).to.eql(200);",
               "});",
-              "pm.test('the new provider served it, not a provider the catalog picked', function () {",
-              "  pm.expect(ef.provider, pm.response.text()).to.eql(provider);",
+              "pm.test('599.1 the new provider served it, not a provider the catalog picked', function () {",
+              "  pm.expect(ef.provider, txt.slice(0, 600)).to.eql(provider);",
               "});",
-              "pm.test('the prefix was stripped before routing', function () {",
-              "  pm.expect(ef.resolved_model_used, pm.response.text()).to.eql('gpt-4o-mini');",
+              "pm.test('599.1 the prefix was stripped before routing', function () {",
+              "  pm.expect(ef.resolved_model_used, txt.slice(0, 600)).to.eql(model);",
               "});",
-              "pm.test('the upstream received the stripped model', function () {",
-              "  pm.expect(String(body.model || ''), pm.response.text()).to.match(/^gpt-4o-mini/);",
-              "});",
-              "deleteProvider(provider);"
+              "fixtureHits(function (hits) {",
+              "  pm.test('599.1 the fixture received the bare model, once', function () {",
+              "    pm.expect(hits, 'the fixture /__hits did not answer').to.be.an('object');",
+              "    pm.expect(hits[model], JSON.stringify(hits).slice(0, 600)).to.eql(1);",
+              "  });",
+              "  pm.test('599.1 the fixture never received the prefixed model', function () {",
+              "    pm.expect(hits && hits[provider + '/' + model], 'the prefix reached the upstream').to.equal(undefined);",
+              "  });",
+              "  deleteProvider(provider);",
+              "});"
             ]
           }
         }
@@ -119,7 +146,7 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"model\": \"{{prefixOnAdd1Provider}}/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+          "raw": "{\n  \"model\": \"{{prefixOnAdd1Provider}}/{{prefixOnAdd1Model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
         },
         "url": {
           "raw": "{{baseUrl}}/v1/chat/completions",
@@ -135,15 +162,17 @@
       }
     },
     {
-      "name": "Prefix on add 2: the first responses request names a provider added a moment earlier - openai gpt-4o-mini - prefix-on-add",
+      "name": "599.2 openai keyless custom provider: the first streamed chat completion names a provider added a moment earlier - prefix-on-add",
       "event": [
         {
           "listen": "prerequest",
           "script": {
             "type": "text/javascript",
             "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); return; }",
               "// ---- in-script management calls (see the folder description) ----",
               "var BASE = pm.variables.get('baseUrl');",
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
               "var PREFIX = 'harness-prefix-on-add-';",
               "function call(method, path, body, cb) {",
               "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
@@ -170,17 +199,26 @@
               "  if (!name) { return; }",
               "  call('DELETE', '/api/providers/' + encodeURIComponent(name), null, function () {});",
               "}",
-              "// The key goes in with the provider, in the one POST: adding it afterwards through /keys builds",
-              "// the provider in core first, which registers the prefix and hides what this row pins.",
-              "var name = PREFIX + 'run-' + Date.now() + '-' + Math.floor(Math.random() * 1e6);",
+              "// The fixture counts each chat request under the model it received.",
+              "function fixtureHits(cb) {",
+              "  pm.sendRequest({ url: FX + '/__hits', method: 'GET' }, function (err, res) {",
+              "    var h = {}; try { h = ((res.json().data || [])[0] || {}).hits || {}; } catch (e) { h = {}; }",
+              "    cb(err ? null : h);",
+              "  });",
+              "}",
+              "// A keyless provider, so nothing is added after the POST: adding a key through /keys builds the",
+              "// provider in core first, which registers the prefix and would hide what this row pins.",
+              "var run = Date.now() + '-' + Math.floor(Math.random() * 1e6);",
+              "var name = PREFIX + 'run-' + run;",
               "pm.collectionVariables.set('prefixOnAdd2Provider', name);",
+              "pm.collectionVariables.set('prefixOnAdd2Model', 'upstream-ok~prefix-on-add-2-' + run);",
               "sweepStale(function () {",
               "  call('POST', '/api/providers', {",
               "    provider: name,",
-              "    custom_provider_config: { base_provider_type: 'openai' },",
-              "    keys: [{ name: name + '-key', value: 'env.OPENAI_API_KEY', models: ['*'], weight: 1 }]",
+              "    custom_provider_config: { base_provider_type: 'openai', is_key_less: true, allowed_requests: { chat_completion: true, chat_completion_stream: true } },",
+              "    network_config: { base_url: FX, max_retries: 0, default_request_timeout_in_seconds: 30 }",
               "  }, function (res) {",
-              "    pm.test('setup: created the run-scoped OpenAI-backed provider with its key', function () {",
+              "    pm.test('setup: created the run-scoped keyless provider on the fixture', function () {",
               "      pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200);",
               "    });",
               "  });",
@@ -193,8 +231,10 @@
           "script": {
             "type": "text/javascript",
             "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') { return; }",
               "// ---- in-script management calls (see the folder description) ----",
               "var BASE = pm.variables.get('baseUrl');",
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
               "var PREFIX = 'harness-prefix-on-add-';",
               "function call(method, path, body, cb) {",
               "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
@@ -221,22 +261,34 @@
               "  if (!name) { return; }",
               "  call('DELETE', '/api/providers/' + encodeURIComponent(name), null, function () {});",
               "}",
+              "// The fixture counts each chat request under the model it received.",
+              "function fixtureHits(cb) {",
+              "  pm.sendRequest({ url: FX + '/__hits', method: 'GET' }, function (err, res) {",
+              "    var h = {}; try { h = ((res.json().data || [])[0] || {}).hits || {}; } catch (e) { h = {}; }",
+              "    cb(err ? null : h);",
+              "  });",
+              "}",
               "var provider = pm.collectionVariables.get('prefixOnAdd2Provider');",
-              "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
-              "var ef = body.extra_fields || {};",
-              "pm.test('the first responses request on the new prefix succeeded', function () {",
-              "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
+              "var model = pm.collectionVariables.get('prefixOnAdd2Model');",
+              "var txt = pm.response.text() || '';",
+              "var ef = {}; try { ef = (pm.response.json() || {}).extra_fields || {}; } catch (e) { ef = {}; }",
+              "pm.test('599.2 the first request on the new prefix succeeded', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 600)).to.eql(200);",
               "});",
-              "pm.test('the new provider served it, not a provider the catalog picked', function () {",
-              "  pm.expect(ef.provider, pm.response.text()).to.eql(provider);",
+              "pm.test('599.2 the stream carries the fixture answer, not an error', function () {",
+              "  pm.expect(txt, txt.slice(0, 600)).to.include('data:');",
+              "  pm.expect(txt, txt.slice(0, 600)).to.not.include('\"error\"');",
               "});",
-              "pm.test('the prefix was stripped before routing', function () {",
-              "  pm.expect(ef.resolved_model_used, pm.response.text()).to.eql('gpt-4o-mini');",
-              "});",
-              "pm.test('the upstream received the stripped model', function () {",
-              "  pm.expect(String(body.model || ''), pm.response.text()).to.match(/^gpt-4o-mini/);",
-              "});",
-              "deleteProvider(provider);"
+              "fixtureHits(function (hits) {",
+              "  pm.test('599.2 the fixture received the bare model, once', function () {",
+              "    pm.expect(hits, 'the fixture /__hits did not answer').to.be.an('object');",
+              "    pm.expect(hits[model], JSON.stringify(hits).slice(0, 600)).to.eql(1);",
+              "  });",
+              "  pm.test('599.2 the fixture never received the prefixed model', function () {",
+              "    pm.expect(hits && hits[provider + '/' + model], 'the prefix reached the upstream').to.equal(undefined);",
+              "  });",
+              "  deleteProvider(provider);",
+              "});"
             ]
           }
         }
@@ -251,16 +303,17 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"model\": \"{{prefixOnAdd2Provider}}/gpt-4o-mini\",\n  \"input\": \"Reply with the single word: ok\",\n  \"max_output_tokens\": 16\n}"
+          "raw": "{\n  \"model\": \"{{prefixOnAdd2Provider}}/{{prefixOnAdd2Model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true\n}"
         },
         "url": {
-          "raw": "{{baseUrl}}/v1/responses",
+          "raw": "{{baseUrl}}/v1/chat/completions",
           "host": [
             "{{baseUrl}}"
           ],
           "path": [
             "v1",
-            "responses"
+            "chat",
+            "completions"
           ]
         }
       }
