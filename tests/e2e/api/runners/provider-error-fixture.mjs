@@ -1112,7 +1112,7 @@ const dashScopeEnded = { ...dashScopeTimes, end_time: "2026-11-10 14:23:39.407" 
 const dashScopeTasks = {
 	"ds-pending": { output: { task_status: "PENDING", submit_time: dashScopeTimes.submit_time } },
 	"ds-running": { output: { task_status: "RUNNING", ...dashScopeTimes } },
-	// Folder 600 (TXE-7050): a finished Wan image task, its two images in output.choices as the new image protocol
+	// Folder 618 (TXE-7050): a finished Wan image task, its two images in output.choices as the new image protocol
 	// returns them, and image_count, the billing quantity.
 	"ds-img-succeeded": {
 		output: {
@@ -1174,7 +1174,7 @@ const dashScopeAnswer = (method, path, query, body) => {
 		}
 		return { status: 200, body: { output: { task_status: "PENDING", task_id: "ds-pending" }, request_id: "fixture-dashscope-create" } };
 	}
-	// Folder 600 (TXE-7050): a Wan image task create, text-to-image or edit, answers a PENDING task.
+	// Folder 618 (TXE-7050): a Wan image task create, text-to-image or edit, answers a PENDING task.
 	if (method === "POST" && path === "/api/v1/services/aigc/image-generation/generation") {
 		return { status: 200, body: { output: { task_status: "PENDING", task_id: "ds-pending" }, request_id: "fixture-dashscope-image-create" } };
 	}

@@ -1,9 +1,9 @@
 {
-  "name": "600. DashScope Wan text-to-image and image edit on the image task routes (dashscope wan image tasks)",
-  "description": "Local fixture regression for TXE-7050 (contract C7 BF16, items B6 and B9), no live provider calls. Start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json and run with providerErrorFixture=1; every case is skipped otherwise. The config's dashscope provider has the fixture as both of its bases (/pp/dashscope), and the fixture records every DashScope call with its X-DashScope-Async header. A Wan image task create is one async POST to /api/v1/services/aigc/image-generation/generation (Wan's new image protocol: input.messages and parameters, with size as width*height and resolution verbatim in parameters.size), answered with a PENDING task. The task is queried with GET /api/v1/tasks/{id} and cancelled with POST /api/v1/tasks/{id}/cancel, as Wan video is: DashScope's six states map one to one, the images of a SUCCEEDED task come from output.choices[].message.content[].image, image_count is usage.output_images, and expires_at is 24 hours after end_time. DashScope cancels only a PENDING task and answers 400 UnsupportedOperation otherwise, which is provider_cancel_unsupported. Red before: the image task routes answered 400 unsupported_operation for dashscope and made no upstream call. An edit task through POST /v1/images/edits/tasks sends its input images in the message, a link unchanged and bytes as a base64 data URI, then the prompt (600.7 to 600.9). The refusals (a synchronous model, a Wan model on the earlier text2image protocol, resolution beside size) are pinned by Go tests in core/providers/dashscope.",
+  "name": "618. DashScope Wan text-to-image and image edit on the image task routes (dashscope wan image tasks)",
+  "description": "Local fixture regression for TXE-7050 (contract C7 BF16, items B6 and B9), no live provider calls. Start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json and run with providerErrorFixture=1; every case is skipped otherwise. The config's dashscope provider has the fixture as both of its bases (/pp/dashscope), and the fixture records every DashScope call with its X-DashScope-Async header. A Wan image task create is one async POST to /api/v1/services/aigc/image-generation/generation (Wan's new image protocol: input.messages and parameters, with size as width*height and resolution verbatim in parameters.size), answered with a PENDING task. The task is queried with GET /api/v1/tasks/{id} and cancelled with POST /api/v1/tasks/{id}/cancel, as Wan video is: DashScope's six states map one to one, the images of a SUCCEEDED task come from output.choices[].message.content[].image, image_count is usage.output_images, and expires_at is 24 hours after end_time. DashScope cancels only a PENDING task and answers 400 UnsupportedOperation otherwise, which is provider_cancel_unsupported. Red before: the image task routes answered 400 unsupported_operation for dashscope and made no upstream call. An edit task through POST /v1/images/edits/tasks sends its input images in the message, a link unchanged and bytes as a base64 data URI, then the prompt (618.7 to 618.9). The refusals (a synchronous model, a Wan model on the earlier text2image protocol, resolution beside size) are pinned by Go tests in core/providers/dashscope.",
   "item": [
     {
-      "name": "600.1 reset the fixture's record (dashscope wan image tasks)",
+      "name": "618.1 reset the fixture's record (dashscope wan image tasks)",
       "request": {
         "method": "POST",
         "header": [],
@@ -43,7 +43,7 @@
       ]
     },
     {
-      "name": "600.2 dashscope/wan2.6-t2i POST /v1/images/generations/tasks creates a Wan image task and returns the queued task object (dashscope wan image tasks)",
+      "name": "618.2 dashscope/wan2.6-t2i POST /v1/images/generations/tasks creates a Wan image task and returns the queued task object (dashscope wan image tasks)",
       "request": {
         "method": "POST",
         "header": [
@@ -102,7 +102,7 @@
       ]
     },
     {
-      "name": "600.3 the create DashScope received is one async POST to image-generation/generation with n and the size as width*height in parameters.size (dashscope wan image tasks)",
+      "name": "618.3 the create DashScope received is one async POST to image-generation/generation with n and the size as width*height in parameters.size (dashscope wan image tasks)",
       "request": {
         "method": "GET",
         "header": [],
@@ -148,7 +148,7 @@
       ]
     },
     {
-      "name": "600.4 GET /v1/images/tasks/{id} of a SUCCEEDED Wan image task is completed with both images, image_count and expires_at 24 hours after it ended (dashscope wan image tasks)",
+      "name": "618.4 GET /v1/images/tasks/{id} of a SUCCEEDED Wan image task is completed with both images, image_count and expires_at 24 hours after it ended (dashscope wan image tasks)",
       "request": {
         "method": "GET",
         "header": [],
@@ -202,7 +202,7 @@
       ]
     },
     {
-      "name": "600.5 POST /v1/images/tasks/{id}/cancel of a PENDING Wan image task cancels it (dashscope wan image tasks)",
+      "name": "618.5 POST /v1/images/tasks/{id}/cancel of a PENDING Wan image task cancels it (dashscope wan image tasks)",
       "request": {
         "method": "POST",
         "header": [],
@@ -250,7 +250,7 @@
       ]
     },
     {
-      "name": "600.6 [EXPECT-400] POST /v1/images/tasks/{id}/cancel of a task that is no longer PENDING is provider_cancel_unsupported (dashscope wan image tasks)",
+      "name": "618.6 [EXPECT-400] POST /v1/images/tasks/{id}/cancel of a task that is no longer PENDING is provider_cancel_unsupported (dashscope wan image tasks)",
       "request": {
         "method": "POST",
         "header": [],
@@ -296,7 +296,7 @@
       ]
     },
     {
-      "name": "600.7 reset the fixture's record before the edit task (dashscope wan image tasks)",
+      "name": "618.7 reset the fixture's record before the edit task (dashscope wan image tasks)",
       "request": {
         "method": "POST",
         "header": [],
@@ -336,7 +336,7 @@
       ]
     },
     {
-      "name": "600.8 dashscope/wan2.6-image POST /v1/images/edits/tasks creates a Wan edit task and returns the queued task object (dashscope wan image tasks)",
+      "name": "618.8 dashscope/wan2.6-image POST /v1/images/edits/tasks creates a Wan edit task and returns the queued task object (dashscope wan image tasks)",
       "request": {
         "method": "POST",
         "header": [
@@ -394,7 +394,7 @@
       ]
     },
     {
-      "name": "600.9 the edit DashScope received is one async create with the link unchanged, the bytes as a base64 data URI, then the prompt (dashscope wan image tasks)",
+      "name": "618.9 the edit DashScope received is one async create with the link unchanged, the bytes as a base64 data URI, then the prompt (dashscope wan image tasks)",
       "request": {
         "method": "GET",
         "header": [],
