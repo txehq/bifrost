@@ -752,6 +752,54 @@ func TestOpenAISpeechRouteLabelsAudioAndCarriesUsage(t *testing.T) {
 	}
 }
 
+// A vendor 200 with no audio on the /openai speech routes is 502 provider_empty_result, as on
+// /v1/audio/speech (contract C6, TXE-7021): the router's raw-audio branch used to write the empty
+// body as a 200. The vendor's response headers still reach the caller, and the success usage
+// header does not.
+func TestOpenAISpeechRoutesAnswerEmptyAudioAsProviderEmptyResult(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "audio/mpeg")
+		w.Header().Set("x-request-id", "req-empty-audio")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: speechTestAccount{baseURL: upstream.URL},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+
+	r := router.New()
+	identity := func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next }
+	NewOpenAIRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, identity)
+
+	for _, uri := range []string{
+		"/openai/v1/audio/speech",
+		"/openai/openai/deployments/gpt-4o-mini-tts/audio/speech?api-version=2025-04-01-preview",
+	} {
+		t.Run(uri, func(t *testing.T) {
+			var ctx fasthttp.RequestCtx
+			ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+			ctx.Request.SetRequestURI(uri)
+			ctx.Request.Header.SetContentType("application/json")
+			ctx.Request.SetBodyString(`{"model":"openai/gpt-4o-mini-tts","input":"Hello","voice":"alloy"}`)
+
+			r.Handler(&ctx)
+
+			require.Equal(t, fasthttp.StatusBadGateway, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+			require.Contains(t, string(ctx.Response.Header.ContentType()), "application/json")
+			body := ctx.Response.Body()
+			errorType, ok := findErrorType(body)
+			require.True(t, ok, "no error_type in %s", body)
+			require.Equal(t, string(schemas.ErrorTypeProviderEmptyResult), errorType, "body: %s", body)
+			require.Equal(t, "req-empty-audio", string(ctx.Response.Header.Peek("x-request-id")), "the vendor's header is kept")
+			require.Nil(t, ctx.Response.Header.Peek(lib.HeaderBifrostUsage), "an error carries no success usage")
+		})
+	}
+}
+
 // groqTranscriptionTestAccount configures the Groq provider at a local upstream, so the
 // OpenAI drop-in transcription route runs end to end without a live key.
 type groqTranscriptionTestAccount struct {
@@ -1954,4 +2002,34 @@ func TestOpenAIRouteXAIResponsesIngressToEgress(t *testing.T) {
 	// its merge cannot restore it. Recorded here so a change to that rule shows up.
 	sent = send(t, `{"model":"xai/grok-4.5","input":"hi","max_turns":3}`, false)
 	require.NotContains(t, sent, "max_turns")
+}
+
+// findErrorType returns extra_fields.error_type wherever the route's error shape puts it.
+func findErrorType(body []byte) (string, bool) {
+	var v any
+	if err := json.Unmarshal(body, &v); err != nil {
+		return "", false
+	}
+	var walk func(any) (string, bool)
+	walk = func(n any) (string, bool) {
+		switch x := n.(type) {
+		case map[string]any:
+			if t, ok := x["error_type"].(string); ok {
+				return t, true
+			}
+			for _, c := range x {
+				if t, ok := walk(c); ok {
+					return t, true
+				}
+			}
+		case []any:
+			for _, c := range x {
+				if t, ok := walk(c); ok {
+					return t, true
+				}
+			}
+		}
+		return "", false
+	}
+	return walk(v)
 }
