@@ -46,6 +46,14 @@
     {
       "row": "416.22 [PREVIEW] kling GET /v1/videos/{client_reference_id}?id_type=client_reference_id - the live task is found by its client_reference_id (kling video contract)",
       "reason": "live Kling [PREVIEW] row: it creates and polls a real Kling task, so it needs a vendor key and include_preview=1, which this runner never sets for folder 416"
+    },
+    {
+      "row": "406.1 gemini/gemini-embedding-001 embedding-batch: inline /v1/embeddings lines create one asyncBatchEmbedContent job, one request per input",
+      "reason": "live Gemini row: it creates a real asyncBatchEmbedContent job, so it needs a vendor key, and skips itself when providerErrorFixture=1; rows 406.5-406.8 cover create, retrieve and results on the fixture (TXE-6637)"
+    },
+    {
+      "row": "406.4 [EXPECT-400] gemini embedding-batch: batch retrieve, cancel and results call upstream with the named key only and report it",
+      "reason": "live Gemini row: it checks at the real vendor that only the named key is used, and skips itself when providerErrorFixture=1; row 406.8 checks the same on the fixture's wire (TXE-6637)"
     }
   ]
 }
