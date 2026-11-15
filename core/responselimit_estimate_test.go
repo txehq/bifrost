@@ -138,3 +138,30 @@ func TestEstimateImageUsageFromRequest(t *testing.T) {
 		}
 	}
 }
+
+// BenchmarkAttachResponseLimitImageEstimate is what TXE-7302 adds after every provider dispatch:
+// a successful request pays a nil check, an ordinary error an errors.Is, and only an image refusal
+// for the response limit builds the estimate.
+func BenchmarkAttachResponseLimitImageEstimate(b *testing.B) {
+	imageReq := &schemas.BifrostRequest{ImageGenerationRequest: &schemas.BifrostImageGenerationRequest{Params: &schemas.ImageGenerationParameters{N: schemas.Ptr(3), Size: schemas.Ptr("1024x1024"), Quality: schemas.Ptr("high")}}}
+	b.Run("success", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			attachResponseLimitImageEstimate(imageReq, nil)
+		}
+	})
+	b.Run("other_error", func(b *testing.B) {
+		other := &schemas.BifrostError{Error: &schemas.ErrorField{Message: "upstream 500", Error: io.ErrUnexpectedEOF}}
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			attachResponseLimitImageEstimate(imageReq, other)
+		}
+	})
+	b.Run("image_refusal", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			refusal := &schemas.BifrostError{Error: &schemas.ErrorField{Error: &network.ResponseBodyTooLargeError{Limit: 1 << 20}}}
+			attachResponseLimitImageEstimate(imageReq, refusal)
+		}
+	})
+}
