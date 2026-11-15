@@ -3761,6 +3761,9 @@ func (provider *VertexProvider) gcsObjectResultSource(ctx *schemas.BifrostContex
 
 // vertexNormalizeBatchUsage normalizes Vertex usageMetadata into OpenAI-compatible
 // usage, ensuring reasoning tokens from thoughtsTokenCount are included in completion_tokens.
+// It goes through gemini.ConvertGeminiUsageMetadataToChatUsage, the converter the sync chat
+// route uses, so a batch line keeps everything that route bills on: the prompt modality counts,
+// the cached modality split (cached audio takes its own rate, TXE-7361) and tool-use tokens.
 func vertexNormalizeBatchUsage(body map[string]any) map[string]any {
 	raw, ok := body["usageMetadata"]
 	if !ok {
@@ -3774,20 +3777,13 @@ func vertexNormalizeBatchUsage(body map[string]any) map[string]any {
 	if err := sonic.Unmarshal(metaBytes, &meta); err != nil {
 		return body
 	}
-	usage := map[string]any{
-		"prompt_tokens":     meta.PromptTokenCount,
-		"completion_tokens": meta.CandidatesTokenCount + meta.ThoughtsTokenCount,
-		"total_tokens":      meta.TotalTokenCount,
+	usageBytes, err := providerUtils.MarshalSorted(gemini.ConvertGeminiUsageMetadataToChatUsage(&meta))
+	if err != nil {
+		return body
 	}
-	if meta.ThoughtsTokenCount > 0 {
-		usage["completion_tokens_details"] = map[string]any{
-			"reasoning_tokens": meta.ThoughtsTokenCount,
-		}
-	}
-	if meta.CachedContentTokenCount > 0 {
-		usage["prompt_tokens_details"] = map[string]any{
-			"cached_tokens": meta.CachedContentTokenCount,
-		}
+	usage := map[string]any{}
+	if err := sonic.Unmarshal(usageBytes, &usage); err != nil {
+		return body
 	}
 	body["usage"] = usage
 	return body
