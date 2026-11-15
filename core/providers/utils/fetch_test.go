@@ -973,8 +973,9 @@ func TestFetchMediaStreamStatusEncodingAndCredentials(t *testing.T) {
 		}
 		defer stream.Body.Close()
 		got, err := io.ReadAll(stream.Body)
-		if err != nil || string(got) != "MP4DATA" || stream.ContentLength != -1 {
-			t.Fatalf("got %q, %v, content length %d; want MP4DATA and no length", got, err, stream.ContentLength)
+		// Held and decoded whole (TXE-7089), so its decoded length is known.
+		if err != nil || string(got) != "MP4DATA" || stream.ContentLength != int64(len("MP4DATA")) {
+			t.Fatalf("got %q, %v, content length %d; want MP4DATA and its decoded length", got, err, stream.ContentLength)
 		}
 	})
 

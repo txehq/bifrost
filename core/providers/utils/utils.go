@@ -3946,7 +3946,12 @@ func CheckOperationAllowed(defaultProvider schemas.ModelProvider, config *schema
 // past the limit fails with *network.ResponseBodyTooLargeError instead of being
 // decompressed in full. The body is never cut short.
 func CheckAndDecodeBody(resp *fasthttp.Response) ([]byte, error) {
-	limit := network.MaxResponseBodyBytes()
+	return checkAndDecodeBodyLimit(resp, network.MaxResponseBodyBytes())
+}
+
+// checkAndDecodeBodyLimit is CheckAndDecodeBody under a caller's limit, for a download held to a
+// tighter cap than client.max_response_body_size_mb (fork, TXE-7089: a held video).
+func checkAndDecodeBodyLimit(resp *fasthttp.Response, limit int64) ([]byte, error) {
 	// A streamed response (an error answer to a streaming request) is read here through the bounded
 	// reader: resp.Body() would drain the stream whole before any check could run.
 	if bodyStream := resp.BodyStream(); bodyStream != nil {

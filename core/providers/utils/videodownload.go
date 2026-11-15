@@ -2,7 +2,6 @@ package utils
 
 import (
 	"bytes"
-	"compress/gzip"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/capsohq/bifrost/core/network"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
@@ -123,23 +123,14 @@ func fetchVendorVideoURL(ctx *schemas.BifrostContext, f VideoContentFetch) (*sch
 		if err != nil {
 			return nil, failed(err, latency)
 		}
-		// The held file is decoded as the streamed one is: gzip on the way through, any other
-		// encoding refused. The decoded file is held to the same cap as the bytes on the wire,
-		// so a small encoded body cannot unfold past it.
+		// The held file is decoded as the streamed one is: gzip decoded whole under the held
+		// cap, any other encoding refused.
 		switch encoding := strings.ToLower(strings.TrimSpace(respHeader.Get("Content-Encoding"))); encoding {
 		case "", "identity":
 		case "gzip", "x-gzip":
-			decoder, gzErr := gzip.NewReader(bytes.NewReader(body))
-			if gzErr != nil {
-				return nil, failed(fmt.Errorf("failed to decode gzip body: %w", gzErr), latency)
-			}
-			decoded, readErr := io.ReadAll(io.LimitReader(decoder, mediaFetchLimits.maxBytes+1))
-			_ = decoder.Close()
-			if readErr != nil {
-				return nil, failed(fmt.Errorf("failed to decode gzip body: %w", readErr), latency)
-			}
-			if int64(len(decoded)) > mediaFetchLimits.maxBytes {
-				return nil, failed(&mediaTooLargeError{message: fmt.Sprintf("decoded video exceeds %d-byte limit", mediaFetchLimits.maxBytes)}, latency)
+			decoded, decodeErr := decodeHeldVideo(body, encoding)
+			if decodeErr != nil {
+				return nil, failed(decodeErr, latency)
 			}
 			body = decoded
 		default:
@@ -258,8 +249,17 @@ func FetchVideoContent(ctx *schemas.BifrostContext, f VideoContentFetch) (*schem
 			ProviderResponseHeaders: providerResponseHeaders,
 		},
 	}
+	encoding := strings.ToLower(strings.TrimSpace(string(resp.Header.Peek("Content-Encoding"))))
 	if !stream {
 		defer fasthttp.ReleaseResponse(resp)
+		if encoding != "" && encoding != "identity" {
+			decoded, err := decodeHeldVideo(resp.Body(), encoding)
+			if err != nil {
+				return nil, heldVideoError(err)
+			}
+			response.Content = decoded
+			return response, nil
+		}
 		body, err := CheckAndDecodeBody(resp)
 		if err != nil {
 			return nil, NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
@@ -267,48 +267,81 @@ func FetchVideoContent(ctx *schemas.BifrostContext, f VideoContentFetch) (*schem
 		response.Content = append([]byte(nil), body...)
 		return response, nil
 	}
-	encoding := strings.ToLower(strings.TrimSpace(string(resp.Header.Peek("Content-Encoding"))))
-	switch encoding {
-	case "", "identity":
-		// Content-Length describes the bytes on the wire, so it is passed on only when they
-		// are the file itself.
-		if length := resp.Header.ContentLength(); length > 0 {
-			response.ContentLength = int64(length)
-		}
-	case "gzip", "x-gzip":
-		// Decoded on the way through by WrapStreamingResponseBody.
-	default:
-		// br, deflate, zstd or a chain: the stream decoder handles gzip only, so the file is
-		// read whole through the guarded stream and decoded as the buffered path decodes it.
-		// A video is already compressed, so a vendor encoding it again is not expected; the
-		// read is capped at the media fetch limit.
+	if encoding != "" && encoding != "identity" {
+		// gzip, br, deflate, zstd or a chain: an encoded file is never streamed. It is read whole
+		// through the guarded stream and decoded under the held cap (TXE-7089), since a stream
+		// decoded on the way through has no cap, and a few KiB of gzip can unfold into
+		// gigabytes. A video is already compressed, so a vendor encoding it again is not
+		// expected, and holding it costs nothing in practice.
 		return decodeEncodedVideoStream(ctx, resp, response)
+	}
+	// Content-Length describes the bytes on the wire, so it is passed on only when they are the
+	// file itself.
+	if length := resp.Header.ContentLength(); length > 0 {
+		response.ContentLength = int64(length)
 	}
 	response.Body = WrapStreamingResponseBody(ctx, resp)
 	return response, nil
 }
 
+// heldVideoLimit is the most a held video download may be, both as the bytes on the wire and
+// decoded (fork, TXE-7089): the media fetch cap or client.max_response_body_size_mb, whichever is
+// tighter. It is read on every download, so a saved client config applies to the next one.
+func heldVideoLimit() int64 {
+	return min(mediaFetchLimits.maxBytes, network.MaxResponseBodyBytes())
+}
+
+// decodeHeldVideo removes the content codings an encoded video carries, decoding it whole.
+// Every video download path decodes through it (fork, TXE-7089): the cap applies to the bytes the
+// caller is handed, not to the bytes on the wire, so a small compressed body that would unfold
+// past heldVideoLimit fails with an error matching ErrMediaTooLarge, and no part of it is
+// delivered. Decoding stops at the limit; the expansion is never completed.
+func decodeHeldVideo(encoded []byte, encoding string) ([]byte, error) {
+	limit := heldVideoLimit()
+	tooLarge := func(stage string) error {
+		return &mediaTooLargeError{message: fmt.Sprintf("%s video exceeds %d-byte limit", stage, limit)}
+	}
+	if int64(len(encoded)) > limit {
+		return nil, tooLarge("encoded")
+	}
+	decodeResp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(decodeResp)
+	decodeResp.Header.Set("Content-Encoding", encoding)
+	decodeResp.SetBodyRaw(encoded)
+	decoded, err := checkAndDecodeBodyLimit(decodeResp, limit)
+	if errors.Is(err, network.ErrResponseBodyTooLarge) {
+		return nil, tooLarge("decoded")
+	}
+	if err != nil {
+		return nil, err
+	}
+	return decoded, nil
+}
+
+// heldVideoError is the BifrostError for a held video that failed to decode: a download past the
+// cap keeps its ErrMediaTooLarge cause, which the video settler reads as final.
+func heldVideoError(err error) *schemas.BifrostError {
+	if errors.Is(err, ErrMediaTooLarge) {
+		return NewBifrostOperationError("failed to download video", err)
+	}
+	return NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
+}
+
 // decodeEncodedVideoStream finishes a streamed download whose Content-Encoding the stream
 // decoder cannot handle. It takes ownership of resp.
 func decodeEncodedVideoStream(ctx *schemas.BifrostContext, resp *fasthttp.Response, response *schemas.BifrostVideoDownloadResponse) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError) {
-	decodeResp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseResponse(decodeResp)
-	resp.Header.CopyTo(&decodeResp.Header)
-	// The raw bytes, with every layer of the encoding still on them: CheckAndDecodeBody below
-	// removes the layers the copied header names, a gzip layer of a chain included.
+	encoding := strings.ToLower(strings.TrimSpace(string(resp.Header.Peek("Content-Encoding"))))
+	// The raw bytes, with every layer of the encoding still on them: decodeHeldVideo removes the
+	// layers the header names, a gzip layer of a chain included.
 	guarded := WrapRawStreamingResponseBody(ctx, resp)
-	encoded, err := io.ReadAll(io.LimitReader(guarded, mediaFetchLimits.maxBytes+1))
+	encoded, err := io.ReadAll(io.LimitReader(guarded, heldVideoLimit()+1))
 	_ = guarded.Close()
 	if err != nil {
 		return nil, largeResponseReadError(err)
 	}
-	if int64(len(encoded)) > mediaFetchLimits.maxBytes {
-		return nil, NewBifrostOperationError(fmt.Sprintf("encoded video exceeds %d-byte limit", mediaFetchLimits.maxBytes), nil)
-	}
-	decodeResp.SetBodyRaw(encoded)
-	decoded, err := CheckAndDecodeBody(decodeResp)
+	decoded, err := decodeHeldVideo(encoded, encoding)
 	if err != nil {
-		return nil, NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
+		return nil, heldVideoError(err)
 	}
 	response.Body = io.NopCloser(bytes.NewReader(decoded))
 	response.ContentLength = int64(len(decoded))

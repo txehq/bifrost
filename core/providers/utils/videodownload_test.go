@@ -3,7 +3,10 @@ package utils
 import (
 	"bytes"
 	"compress/gzip"
+	"compress/zlib"
 	"context"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -24,6 +27,7 @@ import (
 	"github.com/capsohq/bifrost/core/internal/testtime"
 
 	"github.com/andybalholm/brotli"
+	"github.com/capsohq/bifrost/core/network"
 	"github.com/capsohq/bifrost/core/network/proxytest"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
@@ -341,9 +345,9 @@ func TestFetchVideoContentCancelledRequestReturns(t *testing.T) {
 }
 
 // TestFetchVideoContentDecodesContentEncodings: the buffered path decoded gzip, deflate, br and
-// zstd, so the streamed path must not hand a caller compressed bytes as a video. gzip is decoded
-// on the way through (no length is claimed, since Content-Length was the compressed size); any
-// other encoding is read whole and decoded, and its decoded length is reported.
+// zstd, so the streamed path must not hand a caller compressed bytes as a video. Every encoding,
+// gzip included, is read whole and decoded under the held cap (TXE-7089), and its decoded length
+// is reported.
 func TestFetchVideoContentDecodesContentEncodings(t *testing.T) {
 	file := bytes.Repeat([]byte("MP4-FRAME-"), 4096)
 	var gz, br bytes.Buffer
@@ -374,7 +378,7 @@ func TestFetchVideoContentDecodesContentEncodings(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	for path, wantLength := range map[string]int64{"/gzip": 0, "/br": int64(len(file)), "/chain": int64(len(file))} {
+	for path, wantLength := range map[string]int64{"/gzip": int64(len(file)), "/br": int64(len(file)), "/chain": int64(len(file))} {
 		for _, stream := range []bool{true, false} {
 			resp, bifrostErr := videoFetch(t, srv.URL+path, stream)
 			if bifrostErr != nil {
@@ -398,6 +402,120 @@ func TestFetchVideoContentDecodesContentEncodings(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestEveryVideoDownloadEntryPointCapsDecodedBytes is TXE-7089's class check: a small compressed
+// body that decodes past the held video cap is refused by every download entry point, held or
+// streamed, on the provider's client or on the hardened fetcher, with an error matching
+// ErrMediaTooLarge and no part of the file delivered. The two fetchers that never decode
+// (FetchMediaURL, FetchAndEncodeURL) hand back the bytes on the wire, which stay under their
+// cap. Red before: the streamed gzip paths decoded on the way through with no cap at all, and
+// a held encoded video was decoded up to client.max_response_body_size_mb rather than the
+// media cap. A new entry point goes in this table.
+func TestEveryVideoDownloadEntryPointCapsDecodedBytes(t *testing.T) {
+	network.SetMaxResponseBodySizeMB(1)
+	t.Cleanup(func() { network.SetMaxResponseBodySizeMB(0) })
+	limit := heldVideoLimit()
+	if limit != 1<<20 {
+		t.Fatalf("held video limit = %d, want the 1 MiB client limit", limit)
+	}
+	// 4 MiB of zeros: a few KiB on the wire in every encoding.
+	plain := make([]byte, 4<<20)
+	encoded := map[string][]byte{}
+	var gz bytes.Buffer
+	gzw := gzip.NewWriter(&gz)
+	_, _ = gzw.Write(plain)
+	_ = gzw.Close()
+	encoded["gzip"] = gz.Bytes()
+	var fl bytes.Buffer
+	flw, _ := zlib.NewWriterLevel(&fl, zlib.BestCompression)
+	_, _ = flw.Write(plain)
+	_ = flw.Close()
+	encoded["deflate"] = fl.Bytes()
+	var br bytes.Buffer
+	brw := brotli.NewWriter(&br)
+	_, _ = brw.Write(plain)
+	_ = brw.Close()
+	encoded["br"] = br.Bytes()
+	for name, body := range encoded {
+		if len(body) > 64<<10 {
+			t.Fatalf("%s bomb is %d bytes on the wire; the test needs a small one", name, len(body))
+		}
+	}
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		encoding := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/"), ".mp4")
+		w.Header().Set("Content-Type", "video/mp4")
+		w.Header().Set("Content-Encoding", encoding)
+		_, _ = w.Write(encoded[encoding])
+	}
+	srv := httptest.NewServer(http.HandlerFunc(handler))
+	t.Cleanup(srv.Close)
+
+	refused := func(t *testing.T, resp *schemas.BifrostVideoDownloadResponse, bifrostErr *schemas.BifrostError) {
+		t.Helper()
+		if bifrostErr == nil {
+			delivered := len(resp.Content)
+			if resp.Body != nil {
+				got, _ := io.ReadAll(resp.Body)
+				_ = resp.Body.Close()
+				delivered = len(got)
+			}
+			t.Fatalf("delivered %d decoded bytes past the %d-byte cap", delivered, limit)
+		}
+		if resp != nil {
+			t.Fatalf("a refused download returned a response: %+v", resp)
+		}
+		if bifrostErr.Error == nil || !errors.Is(bifrostErr.Error.Error, ErrMediaTooLarge) {
+			t.Fatalf("got %+v, want an error matching ErrMediaTooLarge", bifrostErr.Error)
+		}
+	}
+
+	for _, encoding := range []string{"gzip", "deflate", "br"} {
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprintf("provider client %s stream=%v", encoding, stream), func(t *testing.T) {
+				resp, bifrostErr := videoFetch(t, srv.URL+"/"+encoding+".mp4", stream)
+				refused(t, resp, bifrostErr)
+			})
+		}
+	}
+	// The hardened fetcher decodes gzip only and refuses every other encoding outright.
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("vendor URL gzip stream=%v", stream), func(t *testing.T) {
+			resp, bifrostErr, _ := vendorURLFetch(t, handler, VideoContentFetch{VendorURL: "http://203.0.113.10/gzip.mp4", Stream: stream})
+			refused(t, resp, bifrostErr)
+		})
+	}
+
+	proxy := proxytest.NewOriginTunnel(t, handler)
+	t.Run("FetchMediaStream gzip", func(t *testing.T) {
+		stream, err := FetchMediaStream(mediaStreamProxyCtx(t, proxy.URL, 10*time.Second), "http://203.0.113.10/gzip.mp4", MediaStreamOptions{})
+		if err == nil {
+			got, _ := io.ReadAll(stream.Body)
+			_ = stream.Body.Close()
+			t.Fatalf("delivered %d decoded bytes past the %d-byte cap", len(got), limit)
+		}
+		if !errors.Is(err, ErrMediaTooLarge) {
+			t.Fatalf("got %v, want an error matching ErrMediaTooLarge", err)
+		}
+	})
+	t.Run("FetchMediaURL hands back the bytes on the wire", func(t *testing.T) {
+		_, body, err := FetchMediaURL(mediaStreamProxyCtx(t, proxy.URL, 10*time.Second), "http://203.0.113.10/gzip.mp4")
+		if err != nil {
+			t.Fatalf("FetchMediaURL: %v", err)
+		}
+		if !bytes.Equal(body, encoded["gzip"]) {
+			t.Fatalf("got %d bytes, want the %d encoded bytes undecoded", len(body), len(encoded["gzip"]))
+		}
+	})
+	t.Run("FetchAndEncodeURL hands back the bytes on the wire", func(t *testing.T) {
+		_, b64, err := FetchAndEncodeURL(mediaStreamProxyCtx(t, proxy.URL, 10*time.Second), "http://203.0.113.10/gzip.mp4")
+		if err != nil {
+			t.Fatalf("FetchAndEncodeURL: %v", err)
+		}
+		if b64 != base64.StdEncoding.EncodeToString(encoded["gzip"]) {
+			t.Fatalf("got %d base64 bytes, want the encoded body undecoded", len(b64))
+		}
+	})
 }
 
 // TestNewVideoContentResponse: bytes a provider already holds are Content, or Body with their
