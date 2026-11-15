@@ -554,7 +554,7 @@
               "  pm.test('vendor-price-name minimax delivery: the request reached the vendor', function () { pm.expect(calls.length, 'no captured call on /pp/minimax/v2/video_generation').to.be.above(0); });",
               "  if (!calls.length) { return; }",
               "  var sent = JSON.parse(calls[calls.length - 1].body);",
-              "  pm.test('vendor-price-name minimax delivery: the vendor received the unified 9:16, not the 16:9 its size would derive', function () {",
+              "  pm.test('vendor-price-name minimax delivery: the vendor received the unified 9:16 as ratio (TXE-6428: a size whose ratio contradicts aspect_ratio is refused, so none is sent)', function () {",
               "    pm.expect(sent.ratio, calls[calls.length - 1].body).to.eql('9:16');",
               "  });",
               "  pm.test('vendor-price-name minimax delivery: the unified name is not also sent as a field the vendor does not know', function () {",
@@ -575,7 +575,7 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"model\": \"minimax/MiniMax-H3\",\n  \"prompt\": \"a paper boat on a pond vendor-price-name-minimax-delivery\",\n  \"size\": \"1280x720\",\n  \"aspect_ratio\": \"9:16\"\n}"
+          "raw": "{\n  \"model\": \"minimax/MiniMax-H3\",\n  \"prompt\": \"a paper boat on a pond vendor-price-name-minimax-delivery\",\n  \"aspect_ratio\": \"9:16\"\n}"
         },
         "url": {
           "raw": "{{baseUrl}}/v1/videos",
