@@ -21921,6 +21921,39 @@ func TestAddProvider_Success(t *testing.T) {
 	}
 }
 
+// A provider added at runtime is a model prefix from the moment it is added, not from
+// its first request (TXE-7501): "<provider>/model" must parse before core has built it.
+func TestAddProvider_RegistersKnownProviderPrefix(t *testing.T) {
+	initTestLogger()
+	cases := []struct {
+		name  string
+		store configstore.ConfigStore
+	}{
+		{"store", NewMockConfigStore()},
+		{"already in DB", &mockConfigStoreAddProvider{MockConfigStore: *NewMockConfigStore(), addProviderErr: configstore.ErrAlreadyExists}},
+		{"no store", nil},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := schemas.ModelProvider(fmt.Sprintf("txe-7501-custom-%d", i))
+			if schemas.IsKnownProvider(string(provider)) {
+				t.Fatalf("%s is already a known provider before the add", provider)
+			}
+			cfg := &Config{Providers: make(map[schemas.ModelProvider]configstore.ProviderConfig), ConfigStore: tc.store}
+			_ = cfg.AddProvider(context.Background(), provider, configstore.ProviderConfig{
+				CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true},
+			})
+			if _, ok := cfg.Providers[provider]; !ok {
+				t.Fatalf("%s is not in the in-memory map after the add", provider)
+			}
+			gotProvider, gotModel := schemas.ParseModelString(string(provider)+"/hello-world", "")
+			if gotProvider != provider || gotModel != "hello-world" {
+				t.Fatalf("ParseModelString(%q) = (%q, %q), want (%q, %q)", string(provider)+"/hello-world", gotProvider, gotModel, provider, "hello-world")
+			}
+		})
+	}
+}
+
 func TestAddProvider_AlreadyExistsInMemory(t *testing.T) {
 	initTestLogger()
 	cfg := &Config{

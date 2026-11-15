@@ -182,6 +182,49 @@ func TestAddProvider_ReloadsRuntimeEvenWhenModelDiscoveryIsSkipped(t *testing.T)
 	}
 }
 
+// TestAddProvider_NewPrefixRoutesToItImmediately pins TXE-7501: the first inference
+// request after POST /api/providers names the new provider by prefix, and it must route to
+// that provider. Core builds a provider added at runtime on its first request; before the fix
+// the prefix was registered only then, so this request resolved no provider and the model
+// catalog sent it to whichever provider claimed the model.
+func TestAddProvider_NewPrefixRoutesToItImmediately(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	const name = "txe-7501-route-on-add"
+	if schemas.IsKnownProvider(name) {
+		t.Fatalf("%s is already a known provider before the add", name)
+	}
+	h := &ProviderHandler{
+		inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}},
+		modelsManager: &mockModelsManager{},
+	}
+	body, err := sonic.Marshal(providerCreatePayload{
+		Provider:             name,
+		CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true},
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal request body: %v", err)
+	}
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.SetRequestURI("/api/providers")
+	ctx.Request.SetBody(body)
+	h.addProvider(ctx)
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+
+	// The next request, before any request has reached the provider.
+	provider, model, err := resolveModelAndProvider(&fasthttp.RequestCtx{}, h.inMemoryStore, name+"/hello-world")
+	if err != nil {
+		t.Fatalf("resolveModelAndProvider: %v", err)
+	}
+	if provider != name || model != "hello-world" {
+		t.Fatalf("first request after the add resolved to (%q, %q), want (%q, %q)", provider, model, name, "hello-world")
+	}
+}
+
 // TestAddProvider_GoogleCloudTTS pins that the built-in Google Cloud Text-to-Speech provider
 // can be created through POST /api/providers under its own name, with no custom provider
 // config, the way Tokun's reconciler writes a provider that serves a non-chat operation
