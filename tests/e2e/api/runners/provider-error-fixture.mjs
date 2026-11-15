@@ -577,7 +577,7 @@ const fixturePricing = {
 	// output length (6 s x 0.08 more, $1.26). Folder 521 still expects $0.78, so it fails if that charge comes back.
 	"fixture-minimax-2k": { provider: "minimax", mode: "video_generation", input_cost_per_video_per_second: 0.08, output_cost_per_second: 0.08, output_cost_per_second_768p: 0.08, output_cost_per_second_2k: 0.13 },
 	// TXE-7409: MiniMax-H3's live row with its input-image price, $0.04 per image beyond the first five, whose free
-	// allowance upstream publishes only under provider_specific_entry. Folder 598 settles a job with eight reference images.
+	// allowance upstream publishes only under provider_specific_entry. Folder 600 settles a job with eight reference images.
 	"fixture-minimax-images": {
 		provider: "minimax",
 		mode: "video_generation",
@@ -588,6 +588,10 @@ const fixturePricing = {
 		output_cost_per_second_2k: 0.13,
 		provider_specific_entry: { minimax_free_input_images: 5 },
 	},
+	// TXE-7434: grok-imagine-video-1.5's live rates ($0.08/s unbanded, $0.01 per input image) under xai_media_proxy, a
+	// custom provider on an xAI base. Folder 601 sends xAI's own first frame, "image", which only xAI's converter
+	// sends; the capture judged it by the custom name and billed no image.
+	"fixture-xai-images": { provider: "xai_media_proxy", mode: "video_generation", input_cost_per_image: 0.01, output_cost_per_second: 0.08 },
 	// TXE-7356: dall-e-3's live upstream row, which prices an image only by its joint size and quality rate, so folder
 	// 570 can read the price of an hd and a standard image. The fork dropped these keys at sync and billed $0.
 	"fixture-dalle-3": {
@@ -631,7 +635,7 @@ const fixturePricing = {
 // TXE-7349: the fixture-minimax-2k task (folder 521) finishes as a 6 second 2K clip and names no ratio, so the
 // response carries no size and the job is priced from the resolution tier the request named.
 const MINIMAX_BAND_TASK = "fixture-band-2k";
-// TXE-7409: the fixture-minimax-images task (folder 598) finishes the same way, a 6 second 2K clip.
+// TXE-7409: the fixture-minimax-images task (folder 600) finishes the same way, a 6 second 2K clip.
 const MINIMAX_IMAGES_TASK = "fixture-minimax-images-task";
 
 // Provider wire capture, TXE-5539. The config points each provider these rows use at /pp/<provider>, so one fixture
@@ -1308,6 +1312,8 @@ const storageAnswer = (path, body) => {
 const xaiVideoCreateAnswer = (body) => {
 	if (body.model === "xai-video-drop") return { drop: true };
 	if (body.model === "xai-video-policy") return { status: 403, body: JSON.stringify({ code: "content_policy_violation", error: "The prompt violates the usage policy." }) };
+	// TXE-7434 (folder 601): a create that sent xAI's own first frame is answered with a task that reports no cost.
+	if (body.model === "fixture-xai-images" && body.image && body.image.url) return { status: 200, body: JSON.stringify({ request_id: "xai-fixture-images" }) };
 	return { status: 200, body: JSON.stringify({ request_id: "xai-fixture-done" }) };
 };
 // GET /pp/xai/v1/videos/{request_id}: xai-fixture-pending is still generating, xai-fixture-moderated finished
@@ -1315,6 +1321,10 @@ const xaiVideoCreateAnswer = (body) => {
 // The link is under a reserved name: nothing fetches it.
 const xaiVideoTask = (id) => {
 	if (id === "xai-fixture-pending") return { status: "pending", progress: 42, model: "grok-imagine-video-1.5" };
+	// TXE-7434 (folder 601): finished, 6 s, with no usage, so settlement prices it from the fixture-xai-images row.
+	if (id === "xai-fixture-images") {
+		return { status: "done", progress: 100, model: "fixture-xai-images", video: { url: "https://vidgen.fixture.invalid/xai-video-images.mp4", duration: 6, respect_moderation: true } };
+	}
 	const usage = { cost_in_usd_ticks: 3000000000, input_tokens: 12, output_tokens: 4800, total_tokens: 4812 };
 	if (id === "xai-fixture-moderated") {
 		return { status: "done", progress: 100, model: "grok-imagine-video-1.5", video: { url: "", duration: 6, respect_moderation: false }, usage };
