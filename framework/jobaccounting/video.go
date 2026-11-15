@@ -532,7 +532,9 @@ func RenderedDurationRequired(resp *schemas.BifrostVideoGenerationResponse) bool
 	if resp == nil || resp.Status != schemas.VideoStatusCompleted {
 		return false
 	}
-	if resp.ContentFilter != nil && resp.ContentFilter.FilteredCount > 0 {
+	// A fully filtered task delivered nothing to measure. A partly filtered one (fork, TXE-6537:
+	// Veo reports both) is priced by the clips it delivered, so they are measured like any other.
+	if resp.ContentFilter != nil && resp.ContentFilter.FilteredCount > 0 && len(resp.Videos) == 0 {
 		return false
 	}
 	observed := modelcatalog.VideoDimensionsFromResponse(resp)

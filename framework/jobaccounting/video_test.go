@@ -285,8 +285,11 @@ func TestVideoSettle_DashScopeUnknownTaskParksAsGone(t *testing.T) {
 // clips. Parking it with the fully filtered ones would leave delivered output uncharged.
 func TestVideoSettle_PartlyFilteredJobIsPricedByTheClipsDelivered(t *testing.T) {
 	job := videoJob(t, "vid_partly_filtered", generationDims("sora-2-pro", "1280x720", 8))
+	// The duration is reported, so the clip count alone decides the charge; an unreported one is
+	// measured first (TestRenderedDurationRequired_PartlyFilteredIsMeasured).
 	settlement := settleVideo(t, job, &schemas.BifrostVideoGenerationResponse{
-		Status: schemas.VideoStatusCompleted,
+		Status:  schemas.VideoStatusCompleted,
+		Seconds: bifrost.Ptr("8"),
 		Videos: []schemas.VideoOutput{
 			{Type: schemas.VideoOutputTypeContent, ID: "gs://out/t/sample_0.mp4", ContentType: "video/mp4"},
 			{Type: schemas.VideoOutputTypeBase64, ContentType: "video/mp4"},
@@ -298,6 +301,25 @@ func TestVideoSettle_PartlyFilteredJobIsPricedByTheClipsDelivered(t *testing.T) 
 	assert.True(t, settlement.Complete)
 	assert.Empty(t, settlement.UnpriceableReason)
 	assert.InDelta(t, 2*8*0.30, settlement.Cost, 1e-12, "the two delivered clips, not the filtered one")
+}
+
+// TXE-6537: a partly filtered task that reports neither duration nor cost has its delivered clip
+// measured like any other finished video, so a clip longer than the request is not undercharged.
+// A fully filtered task delivered nothing and has nothing to measure.
+func TestRenderedDurationRequired_PartlyFilteredIsMeasured(t *testing.T) {
+	filter := &schemas.ContentFilterInfo{FilteredCount: 1, Reasons: []string{"safety"}}
+	partly := &schemas.BifrostVideoGenerationResponse{ID: "vid_pf", Status: schemas.VideoStatusCompleted, ContentFilter: filter,
+		Videos: []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL, URL: bifrost.Ptr("https://example.invalid/v.mp4")}}}
+	assert.True(t, RenderedDurationRequired(partly))
+
+	retriever := &fakeVideoRetriever{resp: partly, video: renderedMP4(t, 12)}
+	poll, err := NewVideoSettler(retriever).Poll(context.Background(), videoJob(t, "vid_pf", generationDims("sora-2-pro", "1280x720", 8)))
+	require.NoError(t, err)
+	assert.True(t, poll.Settleable)
+	assert.Equal(t, 1, retriever.downloads, "the delivered clip is measured")
+
+	all := &schemas.BifrostVideoGenerationResponse{ID: "vid_af", Status: schemas.VideoStatusCompleted, ContentFilter: filter}
+	assert.False(t, RenderedDurationRequired(all))
 }
 
 func TestVideoSettle_NoRateRecordsUnpricedRatherThanFree(t *testing.T) {
