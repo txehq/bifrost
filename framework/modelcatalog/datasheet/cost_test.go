@@ -10949,14 +10949,21 @@ func TestCalculateCost_LargeResponseUnreadImagePricesTheRequestedImages(t *testi
 
 // TXE-7302: an image answer the response limit refused unread is priced from the request's
 // estimate: n images at the size and quality it named, through the per-image rates a delivered
-// response takes. A row priced only per image token has no count to apply.
+// response takes; with no quality, or auto, at the dearest tier. A row priced only per image token
+// has no count to apply.
 func TestCalculateCostForEstimatedImageUsage(t *testing.T) {
 	s := batchStore(t, "openai", "gpt-image-1", "image_generation",
 		`{"provider": "openai", "mode": "image_generation", "output_cost_per_image": 0.04, "output_cost_per_image_high_quality": 0.17}`)
 	got := s.CalculateCostForEstimatedImageUsage(&schemas.EstimatedImageUsage{OutputImages: 3, Size: "1024x1024", Quality: "high"}, schemas.OpenAI, "gpt-image-1", schemas.ImageGenerationRequest, nil)
 	assert.InDelta(t, 3*0.17, got, 1e-12)
-	got = s.CalculateCostForEstimatedImageUsage(&schemas.EstimatedImageUsage{OutputImages: 2}, schemas.OpenAI, "gpt-image-1", schemas.ImageGenerationRequest, nil)
-	assert.InDelta(t, 2*0.04, got, 1e-12)
+	got = s.CalculateCostForEstimatedImageUsage(&schemas.EstimatedImageUsage{OutputImages: 2, Quality: "low"}, schemas.OpenAI, "gpt-image-1", schemas.ImageGenerationRequest, nil)
+	assert.InDelta(t, 2*0.04, got, 1e-12, "a named quality with no tier of its own takes the base rate")
+	// No quality, or auto: the vendor billed whatever quality it chose, so the estimate takes the
+	// dearest tier the row prices, never the base rate.
+	for _, quality := range []string{"", "auto"} {
+		got = s.CalculateCostForEstimatedImageUsage(&schemas.EstimatedImageUsage{OutputImages: 2, Quality: quality}, schemas.OpenAI, "gpt-image-1", schemas.ImageGenerationRequest, nil)
+		assert.InDelta(t, 2*0.17, got, 1e-12, "quality %q", quality)
+	}
 	assert.Zero(t, s.CalculateCostForEstimatedImageUsage(nil, schemas.OpenAI, "gpt-image-1", schemas.ImageGenerationRequest, nil))
 
 	tokens := batchStore(t, "gemini", "gemini-2.5-flash-image", "image_generation",

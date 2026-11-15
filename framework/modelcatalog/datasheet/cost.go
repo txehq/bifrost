@@ -279,26 +279,43 @@ func (s *Store) CalculateCostForEstimatedImageUsage(estimate *schemas.EstimatedI
 	if scopes != nil {
 		lookupScopes = *scopes
 	}
-	outputImages := estimate.OutputImages
-	imageUsage := &schemas.ImageUsage{OutputImages: &outputImages}
-	// The count image pricing reads, as a delivered response's Data length sets it.
-	populateOutputImageCount(imageUsage, outputImages)
-	breakdown := s.computeCostFromInput(
-		costInput{
-			imageUsage:      imageUsage,
-			imageSize:       estimate.Size,
-			imageQuality:    estimate.Quality,
-			imageResolution: estimate.Resolution,
-		},
-		schemas.RoutingInfo{Provider: provider, Model: model},
-		normalizeStreamRequestType(requestType),
-		lookupScopes,
-	)
-	if breakdown == nil {
-		return 0
+	price := func(quality string) float64 {
+		outputImages := estimate.OutputImages
+		imageUsage := &schemas.ImageUsage{OutputImages: &outputImages}
+		// The count image pricing reads, as a delivered response's Data length sets it.
+		populateOutputImageCount(imageUsage, outputImages)
+		breakdown := s.computeCostFromInput(
+			costInput{
+				imageUsage:      imageUsage,
+				imageSize:       estimate.Size,
+				imageQuality:    quality,
+				imageResolution: estimate.Resolution,
+			},
+			schemas.RoutingInfo{Provider: provider, Model: model},
+			normalizeStreamRequestType(requestType),
+			lookupScopes,
+		)
+		if breakdown == nil {
+			return 0
+		}
+		return breakdown.TotalCost
 	}
-	return breakdown.TotalCost
+	if estimate.Quality != "" && estimate.Quality != "auto" {
+		return price(estimate.Quality)
+	}
+	// A request that names no quality, or auto, is billed at whatever quality the vendor chose,
+	// which the unread answer would have said. The estimate takes the dearest tier the row prices,
+	// so the budget is never charged less than the vendor may have billed.
+	cost := price(estimate.Quality)
+	for _, quality := range estimatedImageQualityTiers {
+		cost = max(cost, price(quality))
+	}
+	return cost
 }
+
+// estimatedImageQualityTiers are the quality values image pricing distinguishes; an estimate with
+// no quality is priced at the dearest of them (fork, TXE-7302).
+var estimatedImageQualityTiers = []string{"low", "medium", "high", "standard", "hd", "xhigh", "max"}
 
 // CalculateGuardrailCost computes judge cost when no parent response is available.
 //
