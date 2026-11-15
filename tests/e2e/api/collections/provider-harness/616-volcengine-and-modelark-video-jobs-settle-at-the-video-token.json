@@ -1,5 +1,5 @@
 {
-  "name": "599. VolcEngine and ModelArk video jobs settle at the video tokens Ark billed (ark video settlement)",
+  "name": "616. VolcEngine and ModelArk video jobs settle at the video tokens Ark billed (ark video settlement)",
   "description": "Local fixture regression for TXE-7131, no live provider calls. fixture-folders.mjs's video-settlement group starts tests/e2e/api/runners/provider-error-fixture.mjs and a gateway on tests/e2e/api/provider_config/video-settlement.config.json, with provider job accounting and request logging on (provider-error-fixture.config.json turns accounting off, and folder 329 pins that). Its volcengine and modelark providers sit on the fixture's Ark task route (/pp/ovr/<base>/contents/generations/tasks), and the fixture's pricing sheet prices doubao-seedance-1-0-pro-250528 on both at $0.00001 a video token. Run with videoSettlementFixture=1 and videoSettlementFixtureUrl; every case is skipped otherwise. For each provider: a create asking for 5 seconds is a queued Ark task, and no row polls it, because a caller's retrieve of a finished task settles it inline (the logging plugin's accountVideoResults) whatever the settler's provider list says. Only the video sweeper, which settles the jobs nobody polls, reads videoProviders, so it alone can settle these jobs here. It settles each, read by its settlement row id (UUIDv5 of the video namespace and <provider>:<video id>), at 108900 x $0.00001 = $1.089, with accounting.seconds 5 and output_tokens 108900, not marked incomplete. Red before: neither provider was in the settler's videoProviders (they were exempted, naming this ticket), so the sweeper skipped them and no settlement row appeared (measured: a gateway from TXE-7493 without this change leaves both rows absent). Folder 551 pins the query of Ark's task (completed, 1280x720, 5 seconds). Another video provider joins this folder by adding its provider to video-settlement.config.json, a priced model to the fixture's pricing sheet, and two rows.",
   "event": [
     {
@@ -16,7 +16,7 @@
   ],
   "item": [
     {
-      "name": "599.1 reset the fixture's record (ark video settlement)",
+      "name": "616.1 reset the fixture's record (ark video settlement)",
       "request": {
         "method": "POST",
         "header": [],
@@ -45,7 +45,7 @@
       ]
     },
     {
-      "name": "599.2 volcengine/doubao-seedance-1-0-pro-250528 POST /v1/videos asking for 5 seconds is a queued Ark task (ark video settlement)",
+      "name": "616.2 volcengine/doubao-seedance-1-0-pro-250528 POST /v1/videos asking for 5 seconds is a queued Ark task (ark video settlement)",
       "request": {
         "method": "POST",
         "header": [
@@ -88,7 +88,7 @@
       ]
     },
     {
-      "name": "599.3 with no caller polling it, the video sweeper settles the volcengine job at the tokens Ark billed, $1.089 (ark video settlement)",
+      "name": "616.3 with no caller polling it, the video sweeper settles the volcengine job at the tokens Ark billed, $1.089 (ark video settlement)",
       "request": {
         "method": "GET",
         "header": [
@@ -165,7 +165,7 @@
       ]
     },
     {
-      "name": "599.4 modelark/doubao-seedance-1-0-pro-250528 POST /v1/videos asking for 5 seconds is a queued Ark task (ark video settlement)",
+      "name": "616.4 modelark/doubao-seedance-1-0-pro-250528 POST /v1/videos asking for 5 seconds is a queued Ark task (ark video settlement)",
       "request": {
         "method": "POST",
         "header": [
@@ -208,7 +208,7 @@
       ]
     },
     {
-      "name": "599.5 with no caller polling it, the video sweeper settles the modelark job at the tokens Ark billed, $1.089 (ark video settlement)",
+      "name": "616.5 with no caller polling it, the video sweeper settles the modelark job at the tokens Ark billed, $1.089 (ark video settlement)",
       "request": {
         "method": "GET",
         "header": [
