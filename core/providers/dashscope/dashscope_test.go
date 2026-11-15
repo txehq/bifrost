@@ -1428,9 +1428,11 @@ func rawBodyModel(body string) string {
 	return named.Model
 }
 
-// TestDashScopeWanImageTaskBilledDefaults: a converted Wan 2.7 create that names neither a size
-// nor a resolution is billed for one image at 2K, the model's defaults; one that names a size is
-// left to core, which prices it from the request; earlier Wan models default to 4 images.
+// TestDashScopeWanImageTaskBilledDefaults: a converted Wan create is priced from what the converter
+// sends as parameters.size, never from core's own reading of the request: the tier in Wan's
+// spelling, the size as WIDTHxHEIGHT, or, when the request names neither, the model's default (one
+// image at 2K on Wan 2.7, four images and no tier earlier). A resolution Wan does not take as a
+// tier is refused, since it would be sent as given and priced at the base rate.
 func TestDashScopeWanImageTaskBilledDefaults(t *testing.T) {
 	provider, _ := newMockDashScopeImageTasks(t, map[string]mockResponse{"POST /api/v1/services/aigc/image-generation/generation": {http.StatusOK, wanImageTaskCreated}})
 	create := func(model string, params *schemas.ImageGenerationParameters) *schemas.BifrostImageTaskResponse {
@@ -1446,11 +1448,23 @@ func TestDashScopeWanImageTaskBilledDefaults(t *testing.T) {
 	if task := create("wan2.7-image", nil); task.BilledImages != 1 || task.BilledParameters == nil || task.BilledParameters.Resolution != "2K" {
 		t.Errorf("wan2.7-image with no params: billed %d at %+v, want 1 at 2K", task.BilledImages, task.BilledParameters)
 	}
-	if task := create("wan2.7-image-pro", &schemas.ImageGenerationParameters{Resolution: "4K"}); task.BilledParameters != nil {
-		t.Errorf("a named resolution is core's to read, got provider-set %+v", task.BilledParameters)
+	if task := create("wan2.7-image-pro", &schemas.ImageGenerationParameters{Resolution: "4k"}); task.BilledParameters == nil || task.BilledParameters.Resolution != "4K" {
+		t.Errorf("resolution 4k: billed at %+v, want the tier 4K", task.BilledParameters)
 	}
-	if task := create("wan2.6-t2i", &schemas.ImageGenerationParameters{}); task.BilledImages != wanDefaultImageCount || task.BilledParameters != nil {
-		t.Errorf("wan2.6-t2i with no n: billed %d at %+v, want %d and core's reading", task.BilledImages, task.BilledParameters, wanDefaultImageCount)
+	if task := create("wan2.6-t2i", &schemas.ImageGenerationParameters{Size: schemas.Ptr("+1280X1280")}); task.BilledParameters == nil || task.BilledParameters.Size != "1280x1280" {
+		t.Errorf("size +1280X1280: billed at %+v, want size 1280x1280", task.BilledParameters)
+	}
+	if task := create("wan2.6-t2i", &schemas.ImageGenerationParameters{}); task.BilledImages != wanDefaultImageCount || task.BilledParameters == nil || task.BilledParameters.Resolution != "" || task.BilledParameters.Size != "" {
+		t.Errorf("wan2.6-t2i with no n: billed %d at %+v, want %d at no tier", task.BilledImages, task.BilledParameters, wanDefaultImageCount)
+	}
+	for _, resolution := range []schemas.TolerantString{"2048*2048", "3K", "hd"} {
+		_, bifrostErr := provider.ImageGenerationTask(imageTestContext(t), imageTestKey(), &schemas.BifrostImageGenerationRequest{
+			Provider: schemas.DashScope, Model: "wan2.7-image-pro", Input: &schemas.ImageGenerationInput{Prompt: "x"},
+			Params: &schemas.ImageGenerationParameters{Resolution: resolution},
+		})
+		if bifrostErr == nil || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter || bifrostErr.Error.Param != "resolution" {
+			t.Errorf("resolution %q: error %+v, want caller_unsupported_parameter naming resolution", resolution, bifrostErr)
+		}
 	}
 }
 

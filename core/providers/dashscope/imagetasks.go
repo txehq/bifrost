@@ -83,7 +83,16 @@ func wanImageTaskSize(size *string, resolution schemas.TolerantString) (*string,
 			"dashscope: resolution and size both set Wan's parameters.size; send one")
 	}
 	if tier != "" {
-		return &tier, nil
+		// Only a tier Wan takes, in its spelling: anything else would reach parameters.size as
+		// sent while pricing read an unknown tier at the base rate. width*height is size's job.
+		upper := strings.ToUpper(tier)
+		for _, known := range wanImageTiers {
+			if upper == known {
+				return &upper, nil
+			}
+		}
+		return nil, schemas.NewUnsupportedParameterError("resolution", fmt.Sprintf(
+			"dashscope: Wan takes resolution as 1K, 2K or 4K; %q cannot be delivered (send width and height as size)", schemas.BoundEchoedName(tier)))
 	}
 	return nil, nil
 }
@@ -298,9 +307,8 @@ func (provider *DashScopeProvider) ImageGenerationTask(ctx *schemas.BifrostConte
 	}
 	var tierSize, size *string
 	var n *int
-	var resolution schemas.TolerantString
 	if p := request.Params; p != nil {
-		n, size, resolution = p.N, p.Size, p.Resolution
+		n, size = p.N, p.Size
 		tierSize, bifrostErr = validateDashScopeImageTask(request.Model, p.N, p.Size, p.ResponseFormat, p.Resolution, p.ExtraParams)
 		if bifrostErr != nil {
 			return nil, bifrostErr
@@ -321,7 +329,7 @@ func (provider *DashScopeProvider) ImageGenerationTask(ctx *schemas.BifrostConte
 		return nil, bifrostErr
 	}
 	return provider.submitImageTask(ctx, key, schemas.ImageGenerationTaskRequest, request.Model, jsonData,
-		wanImageTaskCount(request.Model, n), wanConvertedBilledParams(request.Model, size, resolution))
+		wanImageTaskCount(request.Model, n), wanConvertedBilledParams(request.Model, size, tierSize))
 }
 
 // ImageEditTask creates a Wan image edit task. Input images go in input.messages[].content[].image:
@@ -346,9 +354,8 @@ func (provider *DashScopeProvider) ImageEditTask(ctx *schemas.BifrostContext, ke
 	}
 	var tierSize, size *string
 	var n *int
-	var resolution schemas.TolerantString
 	if p := request.Params; p != nil {
-		n, size, resolution = p.N, p.Size, p.Resolution
+		n, size = p.N, p.Size
 		tierSize, bifrostErr = validateDashScopeImageTask(request.Model, p.N, p.Size, p.ResponseFormat, p.Resolution, p.ExtraParams)
 		if bifrostErr != nil {
 			return nil, bifrostErr
@@ -363,7 +370,7 @@ func (provider *DashScopeProvider) ImageEditTask(ctx *schemas.BifrostContext, ke
 		return nil, bifrostErr
 	}
 	return provider.submitImageTask(ctx, key, schemas.ImageEditTaskRequest, request.Model, jsonData,
-		wanImageTaskCount(request.Model, n), wanConvertedBilledParams(request.Model, size, resolution))
+		wanImageTaskCount(request.Model, n), wanConvertedBilledParams(request.Model, size, tierSize))
 }
 
 // wanDefaultImageCount is the number of images Wan makes when a create names no n: Alibaba's Wan
@@ -392,17 +399,22 @@ func wanImageTaskCount(model string, n *int) int {
 	return count
 }
 
-// wanConvertedBilledParams is what a converted create is priced at when the request names no size
-// and no resolution: the model's default tier, when it has one. nil leaves the pricing dimensions
-// to core, which reads them from the request (BackfillCreateParams).
-func wanConvertedBilledParams(model string, size *string, resolution schemas.TolerantString) *schemas.ImageGenerationResponseParameters {
-	if (size != nil && strings.TrimSpace(*size) != "") || strings.TrimSpace(string(resolution)) != "" {
-		return nil
+// wanConvertedBilledParams is what a converted create is priced at, read from what the converter
+// sends as parameters.size: the validated tier (tierSize, upper case), the size as the converter
+// converts it (written WIDTHxHEIGHT), or, when the request names neither, the model's default
+// tier. It is never nil, so core never prices a Wan create from its own reading of the request,
+// which could differ from what DashScope receives.
+func wanConvertedBilledParams(model string, size, tierSize *string) *schemas.ImageGenerationResponseParameters {
+	if tierSize != nil {
+		return &schemas.ImageGenerationResponseParameters{Resolution: *tierSize}
 	}
-	if _, tier := wanImageTaskDefaults(model); tier != "" {
-		return &schemas.ImageGenerationResponseParameters{Resolution: tier}
+	if size != nil && strings.TrimSpace(*size) != "" {
+		if dimensions, ok := toDashScopeImageSize(*size); ok {
+			return &schemas.ImageGenerationResponseParameters{Size: strings.Replace(dimensions, "*", "x", 1)}
+		}
 	}
-	return nil
+	_, tier := wanImageTaskDefaults(model)
+	return &schemas.ImageGenerationResponseParameters{Resolution: tier}
 }
 
 // wanImageTiers are the parameters.size values Wan takes as a resolution tier rather than as
