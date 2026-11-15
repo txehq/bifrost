@@ -2250,3 +2250,22 @@ func TestVideoPoll_RangedRefusalIsFinal(t *testing.T) {
 	assert.NotEmpty(t, payload.RenderedUnmeasurable)
 	assert.Zero(t, retriever.downloads)
 }
+
+// A file built of many tiny top-level boxes cannot turn one job into thousands of range requests,
+// each a provider download: past maxRangedRequests the video is measured from one streamed download.
+func TestVideoPoll_RangedReadsAreBoundedPerJob(t *testing.T) {
+	video := renderedMP4(t, 12)
+	// 500 empty mdat boxes after the clip: each costs a header read when walked by ranges.
+	padded := append([]byte(nil), video...)
+	for range 500 {
+		padded = append(padded, 0, 0, 0, 8, 'm', 'd', 'a', 't')
+	}
+	retriever := &rangedVideoRetriever{fakeVideoRetriever: fakeVideoRetriever{resp: silentReplicateResponse("pred_boxes"), video: padded}, mode: "honor"}
+	poll, err := NewVideoSettler(retriever).Poll(context.Background(), replicateVideoJob(t, "pred_boxes", 5))
+	require.NoError(t, err)
+	payload := poll.Payload.(VideoPayload)
+	require.NotNil(t, payload.RenderedSeconds, payload.RenderedUnmeasurable)
+	assert.Equal(t, 12, *payload.RenderedSeconds)
+	assert.LessOrEqual(t, len(retriever.ranges), maxRangedRequests, "range requests sent for one job")
+	assert.Equal(t, 1, retriever.downloads, "measured from one streamed download instead")
+}

@@ -275,10 +275,12 @@ var ErrVideoRangeUnusable = errors.New("the video host's ranged answer is unusab
 // file size, answered with other bytes, or the file needs more requests than maxRangedRequests.
 var errRangedFallback = errors.New("measure the video from a streamed download")
 
-// maxRangedRequests bounds the Range requests one measurement sends: a fragmented file costs two per
-// fragment, so this holds a clip of an hour in one-second fragments. A file needing more is
-// measured from the stream, as before.
-const maxRangedRequests = 8192
+// maxRangedRequests bounds the Range requests one measurement sends. Each is a provider download,
+// which for some providers re-reads the job first (Replicate polls the prediction), so a file built
+// of many tiny top-level boxes must not turn one job into thousands of upstream calls. A generated
+// clip is a handful of boxes (ftyp, moov, an mdat, a moof per fragment); a file needing more is
+// measured from one streamed download instead, as before ranged reads.
+const maxRangedRequests = 64
 
 // measureRangedVideo measures a job's video from Range requests. It returns the duration, or a
 // body to read as a stream when the first answer was the whole file, or errRangedFallback.
