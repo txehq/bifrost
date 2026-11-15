@@ -586,6 +586,22 @@ func isNativeGeminiBatchBody(body map[string]any) bool {
 	return !hasMessages && !hasPrompt
 }
 
+// CheckNativeBatchLineURL refuses a line whose body is sent to the vendor as it is (a native
+// Gemini body, no messages or prompt) but whose url names an operation that body cannot run
+// (fork, TXE-7058). A native body runs as generateContent and its result is returned as a chat
+// completion, so it passes with no url or with /v1/chat/completions; any other url (for example
+// /v1/embeddings with an input-only body) is a 400 naming requests[i].url, error_type
+// caller_unsupported_parameter, before anything is uploaded. Before, the url of a native line was
+// never checked: the line was uploaded and the batch created, and it failed later at the vendor or
+// ran as something the caller did not ask for.
+func CheckNativeBatchLineURL(item schemas.BatchRequestItem) error {
+	url := schemas.BatchEndpoint(strings.TrimSpace(item.URL))
+	if url == "" || url == schemas.BatchEndpointChatCompletions {
+		return nil
+	}
+	return &schemas.BatchLineError{CustomID: item.CustomID, Param: "url", Unsupported: true, Message: fmt.Sprintf("url %s cannot run a native Gemini body: it runs as generateContent and returns a chat completion (use %s, or no url)", url, schemas.BatchEndpointChatCompletions)}
+}
+
 // BatchLineConverters are the sync operations' request converters a host of Gemini models
 // runs an inline batch line through. The Gemini API and Vertex shape the same converted
 // request differently (Vertex strips fields it takes elsewhere), so each passes its own.
@@ -639,6 +655,9 @@ func ConvertBatchLine(ctx *schemas.BifrostContext, item schemas.BatchRequestItem
 		return nil, "", &schemas.BatchLineError{CustomID: item.CustomID, Param: "body", Message: "body is required"}
 	}
 	if isNativeGeminiBatchBody(body) {
+		if err := CheckNativeBatchLineURL(item); err != nil {
+			return nil, "", err
+		}
 		geminiReq, err := ToGeminiBatchGenerateContentRequest(body)
 		if err != nil {
 			return nil, "", &schemas.BatchLineError{CustomID: item.CustomID, Param: "body", Message: err.Error()}

@@ -524,6 +524,8 @@ func vertexConvertRequestsToJSONL(ctx *schemas.BifrostContext, key schemas.Key, 
 			}
 			body = converted
 			lineEndpoint = endpoint
+		} else if err := gemini.CheckNativeBatchLineURL(item); err != nil {
+			return nil, withBatchLineIndex(err, i)
 		}
 		if err := gemini.CheckBatchLineOperation(&batchOperation, item, lineEndpoint); err != nil {
 			return nil, withBatchLineIndex(err, i)

@@ -769,6 +769,9 @@ func TestGeminiBatchCreateRefusesWhatItCannotRun(t *testing.T) {
 		{"imagen image line", schemas.Ptr("imagen-4.0-generate-001"), `{"custom_id":"img-1","url":"/v1/images/generations","body":{"model":"imagen-4.0-generate-001","prompt":"a cat"}}`, "requests[0].url", "Imagen", schemas.ErrorTypeCallerUnsupportedParameter},
 		{"line with neither a url nor messages", schemas.Ptr("gemini-2.5-flash"), `{"custom_id":"line-1","body":{"model":"gemini-2.5-flash","prompt":"hi"}}`, "requests[0].url", "url is required", schemas.ErrorTypeCallerInvalidRequest},
 		{"line without a body", schemas.Ptr("gemini-2.5-flash"), `{"custom_id":"line-1","url":"/v1/chat/completions"}`, "requests[0].body", "body is required", schemas.ErrorTypeCallerInvalidRequest},
+		// TXE-7058: a native body (contents, no messages or prompt) is sent as it is, but its url is checked.
+		{"native body with an embeddings url", schemas.Ptr("gemini-2.5-flash"), `{"custom_id":"n-1","url":"/v1/embeddings","body":{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}}`, "requests[0].url", "/v1/embeddings", schemas.ErrorTypeCallerUnsupportedParameter},
+		{"native body with an image url", schemas.Ptr("gemini-2.5-flash"), `{"custom_id":"n-1","url":"/v1/images/generations","body":{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}}`, "requests[0].url", "cannot run a native Gemini body", schemas.ErrorTypeCallerUnsupportedParameter},
 	}
 	t.Run("lines of two urls", func(t *testing.T) {
 		// A batch runs one url: settlement prices a batch as one operation, so a chat line
@@ -1670,4 +1673,18 @@ func TestGeminiEmbeddingBatchLineKeepsPromptModalities(t *testing.T) {
 	details = promptDetails(t, several)
 	assert.EqualValues(t, 12, details["text_tokens"], "text tokens are summed across the line's inputs")
 	assert.EqualValues(t, 358, details["video_tokens"], "video tokens are summed across the line's inputs")
+}
+
+// BenchmarkCheckNativeBatchLineURL is TXE-7058's per-line cost on a native body: a trim and a
+// comparison, no allocation, for a line with no url, the chat url, or a url it refuses.
+func BenchmarkCheckNativeBatchLineURL(b *testing.B) {
+	for name, url := range map[string]string{"no_url": "", "chat_url": "/v1/chat/completions", "refused_url": "/v1/embeddings"} {
+		item := schemas.BatchRequestItem{CustomID: "line-1", URL: url}
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				_ = CheckNativeBatchLineURL(item)
+			}
+		})
+	}
 }
