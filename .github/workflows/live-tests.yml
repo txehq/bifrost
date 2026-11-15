@@ -1,7 +1,8 @@
 name: Live Tests
 
 # GPT Live e2e suite (tests/live) against a gateway built from the checkout. The fake upstream
-# needs no provider keys. The release pipeline runs the fake suite on every deployment; this
+# needs no provider keys. Every pull request runs the fake suite offline in go-unit-tests.yml's
+# live-fake job (TXE-7424), and the release pipeline runs it on every deployment; this
 # workflow runs the long sessions nightly and either mode on demand.
 
 on:
