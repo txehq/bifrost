@@ -170,6 +170,41 @@ run_case "tld-that-only-ends-like-a-reserved-one" fail "files.unlisted.contest" 
 run_case "example-dot-com-subdomain-is-not-reserved" fail "files.example.com" \
   "$(collection '' '' | sed 's#{\\"model\\": \\"m\\"}#{\\"image_url\\": \\"https://files.example.com/a.png\\"}#')"
 
+# Docker Hub redirects a blob to one of three CDNs, so a blocked job that allows
+# registry-1.docker.io must allow all three, or a pull fails whenever Docker Hub
+# picks the missing one (TXE-7427).
+R2="docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com:443"
+# docker_case <name> <pass|fail> <text expected in the failure, or ""> <policy> <host>...
+docker_case() {
+  local name="$1" want="$2" expect="$3" policy="$4"; shift 4
+  local wf="$WORK/docker-$name.yml" out status=0
+  {
+    printf 'jobs:\n  pull:\n    runs-on: ubuntu-24.04\n    steps:\n'
+    printf '      - uses: step-security/harden-runner@v2\n        with:\n'
+    printf '          egress-policy: %s\n          allowed-endpoints: >\n' "$policy"
+    printf '            %s\n' "$@"
+    printf '      - run: docker pull postgres:16-alpine\n'
+  } > "$wf"
+  out="$(bash "$SCRIPT_DIR/check-egress-allowlist.sh" "$wf" 2>&1)" || status=$?
+  if [[ "$want" == "pass" && $status -ne 0 ]]; then
+    echo "FAIL $name: expected the check to pass, it failed:"; echo "$out" | sed 's/^/    /'
+    failures=$((failures + 1)); return
+  fi
+  if [[ "$want" == "fail" ]] && { [[ $status -eq 0 ]] || ! grep -qF -- "$expect" <<<"$out"; }; then
+    echo "FAIL $name: expected the check to fail naming $expect:"; echo "$out" | sed 's/^/    /'
+    failures=$((failures + 1)); return
+  fi
+  echo "ok   $name"
+}
+docker_case "docker-hub-all-blob-hosts" pass "" block \
+  registry-1.docker.io:443 "$R2" production.cloudflare.docker.com:443 production.cloudfront.docker.com:443
+docker_case "docker-hub-without-r2" fail "omits $R2" block \
+  registry-1.docker.io:443 production.cloudflare.docker.com:443 production.cloudfront.docker.com:443
+docker_case "docker-hub-registry-only" fail "production.cloudfront.docker.com:443" block \
+  registry-1.docker.io:443
+docker_case "no-docker-hub-needs-no-blob-hosts" pass "" block github.com:443
+docker_case "audit-policy-is-not-checked" pass "" audit registry-1.docker.io:443
+
 # The check reads files outside .github/workflows. The workflow that runs it must be
 # triggered by a change to each of them, or a PR that touches only that file merges
 # unchecked and the next PR finds main red (TXE-7139).

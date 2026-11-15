@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Three guards on harden-runner egress allowlists:
+# Four guards on harden-runner egress allowlists:
 #
 #   1. every job that runs apt-get under `egress-policy: block` allowlists the
 #      Ubuntu APT hosts it will need;
@@ -10,7 +10,9 @@ set -euo pipefail
 #      the same set as "the hosts the collection sends requests to";
 #   3. every job that builds the release binaries or runs schemasync allowlists
 #      the Go module proxy and checksum database the workspace build verifies
-#      modules against.
+#      modules against;
+#   4. every job that allows Docker Hub allowlists all three CDNs its blobs are
+#      served from.
 #
 # harden-runner's `egress-policy: block` drops every destination absent from
 # `allowed-endpoints`, so a job that shells out to `apt-get update` fails at the
@@ -535,4 +537,65 @@ if checked == 0:
     print("OK: no Go-workspace blocked-egress jobs found.")
 else:
     print(f"OK: all {checked} Go-workspace blocked-egress job(s) allowlist the Go module hosts.")
+PY
+
+# ---------------------------------------------------------------------------
+# 4. Docker Hub blob hosts
+# ---------------------------------------------------------------------------
+#
+# registry-1.docker.io answers a blob request with a redirect to one of three
+# CDNs, and which one varies from pull to pull. A job that pulls from Docker Hub
+# under the block policy and allows only some of them fails only when Docker Hub
+# picks a missing one. The pull then times out dialling the address harden-runner
+# answers for a refused domain, 54.185.253.63 (TXE-7427: the E2E UI shards and
+# the image health job each failed that way on some runs and passed on others).
+# Allowing registry-1.docker.io marks a job that pulls from Docker Hub, so such a
+# job must allow every blob host.
+
+python3 - "${FILES[@]}" <<'PY'
+import sys
+import yaml
+
+REGISTRY = "registry-1.docker.io:443"
+REQUIRED_BLOB_HOSTS = (
+    "docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com:443",
+    "production.cloudflare.docker.com:443",
+    "production.cloudfront.docker.com:443",
+)
+
+failures = []
+checked = 0
+
+for path in sys.argv[1:]:
+    with open(path, encoding="utf-8") as fh:
+        doc = yaml.safe_load(fh) or {}
+
+    for job_name, job in (doc.get("jobs") or {}).items():
+        if not isinstance(job, dict):
+            continue
+        for step in job.get("steps") or []:
+            if not isinstance(step, dict) or "step-security/harden-runner" not in (step.get("uses") or ""):
+                continue
+            with_block = step.get("with") or {}
+            if str(with_block.get("egress-policy", "")).strip() != "block":
+                continue
+            allowed = set(str(with_block.get("allowed-endpoints") or "").split())
+            if REGISTRY not in allowed:
+                continue
+            checked += 1
+            missing = [host for host in REQUIRED_BLOB_HOSTS if host not in allowed]
+            if missing:
+                failures.append((path, job_name, missing))
+
+for path, job_name, missing in failures:
+    print(
+        f"FAIL {path} :: job '{job_name}' pulls from Docker Hub under "
+        f"egress-policy: block but omits {', '.join(missing)}",
+        file=sys.stderr,
+    )
+
+if failures:
+    sys.exit(1)
+
+print(f"OK: all {checked} Docker Hub blocked-egress job(s) allowlist every Docker Hub blob host.")
 PY
