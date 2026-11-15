@@ -15,6 +15,8 @@ package schemas
 // again. The fork's /v1/async/images/* routes, which store jobs in Bifrost's database, are a
 // different thing and are not used by these routes.
 
+import "strings"
+
 // TaskStatus is the status of a task object. Image and video tasks share the six values.
 type TaskStatus = VideoStatus
 
@@ -69,6 +71,29 @@ func (r *BifrostImageTaskResponse) BackfillCreateParams(req *BifrostRequest) {
 	reading := &BifrostImageGenerationResponse{}
 	reading.BackfillParams(req)
 	r.BilledParameters = reading.ImageGenerationResponseParameters
+	if r.BilledParameters != nil {
+		r.BilledParameters.Size = normalizeBilledImageSize(r.BilledParameters.Size)
+	}
+}
+
+// normalizeBilledImageSize writes a width-and-height size the way the pricing path reads it,
+// "2048x2048": a provider may accept "2048*2048" or "2048X2048" and send it, and the tier and
+// pixel pricing parse only a lower-case x. Anything else is kept as it is.
+func normalizeBilledImageSize(size string) string {
+	trimmed := strings.TrimSpace(size)
+	sep := strings.IndexAny(trimmed, "xX*")
+	if sep <= 0 || sep == len(trimmed)-1 {
+		return size
+	}
+	width, height := trimmed[:sep], trimmed[sep+1:]
+	for _, part := range []string{width, height} {
+		for i := 0; i < len(part); i++ {
+			if part[i] < '0' || part[i] > '9' {
+				return size
+			}
+		}
+	}
+	return width + "x" + height
 }
 
 // ImageTaskObject is the value of BifrostImageTaskResponse.Object.

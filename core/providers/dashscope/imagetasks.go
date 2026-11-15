@@ -229,8 +229,10 @@ func isASCII(s string) bool {
 	return true
 }
 
-// wanNamesInterleave reports whether name could be one of the interleaved-mode switches to some
-// JSON matcher: its letters, folded, contain "interleave" or "maximages". This fails closed on
+// wanNamesInterleave reports whether name could be one of the switches that make the image count
+// something other than n to some JSON matcher: its letters, folded, contain "interleave" or
+// "maximages" (wan2.6-image's interleaved mode) or "sequential" (wan2.7-image's image set mode,
+// parameters.enable_sequential, where n is only an upper bound of up to 12). This fails closed on
 // spellings no exact rule anticipates (an "is" prefix on a boolean, other separators), at the cost
 // of refusing a vendor field that happens to contain those words; there is none documented.
 //
@@ -242,7 +244,8 @@ func wanNamesInterleave(name string) bool {
 		return true
 	}
 	folded := wanFoldedName(name)
-	return strings.Contains(folded, "interleave") || strings.Contains(folded, "maximages")
+	return strings.Contains(folded, "interleave") || strings.Contains(folded, "maximages") ||
+		strings.Contains(folded, "sequential")
 }
 
 // wanInterleaveSwitch returns the name of an interleaved-mode switch among the extra params, at
@@ -287,16 +290,17 @@ func (provider *DashScopeProvider) ImageGenerationTask(ctx *schemas.BifrostConte
 		return nil, bifrostErr
 	}
 	if rawBody != nil {
-		billed, billedParams, countErr := wanRawImageTaskBilling(rawBody)
+		billed, billedParams, countErr := wanRawImageTaskBilling(rawBody, request.Model)
 		if countErr != nil {
 			return nil, countErr
 		}
 		return provider.submitImageTask(ctx, key, schemas.ImageGenerationTaskRequest, request.Model, rawBody, billed, billedParams)
 	}
-	var tierSize *string
+	var tierSize, size *string
 	var n *int
+	var resolution schemas.TolerantString
 	if p := request.Params; p != nil {
-		n = p.N
+		n, size, resolution = p.N, p.Size, p.Resolution
 		tierSize, bifrostErr = validateDashScopeImageTask(request.Model, p.N, p.Size, p.ResponseFormat, p.Resolution, p.ExtraParams)
 		if bifrostErr != nil {
 			return nil, bifrostErr
@@ -316,7 +320,8 @@ func (provider *DashScopeProvider) ImageGenerationTask(ctx *schemas.BifrostConte
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	return provider.submitImageTask(ctx, key, schemas.ImageGenerationTaskRequest, request.Model, jsonData, wanImageTaskCount(n), nil)
+	return provider.submitImageTask(ctx, key, schemas.ImageGenerationTaskRequest, request.Model, jsonData,
+		wanImageTaskCount(request.Model, n), wanConvertedBilledParams(request.Model, size, resolution))
 }
 
 // ImageEditTask creates a Wan image edit task. Input images go in input.messages[].content[].image:
@@ -333,16 +338,17 @@ func (provider *DashScopeProvider) ImageEditTask(ctx *schemas.BifrostContext, ke
 		return nil, bifrostErr
 	}
 	if rawBody != nil {
-		billed, billedParams, countErr := wanRawImageTaskBilling(rawBody)
+		billed, billedParams, countErr := wanRawImageTaskBilling(rawBody, request.Model)
 		if countErr != nil {
 			return nil, countErr
 		}
 		return provider.submitImageTask(ctx, key, schemas.ImageEditTaskRequest, request.Model, rawBody, billed, billedParams)
 	}
-	var tierSize *string
+	var tierSize, size *string
 	var n *int
+	var resolution schemas.TolerantString
 	if p := request.Params; p != nil {
-		n = p.N
+		n, size, resolution = p.N, p.Size, p.Resolution
 		tierSize, bifrostErr = validateDashScopeImageTask(request.Model, p.N, p.Size, p.ResponseFormat, p.Resolution, p.ExtraParams)
 		if bifrostErr != nil {
 			return nil, bifrostErr
@@ -356,20 +362,47 @@ func (provider *DashScopeProvider) ImageEditTask(ctx *schemas.BifrostContext, ke
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	return provider.submitImageTask(ctx, key, schemas.ImageEditTaskRequest, request.Model, jsonData, wanImageTaskCount(n), nil)
+	return provider.submitImageTask(ctx, key, schemas.ImageEditTaskRequest, request.Model, jsonData,
+		wanImageTaskCount(request.Model, n), wanConvertedBilledParams(request.Model, size, resolution))
 }
 
 // wanDefaultImageCount is the number of images Wan makes when a create names no n: Alibaba's Wan
-// text-to-image reference documents n as defaulting to 4, and each image is billed.
+// text-to-image reference documents n as defaulting to 4, and each image is billed. The Wan 2.7
+// image models default to 1 (wanImageTaskDefaults).
 const wanDefaultImageCount = 4
 
+// wanImageTaskDefaults are the image count and resolution tier a Wan model makes when a create
+// names neither n nor a size. Alibaba's Wan image generation and editing reference: wan2.7-image
+// and wan2.7-image-pro default to n=1 and size 2K. Every other Wan image model defaults to n=4,
+// and its size default is width*height priced at the base rate, so no tier is recorded.
+func wanImageTaskDefaults(model string) (count int, tier string) {
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "wan2.7-image") {
+		return 1, "2K"
+	}
+	return wanDefaultImageCount, ""
+}
+
 // wanImageTaskCount is the number of images a Wan task create asks DashScope for, and so bills:
-// n, or Wan's default when the request names none.
-func wanImageTaskCount(n *int) int {
+// n, or the model's default when the request names none.
+func wanImageTaskCount(model string, n *int) int {
 	if n != nil && *n > 0 {
 		return *n
 	}
-	return wanDefaultImageCount
+	count, _ := wanImageTaskDefaults(model)
+	return count
+}
+
+// wanConvertedBilledParams is what a converted create is priced at when the request names no size
+// and no resolution: the model's default tier, when it has one. nil leaves the pricing dimensions
+// to core, which reads them from the request (BackfillCreateParams).
+func wanConvertedBilledParams(model string, size *string, resolution schemas.TolerantString) *schemas.ImageGenerationResponseParameters {
+	if (size != nil && strings.TrimSpace(*size) != "") || strings.TrimSpace(string(resolution)) != "" {
+		return nil
+	}
+	if _, tier := wanImageTaskDefaults(model); tier != "" {
+		return &schemas.ImageGenerationResponseParameters{Resolution: tier}
+	}
+	return nil
 }
 
 // wanImageTiers are the parameters.size values Wan takes as a resolution tier rather than as
@@ -382,15 +415,28 @@ var wanImageTiers = []string{"1K", "2K", "4K"}
 // that is not one JSON object, that names parameters, n or size more than once in any spelling
 // (a parser that took another copy than Bifrost's would make, and bill, something else), or whose
 // n or size Bifrost cannot read, is refused, as is one that turns on interleaved mode
-// (wanInterleaveSwitch).
-func wanRawImageTaskBilling(body []byte) (int, *schemas.ImageGenerationResponseParameters, *schemas.BifrostError) {
+// (wanInterleaveSwitch). So is a body whose model is missing, repeated or not the request's
+// model: governance chose the key, the budget and the price by the request's model, and DashScope
+// runs the body's.
+func wanRawImageTaskBilling(body []byte, model string) (int, *schemas.ImageGenerationResponseParameters, *schemas.BifrostError) {
 	top, err := jsonObjectMembers(body)
 	if err != nil {
 		return 0, nil, newDashScopeBadRequest("", "dashscope: the raw request body of an image task must be one JSON object: "+err.Error())
 	}
+	modelValue, bifrostErr := onlyMember(top, "model", "model")
+	if bifrostErr != nil {
+		return 0, nil, bifrostErr
+	}
+	var bodyModel string
+	if modelValue == nil || json.Unmarshal(modelValue, &bodyModel) != nil || bodyModel != model {
+		return 0, nil, newDashScopeBadRequest("model", fmt.Sprintf(
+			"dashscope: the raw request body must name the request's model %q, once", model))
+	}
+	defaultCount, defaultTier := wanImageTaskDefaults(model)
+	defaults := &schemas.ImageGenerationResponseParameters{Resolution: defaultTier}
 	parameters, bifrostErr := onlyMember(top, "parameters", "parameters")
 	if bifrostErr != nil || parameters == nil {
-		return wanDefaultImageCount, &schemas.ImageGenerationResponseParameters{}, bifrostErr
+		return defaultCount, defaults, bifrostErr
 	}
 	members, err := jsonObjectMembers(parameters)
 	if err != nil {
@@ -403,7 +449,7 @@ func wanRawImageTaskBilling(body []byte) (int, *schemas.ImageGenerationResponseP
 				"dashscope: parameters.%s cannot be delivered on the image task routes: it may switch on Wan's interleaved mode, which makes up to max_images images whatever n says, while a task create is billed for the images it asks for (a name outside ASCII is refused for the same reason)", member.name))
 		}
 	}
-	count := wanDefaultImageCount
+	count := defaultCount
 	nValue, bifrostErr := onlyMember(members, "n", "parameters.n")
 	if bifrostErr != nil {
 		return 0, nil, bifrostErr
@@ -420,9 +466,9 @@ func wanRawImageTaskBilling(body []byte) (int, *schemas.ImageGenerationResponseP
 		return 0, nil, bifrostErr
 	}
 	if sizeValue == nil {
-		// The body names no size: Wan makes its default. The empty, non-nil value keeps core from
+		// The body names no size: Wan makes the model's default. The non-nil value keeps core from
 		// pricing the create from the parsed request's params, which a raw body does not follow.
-		return count, &schemas.ImageGenerationResponseParameters{}, nil
+		return count, defaults, nil
 	}
 	var size string
 	if json.Unmarshal(sizeValue, &size) != nil {

@@ -1356,9 +1356,13 @@ func TestDashScopeWanImageTaskBilledImages(t *testing.T) {
 		{`{"model":"wan2.6-t2i","parameters":{}}`, wanDefaultImageCount, "", ""},
 		{`{"model":"wan2.6-t2i"}`, wanDefaultImageCount, "", ""},
 		{`{"model":"wan2.6-image","parameters":{"n":1,"enable_interleave":false,"max_images":null}}`, 1, "", ""},
+		// Wan 2.7 image models default to one image at 2K.
+		{`{"model":"wan2.7-image","parameters":{}}`, 1, "", "2K"},
+		{`{"model":"wan2.7-image-pro"}`, 1, "", "2K"},
+		{`{"model":"wan2.7-image-pro","parameters":{"n":3,"size":"4K"}}`, 3, "", "4K"},
 	}
 	for _, c := range read {
-		count, params, bifrostErr := wanRawImageTaskBilling([]byte(c.body))
+		count, params, bifrostErr := wanRawImageTaskBilling([]byte(c.body), rawBodyModel(c.body))
 		if bifrostErr != nil || count != c.count {
 			t.Errorf("raw body %s: billed images = %d (%+v), want %d", c.body, count, bifrostErr, c.count)
 			continue
@@ -1395,10 +1399,58 @@ func TestDashScopeWanImageTaskBilledImages(t *testing.T) {
 		`{"model":"wan2.6-t2i","parameters":"n=4"}`:                              "parameters",
 		`{"model":"wan2.6-t2i"} {"parameters":{"n":4}}`:                          "",
 		`["wan2.6-t2i"]`: "",
+		// Image set mode: n is only an upper bound (up to 12).
+		`{"model":"wan2.7-image-pro","parameters":{"enable_sequential":true}}`: "parameters.enable_sequential",
 	} {
-		if _, _, bifrostErr := wanRawImageTaskBilling([]byte(body)); bifrostErr == nil || bifrostErr.Error.Param != param {
+		if _, _, bifrostErr := wanRawImageTaskBilling([]byte(body), rawBodyModel(body)); bifrostErr == nil || bifrostErr.Error.Param != param {
 			t.Errorf("raw body %s: error %+v, want a refusal naming %q", body, bifrostErr, param)
 		}
+	}
+	// The body's model must be the request's: governance chose the key, budget and price by it.
+	for body, model := range map[string]string{
+		`{"model":"wan2.7-image-pro","parameters":{"n":1}}`: "wan2.6-t2i",
+		`{"parameters":{"n":1}}`:                            "wan2.6-t2i",
+		`{"model":"wan2.6-t2i","Model":"wan2.7-image-pro"}`: "wan2.6-t2i",
+		`{"model":["wan2.6-t2i"]}`:                          "wan2.6-t2i",
+	} {
+		if _, _, bifrostErr := wanRawImageTaskBilling([]byte(body), model); bifrostErr == nil || bifrostErr.Error.Param != "model" {
+			t.Errorf("raw body %s for model %s: error %+v, want a refusal naming model", body, model, bifrostErr)
+		}
+	}
+}
+
+// rawBodyModel is the model a raw test body names, read leniently; "" when it names none.
+func rawBodyModel(body string) string {
+	var named struct {
+		Model string `json:"model"`
+	}
+	_ = json.Unmarshal([]byte(body), &named)
+	return named.Model
+}
+
+// TestDashScopeWanImageTaskBilledDefaults: a converted Wan 2.7 create that names neither a size
+// nor a resolution is billed for one image at 2K, the model's defaults; one that names a size is
+// left to core, which prices it from the request; earlier Wan models default to 4 images.
+func TestDashScopeWanImageTaskBilledDefaults(t *testing.T) {
+	provider, _ := newMockDashScopeImageTasks(t, map[string]mockResponse{"POST /api/v1/services/aigc/image-generation/generation": {http.StatusOK, wanImageTaskCreated}})
+	create := func(model string, params *schemas.ImageGenerationParameters) *schemas.BifrostImageTaskResponse {
+		t.Helper()
+		task, bifrostErr := provider.ImageGenerationTask(imageTestContext(t), imageTestKey(), &schemas.BifrostImageGenerationRequest{
+			Provider: schemas.DashScope, Model: model, Input: &schemas.ImageGenerationInput{Prompt: "x"}, Params: params,
+		})
+		if bifrostErr != nil {
+			t.Fatalf("%s: %+v", model, bifrostErr.Error)
+		}
+		return task
+	}
+	if task := create("wan2.7-image", nil); task.BilledImages != 1 || task.BilledParameters == nil || task.BilledParameters.Resolution != "2K" {
+		t.Errorf("wan2.7-image with no params: billed %d at %+v, want 1 at 2K", task.BilledImages, task.BilledParameters)
+	}
+	if task := create("wan2.7-image-pro", &schemas.ImageGenerationParameters{Resolution: "4K"}); task.BilledParameters != nil {
+		t.Errorf("a named resolution is core's to read, got provider-set %+v", task.BilledParameters)
+	}
+	if task := create("wan2.6-t2i", &schemas.ImageGenerationParameters{}); task.BilledImages != wanDefaultImageCount || task.BilledParameters != nil {
+		t.Errorf("wan2.6-t2i with no n: billed %d at %+v, want %d and core's reading", task.BilledImages, task.BilledParameters, wanDefaultImageCount)
 	}
 }
 
@@ -1456,6 +1508,7 @@ func TestDashScopeWanImageTaskRefusesInterleavedMode(t *testing.T) {
 		{"hyphenated", map[string]interface{}{"enable-interleave": true}, "enable-interleave"},
 		{"an is prefix", map[string]interface{}{"isEnableInterleave": true}, "isEnableInterleave"},
 		{"dotted", map[string]interface{}{"max.images": 3}, "max.images"},
+		{"image set mode", map[string]interface{}{"enable_sequential": true}, "enable_sequential"},
 		{"a long s that folds to s", map[string]interface{}{"max_imageſ": 3}, "max_imageſ"},
 		{"a dotted capital I", map[string]interface{}{"enable_İnterleave": true}, "enable_İnterleave"},
 		{"any name outside ASCII", map[string]interface{}{"wätermark": true}, "wätermark"},

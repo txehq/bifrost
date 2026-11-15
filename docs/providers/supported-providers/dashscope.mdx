@@ -245,8 +245,9 @@ The body is Wan's image protocol, the one the synchronous routes send: one user 
 - **`size`** is sent as width\*height in `parameters.size`. Sending both `resolution` and `size` is a 400.
 - **`n`** is sent as `parameters.n`. Wan generates 4 images when `n` is left out, and each is billed, so send `n`.
 - **Edit images:** a link is sent unchanged, and bytes as a base64 data URI.
-- **Refused:** the four task control fields, since DashScope has none. Also refused is an extra `parameters` object naming `n` or `size`, and Wan's interleaved mode (`enable_interleave`, `max_images`), where `max_images` rather than `n` sets how many images are made.
-- **Billing:** a task is billed once, at its create, for the images it asks for (`n`, or 4 when `n` is left out) at the size or resolution tier it asks for. The query and the cancel are not billed.
+- **Refused:** the four task control fields, since DashScope has none. Also refused is an extra `parameters` object naming `n` or `size`, and the modes where `n` does not set how many images are made: interleaved mode (`enable_interleave`, `max_images`) and image set mode (`enable_sequential`). So is an extra param whose name has a character outside ASCII.
+- **Billing:** a task is billed once, at its create, for the images it asks for at the size or resolution tier it asks for. When `n` is left out, that is 1 image at 2K on `wan2.7-image` and `wan2.7-image-pro`, and 4 images on earlier Wan models. The query and the cancel are not billed.
+- **Raw request body mode:** the body must name the request's model once, and is read strictly for `n` and `size`.
 
 Only the newer Wan image models are served (`wan2.6-t2i` and later). `wan2.5-t2i-preview` and earlier use Wan's earlier image protocol (`text2image/image-synthesis`) and are refused with HTTP 400 `caller_invalid_request`, as are `qwen-image-*` and `z-image-*`, which are synchronous.
 

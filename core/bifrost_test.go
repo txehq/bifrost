@@ -11234,6 +11234,16 @@ func TestHandleProviderRequest_ImageTaskCreateCarriesItsPricingDimensions(t *tes
 	if p := edit.BilledParameters; p == nil || p.Size != "1280x1280" {
 		t.Fatalf("edit task billed parameters = %+v, want size 1280x1280", p)
 	}
+	// A size the provider accepted as 2048*2048 or 2048X2048 is kept the way pricing reads it.
+	for _, spelled := range []string{"2048*2048", "2048X2048"} {
+		normalized := &schemas.BifrostImageTaskResponse{}
+		normalized.BackfillCreateParams(&schemas.BifrostRequest{RequestType: schemas.ImageGenerationTaskRequest, ImageGenerationRequest: &schemas.BifrostImageGenerationRequest{
+			Params: &schemas.ImageGenerationParameters{Size: schemas.Ptr(spelled)},
+		}})
+		if p := normalized.BilledParameters; p == nil || p.Size != "2048x2048" {
+			t.Fatalf("size %s: billed parameters %+v, want size 2048x2048", spelled, p)
+		}
+	}
 	// A provider that read the dimensions from a raw body core never parsed keeps them.
 	preset := &schemas.BifrostImageTaskResponse{BilledParameters: &schemas.ImageGenerationResponseParameters{Resolution: "4K"}}
 	preset.BackfillCreateParams(&schemas.BifrostRequest{RequestType: schemas.ImageGenerationTaskRequest, ImageGenerationRequest: &schemas.BifrostImageGenerationRequest{
