@@ -10,8 +10,8 @@ PR #144). go-unit-tests.yml runs this script on every pull request, in SHARDS pa
   go-unit-shards.py run --shard I --shards N   run shard I (1-based)
   go-unit-shards.py compile                    build every test binary, run none (cache warm-up)
 
-What it runs. Every package with test files in core, framework, transports and every
-plugins/*/go.mod module, found with `go list` on each run, so a new package or plugin is
+What it runs. Every package with test files in core, framework, transports,
+third_party/sonic-loader and every plugins/*/go.mod module, found with `go list` on each run, so a new package or plugin is
 tested without a CI edit. The few exclusions are EXCLUDED below, each with its reason. A
 package heavier than a shard's share is split into parts by its top-level test names
 (`go test -list`), round-robin over the sorted names, so every test lands in exactly one part.
@@ -39,7 +39,9 @@ import time
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
 # Module directories, relative to ROOT. plugins/*/go.mod is globbed in modules().
-MODULES = ("core", "framework", "transports")
+# third_party/sonic-loader is the patched sonic JIT loader every module replaces to (TXE-7504);
+# its registration regression tests run here.
+MODULES = ("core", "framework", "transports", "third_party/sonic-loader")
 
 # Packages not run here, with the reason. Matched on the import path's suffix after the module.
 EXCLUDED = {

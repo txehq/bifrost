@@ -41,6 +41,8 @@
   COPY core/ ./core/
   COPY framework/ ./framework/
   COPY plugins/ ./plugins/
+  # Patched sonic JIT loader every go.mod replaces to (TXE-7504).
+  COPY third_party/ ./third_party/
   COPY transports/ ./transports/
 
   # Copy UI build output into transports

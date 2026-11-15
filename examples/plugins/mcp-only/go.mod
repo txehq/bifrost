@@ -37,3 +37,5 @@ require (
 )
 
 replace github.com/capsohq/bifrost/core => ../../../core
+
+replace github.com/bytedance/sonic/loader => ../../../third_party/sonic-loader

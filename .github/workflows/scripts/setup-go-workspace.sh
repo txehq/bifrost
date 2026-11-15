@@ -25,6 +25,8 @@ go work use ./cli
 # The Warp runner builds tests/cmd/seed/warpseed inside the workspace; its own go.sum
 # does not cover framework's dependencies, so it cannot build with GOWORK=off.
 go work use ./tests/cmd/seed
+# The patched sonic JIT loader every go.mod replaces to (TXE-7504).
+go work use ./third_party/sonic-loader
 # Discover plugin modules instead of listing them, so a newly added plugin
 # never needs a matching CI edit. test-all-plugins.sh globs plugins/*/go.mod
 # the same way, so the two lists cannot drift apart.

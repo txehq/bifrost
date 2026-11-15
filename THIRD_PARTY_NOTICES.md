@@ -17,6 +17,18 @@ Copyright (c) 2016 Andrey Nering
 
 Full license text is preserved in the file's header comment.
 
+### `third_party/sonic-loader/`
+
+A copy of [bytedance/sonic](https://github.com/bytedance/sonic)'s `loader` module, v0.5.2, which every Go module here replaces the upstream loader with.
+
+```
+Apache License, Version 2.0
+Copyright 2021-2024 ByteDance Inc.
+Copyright 2024 CloudWeGo Authors
+```
+
+Modified: `register.go` serializes JIT module registration (TXE-7504), and `register_test.go` adds its regression tests. `third_party/sonic-loader/README.md` describes the change; the full license text is in `third_party/sonic-loader/LICENSE`.
+
 ## MPL-2.0 components — Go (compiled into the binary)
 
 ### `github.com/cyphar/filepath-securejoin`

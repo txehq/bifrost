@@ -179,3 +179,5 @@ require (
 	gorm.io/driver/postgres v1.6.0 // indirect
 	gorm.io/driver/sqlite v1.6.0 // indirect
 )
+
+replace github.com/bytedance/sonic/loader => ../../third_party/sonic-loader

@@ -16,6 +16,7 @@ use (
 	./plugins/routing
 	./plugins/semanticcache
 	./plugins/telemetry
+	./third_party/sonic-loader
 	./transports
 )
 
