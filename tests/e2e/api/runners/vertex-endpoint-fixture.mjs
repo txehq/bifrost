@@ -99,7 +99,8 @@ const omniInteraction = (id) => {
 		status: "completed",
 		updated: "2026-11-10T12:25:15Z",
 		steps: [{ type: "model_output", content: [{ type: "video", mime_type: "video/webm", data: fixtureVideo }] }],
-		usage: { output_tokens_by_modality: [{ modality: "video", tokens: 46336 }] },
+		// TXE-7239 (folder 518): input usage by modality, a text prompt and a reference video.
+		usage: { input_tokens_by_modality: [{ modality: "text", tokens: 12 }, { modality: "video", tokens: 1032 }], output_tokens_by_modality: [{ modality: "video", tokens: 46336 }] },
 	};
 };
 

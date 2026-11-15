@@ -179,7 +179,7 @@
       ]
     },
     {
-      "name": "418.4 gemini GET /v1/videos/{id} of a completed Omni interaction reports provider_status, a content artifact, video output tokens and expires_at (gemini omni video)",
+      "name": "418.4 gemini GET /v1/videos/{id} of a completed Omni interaction reports provider_status, a content artifact, video output tokens, input tokens by modality and expires_at (gemini omni video)",
       "request": {
         "method": "GET",
         "header": [],
@@ -220,6 +220,9 @@
               "  pm.expect(j.provider_status, 'provider_status').to.eql('completed');",
               "  pm.expect(j.videos, 'videos: ' + pm.response.text()).to.eql([{ type: 'content', content_type: 'video/mp4' }]);",
               "  pm.expect(j.usage && j.usage.output_tokens, 'usage: ' + pm.response.text()).to.eql(46336);",
+              "  // TXE-7239: the input tokens by modality, as the task object's usage carries them.",
+              "  pm.expect(j.usage && j.usage.input_tokens, 'usage: ' + pm.response.text()).to.eql(270);",
+              "  pm.expect(j.usage && j.usage.input_tokens_details, 'usage: ' + pm.response.text()).to.eql({ text_tokens: 12, image_tokens: 258 });",
               "  pm.expect(j.completed_at, 'completed_at').to.be.a('number');",
               "  pm.expect(j.expires_at, 'expires_at is completed_at plus 48 hours').to.eql(j.completed_at + 172800);",
               "  pm.expect(j.content_filter, 'content_filter').to.eql(undefined);",

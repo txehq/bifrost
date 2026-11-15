@@ -341,12 +341,28 @@ var UnifiedVideoGenerationFields = []string{"aspect_ratio", "resolution", "last_
 type VideoUsage struct {
 	Cost *BifrostCost `json:"cost,omitempty"`
 
-	OutputTokens   *int        `json:"output_tokens,omitempty"`   // tokens the vendor bills the output by (Seedance completion_tokens)
-	OutputSeconds  *float64    `json:"output_seconds,omitempty"`  // seconds of output the vendor billed
-	InputSeconds   *float64    `json:"input_seconds,omitempty"`   // seconds of input media the vendor billed
-	InputImages    *int        `json:"input_images,omitempty"`    // input images the vendor billed
-	ComputeSeconds *float64    `json:"compute_seconds,omitempty"` // run time a hosting platform bills by (Replicate metrics.predict_time)
-	VendorCost     *VendorCost `json:"vendor_cost,omitempty"`     // money or credits the vendor reported
+	OutputTokens *int `json:"output_tokens,omitempty"` // tokens the vendor bills the output by (Seedance completion_tokens)
+	// InputTokens is the input tokens the vendor reported, the sum over its modalities, and
+	// InputTokensDetails splits them by modality (fork, TXE-7239, contract C7 video usage): an
+	// image-to-video or reference-to-video task is billed on its input images and video as well
+	// as its output. Both are absent when the vendor reports no input tokens, and a modality is
+	// absent when the vendor did not report it. Spelled as image usage spells it.
+	InputTokens        *int               `json:"input_tokens,omitempty"`
+	InputTokensDetails *VideoTokenDetails `json:"input_tokens_details,omitempty"`
+	OutputSeconds      *float64           `json:"output_seconds,omitempty"`  // seconds of output the vendor billed
+	InputSeconds       *float64           `json:"input_seconds,omitempty"`   // seconds of input media the vendor billed
+	InputImages        *int               `json:"input_images,omitempty"`    // input images the vendor billed
+	ComputeSeconds     *float64           `json:"compute_seconds,omitempty"` // run time a hosting platform bills by (Replicate metrics.predict_time)
+	VendorCost         *VendorCost        `json:"vendor_cost,omitempty"`     // money or credits the vendor reported
+}
+
+// VideoTokenDetails is a video task's tokens by modality, as the vendor reported them. A nil
+// field is a modality the vendor did not report, never a zero it reported.
+type VideoTokenDetails struct {
+	TextTokens  *int `json:"text_tokens,omitempty"`
+	ImageTokens *int `json:"image_tokens,omitempty"`
+	VideoTokens *int `json:"video_tokens,omitempty"`
+	AudioTokens *int `json:"audio_tokens,omitempty"`
 }
 
 // getSecondsFromVideoRequest extracts Seconds from video-related requests.

@@ -1814,9 +1814,10 @@ const omniInteraction = (id, origin) => {
 			{ type: "model_output", content: [{ type: "video", mime_type: "video/mp4", uri: `${origin}/pp/gemini/files/omni-file:download?alt=media` }] },
 		];
 		interaction.usage = {
-			input_tokens_by_modality: [{ modality: "text", tokens: 12 }],
+			// TXE-7239 (folder 418): an image-to-video task bills its input image too, so input usage has two modalities.
+			input_tokens_by_modality: [{ modality: "text", tokens: 12 }, { modality: "image", tokens: 258 }],
 			output_tokens_by_modality: [{ modality: "text", tokens: 7 }, { modality: "video", tokens: 46336 }],
-			total_input_tokens: 12, total_output_tokens: 46343, total_tokens: 46355,
+			total_input_tokens: 270, total_output_tokens: 46343, total_tokens: 46613,
 		};
 	}
 	return interaction;

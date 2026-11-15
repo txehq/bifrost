@@ -6521,6 +6521,28 @@
                           "type": "integer",
                           "description": "Tokens the provider bills the output by (e.g. Seedance `completion_tokens`)"
                         },
+                        "input_tokens": {
+                          "type": "integer",
+                          "description": "Input tokens the provider reported, summed over every modality (e.g. Gemini Omni `input_tokens_by_modality`)"
+                        },
+                        "input_tokens_details": {
+                          "type": "object",
+                          "description": "The input tokens by modality. A modality the provider did not report is absent; a modality\noutside these four counts toward `input_tokens` only.\n",
+                          "properties": {
+                            "text_tokens": {
+                              "type": "integer"
+                            },
+                            "image_tokens": {
+                              "type": "integer"
+                            },
+                            "video_tokens": {
+                              "type": "integer"
+                            },
+                            "audio_tokens": {
+                              "type": "integer"
+                            }
+                          }
+                        },
                         "output_seconds": {
                           "type": "number",
                           "description": "Seconds of output the provider billed"
@@ -7013,6 +7035,28 @@
                           "type": "integer",
                           "description": "Tokens the provider bills the output by (e.g. Seedance `completion_tokens`)"
                         },
+                        "input_tokens": {
+                          "type": "integer",
+                          "description": "Input tokens the provider reported, summed over every modality (e.g. Gemini Omni `input_tokens_by_modality`)"
+                        },
+                        "input_tokens_details": {
+                          "type": "object",
+                          "description": "The input tokens by modality. A modality the provider did not report is absent; a modality\noutside these four counts toward `input_tokens` only.\n",
+                          "properties": {
+                            "text_tokens": {
+                              "type": "integer"
+                            },
+                            "image_tokens": {
+                              "type": "integer"
+                            },
+                            "video_tokens": {
+                              "type": "integer"
+                            },
+                            "audio_tokens": {
+                              "type": "integer"
+                            }
+                          }
+                        },
                         "output_seconds": {
                           "type": "number",
                           "description": "Seconds of output the provider billed"
@@ -7481,6 +7525,28 @@
                           "type": "integer",
                           "description": "Tokens the provider bills the output by (e.g. Seedance `completion_tokens`)"
                         },
+                        "input_tokens": {
+                          "type": "integer",
+                          "description": "Input tokens the provider reported, summed over every modality (e.g. Gemini Omni `input_tokens_by_modality`)"
+                        },
+                        "input_tokens_details": {
+                          "type": "object",
+                          "description": "The input tokens by modality. A modality the provider did not report is absent; a modality\noutside these four counts toward `input_tokens` only.\n",
+                          "properties": {
+                            "text_tokens": {
+                              "type": "integer"
+                            },
+                            "image_tokens": {
+                              "type": "integer"
+                            },
+                            "video_tokens": {
+                              "type": "integer"
+                            },
+                            "audio_tokens": {
+                              "type": "integer"
+                            }
+                          }
+                        },
                         "output_seconds": {
                           "type": "number",
                           "description": "Seconds of output the provider billed"
@@ -7742,6 +7808,28 @@
                         "output_tokens": {
                           "type": "integer",
                           "description": "Tokens the provider bills the output by (e.g. Seedance `completion_tokens`)"
+                        },
+                        "input_tokens": {
+                          "type": "integer",
+                          "description": "Input tokens the provider reported, summed over every modality (e.g. Gemini Omni `input_tokens_by_modality`)"
+                        },
+                        "input_tokens_details": {
+                          "type": "object",
+                          "description": "The input tokens by modality. A modality the provider did not report is absent; a modality\noutside these four counts toward `input_tokens` only.\n",
+                          "properties": {
+                            "text_tokens": {
+                              "type": "integer"
+                            },
+                            "image_tokens": {
+                              "type": "integer"
+                            },
+                            "video_tokens": {
+                              "type": "integer"
+                            },
+                            "audio_tokens": {
+                              "type": "integer"
+                            }
+                          }
                         },
                         "output_seconds": {
                           "type": "number",
@@ -8123,6 +8211,28 @@
                         "output_tokens": {
                           "type": "integer",
                           "description": "Tokens the provider bills the output by (e.g. Seedance `completion_tokens`)"
+                        },
+                        "input_tokens": {
+                          "type": "integer",
+                          "description": "Input tokens the provider reported, summed over every modality (e.g. Gemini Omni `input_tokens_by_modality`)"
+                        },
+                        "input_tokens_details": {
+                          "type": "object",
+                          "description": "The input tokens by modality. A modality the provider did not report is absent; a modality\noutside these four counts toward `input_tokens` only.\n",
+                          "properties": {
+                            "text_tokens": {
+                              "type": "integer"
+                            },
+                            "image_tokens": {
+                              "type": "integer"
+                            },
+                            "video_tokens": {
+                              "type": "integer"
+                            },
+                            "audio_tokens": {
+                              "type": "integer"
+                            }
+                          }
                         },
                         "output_seconds": {
                           "type": "number",

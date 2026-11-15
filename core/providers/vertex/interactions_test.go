@@ -199,7 +199,7 @@ func TestVertexVideoRetrieve_TaskIDKindReachesItsOwnAPI(t *testing.T) {
 	video := []byte("\x00\x00\x00 ftypisom-not-a-real-video")
 	completed := `{"id":"` + vertexOmniInteractionID + `","status":"completed","model":"gemini-omni-1.1-flash-preview","created":"2026-11-10T12:22:47Z","updated":"2026-11-10T12:25:15Z",` +
 		`"steps":[{"type":"thought","content":[{"type":"thought","text":"plan"}]},{"type":"model_output","content":[{"type":"video","mime_type":"video/mp4","data":"` + base64.StdEncoding.EncodeToString(video) + `"}]}],` +
-		`"usage":{"output_tokens_by_modality":[{"modality":"video","tokens":46336}]}}`
+		`"usage":{"input_tokens_by_modality":[{"modality":"text","tokens":12},{"modality":"video","tokens":1032}],"output_tokens_by_modality":[{"modality":"video","tokens":46336}]}}`
 	provider, key, upstream := newVertexOmniProvider(t, "us-east5", func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/interactions/") {
 			_, _ = w.Write([]byte(completed))
@@ -218,6 +218,13 @@ func TestVertexVideoRetrieve_TaskIDKindReachesItsOwnAPI(t *testing.T) {
 	}
 	if resp.Usage == nil || resp.Usage.OutputTokens == nil || *resp.Usage.OutputTokens != 46336 {
 		t.Errorf("usage %+v, want output_tokens 46336", resp.Usage)
+	}
+	// TXE-7239: Vertex carries the input tokens by modality as Gemini does: text 12, video 1032.
+	if resp.Usage == nil || resp.Usage.InputTokens == nil || *resp.Usage.InputTokens != 1044 || resp.Usage.InputTokensDetails == nil ||
+		resp.Usage.InputTokensDetails.TextTokens == nil || *resp.Usage.InputTokensDetails.TextTokens != 12 ||
+		resp.Usage.InputTokensDetails.VideoTokens == nil || *resp.Usage.InputTokensDetails.VideoTokens != 1032 ||
+		resp.Usage.InputTokensDetails.ImageTokens != nil || resp.Usage.InputTokensDetails.AudioTokens != nil {
+		t.Errorf("usage %+v, want input_tokens 1044 with text 12 and video 1032 only", resp.Usage)
 	}
 	if len(resp.Videos) != 1 || resp.Videos[0].Type != schemas.VideoOutputTypeContent || resp.Videos[0].Base64Data != nil || resp.Videos[0].URL != nil {
 		t.Errorf("videos %+v, want one content entry", resp.Videos)
