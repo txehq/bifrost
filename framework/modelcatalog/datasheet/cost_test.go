@@ -10879,3 +10879,38 @@ func TestCalculateCostForUsage_ProviderSpecificClaudeMultipliers(t *testing.T) {
 	assert.InDelta(t, 1000*1e-05+500*5e-05, cost("claude-opus-4-8", &fast, nil, false), 1e-12, "the explicit fast rates win over fast")
 	assert.InDelta(t, 1000*5e-06+500*2.5e-05, cost("claude-opus-4-7-20260416", nil, nil, false), 1e-12, "a standard request is unchanged")
 }
+
+// A speech stream cancelled, timed out or cut off after the vendor accepted it carries its
+// input's characters on BilledUsage.SpeechInputChars (TXE-7072). The bare-usage path prices
+// them exactly as a finished stream whose usage reports the same InputChars, so the
+// interrupted synthesis is no longer free.
+func TestCalculateCostForUsage_CancelledSpeechStreamPricesItsCharacters(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("tts-1", "openai", "audio_speech"): {
+			Model: "tts-1", Provider: "openai", Mode: "audio_speech",
+			InputCostPerToken:     bifrost.Ptr(0.0),
+			InputCostPerCharacter: bifrost.Ptr(0.000015),
+		},
+	})
+	finished := &schemas.BifrostResponse{
+		SpeechStreamResponse: &schemas.BifrostSpeechStreamResponse{
+			Usage: &schemas.SpeechUsage{InputChars: 1200},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.SpeechStreamRequest,
+				RoutingInfo: routingInfoFor(schemas.OpenAI, "tts-1"),
+			},
+		},
+	}
+	want := s.CalculateCost(finished, nil)
+	assert.InDelta(t, 1200*0.000015, want, 1e-12)
+
+	cancelled := &schemas.BifrostLLMUsage{SpeechInputChars: 1200}
+	assert.Equal(t, want, s.CalculateCostForUsage(cancelled, schemas.OpenAI, "tts-1", schemas.SpeechStreamRequest, nil))
+
+	bd := s.CalculateCostBreakdownForUsage(cancelled, schemas.OpenAI, "tts-1", schemas.SpeechStreamRequest, nil)
+	require.NotNil(t, bd)
+	assert.InDelta(t, want, bd.InputCost, 1e-12, "characters are input cost")
+
+	assert.Equal(t, 0.0, s.CalculateCostForUsage(&schemas.BifrostLLMUsage{}, schemas.OpenAI, "tts-1", schemas.SpeechStreamRequest, nil),
+		"a usage with no characters and no tokens still costs nothing")
+}

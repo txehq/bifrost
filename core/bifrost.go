@@ -10053,6 +10053,9 @@ func (bifrost *Bifrost) handleProviderStreamRequest(provider schemas.Provider, c
 		}
 		return lifecycle.ResponsesRetrieveStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.ResponsesRetrieveRequest)
 	case schemas.SpeechStreamRequest:
+		// Recorded here, once, so every provider's cancel, timeout and truncation path bills
+		// the characters the vendor already accepted (TXE-7072).
+		providerUtils.SetSpeechStreamInput(req.Context, req.BifrostRequest.SpeechRequest)
 		return provider.SpeechStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.SpeechRequest)
 	case schemas.TranscriptionStreamRequest:
 		return provider.TranscriptionStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.TranscriptionRequest)

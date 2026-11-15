@@ -243,7 +243,9 @@ func (s *Store) CalculateCostBreakdownForUsage(usage *schemas.BifrostLLMUsage, p
 
 	// Apply the served tier (fast mode / data residency) carried on the usage so
 	// cancelled/failed fast or US-residency streams keep their multiplier.
-	input := costInput{usage: usage, audioSeconds: usage.AudioSeconds}
+	// A cancelled, timed-out or truncated speech stream carries its input's characters
+	// (TXE-7072); they are the speech success path's audioTextInputChars.
+	input := costInput{usage: usage, audioSeconds: usage.AudioSeconds, audioTextInputChars: usage.SpeechInputChars}
 	input.tier = tierFromResponse(usage.ServiceTier, usage.Speed, usage.InferenceGeo)
 
 	return s.computeCostFromInput(

@@ -41,6 +41,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/capsohq/bifrost/core/internal/testtime"
 
@@ -14683,5 +14684,121 @@ func TestCustomProviderAllowedRequestsGateEveryCall(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// speechStreamProviders are the providers whose SpeechStream reaches the vendor. The sweep
+// below fails when that set changes, so a new speech-stream provider is held to the
+// cancelled-stream billing rule from its first commit (TXE-7072).
+var speechStreamProviders = []schemas.ModelProvider{ // sorted
+	schemas.Azure, schemas.AzureSpeech, schemas.Elevenlabs, schemas.Gemini, schemas.Minimax,
+	schemas.OpenAI, schemas.Sarvam, schemas.Vertex,
+}
+
+// TestEverySpeechStreamBillsItsInputWhenCancelled dispatches a speech stream to every
+// standard provider through core, the vendor answers 200 and then stalls, and the caller
+// cancels. The error the post-hooks receive must carry the input's characters on
+// BilledUsage.SpeechInputChars: the vendor has accepted the synthesis and may bill it, and
+// without the count governance and logging price the request at zero (TXE-7072).
+func TestEverySpeechStreamBillsItsInputWhenCancelled(t *testing.T) {
+	upstream := newGuardUpstream(t)
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	upstream.respondTo = func(w http.ResponseWriter, r *http.Request, _ []byte) bool {
+		if strings.Contains(r.URL.Path, "token") {
+			return false // an OAuth exchange gets the default answer
+		}
+		// Every shape a speech stream reads: SSE frames and raw audio both wait here.
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+		return true
+	}
+	client := &Bifrost{logger: NewNoOpLogger()}
+	const input = "héllo wörld, say this" // code points, not bytes
+	wantChars := utf8.RuneCountInString(input)
+
+	var served []schemas.ModelProvider
+	for _, providerKey := range schemas.StandardProviders {
+		t.Run(string(providerKey), func(t *testing.T) {
+			config := &schemas.ProviderConfig{
+				NetworkConfig: schemas.NetworkConfig{BaseURL: "http://" + guardUpstreamHost, DefaultRequestTimeoutInSeconds: 10},
+				ProxyConfig: &schemas.ProxyConfig{
+					Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(upstream.proxyURL), CACertPEM: schemas.NewSecretVar(upstream.caPEM),
+				},
+			}
+			provider, err := client.createBaseProvider(providerKey, config)
+			if err != nil {
+				t.Fatalf("construct %s: %v", providerKey, err)
+			}
+			model := guardModel(providerKey)
+			req := &schemas.BifrostSpeechRequest{
+				Provider: providerKey,
+				Model:    model,
+				Input:    &schemas.SpeechInput{Input: input},
+				Params: &schemas.SpeechParameters{
+					VoiceConfig: &schemas.SpeechVoiceInput{Voice: schemas.Ptr(guardSpeechVoice(providerKey, model))},
+				},
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			msg := &ChannelMessage{
+				BifrostRequest: schemas.BifrostRequest{RequestType: schemas.SpeechStreamRequest, SpeechRequest: req},
+				Context:        ctx,
+			}
+			// The post-hooks are where governance and logging bill, so the test reads what they
+			// receive; the stream channel drops chunks once the caller has gone.
+			var mu sync.Mutex
+			var hooked []*schemas.BifrostError
+			recordHook := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				if err != nil {
+					mu.Lock()
+					hooked = append(hooked, err)
+					mu.Unlock()
+				}
+				return result, err
+			}
+			var stream chan *schemas.BifrostStreamChunk
+			var bifrostErr *schemas.BifrostError
+			func() {
+				defer func() { _ = recover() }()
+				stream, bifrostErr = client.handleProviderStreamRequest(provider, config, msg, guardKey(providerKey), recordHook, nil)
+			}()
+			if bifrostErr != nil || stream == nil {
+				return // the provider does not serve a speech stream
+			}
+			served = append(served, providerKey)
+			time.AfterFunc(testtime.Scale(200*time.Millisecond), ctx.Cancel)
+			deadline := time.After(10 * time.Second)
+		drain:
+			for {
+				select {
+				case _, ok := <-stream:
+					if !ok {
+						break drain
+					}
+				case <-deadline:
+					t.Fatalf("the stream did not end within 10s of the caller cancelling")
+				}
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if len(hooked) != 1 {
+				t.Fatalf("the post-hooks saw %d errors after the caller cancelled, want 1: %+v", len(hooked), hooked)
+			}
+			billed := hooked[0].ExtraFields.BilledUsage
+			if billed == nil || billed.SpeechInputChars != wantChars {
+				t.Fatalf("a cancelled speech stream must bill its input: BilledUsage %+v, want SpeechInputChars %d (error: %+v)", billed, wantChars, hooked[0].Error)
+			}
+		})
+	}
+	slices.Sort(served)
+	if !slices.Equal(served, speechStreamProviders) {
+		t.Errorf("speech stream is served by %v; speechStreamProviders records %v: update the list", served, speechStreamProviders)
 	}
 }
