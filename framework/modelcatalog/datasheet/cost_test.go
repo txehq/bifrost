@@ -10929,3 +10929,20 @@ func TestCalculateCostForUsage_CancelledSpeechStreamKeepsReportedTokens(t *testi
 	assert.InDelta(t, 100*0.0000005, s.CalculateCostForUsage(withTokens, schemas.Gemini, "gemini-2.5-flash-preview-tts", schemas.SpeechStreamRequest, nil), 1e-15,
 		"the vendor's 100 tokens, not 400 characters at the token rate")
 }
+
+// TXE-7017: an image answer streamed to the caller unread in large-response mode reaches pricing
+// as an empty response marked unread. It is priced at the images the request asked for, at the
+// request's quality, not as no images (output_images 0) or the default one.
+func TestCalculateCost_LargeResponseUnreadImagePricesTheRequestedImages(t *testing.T) {
+	s := batchStore(t, "openai", "gpt-image-1", "image_generation",
+		`{"provider": "openai", "mode": "image_generation", "output_cost_per_image": 0.04, "output_cost_per_image_high_quality": 0.17}`)
+	req := &schemas.BifrostRequest{ImageGenerationRequest: &schemas.BifrostImageGenerationRequest{
+		Provider: schemas.OpenAI, Model: "gpt-image-1",
+		Params: &schemas.ImageGenerationParameters{N: schemas.Ptr(3), Quality: schemas.Ptr("high")},
+	}}
+	result := makeImageResponse(schemas.OpenAI, "gpt-image-1", nil)
+	result.ImageGenerationResponse.MarkLargeResponseUnread(req)
+	result.ImageGenerationResponse.BackfillParams(req)
+	require.Nil(t, result.ImageGenerationResponse.Usage.OutputImages, "an unread answer reports no output_images")
+	assert.InDelta(t, 3*0.17, s.CalculateCost(result, nil), 1e-12)
+}

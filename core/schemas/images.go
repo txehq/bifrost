@@ -97,8 +97,60 @@ type BifrostImageGenerationResponse struct {
 	// the log row's service_tier column so a recalculation reprices at the served tier.
 	ServiceTier *BifrostServiceTier `json:"-"`
 
+	// LargeResponseUnread is set when the vendor's answer was streamed to the caller unchanged in
+	// large-response mode (fork, TXE-7017): Bifrost never read it, so Data is empty and the
+	// vendor's usage, which follows the base64 images, is unknown. Never serialised; see
+	// MarkLargeResponseUnread.
+	LargeResponseUnread bool `json:"-"`
+
 	Usage       *ImageUsage                `json:"usage,omitempty"`
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+}
+
+// MarkLargeResponseUnread marks a response whose vendor answer was streamed to the caller unread
+// (large-response mode, fork TXE-7017), before BackfillParams runs. The empty Data is not what the
+// vendor delivered, so usage.output_images is left unset instead of being written as 0, and the
+// cost path is given the images the request asked for (n, 1 when unset) through the internal
+// NImages count, priced at the request's size and quality like any image response. Before, the
+// post-hooks saw output_images 0 and the call was priced as no images, or one. A count the
+// provider decoded from the vendor's own usage is kept.
+func (r *BifrostImageGenerationResponse) MarkLargeResponseUnread(req *BifrostRequest) {
+	if r == nil {
+		return
+	}
+	if r.Usage != nil && r.Usage.OutputImages != nil {
+		return
+	}
+	r.LargeResponseUnread = true
+	if r.Usage == nil {
+		r.Usage = &ImageUsage{}
+	}
+	if r.Usage.OutputTokensDetails == nil {
+		r.Usage.OutputTokensDetails = &ImageTokenDetails{}
+	}
+	if r.Usage.OutputTokensDetails.NImages == 0 {
+		r.Usage.OutputTokensDetails.NImages = requestedImageCount(req)
+	}
+}
+
+// requestedImageCount is the n an image generation, edit or variation request asks for, or 1,
+// the vendors' default.
+func requestedImageCount(req *BifrostRequest) int {
+	var n *int
+	if req != nil {
+		switch {
+		case req.ImageGenerationRequest != nil && req.ImageGenerationRequest.Params != nil:
+			n = req.ImageGenerationRequest.Params.N
+		case req.ImageEditRequest != nil && req.ImageEditRequest.Params != nil:
+			n = req.ImageEditRequest.Params.N
+		case req.ImageVariationRequest != nil && req.ImageVariationRequest.Params != nil:
+			n = req.ImageVariationRequest.Params.N
+		}
+	}
+	if n != nil && *n > 0 {
+		return *n
+	}
+	return 1
 }
 
 // ImageLinkLifetimes is how long each vendor documents its image result links to work (fork,
@@ -264,7 +316,7 @@ func getImageResolutionAndStepsFromRequest(req *BifrostRequest) (resolution stri
 // OpenAI-compatible reseller such as Vercel AI Gateway) left the response with no readable count:
 // the internal NImages and NumInputImages counts are never serialised.
 func (r *BifrostImageGenerationResponse) fillOutputImages() {
-	if r.Usage != nil && r.Usage.OutputImages != nil {
+	if r.LargeResponseUnread || (r.Usage != nil && r.Usage.OutputImages != nil) {
 		return
 	}
 	if r.Usage == nil {
