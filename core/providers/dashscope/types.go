@@ -77,6 +77,20 @@ type DashScopeTaskOutput struct {
 	VideoURL      string `json:"video_url,omitempty"`
 	Code          string `json:"code,omitempty"`
 	Message       string `json:"message,omitempty"`
+	// Choices holds a Wan image task's results (TXE-7050): the image links in
+	// choices[].message.content[].image, as the synchronous image endpoint returns them.
+	Choices []DashScopeImageChoice `json:"choices,omitempty"`
+}
+
+// DashScopeImageTaskResponse is a Wan image task: the create answer or a query (TXE-7050). usage
+// carries image_count, the billing quantity, once the task has finished.
+type DashScopeImageTaskResponse struct {
+	RequestID string               `json:"request_id,omitempty"`
+	Output    *DashScopeTaskOutput `json:"output,omitempty"`
+	Usage     *DashScopeImageUsage `json:"usage,omitempty"`
+	// Code and Message are set when DashScope answers a 2xx with an error object and no output.
+	Code    string `json:"code,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
 // DashScopeVideoUsage is the usage object of a finished task. Wan 2.6 and later report

@@ -110,7 +110,9 @@ func (provider *DashScopeProvider) doDashScopeRequest(ctx *schemas.BifrostContex
 	provider.setRequestHeaders(ctx, req, key)
 	req.SetRequestURI(provider.baseURLFor(requestType) + pathAndQuery)
 	req.Header.SetMethod(method)
-	if requestType == schemas.VideoGenerationRequest {
+	switch requestType {
+	case schemas.VideoGenerationRequest, schemas.ImageGenerationTaskRequest, schemas.ImageEditTaskRequest:
+		// Wan video and Wan image tasks (TXE-7050) are created only in async mode.
 		req.Header.Set("X-DashScope-Async", "enable")
 	}
 	if jsonData != nil {
@@ -153,6 +155,10 @@ func (provider *DashScopeProvider) SupportedUnifiedFields(requestType schemas.Re
 		return dashScopeImageGenerationFields, true
 	case schemas.ImageEditRequest:
 		return dashScopeImageEditFields, true
+	case schemas.ImageGenerationTaskRequest:
+		return dashScopeImageTaskGenerationFields, true
+	case schemas.ImageEditTaskRequest:
+		return dashScopeImageTaskEditFields, true
 	case schemas.SpeechRequest:
 		return speechFields, true
 	case schemas.TranscriptionRequest:

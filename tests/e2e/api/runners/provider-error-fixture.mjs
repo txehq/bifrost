@@ -1112,6 +1112,15 @@ const dashScopeEnded = { ...dashScopeTimes, end_time: "2026-11-10 14:23:39.407" 
 const dashScopeTasks = {
 	"ds-pending": { output: { task_status: "PENDING", submit_time: dashScopeTimes.submit_time } },
 	"ds-running": { output: { task_status: "RUNNING", ...dashScopeTimes } },
+	// Folder 600 (TXE-7050): a finished Wan image task, its two images in output.choices as the new image protocol
+	// returns them, and image_count, the billing quantity.
+	"ds-img-succeeded": {
+		output: {
+			task_status: "SUCCEEDED", ...dashScopeEnded,
+			choices: [{ finish_reason: "stop", message: { role: "assistant", content: [{ image: "https://dashscope-result.example.test/fixture/ds-img-1.png?Expires=1762842232" }, { image: "https://dashscope-result.example.test/fixture/ds-img-2.png?Expires=1762842232" }] } }],
+		},
+		usage: { image_count: 2 },
+	},
 	"ds-succeeded": {
 		output: { task_status: "SUCCEEDED", ...dashScopeEnded, orig_prompt: "A kitten on a rooftop", video_url: "https://dashscope-result.example.test/fixture/ds-succeeded.mp4?Expires=1762842232&Signature=fixture" },
 		usage: { duration: 10, input_video_duration: 0, output_video_duration: 10, video_count: 1, ratio: "16:9", SR: 720 },
@@ -1164,6 +1173,10 @@ const dashScopeAnswer = (method, path, query, body) => {
 			return { status: 200, body: { output: { task_status: "PENDING", task_id: taskID }, request_id: "fixture-dashscope-create" } };
 		}
 		return { status: 200, body: { output: { task_status: "PENDING", task_id: "ds-pending" }, request_id: "fixture-dashscope-create" } };
+	}
+	// Folder 600 (TXE-7050): a Wan image task create, text-to-image or edit, answers a PENDING task.
+	if (method === "POST" && path === "/api/v1/services/aigc/image-generation/generation") {
+		return { status: 200, body: { output: { task_status: "PENDING", task_id: "ds-pending" }, request_id: "fixture-dashscope-image-create" } };
 	}
 	const task = /^\/api\/v1\/tasks\/([^/]+)(\/cancel)?$/.exec(path);
 	if (task && method === "POST" && task[2]) {

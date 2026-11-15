@@ -1,0 +1,299 @@
+{
+  "name": "600. DashScope Wan text-to-image and image edit on the image task routes (dashscope wan image tasks)",
+  "description": "Local fixture regression for TXE-7050 (contract C7 BF16, items B6 and B9), no live provider calls. Start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json and run with providerErrorFixture=1; every case is skipped otherwise. The config's dashscope provider has the fixture as both of its bases (/pp/dashscope), and the fixture records every DashScope call with its X-DashScope-Async header. A Wan image task create is one async POST to /api/v1/services/aigc/image-generation/generation (Wan's new image protocol: input.messages and parameters, with resolution as parameters.size), answered with a PENDING task. The task is queried with GET /api/v1/tasks/{id} and cancelled with POST /api/v1/tasks/{id}/cancel, as Wan video is: DashScope's six states map one to one, the images of a SUCCEEDED task come from output.choices[].message.content[].image, image_count is usage.output_images, and expires_at is 24 hours after end_time. DashScope cancels only a PENDING task and answers 400 UnsupportedOperation otherwise, which is provider_cancel_unsupported. Red before: the image task routes answered 400 unsupported_operation for dashscope and made no upstream call. The edit body (a link unchanged, bytes as a base64 data URI) and the refusals (a synchronous model, a Wan model on the earlier text2image protocol, resolution beside size) are pinned by Go tests in core/providers/dashscope.",
+  "item": [
+    {
+      "name": "600.1 reset the fixture's record (dashscope wan image tasks)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{providerErrorFixtureUrl}}/__reset",
+          "host": [
+            "{{providerErrorFixtureUrl}}"
+          ],
+          "path": [
+            "__reset"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the fixture reset its record', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "600.2 dashscope/wan2.6-t2i POST /v1/images/generations/tasks creates a Wan image task and returns the queued task object (dashscope wan image tasks)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations/tasks",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations",
+            "tasks"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"dashscope/wan2.6-t2i\",\n  \"prompt\": \"a lighthouse at dusk\",\n  \"n\": 2,\n  \"resolution\": \"2K\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the create is a queued Wan image task', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.object, pm.response.text()).to.eql('image.task');",
+              "  pm.expect(j.status, pm.response.text()).to.eql('queued');",
+              "  pm.expect(j.provider_status, pm.response.text()).to.eql('PENDING');",
+              "  pm.expect(j.id, pm.response.text()).to.eql('ds-pending:dashscope');",
+              "  pm.expect(j.model, pm.response.text()).to.eql('wan2.6-t2i');",
+              "  pm.expect(j.data, pm.response.text()).to.eql([]);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "600.3 the create DashScope received is one async POST to image-generation/generation with n and the resolution as parameters.size (dashscope wan image tasks)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{providerErrorFixtureUrl}}/__wire",
+          "host": [
+            "{{providerErrorFixtureUrl}}"
+          ],
+          "path": [
+            "__wire"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('one async create in the new image protocol', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var calls = pm.response.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/dashscope/') === 0; });",
+              "  pm.expect(calls.map(function (c) { return c.method + ' ' + c.path + ' async=' + c.async; }), JSON.stringify(calls)).to.eql(['POST /pp/dashscope/api/v1/services/aigc/image-generation/generation async=enable']);",
+              "  var sent = JSON.parse(calls[0].body);",
+              "  pm.expect(sent.model).to.eql('wan2.6-t2i');",
+              "  pm.expect(sent.input.messages[0].content, calls[0].body).to.eql([{ text: 'a lighthouse at dusk' }]);",
+              "  pm.expect(sent.parameters, calls[0].body).to.eql({ n: 2, size: '2K' });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "600.4 GET /v1/images/tasks/{id} of a SUCCEEDED Wan image task is completed with both images, image_count and expires_at 24 hours after it ended (dashscope wan image tasks)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/tasks/ds-img-succeeded:dashscope",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "tasks",
+            "ds-img-succeeded:dashscope"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the query maps SUCCEEDED and reads the images from output.choices', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, pm.response.text()).to.eql('ds-img-succeeded:dashscope');",
+              "  pm.expect(j.status, pm.response.text()).to.eql('completed');",
+              "  pm.expect(j.provider_status, pm.response.text()).to.eql('SUCCEEDED');",
+              "  pm.expect(j.data, pm.response.text()).to.eql([",
+              "    { type: 'url', url: 'https://dashscope-result.example.test/fixture/ds-img-1.png?Expires=1762842232', content_type: 'image/png' },",
+              "    { type: 'url', url: 'https://dashscope-result.example.test/fixture/ds-img-2.png?Expires=1762842232', content_type: 'image/png' }",
+              "  ]);",
+              "  pm.expect(j.usage && j.usage.output_images, pm.response.text()).to.eql(2);",
+              "  pm.expect(j.completed_at, 'end_time 2026-11-10 14:23:39 in UTC+8').to.eql(1794291819);",
+              "  pm.expect(j.expires_at, 'expires_at is 24 hours after completion').to.eql(1794378219);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "600.5 POST /v1/images/tasks/{id}/cancel of a PENDING Wan image task cancels it (dashscope wan image tasks)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/tasks/ds-pending:dashscope/cancel",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "tasks",
+            "ds-pending:dashscope",
+            "cancel"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('a PENDING task is cancelled', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, pm.response.text()).to.eql('ds-pending:dashscope');",
+              "  pm.expect(j.status, pm.response.text()).to.eql('cancelled');",
+              "  pm.expect(j.object, pm.response.text()).to.eql('image.task');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "600.6 [EXPECT-400] POST /v1/images/tasks/{id}/cancel of a task that is no longer PENDING is provider_cancel_unsupported (dashscope wan image tasks)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/tasks/ds-img-succeeded:dashscope/cancel",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "tasks",
+            "ds-img-succeeded:dashscope",
+            "cancel"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('DashScope refused with UnsupportedOperation, answered as provider_cancel_unsupported', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, pm.response.text()).to.eql('provider_cancel_unsupported');",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
