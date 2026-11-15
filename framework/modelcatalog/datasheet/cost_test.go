@@ -10966,6 +10966,18 @@ func TestCalculateCostForEstimatedImageUsage(t *testing.T) {
 	}
 	assert.Zero(t, s.CalculateCostForEstimatedImageUsage(nil, schemas.OpenAI, "gpt-image-1", schemas.ImageGenerationRequest, nil))
 
+	// The request's input images, resolution tier and steps are part of what it fixes.
+	inputs := batchStore(t, "xai", "grok-imagine-image-quality", "image_generation",
+		`{"provider": "xai", "mode": "image_generation", "output_cost_per_image": 0.07, "input_cost_per_image": 0.002}`)
+	assert.InDelta(t, 2*0.07+3*0.002, inputs.CalculateCostForEstimatedImageUsage(&schemas.EstimatedImageUsage{OutputImages: 2, InputImages: 3, Quality: "low"}, schemas.XAI, "grok-imagine-image-quality", schemas.ImageEditRequest, nil), 1e-12)
+
+	row := pricingRowFromDatasheetJSON(t, "replicate/google/nano-banana-2", replicateNanoBanana2Row)
+	banana := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{makeKey(row.Model, row.Provider, row.Mode): row})
+	assert.InDelta(t, 0.151, banana.CalculateCostForEstimatedImageUsage(&schemas.EstimatedImageUsage{OutputImages: 1, Quality: "low", Resolution: "4K"}, schemas.Replicate, row.Model, schemas.ImageGenerationRequest, nil), 1e-12, "the 4K tier the request named")
+	sdxl := pricingRowFromDatasheetJSON(t, "stability.stable-diffusion-xl-v1", bedrockSDXL1Row)
+	steps := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{makeKey(sdxl.Model, sdxl.Provider, sdxl.Mode): sdxl})
+	assert.InDelta(t, 0.08, steps.CalculateCostForEstimatedImageUsage(&schemas.EstimatedImageUsage{OutputImages: 1, Size: "1024x1024", Quality: "low", Steps: schemas.Ptr(60)}, schemas.Bedrock, sdxl.Model, schemas.ImageGenerationRequest, nil), 1e-12, "more than 50 steps")
+
 	tokens := batchStore(t, "gemini", "gemini-2.5-flash-image", "image_generation",
 		`{"provider": "gemini", "mode": "image_generation", "output_cost_per_image_token": 3e-05}`)
 	assert.Zero(t, tokens.CalculateCostForEstimatedImageUsage(&schemas.EstimatedImageUsage{OutputImages: 2}, schemas.Gemini, "gemini-2.5-flash-image", schemas.ImageGenerationRequest, nil))

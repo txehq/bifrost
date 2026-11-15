@@ -2455,13 +2455,7 @@ type BifrostErrorExtraFields struct {
 	// the provider actually billed us for. Nil when the failure consumed no
 	// tokens (e.g. 401/403/429 before the model ran).
 	BilledUsage *BifrostLLMUsage `json:"billed_usage,omitempty"`
-	// EstimatedImageUsage is Bifrost's estimate of what the vendor billed for an image
-	// request that the response limit refused (client.max_response_body_size_mb, fork
-	// TXE-7302). It is not the vendor's count: the answer was never read. Governance charges
-	// it to the virtual key's budget under billed_reason "estimated_images_on_response_limit".
-	// It is never serialised: the refusal stays bifrost_internal, which Tokun does not
-	// charge the caller for (contract C6).
-	EstimatedImageUsage *EstimatedImageUsage `json:"-"`
+	EstimatedImageUsage *EstimatedImageUsage `json:"-"` // Bifrost's estimate for a refused image answer, never the vendor's count (TXE-7302)
 	NativeErrorResponse json.RawMessage      `json:"-"` // provider error body verbatim for native drop-in routes; never serialized
 
 	// ErrorType is this failure's normalized classification, declared by whoever

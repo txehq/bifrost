@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -127,13 +128,20 @@ func TestEstimateImageUsageFromRequest(t *testing.T) {
 			&schemas.BifrostRequest{ImageVariationRequest: &schemas.BifrostImageVariationRequest{Params: &schemas.ImageVariationParameters{N: schemas.Ptr(2), Size: schemas.Ptr("512x512")}}},
 			&schemas.EstimatedImageUsage{OutputImages: 2, Size: "512x512"},
 		},
+		"edit with input images, an extra resolution and extra steps": {
+			&schemas.BifrostRequest{ImageEditRequest: &schemas.BifrostImageEditRequest{
+				Input:  &schemas.ImageEditInput{Images: []schemas.ImageInput{{Image: []byte("a")}, {Image: []byte("b")}}},
+				Params: &schemas.ImageEditParameters{N: schemas.Ptr(1), ExtraParams: map[string]interface{}{"resolution": "4K", "steps": 60}},
+			}},
+			&schemas.EstimatedImageUsage{OutputImages: 1, InputImages: 2, Resolution: "4K", Steps: schemas.Ptr(60)},
+		},
 		"chat has no estimate": {
 			&schemas.BifrostRequest{ChatRequest: &schemas.BifrostChatRequest{}},
 			nil,
 		},
 	} {
 		got := schemas.EstimateImageUsageFromRequest(tc.req)
-		if (got == nil) != (tc.want == nil) || (got != nil && *got != *tc.want) {
+		if !reflect.DeepEqual(got, tc.want) {
 			t.Errorf("%s: estimate = %+v, want %+v", name, got, tc.want)
 		}
 	}
