@@ -143,3 +143,5 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	gorm.io/driver/clickhouse v0.7.0 // indirect
 )
+
+replace github.com/bytedance/sonic/loader => ../../third_party/sonic-loader

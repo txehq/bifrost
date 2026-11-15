@@ -39,6 +39,8 @@
   COPY core /app/core
   COPY framework /app/framework
   COPY plugins /app/plugins
+  # Patched sonic JIT loader every go.mod replaces to (TXE-7504).
+  COPY third_party /app/third_party
   COPY transports/ ./
 
   COPY --from=ui-builder /app/out ./bifrost-http/ui
