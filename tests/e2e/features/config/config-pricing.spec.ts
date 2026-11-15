@@ -31,12 +31,25 @@ test.describe('Pricing Config', () => {
     await expect(configSettingsPage.pricingSaveBtn).toBeVisible()
   })
 
-  test('should set and save datasheet URL', async ({ configSettingsPage }) => {
-    // Saving checks the URL is reachable, so it has to be a live datasheet. The check dials through
-    // an SSRF-safe dialer that refuses loopback, so an offline run cannot serve one (TXE-7395). It
-    // is skipped there rather than quarantined: it passes whenever the URL is already stored.
-    test.skip(process.env.E2E_OFFLINE === '1', 'needs a public datasheet URL; offline runs have none (TXE-7395)')
+  test('should set and save datasheet URL', async ({ configSettingsPage, page }) => {
     const testUrl = 'https://getbifrost.ai/datasheet?source=e2e'
+    // Saving a new datasheet URL makes the gateway fetch it first, through an SSRF-safe dialer that
+    // refuses loopback, so an offline run has no URL the gateway would accept (TXE-7395). Offline,
+    // the save is answered here, after the test checks the form sent the URL it was given; the
+    // gateway's own check is pinned by TestCheckURLAccessibility_* in handlers/config_test.go.
+    // Nothing is stored, so afterEach finds the form unchanged and saves nothing.
+    const sent: unknown[] = []
+    const configApi = (url: URL) => url.pathname === '/api/config'
+    if (process.env.E2E_OFFLINE === '1') {
+      await page.route(
+        configApi,
+        async (route) => {
+          if (route.request().method() !== 'PUT') return route.continue()
+          sent.push(route.request().postDataJSON())
+          await route.fulfill({ json: { status: 'success', message: 'configuration updated successfully' } })
+        },
+      )
+    }
     await configSettingsPage.setPricingDatasheetUrl(testUrl)
 
     const isSaveEnabled = await configSettingsPage.pricingSaveBtn.isDisabled().then((d) => !d)
@@ -47,6 +60,10 @@ test.describe('Pricing Config', () => {
 
     await configSettingsPage.savePricingConfig()
     await configSettingsPage.dismissToasts()
+    if (process.env.E2E_OFFLINE === '1') {
+      expect(sent).toEqual([expect.objectContaining({ framework_config: expect.objectContaining({ pricing_url: testUrl }) })])
+      await page.unroute(configApi)
+    }
   })
 
   test('should trigger force sync', async ({ configSettingsPage }) => {
