@@ -61,6 +61,9 @@ func (u *BifrostLLMUsage) MergeStreamFrame(frame *BifrostLLMUsage) {
 		u.SearchContextSize = frame.SearchContextSize
 	}
 	u.ToolUsePromptTokens = max(u.ToolUsePromptTokens, frame.ToolUsePromptTokens)
+	// SpeechInputChars is set by Bifrost, never by a vendor frame; keep the larger count so a
+	// merge never loses it (TXE-7072).
+	u.SpeechInputChars = max(u.SpeechInputChars, frame.SpeechInputChars)
 	if frame.ToolUsePromptTokensDetails != nil {
 		u.ToolUsePromptTokensDetails = frame.ToolUsePromptTokensDetails
 	}

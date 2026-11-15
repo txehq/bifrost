@@ -3,6 +3,7 @@ package utils
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -1200,4 +1201,113 @@ func TestStreamStartupStateIgnoresSkippedChunks(t *testing.T) {
 	if startup.IsStartupError(failure) {
 		t.Fatal("output did not commit the stream")
 	}
+}
+
+// TXE-7072: a speech stream that ends on a cancel, a timeout or a truncation after the vendor
+// accepted it carries the input's characters, recorded by SetSpeechStreamInput, on the
+// BilledUsage the post-hooks receive, next to any token usage the provider accumulated. A
+// stream that is not speech, or a non-SSE answer the vendor sent instead of a stream, is
+// left as before.
+func TestInterruptedSpeechStreamBillsItsInputCharacters(t *testing.T) {
+	type ending struct {
+		name string
+		end  func(ctx *schemas.BifrostContext, hook schemas.PostHookRunner, ch chan *schemas.BifrostStreamChunk)
+		bill bool
+	}
+	endings := []ending{
+		{"cancel", func(ctx *schemas.BifrostContext, hook schemas.PostHookRunner, ch chan *schemas.BifrostStreamChunk) {
+			HandleStreamCancellation(ctx, hook, ch, nil, nil, nil)
+		}, true},
+		{"timeout", func(ctx *schemas.BifrostContext, hook schemas.PostHookRunner, ch chan *schemas.BifrostStreamChunk) {
+			HandleStreamTimeout(ctx, hook, ch, nil, nil, nil)
+		}, true},
+		{"truncated", func(ctx *schemas.BifrostContext, hook schemas.PostHookRunner, ch chan *schemas.BifrostStreamChunk) {
+			SendStreamTruncatedError(ctx, hook, ch, nil, nil, nil)
+		}, true},
+		{"non-SSE answer", func(ctx *schemas.BifrostContext, hook schemas.PostHookRunner, ch chan *schemas.BifrostStreamChunk) {
+			ProcessAndSendNonSSEStreamError(ctx, hook, &NonSSEStreamBody{ContentType: "application/json"}, ch, nil, nil)
+		}, false},
+	}
+	for _, e := range endings {
+		for _, withTokens := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s tokens=%v", e.name, withTokens), func(t *testing.T) {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				SetSpeechStreamInput(ctx, &schemas.BifrostSpeechRequest{Input: &schemas.SpeechInput{Input: "naïve café"}})
+				if withTokens {
+					ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, &schemas.BifrostLLMUsage{PromptTokens: 7, TotalTokens: 7})
+				}
+				var seen *schemas.BifrostError
+				hook := func(_ *schemas.BifrostContext, r *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+					seen = err
+					return r, err
+				}
+				e.end(ctx, hook, make(chan *schemas.BifrostStreamChunk, 4))
+				if seen == nil {
+					t.Fatal("the post-hooks saw no error")
+				}
+				billed := seen.ExtraFields.BilledUsage
+				wantChars := 0
+				if e.bill {
+					wantChars = 10 // code points, not bytes
+				}
+				if got := 0; billed != nil {
+					got = billed.SpeechInputChars
+					if got != wantChars {
+						t.Fatalf("SpeechInputChars = %d, want %d", got, wantChars)
+					}
+				} else if wantChars != 0 || withTokens {
+					t.Fatalf("no BilledUsage; want SpeechInputChars %d and tokens=%v", wantChars, withTokens)
+				}
+				if withTokens && billed.PromptTokens != 7 {
+					t.Fatalf("the accumulated tokens were lost: %+v", billed)
+				}
+			})
+		}
+	}
+}
+
+// A context with no speech input recorded (every non-speech stream) gets no BilledUsage from
+// the speech rule, and an empty input records nothing.
+func TestSpeechStreamInputNotRecordedLeavesErrorsUnbilled(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	SetSpeechStreamInput(ctx, &schemas.BifrostSpeechRequest{Input: &schemas.SpeechInput{Input: ""}})
+	SetSpeechStreamInput(ctx, nil)
+	bifrostErr := &schemas.BifrostError{}
+	attachSpeechStreamInputFromContext(ctx, bifrostErr)
+	if bifrostErr.ExtraFields.BilledUsage != nil {
+		t.Fatalf("BilledUsage attached with no speech input recorded: %+v", bifrostErr.ExtraFields.BilledUsage)
+	}
+}
+
+// BenchmarkSpeechStreamInputBilling measures what TXE-7072 adds to the request flow. dispatch is
+// paid once per speech stream (core's SetSpeechStreamInput: a code-point count of the input and one
+// context write); the attach cases are paid once per interrupted stream, never per chunk. A
+// non-speech stream pays only the miss: one context read, and no allocation.
+func BenchmarkSpeechStreamInputBilling(b *testing.B) {
+	req := &schemas.BifrostSpeechRequest{Input: &schemas.SpeechInput{Input: strings.Repeat("héllo wörld ", 84)}} // 1008 code points
+	b.Run("dispatch speech stream 1008 chars", func(b *testing.B) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		b.ReportAllocs()
+		for b.Loop() {
+			SetSpeechStreamInput(ctx, req)
+		}
+	})
+	b.Run("interrupted non-speech stream", func(b *testing.B) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		bifrostErr := &schemas.BifrostError{}
+		b.ReportAllocs()
+		for b.Loop() {
+			attachSpeechStreamInputFromContext(ctx, bifrostErr)
+		}
+	})
+	b.Run("interrupted speech stream", func(b *testing.B) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		SetSpeechStreamInput(ctx, req)
+		bifrostErr := &schemas.BifrostError{}
+		b.ReportAllocs()
+		for b.Loop() {
+			bifrostErr.ExtraFields.BilledUsage = nil // the BilledUsage is the one allocation
+			attachSpeechStreamInputFromContext(ctx, bifrostErr)
+		}
+	})
 }

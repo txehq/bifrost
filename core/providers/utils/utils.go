@@ -27,6 +27,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 	"weak"
 
 	"github.com/bytedance/sonic"
@@ -5093,8 +5094,9 @@ func HandleStreamCancellation(
 	}
 
 	// Bill for tokens the provider already processed before the client
-	// disconnected.
+	// disconnected, and for the characters of a speech synthesis it accepted.
 	attachBilledUsageFromContext(ctx, cancelErr)
+	attachSpeechStreamInputFromContext(ctx, cancelErr)
 
 	// Send through PostHook chain - this updates the log to "error" status
 	ProcessAndSendBifrostError(ctx, postHookRunner, cancelErr, responseChan, logger, postHookSpanFinalizer)
@@ -5132,6 +5134,46 @@ func attachBilledUsageFromContext(ctx *schemas.BifrostContext, bifrostErr *schem
 	bifrostErr.ExtraFields.BilledUsage = usage.DeepCopy()
 }
 
+// SetSpeechStreamInput records the code-point count of a speech stream's input on the
+// context, for attachSpeechStreamInputFromContext. Core calls it once, when it dispatches
+// SpeechStreamRequest, so no provider has to remember it (fork, TXE-7072). It counts the
+// way SpeechUsage.InputChars is backfilled on a clean end (BackfillParams), so an
+// interrupted stream and a finished one are priced on the same number.
+//
+// The count travels on BifrostLLMUsage.SpeechInputChars, which is json:"-": an in-process
+// billing input for governance and logging, not a wire field. It is Bifrost's own count,
+// never a vendor report (that is BilledCharacters). Pricing reads it only when the vendor
+// reported no input tokens before the stream ended (CalculateCostBreakdownForUsage).
+func SetSpeechStreamInput(ctx *schemas.BifrostContext, request *schemas.BifrostSpeechRequest) {
+	if ctx == nil || request == nil || request.Input == nil {
+		return
+	}
+	if chars := utf8.RuneCountInString(request.Input.Input); chars > 0 {
+		ctx.SetValue(schemas.BifrostContextKeySpeechStreamInputChars, chars)
+	}
+}
+
+// attachSpeechStreamInputFromContext puts the speech input's character count, recorded by
+// SetSpeechStreamInput, on the BilledUsage of a speech stream that ended on a cancel, a
+// timeout or a truncation. These handlers run only inside a stream goroutine, after the
+// vendor answered 200 and began synthesizing, so the vendor has the whole input: a
+// per-character vendor bills it, and pricing reads SpeechInputChars as it reads
+// SpeechUsage.InputChars on a clean end (TXE-7072). Token usage the provider accumulated
+// stays on the same BilledUsage. A request with no recorded count is left unchanged.
+func attachSpeechStreamInputFromContext(ctx *schemas.BifrostContext, bifrostErr *schemas.BifrostError) {
+	if ctx == nil || bifrostErr == nil {
+		return
+	}
+	chars, ok := ctx.Value(schemas.BifrostContextKeySpeechStreamInputChars).(int)
+	if !ok || chars <= 0 {
+		return
+	}
+	if bifrostErr.ExtraFields.BilledUsage == nil {
+		bifrostErr.ExtraFields.BilledUsage = &schemas.BifrostLLMUsage{}
+	}
+	bifrostErr.ExtraFields.BilledUsage.SpeechInputChars = chars
+}
+
 // HandleStreamTimeout should be called when a streaming goroutine exits
 // due to context deadline exceeded. It ensures proper cleanup by:
 // 1. Checking if StreamEndIndicator was already set (to avoid duplicate handling)
@@ -5167,8 +5209,10 @@ func HandleStreamTimeout(
 		timeoutErr.ExtraFields.RawRequest = compactRawJSON(jsonBody)
 	}
 
-	// Bill for tokens the provider already processed before the deadline.
+	// Bill for tokens the provider already processed before the deadline, and for the
+	// characters of a speech synthesis it accepted.
 	attachBilledUsageFromContext(ctx, timeoutErr)
+	attachSpeechStreamInputFromContext(ctx, timeoutErr)
 
 	// Send through PostHook chain - this updates the log to "error" status
 	ProcessAndSendBifrostError(ctx, postHookRunner, timeoutErr, responseChan, logger, postHookSpanFinalizer)
@@ -5298,8 +5342,10 @@ func SendStreamTruncatedError(
 		truncatedErr.ExtraFields.RawRequest = compactRawJSON(jsonBody)
 	}
 
-	// Bill for tokens the provider already produced before the stream died.
+	// Bill for tokens the provider already produced before the stream died, and for the
+	// characters of a speech synthesis it accepted.
 	attachBilledUsageFromContext(ctx, truncatedErr)
+	attachSpeechStreamInputFromContext(ctx, truncatedErr)
 
 	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 	ProcessAndSendBifrostError(ctx, postHookRunner, truncatedErr, responseChan, logger, postHookSpanFinalizer)

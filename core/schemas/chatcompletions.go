@@ -2029,6 +2029,7 @@ type BifrostLLMUsage struct {
 	// turn is priced at the requested model's rates.
 	ServerSideFallbackModel *string           `json:"-"`
 	BillingTurns            []BifrostLLMUsage `json:"-"` // Separate provider calls this usage sums; set only by AddBillingTurn
+	SpeechInputChars        int               `json:"-"` // Bifrost's code-point count of an interrupted speech stream's input (fork, TXE-7072); see SetSpeechStreamInput
 }
 
 // AddBillingTurn returns the sum of total and turn, keeping each provider call it sums in
