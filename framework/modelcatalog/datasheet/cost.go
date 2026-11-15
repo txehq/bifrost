@@ -270,8 +270,10 @@ func (s *Store) CalculateCostBreakdownForUsage(usage *schemas.BifrostLLMUsage, p
 // the response limit refused unread (fork, TXE-7302): the requested images and the input images at
 // the request's size, quality, resolution and steps, through the same image pricing a delivered
 // response takes. A row priced only per image token has no count to apply and prices to 0 (TXE-7492).
-// Returns 0 when estimate is nil or the model has no pricing.
-func (s *Store) CalculateCostForEstimatedImageUsage(estimate *schemas.EstimatedImageUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *LookupScopes) float64 {
+// routingInfo is the refused request's, resolved key alias included, so an alias whose label is
+// not itself a catalog row is priced at the model it names. Returns 0 when estimate is nil or the
+// model has no pricing.
+func (s *Store) CalculateCostForEstimatedImageUsage(estimate *schemas.EstimatedImageUsage, routingInfo schemas.RoutingInfo, requestType schemas.RequestType, scopes *LookupScopes) float64 {
 	if estimate == nil || estimate.OutputImages <= 0 {
 		return 0
 	}
@@ -292,7 +294,7 @@ func (s *Store) CalculateCostForEstimatedImageUsage(estimate *schemas.EstimatedI
 				imageResolution: estimate.Resolution,
 				imageSteps:      estimate.Steps,
 			},
-			schemas.RoutingInfo{Provider: provider, Model: model},
+			routingInfo,
 			normalizeStreamRequestType(requestType),
 			lookupScopes,
 		)

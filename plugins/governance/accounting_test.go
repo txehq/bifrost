@@ -926,7 +926,7 @@ func TestResponseLimitImageRefusalChargesTheEstimateToTheBudget(t *testing.T) {
 	usage := func() float64 {
 		return store.GetGovernanceData(context.Background()).Budgets["budget-limit"].CurrentUsage
 	}
-	refuse := func(id string, req *schemas.BifrostRequest, model string, estimate *schemas.EstimatedImageUsage) {
+	refuse := func(id string, req *schemas.BifrostRequest, model string, estimate *schemas.EstimatedImageUsage, alias *schemas.ResolvedKeyAlias) {
 		t.Helper()
 		ctx := resolverCtx(store, "sk-bf-limit")
 		ctx.SetValue(schemas.BifrostContextKeyRequestID, id)
@@ -943,6 +943,7 @@ func TestResponseLimitImageRefusalChargesTheEstimateToTheBudget(t *testing.T) {
 				OriginalModelRequested: model,
 				ErrorType:              schemas.ErrorTypeBifrostInternal,
 				EstimatedImageUsage:    estimate,
+				RoutingInfo:            schemas.RoutingInfo{Provider: schemas.OpenAI, Model: model, ResolvedKeyAlias: alias},
 			},
 		})
 		require.NoError(t, err)
@@ -950,7 +951,7 @@ func TestResponseLimitImageRefusalChargesTheEstimateToTheBudget(t *testing.T) {
 	}
 
 	// A chat answer past the limit: no estimate, nothing charged.
-	refuse("req-chat", newChatRequest(), "gpt-4o", nil)
+	refuse("req-chat", newChatRequest(), "gpt-4o", nil, nil)
 	time.Sleep(testtime.Scale(50 * time.Millisecond))
 	assert.InDelta(t, 0, usage(), 1e-12, "an over-limit chat refusal charges nothing")
 
@@ -958,8 +959,18 @@ func TestResponseLimitImageRefusalChargesTheEstimateToTheBudget(t *testing.T) {
 	refuse("req-image", &schemas.BifrostRequest{
 		RequestType:            schemas.ImageGenerationRequest,
 		ImageGenerationRequest: &schemas.BifrostImageGenerationRequest{Provider: schemas.OpenAI, Model: "gpt-image-1"},
-	}, "gpt-image-1", &schemas.EstimatedImageUsage{OutputImages: 3, Size: "1024x1024", Quality: "high"})
+	}, "gpt-image-1", &schemas.EstimatedImageUsage{OutputImages: 3, Size: "1024x1024", Quality: "high"}, nil)
 	assert.EventuallyWithT(t, func(c *assert.CollectT) {
 		assert.InDelta(c, 3*0.17, usage(), 1e-12, "the estimate is charged to the budget")
+	}, testtime.Scale(time.Second), testtime.Scale(10*time.Millisecond))
+
+	// A key alias whose label is not a catalog row is priced at the model it resolves to, read from
+	// the refusal's routing info: one more high-quality image, not $0.
+	refuse("req-alias", &schemas.BifrostRequest{
+		RequestType:            schemas.ImageGenerationRequest,
+		ImageGenerationRequest: &schemas.BifrostImageGenerationRequest{Provider: schemas.OpenAI, Model: "house-image"},
+	}, "house-image", &schemas.EstimatedImageUsage{OutputImages: 1, Size: "1024x1024", Quality: "high"}, &schemas.ResolvedKeyAlias{ModelID: "gpt-image-1"})
+	assert.EventuallyWithT(t, func(c *assert.CollectT) {
+		assert.InDelta(c, 4*0.17, usage(), 1e-12, "the aliased refusal is priced at gpt-image-1")
 	}, testtime.Scale(time.Second), testtime.Scale(10*time.Millisecond))
 }
