@@ -148,9 +148,9 @@ func extraOnlyRequest(t testing.TB, requestType RequestType, extra map[string]in
 	switch requestType {
 	case EmbeddingRequest:
 		req.EmbeddingRequest = &BifrostEmbeddingRequest{Params: &EmbeddingParameters{ExtraParams: extra}}
-	case ImageGenerationRequest, ImageGenerationStreamRequest:
+	case ImageGenerationRequest, ImageGenerationStreamRequest, ImageGenerationTaskRequest:
 		req.ImageGenerationRequest = &BifrostImageGenerationRequest{Input: &ImageGenerationInput{Prompt: "a cat"}, Params: &ImageGenerationParameters{ExtraParams: extra}}
-	case ImageEditRequest, ImageEditStreamRequest:
+	case ImageEditRequest, ImageEditStreamRequest, ImageEditTaskRequest:
 		req.ImageEditRequest = &BifrostImageEditRequest{Input: &ImageEditInput{Prompt: "a cat"}, Params: &ImageEditParameters{ExtraParams: extra}}
 	case VideoGenerationRequest:
 		req.VideoGenerationRequest = &BifrostVideoGenerationRequest{Input: &VideoGenerationInput{Prompt: "a cat"}, Params: &VideoGenerationParameters{ExtraParams: extra}}
@@ -400,6 +400,31 @@ func BenchmarkCheckExtraParamPriceFields(b *testing.B) {
 		{"embedding_vendor_name_beside_field", Gemini, embeddingReq(&EmbeddingParameters{TaskType: Ptr("RETRIEVAL_DOCUMENT"), ExtraParams: map[string]interface{}{"taskType": "RETRIEVAL_DOCUMENT"}})},
 		{"embedding_vendor_name_alone", Gemini, embeddingReq(&EmbeddingParameters{ExtraParams: map[string]interface{}{"taskType": "RETRIEVAL_DOCUMENT"}})},
 		{"embedding_vendor_name_other_provider", OpenAI, embeddingReq(&EmbeddingParameters{ExtraParams: map[string]interface{}{"taskType": "RETRIEVAL_DOCUMENT"}})},
+	}...)
+	// TXE-7499: the image task creates are in the table, so their extra params are walked like
+	// the sync routes'. DashScope has the nested parameters.n and parameters.size for them; BFL
+	// has width and height as its names for size.
+	imageTaskReq := func(params *ImageGenerationParameters) *BifrostRequest {
+		req := imageReq(params)
+		req.RequestType = ImageGenerationTaskRequest
+		return req
+	}
+	imageEditTaskReq := func(params *ImageEditParameters) *BifrostRequest {
+		return &BifrostRequest{RequestType: ImageEditTaskRequest, ImageEditRequest: &BifrostImageEditRequest{
+			Provider: DashScope, Model: "m", Input: &ImageEditInput{Prompt: "a cat", Images: []ImageInput{{URL: "https://example.com/a.png"}}}, Params: params}}
+	}
+	nestedCases = append(nestedCases, []struct {
+		name     string
+		provider ModelProvider
+		req      *BifrostRequest
+	}{
+		{"image_task_no_extra_params", DashScope, imageTaskReq(&ImageGenerationParameters{N: Ptr(2), Size: Ptr("1024*1024")})},
+		{"image_task_vendor_extra_params", DashScope, imageTaskReq(&ImageGenerationParameters{N: Ptr(2), ExtraParams: map[string]interface{}{"watermark": false, "prompt_extend": true}})},
+		{"image_task_object_extra_not_a_price_field", DashScope, imageTaskReq(&ImageGenerationParameters{ExtraParams: map[string]interface{}{"parameters": map[string]interface{}{"watermark": false}}})},
+		{"image_task_nested_refused", DashScope, imageTaskReq(&ImageGenerationParameters{ExtraParams: map[string]interface{}{"parameters": map[string]interface{}{"n": 4}}})},
+		{"image_edit_task_vendor_extra_params", DashScope, imageEditTaskReq(&ImageEditParameters{ExtraParams: map[string]interface{}{"watermark": false}})},
+		{"image_task_bfl_vendor_extra_params", BFL, imageTaskReq(&ImageGenerationParameters{Size: Ptr("1024x1024"), ExtraParams: map[string]interface{}{"safety_tolerance": 2, "prompt_upsampling": false}})},
+		{"image_task_bfl_vendor_name_refused", BFL, imageTaskReq(&ImageGenerationParameters{ExtraParams: map[string]interface{}{"width": 2048}})},
 	}...)
 	for _, tc := range nestedCases {
 		b.Run(tc.name, func(b *testing.B) {

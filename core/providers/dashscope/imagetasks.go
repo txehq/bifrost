@@ -110,24 +110,10 @@ func validateDashScopeImageTask(model string, n *int, size, responseFormat *stri
 	if bifrostErr := validateDashScopeImageParams(dashScopeImageWan, n, size, responseFormat, extraParams); bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	// An extra parameters object is merged into parameters (GetExtraParams), so one naming n or
-	// size would add the field beside, or in place of, the request's own value, and Wan bills per
-	// image. Core's nested price-field check does not run for the image task request types yet,
-	// so the refusal is made here.
-	for name, value := range extraParams {
-		object, ok := schemas.ExtraParamObject(value)
-		if !ok || !providerUtils.ExtraParamNamesField(name, "parameters") {
-			continue
-		}
-		for nested := range object {
-			for _, field := range dashScopeImagePriceParameters {
-				if schemas.SameJSONFieldName(nested, field) {
-					return nil, newDashScopeBadRequest(name, fmt.Sprintf(
-						"dashscope: extra params cannot set parameters.%s; send the value in the request's own %s field", nested, field))
-				}
-			}
-		}
-	}
+	// An extra parameters object naming n or size (parameters.n, parameters.size, in the spellings
+	// schemas.SameJSONFieldName reads) is refused by core before a key is chosen:
+	// schemas.NestedPriceFields lists both paths for the image task request types (TXE-7499). The
+	// separator aliases DashScope may also read are refused below (wanBilledParameterAlias).
 	if name := wanInterleaveSwitch(extraParams); name != "" {
 		return nil, schemas.NewUnsupportedParameterError(name, fmt.Sprintf(
 			"dashscope: %s cannot be delivered on the image task routes: it may switch on Wan's interleaved mode, which makes up to max_images images whatever n says, while a task create is billed for the images it asks for (a name outside ASCII is refused for the same reason)", name))
@@ -184,8 +170,8 @@ func wanFoldedName(name string) string {
 
 // wanBilledParameterAlias returns an extra param, at the top level or inside an extra parameters
 // object (GetExtraParams puts both in parameters), whose folded name is a parameter the task is
-// billed by (n, size), and that parameter; "" when there is none. The exact spellings are refused
-// above and by core; this catches the separators SameJSONFieldName keeps ("s-ize", "-n").
+// billed by (n, size), and that parameter; "" when there is none. The spellings SameJSONFieldName
+// reads are refused by core (TXE-7499); this catches the separators it keeps ("s-ize", "-n").
 func wanBilledParameterAlias(extraParams map[string]interface{}) (name, field string) {
 	check := func(candidate string) string {
 		folded := wanFoldedName(candidate)

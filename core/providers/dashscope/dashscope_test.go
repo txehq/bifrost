@@ -1729,7 +1729,8 @@ func TestDashScopeWanImageTaskCancel(t *testing.T) {
 
 // TestDashScopeWanImageTaskRefusals: what the task routes cannot serve is refused before any
 // upstream call: a synchronous model, a Wan model on the earlier protocol, an unknown model,
-// resolution beside size, and an extra parameters object naming n or size.
+// and resolution beside size. An extra parameters object naming n or size is core's to refuse
+// (TestDashScopeWanImageTaskNestedPriceFieldsRefusedByCore).
 func TestDashScopeWanImageTaskRefusals(t *testing.T) {
 	provider, mock := newMockDashScopeImageTasks(t, map[string]mockResponse{"POST /api/v1/services/aigc/image-generation/generation": {http.StatusOK, wanImageTaskCreated}})
 	cases := []struct {
@@ -1742,8 +1743,6 @@ func TestDashScopeWanImageTaskRefusals(t *testing.T) {
 		{"wan2.5 is on the earlier protocol", "wan2.5-t2i-preview", nil, "model"},
 		{"unknown model", "flux-dev", nil, "model"},
 		{"resolution beside size", "wan2.6-t2i", &schemas.ImageGenerationParameters{Size: schemas.Ptr("1024x1024"), Resolution: "2K"}, "resolution"},
-		{"extra parameters.n", "wan2.6-t2i", &schemas.ImageGenerationParameters{ExtraParams: map[string]interface{}{"parameters": map[string]interface{}{"n": 4}}}, "parameters"},
-		{"extra parameters.size", "wan2.6-t2i", &schemas.ImageGenerationParameters{ExtraParams: map[string]interface{}{"parameters": map[string]interface{}{"size": "4K"}}}, "parameters"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -1757,6 +1756,31 @@ func TestDashScopeWanImageTaskRefusals(t *testing.T) {
 	}
 	if len(mock.requests) != 0 {
 		t.Fatalf("%d calls reached DashScope, want none", len(mock.requests))
+	}
+}
+
+// TestDashScopeWanImageTaskNestedPriceFieldsRefusedByCore (TXE-7499): an extra parameters object
+// naming n or size on a Wan image task create would add billed images or change their size with
+// no unified field showing it. Core's C4 check refuses it on both task request types, before a
+// key is chosen, naming the nested path.
+func TestDashScopeWanImageTaskNestedPriceFieldsRefusedByCore(t *testing.T) {
+	for _, requestType := range []schemas.RequestType{schemas.ImageGenerationTaskRequest, schemas.ImageEditTaskRequest} {
+		for _, field := range []string{"n", "size"} {
+			t.Run(string(requestType)+"/"+field, func(t *testing.T) {
+				extra := map[string]interface{}{"parameters": map[string]interface{}{field: 4}}
+				req := &schemas.BifrostRequest{RequestType: requestType}
+				if requestType == schemas.ImageGenerationTaskRequest {
+					req.ImageGenerationRequest = &schemas.BifrostImageGenerationRequest{Provider: schemas.DashScope, Model: "wan2.6-t2i", Input: &schemas.ImageGenerationInput{Prompt: "x"}, Params: &schemas.ImageGenerationParameters{ExtraParams: extra}}
+				} else {
+					req.ImageEditRequest = &schemas.BifrostImageEditRequest{Provider: schemas.DashScope, Model: "wan2.6-image", Input: &schemas.ImageEditInput{Prompt: "x", Images: []schemas.ImageInput{{URL: "https://example.test/a.png"}}}, Params: &schemas.ImageEditParameters{ExtraParams: extra}}
+				}
+				bifrostErr := schemas.CheckExtraParamPriceFieldsFor(schemas.DashScope, req)
+				if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest ||
+					bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter || bifrostErr.Error.Param != "parameters."+field {
+					t.Fatalf("error = %+v, want 400 caller_unsupported_parameter naming parameters.%s", bifrostErr, field)
+				}
+			})
+		}
 	}
 }
 
