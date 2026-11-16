@@ -144,6 +144,13 @@ jobs:
 
       # Replays release-pipeline.yml conditions: a transport-only release must run and
       # pass the core, CLI, framework and plugin suites it embeds before publishing.
+      # A tool fetched at @latest changes under a commit; Docs Validation's mintlify did (TXE-7592).
+      - name: Check every tool a workflow fetches is pinned
+        if: ${{ !cancelled() }}
+        run: |
+          ./.github/workflows/scripts/check-pinned-tools.test.sh
+          python3 .github/workflows/scripts/check-pinned-tools.py
+
       - name: Check release gates require the embedded suites
         if: ${{ !cancelled() }}
         run: python3 .github/workflows/scripts/test-release-gates.py
