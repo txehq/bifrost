@@ -344,8 +344,9 @@ func ReadsRawImageBody(requestType schemas.RequestType) bool {
 // ReadRawImageBody reads the pricing dimensions of a Gemini-format image body sent raw (Gemini and
 // Vertex, TXE-7502), as the typed path reads them (ToBifrostImageGenerationRequest): the size from
 // generationConfig.imageConfig.imageSize and aspectRatio on generateContent, or from
-// parameters.sampleImageSize and aspectRatio on an Imagen predict, written WIDTHxHEIGHT. The image
-// count is the delivered images', since a sync response is billed for those.
+// parameters.sampleImageSize and aspectRatio on an Imagen predict, written WIDTHxHEIGHT, and the
+// input images (rawInputImages). The output count is the delivered images', since a sync response
+// is billed for those.
 //
 // It fails closed. Google's JSON reads a field in lowerCamelCase or snake_case, so a name is
 // matched with case and underscores ignored, and a body that is not one JSON object, that names
@@ -408,7 +409,68 @@ func ReadRawImageBody(body []byte) (*schemas.RawImageBilling, *schemas.BifrostEr
 			params.Size = size
 		}
 	}
-	return &schemas.RawImageBilling{Parameters: params}, nil
+	inputImages, bifrostErr := rawInputImages(top)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	return &schemas.RawImageBilling{InputImages: inputImages, Parameters: params}, nil
+}
+
+// rawInputImages counts the input images a raw Gemini-format body carries, which an edit may be
+// priced by: the parts of contents[] carrying inlineData or fileData (generateContent), and the
+// REFERENCE_TYPE_RAW entries of instances[].referenceImages (an Imagen edit; a mask is not an
+// input image), as the typed path counts them. contents and instances must be named once.
+func rawInputImages(top []utils.JSONMember) (int, *schemas.BifrostError) {
+	count := 0
+	contents, bifrostErr := onlyRawMember(top, "contents", "contents")
+	if bifrostErr != nil {
+		return 0, bifrostErr
+	}
+	for _, content := range rawArrayObjects(contents) {
+		parts, _ := utils.OnlyJSONMember(content, "parts", schemas.SameJSONFieldName)
+		for _, part := range rawArrayObjects(parts) {
+			for _, field := range []string{"inlineData", "fileData"} {
+				if value, seen := utils.OnlyJSONMember(part, field, schemas.SameJSONFieldName); seen > 0 && strings.TrimSpace(string(value)) != "null" {
+					count++
+					break
+				}
+			}
+		}
+	}
+	instances, bifrostErr := onlyRawMember(top, "instances", "instances")
+	if bifrostErr != nil {
+		return 0, bifrostErr
+	}
+	for _, instance := range rawArrayObjects(instances) {
+		references, _ := utils.OnlyJSONMember(instance, "referenceImages", schemas.SameJSONFieldName)
+		for _, reference := range rawArrayObjects(references) {
+			kind, _ := utils.OnlyJSONMember(reference, "referenceType", schemas.SameJSONFieldName)
+			var referenceType string
+			if json.Unmarshal(kind, &referenceType) == nil && referenceType == "REFERENCE_TYPE_RAW" {
+				count++
+			}
+		}
+	}
+	return count, nil
+}
+
+// rawArrayObjects reads value as a JSON array and returns the members of each element that is a
+// JSON object; anything else reads as empty.
+func rawArrayObjects(value json.RawMessage) [][]utils.JSONMember {
+	if value == nil {
+		return nil
+	}
+	var elements []json.RawMessage
+	if json.Unmarshal(value, &elements) != nil {
+		return nil
+	}
+	objects := make([][]utils.JSONMember, 0, len(elements))
+	for _, element := range elements {
+		if members, err := utils.JSONObjectMembers(element); err == nil {
+			objects = append(objects, members)
+		}
+	}
+	return objects
 }
 
 // onlyRawMember returns the one member same-named field (case and underscores ignored, Google's

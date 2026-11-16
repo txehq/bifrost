@@ -64,8 +64,8 @@ var rawImageBodyPricingCases = map[schemas.ModelProvider]map[schemas.RequestType
 		},
 		schemas.ImageEditRequest: {
 			model:     "imagen-3.0-capability-001",
-			body:      `{"instances":[{"prompt":"make it blue"}],"parameters":{"sampleImageSize":"2K","sampleCount":1}}`,
-			want:      schemas.RawImageBilling{Parameters: &schemas.ImageGenerationResponseParameters{Size: "2048x2048"}},
+			body:      `{"instances":[{"prompt":"make it blue","referenceImages":[{"referenceType":"REFERENCE_TYPE_RAW","referenceImage":{"bytesBase64Encoded":"aW1n"}},{"referenceType":"REFERENCE_TYPE_MASK","referenceImage":{"bytesBase64Encoded":"bWFzaw=="}}]}],"parameters":{"sampleImageSize":"2K","sampleCount":1}}`,
+			want:      schemas.RawImageBilling{InputImages: 1, Parameters: &schemas.ImageGenerationResponseParameters{Size: "2048x2048"}},
 			duplicate: `{"parameters":{"sampleImageSize":"1K"},"Parameters":{"sampleImageSize":"2K"}}`,
 		},
 	},
@@ -78,8 +78,8 @@ var rawImageBodyPricingCases = map[schemas.ModelProvider]map[schemas.RequestType
 		},
 		schemas.ImageEditRequest: {
 			model:     "gemini-2.5-flash-image",
-			body:      `{"contents":[{"parts":[{"text":"make it blue"}]}],"generation_config":{"image_config":{"image_size":"2K"}}}`,
-			want:      schemas.RawImageBilling{Parameters: &schemas.ImageGenerationResponseParameters{Size: "2048x2048"}},
+			body:      `{"contents":[{"parts":[{"text":"make it blue"},{"inline_data":{"mime_type":"image/png","data":"aW1n"}},{"fileData":{"fileUri":"gs://b/a.png"}}]}],"generation_config":{"image_config":{"image_size":"2K"}}}`,
+			want:      schemas.RawImageBilling{InputImages: 2, Parameters: &schemas.ImageGenerationResponseParameters{Size: "2048x2048"}},
 			duplicate: `{"generationConfig":{"imageConfig":{"imageSize":"1K"}},"generation_config":{"image_config":{"image_size":"4K"}}}`,
 		},
 	},

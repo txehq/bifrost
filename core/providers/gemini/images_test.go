@@ -286,9 +286,21 @@ func TestReadRawImageBodyReadsTheSizeTheTypedPathReads(t *testing.T) {
 		`{"parameters":{"sampleImageSize":4}}`,
 		`{"parameters":[]}`,
 		`[{"parameters":{}}]`,
+		`{"contents":[],"Contents":[]}`,
 	} {
 		_, bifrostErr := ReadRawImageBody([]byte(body))
 		assert.NotNil(t, bifrostErr, "%s was read, want it refused", body)
+	}
+	// Input images are counted as the typed edit path counts them, so an edit priced per input
+	// image is not billed for none (review of #356).
+	for body, want := range map[string]int{
+		`{"contents":[{"parts":[{"text":"x"},{"inlineData":{"mimeType":"image/png","data":"aW1n"}},{"inlineData":{"mimeType":"image/png","data":"aW1n"}}]}]}`:                                                                             2,
+		`{"instances":[{"prompt":"x","referenceImages":[{"referenceType":"REFERENCE_TYPE_RAW","referenceImage":{"bytesBase64Encoded":"aW1n"}},{"referenceType":"REFERENCE_TYPE_MASK","referenceImage":{"bytesBase64Encoded":"aW1n"}}]}]}`: 1,
+		`{"contents":[{"parts":[{"text":"x"}]}]}`: 0,
+	} {
+		billing, bifrostErr := ReadRawImageBody([]byte(body))
+		require.Nil(t, bifrostErr, body)
+		assert.Equal(t, want, billing.InputImages, body)
 	}
 }
 
