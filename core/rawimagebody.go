@@ -9,11 +9,15 @@ import "github.com/capsohq/bifrost/core/schemas"
 // place of the typed request. Any other attempt is refused before an upstream call. It runs per
 // attempt, after the passthrough helpers that may switch raw mode off, so a fallback decides
 // afresh and an attempt that converts is never refused.
+//
+// Any other request returns before touching the context, which takes a lock. Only a priced image
+// attempt can read a billing an earlier attempt left (a fallback keeps the request type), so that
+// is where it is cleared.
 func decideRawImageBodyForAttempt(ctx *schemas.BifrostContext, provider schemas.Provider, requestType schemas.RequestType, req *schemas.BifrostRequest) *schemas.BifrostError {
-	ctx.ClearValue(schemas.BifrostContextKeyRawImageBilling)
 	if !schemas.IsPricedImageRequestType(requestType) {
 		return nil
 	}
+	ctx.ClearValue(schemas.BifrostContextKeyRawImageBilling)
 	if useRaw, _ := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); !useRaw {
 		return nil
 	}

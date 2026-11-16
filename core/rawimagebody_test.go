@@ -336,9 +336,18 @@ func BenchmarkDecideRawImageBodyForAttempt(b *testing.B) {
 	}
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	req := rawImageRequest(schemas.OpenAI, schemas.ImageGenerationRequest, "gpt-image-1", `{}`)
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = decideRawImageBodyForAttempt(ctx, provider, schemas.ImageGenerationRequest, req)
-	}
+	// The common case: a request that is not an image one touches neither the context nor its lock.
+	b.Run("chat", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = decideRawImageBodyForAttempt(ctx, provider, schemas.ChatCompletionRequest, req)
+		}
+	})
+	// An image attempt that converts: one clear and one read.
+	b.Run("image_converted", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = decideRawImageBodyForAttempt(ctx, provider, schemas.ImageGenerationRequest, req)
+		}
+	})
 }
