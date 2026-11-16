@@ -479,7 +479,9 @@ func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *f
 	unbind := bindRequestContext(req, ctx)
 	latency, bifrostErr, wait := makeRequestWithDoFunc(ctx, func() error {
 		defer unbind()
-		return client.Do(req, resp)
+		err := client.Do(req, resp)
+		RecordUpstreamExchange(ctx, err)
+		return err
 	})
 	return latency, bifrostErr, wait
 }
@@ -490,7 +492,9 @@ func MakeRequestWithContextFollowRedirects(ctx context.Context, client *fasthttp
 	unbind := bindRequestContext(req, ctx)
 	latency, bifrostErr, wait := makeRequestWithDoFunc(ctx, func() error {
 		defer unbind()
-		return client.DoRedirects(req, resp, maxRedirects)
+		err := client.DoRedirects(req, resp, maxRedirects)
+		RecordUpstreamExchange(ctx, err)
+		return err
 	})
 	return latency, bifrostErr, wait
 }
@@ -519,6 +523,7 @@ func DoStreamingRequest(ctx context.Context, client *fasthttp.Client, req *fasth
 	startTime := time.Now()
 	err := client.Do(req, resp)
 	unbind()
+	RecordUpstreamExchange(ctx, err)
 	schemas.AddUpstreamLatency(ctx, time.Since(startTime))
 	return err
 }
@@ -573,8 +578,10 @@ func DoHTTPRequest(client *http.Client, req *http.Request) (*http.Response, erro
 		}()
 		req = req.WithContext(attemptCtx)
 	}
+	req, recordWrite := traceUpstreamWrite(req)
 	startTime := time.Now()
 	resp, err := client.Do(req)
+	recordWrite(err)
 	schemas.AddUpstreamLatency(req.Context(), time.Since(startTime))
 	if err == nil && resp != nil && resp.Body != nil {
 		resp.Body = &upstreamTimingBody{inner: resp.Body, ctx: req.Context()}
@@ -1322,7 +1329,9 @@ func (rt *fasthttpRoundTripper) RoundTrip(req *http.Request) (*http.Response, er
 	unbind := bindRequestContext(freq, ctx)
 	done := make(chan error, 1)
 	go func() {
-		done <- rt.client.Do(freq, fresp)
+		err := rt.client.Do(freq, fresp)
+		RecordUpstreamExchange(ctx, err)
+		done <- err
 	}()
 
 	var err error

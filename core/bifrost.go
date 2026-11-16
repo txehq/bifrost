@@ -8796,6 +8796,11 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		// Set while a failed stream attempt's error is withheld from plugins and no post-hook has ended the request.
 		var heldBackError atomic.Bool
 
+		// The shared HTTP client records on this whether the call's exchanges wrote the request
+		// (TXE-6746); it is applied to the error the retries end with, below.
+		upstreamAttempt := &schemas.UpstreamAttempt{}
+		req.Context.SetValue(schemas.BifrostContextKeyUpstreamAttempt, upstreamAttempt)
+
 		// Execute request with retries. For streaming, the plugin pipeline,
 		// postHookRunner, and finalizer are allocated per-attempt inside the
 		// request handler closure. If they were request-scoped, a retry
@@ -9019,6 +9024,9 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				lastAttemptFinalizer(req.Context)
 			}
 		}
+
+		// upstream_sent from what the shared client recorded across the retries (TXE-6746).
+		upstreamAttempt.Apply(bifrostError)
 
 		// No plugin has seen this stream end: end it here, so it ends even if the caller has left.
 		if IsStreamRequestType(req.RequestType) && bifrostError != nil && heldBackError.Load() {

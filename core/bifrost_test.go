@@ -15299,6 +15299,55 @@ func TestUpstreamSentIsCallWideAcrossFallbacks(t *testing.T) {
 	}
 }
 
+// The vendor call's upstream_sent comes from the shared HTTP client (TXE-6746): a provider whose
+// endpoint refuses the connection reports false; one whose vendor answered reports true.
+func TestVendorCallReportsWhetherTheRequestWasWritten(t *testing.T) {
+	closed, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	refusedURL := "http://" + closed.Addr().String()
+	_ = closed.Close()
+	answered := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"bad request from the vendor","type":"invalid_request_error"}}`))
+	}))
+	defer answered.Close()
+
+	for _, c := range []struct {
+		name    string
+		baseURL string
+		want    bool
+	}{{"connection refused", refusedURL, false}, {"vendor answered 400", answered.URL, true}} {
+		t.Run(c.name, func(t *testing.T) {
+			account := NewMockAccount()
+			account.AddProviderWithBaseURL(schemas.OpenAI, 1, 10, c.baseURL)
+			account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+			account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+				{ID: "k", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 100},
+			})
+			client, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewDefaultLogger(schemas.LogLevelError)})
+			if err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			defer client.Shutdown()
+			text := "ping"
+			_, bifrostErr := client.ChatCompletionRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.BifrostChatRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-4o-mini",
+				Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &text}}},
+			})
+			if bifrostErr == nil {
+				t.Fatal("the call must fail")
+			}
+			if s := bifrostErr.ExtraFields.UpstreamSent; s == nil || *s != c.want {
+				t.Errorf("upstream_sent %v, want %v (error_type %q, message %q)", s, c.want, bifrostErr.ResolveErrorType(), bifrostErr.Error.Message)
+			}
+		})
+	}
+}
+
 // TestProviderQueueErrorType: only getProviderQueue's no-config error is the caller's; a
 // provider that fails to start is Bifrost's own fault.
 func TestProviderQueueErrorType(t *testing.T) {

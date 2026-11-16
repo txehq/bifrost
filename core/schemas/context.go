@@ -44,6 +44,7 @@ var reservedKeys = map[BifrostContextKey]struct{}{
 	BifrostContextKeyMCPUnattendedExecution:  {},
 	BifrostContextKeyInjectedToolsExecuted:   {},
 	BifrostContextKeyWriteOnce:               {},
+	BifrostContextKeyUpstreamAttempt:         {},
 	BifrostContextKeyUpstreamLatency:         {},
 	BifrostContextKeyStreamOverhead:          {},
 	BifrostContextKeyRoutingInfo:             {},
