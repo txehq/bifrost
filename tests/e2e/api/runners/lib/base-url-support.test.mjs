@@ -97,3 +97,57 @@ test("every fixture config with providers carries the egress_probe provider on T
   }
   assert.deepStrictEqual(missing, [], "add the egress_probe provider from provider-error-fixture.config.json");
 });
+
+// JSON.parse keeps the last of two equal keys and says nothing, so a provider defined twice in a
+// fixture config runs on whichever entry comes last: TXE-7117's huggingface entry on /pp/huggingface
+// was shadowed by a later one on /pp/hf, and its rows got 404s with no hint why. No object in a
+// fixture config may name a key twice.
+export function duplicateKeys(text) {
+  const found = [];
+  let i = 0;
+  const ws = () => { while (/\s/.test(text[i])) i++; };
+  const str = () => { const start = i++; while (text[i] !== '"') i += text[i] === "\\" ? 2 : 1; i++; return JSON.parse(text.slice(start, i)); };
+  const value = (path) => {
+    ws();
+    if (text[i] === "{") {
+      i++;
+      const seen = new Set();
+      for (ws(); text[i] !== "}"; ws()) {
+        if (text[i] === ",") { i++; continue; }
+        const key = str();
+        if (seen.has(key)) found.push(`${path}.${key}`);
+        seen.add(key);
+        ws(); i++; // ':'
+        value(`${path}.${key}`);
+      }
+      i++;
+    } else if (text[i] === "[") {
+      i++;
+      for (let n = 0; (ws(), text[i] !== "]"); ) {
+        if (text[i] === ",") { i++; continue; }
+        value(`${path}[${n++}]`);
+      }
+      i++;
+    } else if (text[i] === '"') {
+      str();
+    } else {
+      while (i < text.length && !/[\s,}\]]/.test(text[i])) i++;
+    }
+  };
+  value("$");
+  return found;
+}
+
+test("duplicateKeys finds a key named twice in one object, at any depth", () => {
+  assert.deepStrictEqual(duplicateKeys('{"a":1,"b":{"c":[1,{"d":"x\\"y"}],"c":2},"a":[]}'), ["$.b.c", "$.a"]);
+  assert.deepStrictEqual(duplicateKeys('{"a":{"x":1},"b":{"x":1}}'), []);
+});
+
+test("no fixture config names a key twice in one object", () => {
+  const dir = join(root, "tests/e2e/api/provider_config");
+  const problems = [];
+  for (const file of fixtureConfigFiles(dir)) {
+    for (const key of duplicateKeys(readFileSync(file, "utf8"))) problems.push(`${relativeTo(root, file)}: ${key}`);
+  }
+  assert.deepStrictEqual(problems, [], "JSON.parse keeps only the last of two equal keys; merge or rename the entries");
+});

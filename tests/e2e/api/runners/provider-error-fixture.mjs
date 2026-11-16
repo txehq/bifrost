@@ -1716,10 +1716,10 @@ const wireAnswer = (path, body, bytes) => {
 	// HuggingFace speech through fal-ai (TXE-7117): the answer names the audio file by URL. The model's last
 	// path segment picks where: speech-origin on the provider's own origin, speech-loopback on another
 	// loopback origin (the same fixture by the name localhost).
-	const hfSpeech = /^\/pp\/huggingface\/fal-ai\/.*speech-(origin|loopback)$/.exec(path);
+	const hfSpeech = /^\/pp\/hf\/fal-ai\/.*speech-(origin|loopback)$/.exec(path);
 	if (hfSpeech) {
 		const host = hfSpeech[1] === "origin" ? "127.0.0.1" : "localhost";
-		return { status: 200, body: JSON.stringify({ audio: { url: `http://${host}:${port}/pp/huggingface/audio/${hfSpeech[1]}.mp3`, content_type: "audio/mpeg", file_name: `${hfSpeech[1]}.mp3`, file_size: FIXTURE_HF_AUDIO.length } }) };
+		return { status: 200, body: JSON.stringify({ audio: { url: `http://${host}:${port}/pp/hf/audio/${hfSpeech[1]}.mp3`, content_type: "audio/mpeg", file_name: `${hfSpeech[1]}.mp3`, file_size: FIXTURE_HF_AUDIO.length } }) };
 	}
 	// Replicate accepts a prediction (201) but the answer names no urls.get to poll it at (folder 456, TXE-7056).
 	if (path.startsWith("/pp/replicate/") && path.endsWith("/predictions")) return { status: 201, body: JSON.stringify({ id: "pred_fixture_no_urls", status: "starting" }) };
@@ -2795,14 +2795,14 @@ const handleRequest = (req, res) => {
 	// The HuggingFace model hub (TXE-7117), which a provider whose base URL is the fixture asks here and not at
 	// huggingface.co. A model lookup answers that fal-ai serves the model as text-to-speech; a model list is
 	// empty. Each lookup is counted as "huggingface.hub@<model>".
-	if (req.method === "GET" && path.startsWith("/pp/huggingface/api/models")) {
-		const model = decodeURIComponent(path.slice("/pp/huggingface/api/models".length).replace(/^\//, ""));
+	if (req.method === "GET" && path.startsWith("/pp/hf/api/models")) {
+		const model = decodeURIComponent(path.slice("/pp/hf/api/models".length).replace(/^\//, ""));
 		if (!model) return send(200, {}, "[]");
 		countHit(`huggingface.hub@${model}`);
 		return send(200, {}, JSON.stringify({ _id: "fixture", id: model, pipeline_tag: "text-to-speech", inferenceProviderMapping: { "fal-ai": { status: "live", providerId: `fal-ai/${model}`, task: "text-to-speech" } } }));
 	}
 	// The audio file a HuggingFace speech answer names, counted under the Host it was asked at.
-	if (req.method === "GET" && path.startsWith("/pp/huggingface/audio/")) {
+	if (req.method === "GET" && path.startsWith("/pp/hf/audio/")) {
 		countHit(`huggingface.audio@${String(req.headers.host).split(":")[0]}`);
 		res.writeHead(200, { "Content-Type": "audio/mpeg", "Content-Length": FIXTURE_HF_AUDIO.length });
 		return res.end(FIXTURE_HF_AUDIO);
