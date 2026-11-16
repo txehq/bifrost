@@ -20,6 +20,8 @@ such as requireIntegrationEnv). This check keeps every live test on the gate:
   4. The gated top-level tests are exactly the ones in live-tests.txt. A test that loses its gate
      (a helper call deleted) or a new live test that is not listed fails here, so the stay-off
      proof, which runs the listed tests, always covers every live test.
+  5. A workflow step that runs a live Go runner (LIVE_RUNNERS) sets BIFROST_LIVE_TESTS. Without
+     it the suites skip and the runner reports success, so a live job would pass having run nothing.
 
   check-live-tests-opt-in.py                    check the repository; exit 1 on a violation
   check-live-tests-opt-in.py --list-live        print "<package dir>\t<TestName>" for every live test
@@ -52,6 +54,23 @@ LOCAL_CREDENTIALS = {
     "AGENTGATEWAY_ADMIN_TOKEN": "the admin token of the local Agent Gateway tests/agentgateway starts",
     "QDRANT_API_KEY": "the key of the Qdrant instance QDRANT_HOST names, a local container by default",
 }
+
+
+# The commands that run the Go live suites in CI. A step running one must set the opt-in.
+LIVE_RUNNERS = ("test-all-plugins.sh", "make test-core")
+STEP = re.compile(r"\n(?=\s*- (?:name|uses|run):)")
+
+
+def workflow_failures(workflows):
+    """workflows: {path: text}. A step that runs a live runner must set BIFROST_LIVE_TESTS."""
+    out = []
+    for path, text in sorted(workflows.items()):
+        for step in STEP.split(text):
+            runner = next((r for r in LIVE_RUNNERS if r in step), None)
+            if runner and "BIFROST_LIVE_TESTS" not in step:
+                name = re.search(r"- name:\s*(.+)", step)
+                out.append(f"{path}: step {name.group(1).strip() if name else '?'} runs {runner} without BIFROST_LIVE_TESTS")
+    return out
 
 
 def functions(text):
@@ -118,6 +137,9 @@ def check():
     setup = dict(functions(open(os.path.join(REPO, SETUP_FILE), encoding="utf-8").read())).get("SetupTest", "")
     if ENABLED not in setup:
         failures.append(f"{SETUP_FILE}: SetupTest no longer refuses to build a client unless {ENABLED}")
+    wf_dir = os.path.join(REPO, ".github", "workflows")
+    failures += workflow_failures({f".github/workflows/{f}": open(os.path.join(wf_dir, f), encoding="utf-8").read()
+                                   for f in os.listdir(wf_dir) if f.endswith((".yml", ".yaml"))})
     listed = read_inventory()
     for directory, name in sorted(listed - set(live)):
         failures.append(f"{directory}: {name} is in live-tests.txt but no longer reaches livetest.Require or livetest.Key")
@@ -153,13 +175,24 @@ def self_test():
         ("ungated account", {"p/a_test.go": 'func (a *A) GetKeysForProvider(ctx context.Context) {\n\treturn schemas.NewSecretVar("env.OPENAI_API_KEY")\n}\n'}, 1, 0),
         ("guarded account", {"p/a_test.go": 'func (a *A) GetKeysForProvider(ctx context.Context) {\n\tif !livetest.Enabled() { return nil }\n\treturn schemas.NewSecretVar("env.OPENAI_API_KEY")\n}\n'}, 0, 0),
     ]
+    steps = [
+        ("live step with the opt-in", "      - name: Run plugin tests\n        env:\n          BIFROST_LIVE_TESTS: \"1\"\n          OPENAI_API_KEY: x\n        run: ./.github/workflows/scripts/test-all-plugins.sh\n", 0),
+        ("live step without the opt-in", "      - name: Run plugin tests\n        env:\n          OPENAI_API_KEY: x\n        run: ./.github/workflows/scripts/test-all-plugins.sh\n", 1),
+        ("inline opt-in", "      - name: vLLM\n        run: BIFROST_LIVE_TESTS=1 make test-core PROVIDER=vllm\n", 0),
+        ("opt-in in a neighbouring step does not count", "      - name: a\n        env:\n          BIFROST_LIVE_TESTS: \"1\"\n        run: echo\n      - name: b\n        run: make test-core\n", 1),
+    ]
     bad = 0
+    for label, text, want in steps:
+        got = len(workflow_failures({"w.yml": "jobs:\n  j:\n    steps:\n" + text}))
+        if got != want:
+            bad += 1
+            print(f"FAIL self-test {label}: {got} violations, want {want}")
     for label, files, want_failures, want_live in cases:
         failures, live = analyze(files)
         if len(failures) != want_failures or len(live) != want_live:
             bad += 1
             print(f"FAIL self-test {label}: {len(failures)} violations and {len(live)} live tests, want {want_failures} and {want_live}")
-    print(f"{len(cases)} self-test cases, {bad} failures")
+    print(f"{len(cases) + len(steps)} self-test cases, {bad} failures")
     return 1 if bad else 0
 
 

@@ -3,6 +3,7 @@ package jsonparser
 import (
 	"context"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
@@ -49,8 +50,13 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 
 func skipUnlessJsonParserLiveTestEnabled(t *testing.T) {
 	t.Helper()
-	// BIFROST_LIVE_TESTS=1 replaces the plugin's own RUN_JSONPARSER_LIVE_TESTS=1 opt-in (TXE-7530).
 	livetest.Require(t, "OPENAI_API_KEY")
+	// These ran in no release job before TXE-7530 (the release's plugin job never set this), and
+	// that job now sets BIFROST_LIVE_TESTS=1 for the semantic cache and Maxim suites. Keeping the
+	// plugin's own switch on top of the gate leaves the release running what it ran before.
+	if os.Getenv("RUN_JSONPARSER_LIVE_TESTS") != "1" {
+		t.Skip("RUN_JSONPARSER_LIVE_TESTS=1 is not set, skipping live OpenAI test")
+	}
 }
 
 // TestJsonParserPluginEndToEnd tests the integration of the JSON parser plugin with Bifrost.
