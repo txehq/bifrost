@@ -15,6 +15,16 @@ import (
 // descends several levels into it, so nothing here copies a value: a member's or an element's
 // value is a slice of the caller's bytes. Only names are decoded.
 
+// MaxRawJSONMembers bounds the members of one object and the elements of one array that the raw
+// readers keep a record of. A body is still only as large as the request limit, but each member
+// costs a record and a decoded name, so a body of a million tiny members would cost far more than
+// its size. No image request has an object or an array anywhere near this many entries; one that
+// has more is refused, which fails closed.
+const MaxRawJSONMembers = 10000
+
+// errTooManyMembers is the error for an object or an array past MaxRawJSONMembers.
+var errTooManyMembers = errors.New("more than 10000 members or elements in one JSON object or array")
+
 // JSONMember is one member of a JSON object, in document order. Value is a slice of the bytes
 // that were read, not a copy: it is valid while they are, and must not be modified.
 type JSONMember struct {
@@ -36,6 +46,9 @@ func JSONObjectMembers(data []byte) ([]JSONMember, error) {
 	var members []JSONMember
 	i = skipJSONSpace(data, i+1)
 	for data[i] != '}' {
+		if len(members) == MaxRawJSONMembers {
+			return nil, errTooManyMembers
+		}
 		nameEnd := jsonValueEnd(data, i)
 		var name string
 		if err := json.Unmarshal(data[i:nameEnd], &name); err != nil {
@@ -66,6 +79,9 @@ func JSONArrayElements(data []byte) ([]json.RawMessage, error) {
 	var elements []json.RawMessage
 	i = skipJSONSpace(data, i+1)
 	for data[i] != ']' {
+		if len(elements) == MaxRawJSONMembers {
+			return nil, errTooManyMembers
+		}
 		end := jsonValueEnd(data, i)
 		elements = append(elements, json.RawMessage(data[i:end:end]))
 		i = skipJSONSpace(data, end)

@@ -60,6 +60,39 @@ func TestJSONObjectMembersKeepsEveryMemberInOrder(t *testing.T) {
 	}
 }
 
+// TXE-7502 security review: each member costs a record and a decoded name, so a body of a million
+// tiny members would cost far more than its size. An object or an array past MaxRawJSONMembers is
+// refused; one at the limit is read.
+func TestRawJSONReadingBoundsMembers(t *testing.T) {
+	object := func(n int) []byte {
+		var b strings.Builder
+		b.WriteString("{")
+		for i := 0; i < n; i++ {
+			if i > 0 {
+				b.WriteString(",")
+			}
+			b.WriteString(`"x":0`)
+		}
+		b.WriteString("}")
+		return []byte(b.String())
+	}
+	array := func(n int) []byte {
+		return []byte("[" + strings.TrimSuffix(strings.Repeat("0,", n), ",") + "]")
+	}
+	if members, err := JSONObjectMembers(object(MaxRawJSONMembers)); err != nil || len(members) != MaxRawJSONMembers {
+		t.Fatalf("an object at the limit: %d members, %v", len(members), err)
+	}
+	if _, err := JSONObjectMembers(object(MaxRawJSONMembers + 1)); err == nil {
+		t.Fatal("an object past the limit was read")
+	}
+	if elements, err := JSONArrayElements(array(MaxRawJSONMembers)); err != nil || len(elements) != MaxRawJSONMembers {
+		t.Fatalf("an array at the limit: %d elements, %v", len(elements), err)
+	}
+	if _, err := JSONArrayElements(array(MaxRawJSONMembers + 1)); err == nil {
+		t.Fatal("an array past the limit was read")
+	}
+}
+
 // TXE-7502 security review: a raw body may be as large as the request limit, and a reader descends
 // several levels into it. A value is a slice of the body, so reading a 20 MiB inline image four
 // levels deep allocates nothing near its size (the earlier decoder copied it at every level).
