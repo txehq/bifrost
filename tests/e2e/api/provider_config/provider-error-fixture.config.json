@@ -163,7 +163,8 @@
             "upstream-oversize-gzip-500",
             "upstream-ok~rbl-fallback",
             "upstream-ok~rbl-under",
-            "fixture-image-oversize"
+            "fixture-image-oversize",
+            "gpt-image-2.5-flare"
           ],
           "use_for_batch_api": true,
           "weight": 1

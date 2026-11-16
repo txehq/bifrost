@@ -647,6 +647,9 @@ const fixturePricing = {
 	// images charges the budget 3 x $0.17; and the over-limit chat model priced, so a charge for it would show.
 	"fixture-image-oversize": { provider: "openai", mode: "image_generation", output_cost_per_image: 0.04, output_cost_per_image_high_quality: 0.17 },
 	"upstream-oversize": { provider: "openai", mode: "chat", input_cost_per_token: 0.001, output_cost_per_token: 0.002 },
+	// Folder 612 (TXE-7492): gpt-image-2.5-flare's live row prices images only per image token ($30/M), so the
+	// over-limit estimate charges the floor of 7034 tokens per image from the gateway's table.
+	"gpt-image-2.5-flare": { provider: "openai", mode: "image_generation", input_cost_per_token: 5e-6, input_cost_per_image_token: 8e-6, output_cost_per_image_token: 3e-5 },
 	// TXE-7356: dall-e-3's live upstream row, which prices an image only by its joint size and quality rate, so folder
 	// 570 can read the price of an hd and a standard image. The fork dropped these keys at sync and billed $0.
 	"fixture-dalle-3": {
@@ -977,7 +980,8 @@ const openAIImageAnswer = (body, bytes, isEdit) => {
 	const n = Number.isInteger(requested) && requested > 0 ? requested : 1;
 	// fixture-image-oversize answers n images totalling 2 MiB, past the 1 MB response limit folder 612 sets, so
 	// the gateway refuses the answer unread and charges the virtual key its estimate (TXE-7302).
-	if (model === "fixture-image-oversize") {
+	// gpt-image-2.5-flare does the same for its token-priced row (TXE-7492).
+	if (model === "fixture-image-oversize" || model === "gpt-image-2.5-flare") {
 		const each = "A".repeat(Math.ceil(OVERSIZE_BYTES / n));
 		return { status: 200, body: JSON.stringify({ created: 1, data: Array.from({ length: n }, () => ({ b64_json: each })), usage: { input_tokens: 12, output_tokens: 272 * n, total_tokens: 12 + 272 * n } }) };
 	}

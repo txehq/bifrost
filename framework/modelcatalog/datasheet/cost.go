@@ -269,7 +269,9 @@ func (s *Store) CalculateCostBreakdownForUsage(usage *schemas.BifrostLLMUsage, p
 // CalculateCostForEstimatedImageUsage prices Bifrost's estimate of an image request whose answer
 // the response limit refused unread (fork, TXE-7302): the requested images and the input images at
 // the request's size, quality, resolution and steps, through the same image pricing a delivered
-// response takes. A row priced only per image token has no count to apply and prices to 0 (TXE-7492).
+// response takes. A size and quality that pricing prices at 0, on a row with an image token rate
+// and no per-image price for that tier, takes the output tokens per image in
+// estimatedimagetokens.go (TXE-7492), and prices to 0 when its model has none.
 // routingInfo is the refused request's, resolved key alias included, so an alias whose label is
 // not itself a catalog row is priced at the model it names. Returns 0 when estimate is nil or the
 // model has no pricing.
@@ -314,13 +316,38 @@ func (s *Store) CalculateCostForEstimatedImageUsage(estimate *schemas.EstimatedI
 	if estimate.Quality == "" || estimate.Quality == "auto" {
 		qualities = append(qualities, estimatedImageQualityTiers...)
 	}
+	// A tier image pricing prices at 0 takes the token estimate, if the row has one, before the
+	// dearest is taken: a row may price some tiers per image and leave others to the tokens.
+	// It is resolved on the first such tier, so a fully priced row pays nothing for it.
+	var tokenFallback func(size, quality string) float64
+	fallbackResolved := false
 	cost := 0.0
 	for _, size := range sizes {
 		for _, quality := range qualities {
-			cost = max(cost, price(size, quality))
+			c := price(size, quality)
+			// An unset or auto size or quality stands for the tiers enumerated after it; the
+			// fallback prices those, never the placeholder, which per-pixel and per-tier prices
+			// cannot resolve.
+			if c == 0 && (unresolvedImageTier(size, sizes) || unresolvedImageTier(quality, qualities)) {
+				continue
+			}
+			if c == 0 && !fallbackResolved {
+				tokenFallback = s.imageTokenFallback(estimate, routingInfo, normalizeStreamRequestType(requestType), lookupScopes)
+				fallbackResolved = true
+			}
+			if c == 0 && tokenFallback != nil {
+				c = tokenFallback(size, quality)
+			}
+			cost = max(cost, c)
 		}
 	}
 	return cost
+}
+
+// unresolvedImageTier reports whether value is an unset or auto size or quality that the estimate
+// enumerated the tiers for.
+func unresolvedImageTier(value string, candidates []string) bool {
+	return (value == "" || value == "auto") && len(candidates) > 1
 }
 
 // estimatedImageQualityTiers are the quality values image pricing distinguishes, and
