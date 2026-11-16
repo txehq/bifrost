@@ -1,0 +1,466 @@
+{
+  "name": "489. Passthrough routes forward the query string the transport plugins left: the caller's bytes when no plugin changed it (passthrough query) [SERIAL]",
+  "description": "TXE-7087 regression. Local fixture regression, no live provider calls: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream. The passthrough routes, the native Anthropic Messages forward and the Claude Code OAuth forward used to send the vendor the query string as the caller sent it even after a transport plugin had changed a parameter, so a value a plugin pinned left with the caller's value. They now forward the query the transport plugins left (lib.ForwardedQueryString): re-encoded when a plugin changed it, and the caller's bytes when none did. No plugin shipped with the gateway changes a query parameter, so these rows pin the second half on the wire: order, a repeated name, percent-encoding and a name without a value reach the fixture byte for byte. The first half, a plugin's change reaching the vendor on every passthrough route, is pinned by handlers.TestPassthroughRoutesForwardThePluginsQuery and handlers.TestForwardedQueryReachesTheVendorAsThePluginLeftIt. Bedrock, Azure and the ChatGPT route are not here: the fixture config points none of them at the fixture for these paths. Run the whole folder in order.",
+  "item": [
+    {
+      "name": "489.1 openai GET /openai_passthrough/v1/responses/{id}/input_items forwards the caller's query string byte for byte: order, repeats, percent-encoding and a bare name (passthrough query)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/openai_passthrough/v1/responses/resp_passthrough_query/input_items?order=desc&include=b%20c&include=a&flag&limit=5",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai_passthrough",
+            "v1",
+            "responses",
+            "resp_passthrough_query",
+            "input_items"
+          ],
+          "query": [
+            {
+              "key": "order",
+              "value": "desc"
+            },
+            {
+              "key": "include",
+              "value": "b%20c"
+            },
+            {
+              "key": "include",
+              "value": "a"
+            },
+            {
+              "key": "flag",
+              "value": null
+            },
+            {
+              "key": "limit",
+              "value": "5"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('passthrough query setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var text = pm.response.text();",
+              "pm.test('the client gets 200', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+              "// wire: the requests that reached the fixture, with the query string as it arrived.",
+              "pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/v1/responses/resp_passthrough_query/input_items'; });",
+              "  pm.test('exactly one upstream call', function () { pm.expect(calls, res.text()).to.have.length(1); });",
+              "  pm.test('the vendor receives the query string as the caller sent it', function () { pm.expect((calls[0] || {}).query, res.text()).to.equal('?order=desc&include=b%20c&include=a&flag&limit=5'); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "489.2 anthropic POST /anthropic_passthrough/v1/messages forwards the caller's query string byte for byte (passthrough query)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"pp-ok\",\n  \"max_tokens\": 8,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic_passthrough/v1/messages?order=desc&include=b%20c&include=a&flag&limit=5",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic_passthrough",
+            "v1",
+            "messages"
+          ],
+          "query": [
+            {
+              "key": "order",
+              "value": "desc"
+            },
+            {
+              "key": "include",
+              "value": "b%20c"
+            },
+            {
+              "key": "include",
+              "value": "a"
+            },
+            {
+              "key": "flag",
+              "value": null
+            },
+            {
+              "key": "limit",
+              "value": "5"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('passthrough query setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var text = pm.response.text();",
+              "pm.test('the client gets 200', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+              "// wire: the requests that reached the fixture, with the query string as it arrived.",
+              "pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/anthropic/v1/messages'; });",
+              "  pm.test('exactly one upstream call', function () { pm.expect(calls, res.text()).to.have.length(1); });",
+              "  pm.test('the vendor receives the query string as the caller sent it', function () { pm.expect((calls[0] || {}).query, res.text()).to.equal('?order=desc&include=b%20c&include=a&flag&limit=5'); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "489.3 gemini POST /genai_passthrough/v1beta/models/{model}:generateContent forwards the caller's query string byte for byte (passthrough query)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [\n    {\n      \"parts\": [\n        {\n          \"text\": \"hi\"\n        }\n      ]\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai_passthrough/v1beta/models/pp-stt-ok:generateContent?order=desc&include=b%20c&include=a&flag&limit=5",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai_passthrough",
+            "v1beta",
+            "models",
+            "pp-stt-ok:generateContent"
+          ],
+          "query": [
+            {
+              "key": "order",
+              "value": "desc"
+            },
+            {
+              "key": "include",
+              "value": "b%20c"
+            },
+            {
+              "key": "include",
+              "value": "a"
+            },
+            {
+              "key": "flag",
+              "value": null
+            },
+            {
+              "key": "limit",
+              "value": "5"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('passthrough query setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var text = pm.response.text();",
+              "pm.test('the client gets 200', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+              "// wire: the requests that reached the fixture, with the query string as it arrived.",
+              "pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/gemini/models/pp-stt-ok:generateContent'; });",
+              "  pm.test('exactly one upstream call', function () { pm.expect(calls, res.text()).to.have.length(1); });",
+              "  pm.test('the vendor receives the query string as the caller sent it', function () { pm.expect((calls[0] || {}).query, res.text()).to.equal('?order=desc&include=b%20c&include=a&flag&limit=5'); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "489.4 xai POST /anthropic/v1/messages xai/pp-ok, the native Anthropic Messages forward, carries the caller's query string byte for byte (passthrough query)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"xai/pp-ok\",\n  \"max_tokens\": 8,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages?order=desc&include=b%20c&include=a&flag&limit=5",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ],
+          "query": [
+            {
+              "key": "order",
+              "value": "desc"
+            },
+            {
+              "key": "include",
+              "value": "b%20c"
+            },
+            {
+              "key": "include",
+              "value": "a"
+            },
+            {
+              "key": "flag",
+              "value": null
+            },
+            {
+              "key": "limit",
+              "value": "5"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('passthrough query setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var text = pm.response.text();",
+              "pm.test('the client gets 200', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+              "// wire: the requests that reached the fixture, with the query string as it arrived.",
+              "pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/xai/v1/messages'; });",
+              "  pm.test('exactly one upstream call', function () { pm.expect(calls, res.text()).to.have.length(1); });",
+              "  pm.test('the vendor receives the query string as the caller sent it', function () { pm.expect((calls[0] || {}).query, res.text()).to.equal('?order=desc&include=b%20c&include=a&flag&limit=5'); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "489.5 anthropic POST /anthropic/v1/messages with a Claude Code OAuth token, the OAuth forward, carries the caller's query string byte for byte (passthrough query)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "anthropic-version",
+            "value": "2023-06-01"
+          },
+          {
+            "key": "User-Agent",
+            "value": "claude-cli/2.0.0 (external, cli)"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer sk-ant-oat01-fixture-token"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"claude-opus-4-8\",\n  \"max_tokens\": 8,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/anthropic/v1/messages?order=desc&include=b%20c&include=a&flag&limit=5",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "anthropic",
+            "v1",
+            "messages"
+          ],
+          "query": [
+            {
+              "key": "order",
+              "value": "desc"
+            },
+            {
+              "key": "include",
+              "value": "b%20c"
+            },
+            {
+              "key": "include",
+              "value": "a"
+            },
+            {
+              "key": "flag",
+              "value": null
+            },
+            {
+              "key": "limit",
+              "value": "5"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('passthrough query setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var text = pm.response.text();",
+              "pm.test('the client gets 200', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+              "// wire: the requests that reached the fixture, with the query string as it arrived.",
+              "pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/anthropic/v1/messages'; });",
+              "  pm.test('exactly one upstream call', function () { pm.expect(calls, res.text()).to.have.length(1); });",
+              "  pm.test('the vendor receives the query string as the caller sent it', function () { pm.expect((calls[0] || {}).query, res.text()).to.equal('?order=desc&include=b%20c&include=a&flag&limit=5'); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
