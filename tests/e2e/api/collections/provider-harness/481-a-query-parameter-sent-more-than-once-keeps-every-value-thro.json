@@ -1,0 +1,243 @@
+{
+  "name": "481. A query parameter sent more than once keeps every value through the transport plugins (repeated query) [SERIAL]",
+  "description": "TXE-7042 regression. Local fixture regression, no live provider calls: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream (the openai provider's base_url is the fixture). With a transport plugin loaded the gateway copied the query string into a map with one value per name and wrote it back, so the first value of a repeated parameter was replaced by the last: include=a&include=b reached the vendor as include=b&include=b, and a repeated after, order or provider was read as its last value. The fixture keeps each Responses lifecycle read in /__wire with the query string as it arrived. Each row sends parameters twice and reads back what the vendor received: every include value in the order sent, the first after and order, and the first provider. Run the whole folder in order.",
+  "item": [
+    {
+      "name": "openai GET /v1/responses/{id}/input_items with include, after and order sent twice: the vendor receives both include values in order and the first after and order (repeated query)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses/resp_repeated_query/input_items?provider=openai&include=message.input_image.image_url&after=item_a&include=file_search_call.results&order=asc&order=desc&after=item_b",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses",
+            "resp_repeated_query",
+            "input_items"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "openai"
+            },
+            {
+              "key": "include",
+              "value": "message.input_image.image_url"
+            },
+            {
+              "key": "after",
+              "value": "item_a"
+            },
+            {
+              "key": "include",
+              "value": "file_search_call.results"
+            },
+            {
+              "key": "order",
+              "value": "asc"
+            },
+            {
+              "key": "order",
+              "value": "desc"
+            },
+            {
+              "key": "after",
+              "value": "item_b"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('repeated query setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var text = pm.response.text();",
+              "pm.test('the client gets 200', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+              "// wire: the requests that reached the fixture, with the query string as it arrived.",
+              "pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/v1/responses/resp_repeated_query/input_items'; });",
+              "  pm.test('exactly one upstream call', function () { pm.expect(calls, res.text()).to.have.length(1); });",
+              "  pm.test('both include values arrive in the order sent, with the first after and order', function () { pm.expect((calls[0] || {}).query, res.text()).to.equal('?after=item_a&include=message.input_image.image_url&include=file_search_call.results&order=asc'); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "openai GET /openai/v1/responses/{id} with include sent twice on the integration route: the vendor receives both values in order (repeated query)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/responses/resp_repeated_query?include=file_search_call.results&include=message.input_image.image_url",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "responses",
+            "resp_repeated_query"
+          ],
+          "query": [
+            {
+              "key": "include",
+              "value": "file_search_call.results"
+            },
+            {
+              "key": "include",
+              "value": "message.input_image.image_url"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('repeated query setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var text = pm.response.text();",
+              "pm.test('the client gets 200', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+              "// wire: the requests that reached the fixture, with the query string as it arrived.",
+              "pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/v1/responses/resp_repeated_query'; });",
+              "  pm.test('exactly one upstream call', function () { pm.expect(calls, res.text()).to.have.length(1); });",
+              "  pm.test('both include values arrive in the order sent', function () { pm.expect((calls[0] || {}).query, res.text()).to.equal('?include=file_search_call.results&include=message.input_image.image_url'); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "openai GET /v1/responses/{id} with provider sent twice: the first provider serves the request and the include values are kept (repeated query)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses/resp_repeated_provider?provider=openai&include=file_search_call.results&provider=no_such_provider&include=message.input_image.image_url",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses",
+            "resp_repeated_provider"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "openai"
+            },
+            {
+              "key": "include",
+              "value": "file_search_call.results"
+            },
+            {
+              "key": "provider",
+              "value": "no_such_provider"
+            },
+            {
+              "key": "include",
+              "value": "message.input_image.image_url"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('repeated query setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var text = pm.response.text();",
+              "pm.test('the client gets 200', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+              "// wire: the requests that reached the fixture, with the query string as it arrived.",
+              "pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/v1/responses/resp_repeated_provider'; });",
+              "  pm.test('exactly one upstream call', function () { pm.expect(calls, res.text()).to.have.length(1); });",
+              "  pm.test('the first provider received the call with both include values, and provider itself is not forwarded', function () { pm.expect((calls[0] || {}).query, res.text()).to.equal('?include=file_search_call.results&include=message.input_image.image_url'); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
