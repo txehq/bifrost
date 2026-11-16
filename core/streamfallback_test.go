@@ -11,6 +11,9 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
@@ -2680,3 +2683,299 @@ func BenchmarkWrapSpeechStreamPostHookRunner(b *testing.B) {
 }
 
 var speechRunnerSink schemas.PostHookRunner
+
+// TXE-7222: a provider that always forwards the caller's extra fields switches the
+// extra-params merge on for its call and leaves it on. A fallback runs on the same context, so
+// it used to be sent fields only the first vendor knows (xAI's max_turns, a vLLM sampling knob)
+// although the caller never enabled passthrough. Core now puts the caller's own setting back
+// before every fallback attempt and when the request returns.
+
+const forcedMergeProbe = "txe7222_vendor_only_probe"
+
+// forcedMergeUpstream records each request body and answers with status, or, when status is
+// 200, with an OpenAI-shaped chat or text completion (SSE when the body asks to stream).
+type forcedMergeUpstream struct {
+	*httptest.Server
+	mu     sync.Mutex
+	bodies [][]byte
+}
+
+func newForcedMergeUpstream(t testing.TB, status int) *forcedMergeUpstream {
+	t.Helper()
+	u := &forcedMergeUpstream{}
+	u.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		u.mu.Lock()
+		u.bodies = append(u.bodies, body)
+		u.mu.Unlock()
+		if status != http.StatusOK {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			fmt.Fprint(w, `{"error":{"message":"upstream unavailable","type":"server_error"}}`)
+			return
+		}
+		text := strings.HasSuffix(r.URL.Path, "/completions") && !strings.HasSuffix(r.URL.Path, "/chat/completions")
+		if bytes.Contains(body, []byte(`"stream":true`)) {
+			if text {
+				sseHandler(
+					`{"id":"t1","object":"text_completion","created":1,"model":"m","choices":[{"index":0,"text":"ok","finish_reason":null}]}`,
+					`{"id":"t1","object":"text_completion","created":1,"model":"m","choices":[{"index":0,"text":"","finish_reason":"stop"}]}`,
+				)(w, r)
+				return
+			}
+			sseHandler(
+				`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":null}]}`,
+				`{"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			)(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if text {
+			fmt.Fprint(w, `{"id":"t1","object":"text_completion","created":1,"model":"m","choices":[{"index":0,"text":"ok","finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+			return
+		}
+		fmt.Fprint(w, `{"id":"c1","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	t.Cleanup(u.Close)
+	return u
+}
+
+func (u *forcedMergeUpstream) carriedProbe() (requests int, carried bool) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	for _, body := range u.bodies {
+		if bytes.Contains(body, []byte(forcedMergeProbe)) {
+			carried = true
+		}
+	}
+	return len(u.bodies), carried
+}
+
+// forcedMergeFallbackCoverage names every provider package that writes the extra-params merge
+// switch on directly, and how TestForcedExtraParamsMergeIsOffForTheFallback pins it. "chat"
+// and "text" run that request type end to end through a fallback. Any other value is the
+// reason the package is not driven end to end; the restore in core covers it all the same,
+// since it does not depend on which provider wrote the switch.
+var forcedMergeFallbackCoverage = map[string]string{
+	"byteplus":   "chat",
+	"minimax":    "chat",
+	"runware":    "chat",
+	"sgl":        "chat",
+	"wafer":      "chat",
+	"deepseek":   "text",
+	"vllm":       "text",
+	"bfl":        "image and video generation only, which have no OpenAI-compatible fallback to observe here",
+	"databricks": "needs a workspace OAuth exchange before the request; the switch is written on the same context as the others",
+	"xai":        "video and speech only on this path; xAI Responses already restores with ForceExtraParamsPassthrough",
+}
+
+// TestEveryForcedMergeProviderIsCovered fails when a provider package starts writing the
+// extra-params merge switch directly and is not added to forcedMergeFallbackCoverage, so the
+// fallback test below grows with the class instead of drifting behind it.
+func TestEveryForcedMergeProviderIsCovered(t *testing.T) {
+	files, err := filepath.Glob(filepath.Join("providers", "*", "*.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	direct := regexp.MustCompile(`SetValue\(\s*schemas\.BifrostContextKeyPassthroughExtraParams\s*,\s*true\s*\)`)
+	found := map[string]bool{}
+	for _, file := range files {
+		if strings.HasSuffix(file, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if direct.Match(src) {
+			found[filepath.Base(filepath.Dir(file))] = true
+		}
+	}
+	delete(found, "utils") // ForceExtraParamsPassthrough itself
+	if len(found) == 0 {
+		t.Fatal("found no provider that writes the merge switch; the pattern no longer matches the source")
+	}
+	for pkg := range found {
+		if _, ok := forcedMergeFallbackCoverage[pkg]; !ok {
+			t.Errorf("providers/%s switches the extra-params merge on directly; add it to forcedMergeFallbackCoverage (and to the end-to-end table when it serves chat or text)", pkg)
+		}
+	}
+	for pkg := range forcedMergeFallbackCoverage {
+		if !found[pkg] {
+			t.Errorf("forcedMergeFallbackCoverage lists providers/%s, which no longer writes the switch; remove it", pkg)
+		}
+	}
+}
+
+func TestForcedExtraParamsMergeIsOffForTheFallback(t *testing.T) {
+	type primaryCase struct {
+		provider schemas.ModelProvider
+		text     bool
+	}
+	var primaries []primaryCase
+	for pkg, how := range forcedMergeFallbackCoverage {
+		if how == "chat" || how == "text" {
+			primaries = append(primaries, primaryCase{provider: schemas.ModelProvider(pkg), text: how == "text"})
+		}
+	}
+	slices.SortFunc(primaries, func(a, b primaryCase) int { return strings.Compare(string(a.provider), string(b.provider)) })
+
+	for _, pc := range primaries {
+		for _, stream := range []bool{false, true} {
+			for _, callerPassthrough := range []bool{false, true} {
+				name := fmt.Sprintf("%s/stream=%v/caller_passthrough=%v", pc.provider, stream, callerPassthrough)
+				t.Run(name, func(t *testing.T) {
+					primary := newForcedMergeUpstream(t, http.StatusServiceUnavailable)
+					fallback := newForcedMergeUpstream(t, http.StatusOK)
+
+					account := NewMockAccount()
+					account.AddProviderWithBaseURL(pc.provider, 1, 1, primary.URL)
+					account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, fallback.URL)
+					account.configs[pc.provider].NetworkConfig.MaxRetries = 0
+					account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+					primaryKey := schemas.Key{ID: "primary-key", Value: *schemas.NewSecretVar("sk-primary"), Models: schemas.WhiteList{"*"}, Weight: 100}
+					switch pc.provider {
+					case schemas.VLLM: // self-hosted: the server URL is on the key
+						primaryKey.VLLMKeyConfig = &schemas.VLLMKeyConfig{URL: *schemas.NewSecretVar(primary.URL), ModelName: "some-model"}
+					case schemas.SGL:
+						primaryKey.SGLKeyConfig = &schemas.SGLKeyConfig{URL: *schemas.NewSecretVar(primary.URL)}
+					}
+					account.SetKeysForProvider(pc.provider, []schemas.Key{primaryKey})
+					account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+						{ID: "fallback-key", Value: *schemas.NewSecretVar("sk-fallback"), Models: schemas.WhiteList{"*"}, Weight: 100},
+					})
+					client := newStreamTestClient(t, account)
+
+					ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+					if callerPassthrough {
+						ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+					}
+					extra := map[string]any{forcedMergeProbe: "x"}
+					fallbacks := []schemas.Fallback{{Provider: schemas.OpenAI, Model: "gpt-4o-mini"}}
+
+					var bifrostErr *schemas.BifrostError
+					switch {
+					case pc.text:
+						req := &schemas.BifrostTextCompletionRequest{
+							Provider: pc.provider, Model: "some-model",
+							Input:     &schemas.TextCompletionInput{PromptStr: schemas.Ptr("hi")},
+							Params:    &schemas.TextCompletionParameters{ExtraParams: extra},
+							Fallbacks: fallbacks,
+						}
+						if stream {
+							var ch chan *schemas.BifrostStreamChunk
+							ch, bifrostErr = client.TextCompletionStreamRequest(ctx, req)
+							for range ch {
+							}
+						} else {
+							_, bifrostErr = client.TextCompletionRequest(ctx, req)
+						}
+					default:
+						req := &schemas.BifrostChatRequest{
+							Provider: pc.provider, Model: "some-model",
+							Input: []schemas.ChatMessage{
+								{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+							},
+							Params:    &schemas.ChatParameters{ExtraParams: extra},
+							Fallbacks: fallbacks,
+						}
+						if stream {
+							var ch chan *schemas.BifrostStreamChunk
+							ch, bifrostErr = client.ChatCompletionStreamRequest(ctx, req)
+							if ch != nil {
+								_, errs := drainChatStream(ch)
+								if len(errs) > 0 {
+									t.Fatalf("fallback stream emitted error chunks: %v", errs)
+								}
+							}
+						} else {
+							_, bifrostErr = client.ChatCompletionRequest(ctx, req)
+						}
+					}
+					if bifrostErr != nil {
+						t.Fatalf("request failed: %s", bifrostErr.GetErrorString())
+					}
+
+					// The primary forced the merge: without that, this case proves nothing.
+					if n, carried := primary.carriedProbe(); n == 0 || !carried {
+						t.Fatalf("primary %s got %d request(s), probe carried=%v; want the forced merge to send it", pc.provider, n, carried)
+					}
+					n, carried := fallback.carriedProbe()
+					if n == 0 {
+						t.Fatal("the fallback was never called")
+					}
+					if carried != callerPassthrough {
+						t.Fatalf("fallback carried the extra param = %v, want %v (the caller's own passthrough setting)", carried, callerPassthrough)
+					}
+					// And the switch does not outlive the request on a context the caller reuses.
+					if got, _ := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams).(bool); got != callerPassthrough {
+						t.Fatalf("after the request the passthrough switch is %v, want the caller's %v", got, callerPassthrough)
+					}
+				})
+			}
+		}
+	}
+}
+
+// BenchmarkCallerExtraParamsPassthrough is the work TXE-7222 adds to a request: one read of the
+// caller's setting before the first attempt and one read at the end. The write happens only where a
+// provider changed the switch: before each fallback attempt, and once at the end.
+func BenchmarkCallerExtraParamsPassthrough(b *testing.B) {
+	b.Run("common request, no switch", func(b *testing.B) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		b.ReportAllocs()
+		for b.Loop() {
+			s := callerExtraParamsPassthrough(ctx)
+			s.restoreIfChanged(ctx)
+		}
+	})
+	b.Run("caller enabled passthrough", func(b *testing.B) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+		b.ReportAllocs()
+		for b.Loop() {
+			s := callerExtraParamsPassthrough(ctx)
+			s.restoreIfChanged(ctx)
+		}
+	})
+	b.Run("provider forced the merge, then a fallback", func(b *testing.B) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		b.ReportAllocs()
+		for b.Loop() {
+			s := callerExtraParamsPassthrough(ctx)
+			ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true) // what the provider does
+			s.restore(ctx)                                                      // before the fallback
+			s.restoreIfChanged(ctx)
+		}
+	})
+}
+
+// BenchmarkChatCompletionNoFallback is a whole buffered chat request with no fallback, through the
+// client to a local OpenAI-shaped upstream: the common path every request takes.
+func BenchmarkChatCompletionNoFallback(b *testing.B) {
+	upstream := newForcedMergeUpstream(b, http.StatusOK)
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 4, 64, upstream.URL)
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "k", Value: *schemas.NewSecretVar("sk-bench"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+	client, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewDefaultLogger(schemas.LogLevelError)})
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(client.Shutdown)
+	req := func() *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI, Model: "gpt-4o-mini",
+			Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+		}
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if _, bifrostErr := client.ChatCompletionRequest(ctx, req()); bifrostErr != nil {
+			b.Fatal(bifrostErr.GetErrorString())
+		}
+		ctx.Cancel()
+	}
+}
