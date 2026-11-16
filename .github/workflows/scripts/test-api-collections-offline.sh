@@ -38,6 +38,10 @@ set -euo pipefail
 #       the release's test-bifrost-http job starts with it and fails the release when it does not.
 #   test-migration-fixtures.py                 the v2.0.0 migration seed SQL; needs no service.
 #       It ran in no job until the check above found it.
+#   test-plugin-release-dependencies.py        release-single-plugin.sh pins core, framework and
+#       sibling plugins, under the module root read from core/go.mod, before go mod tidy
+#       (TXE-7113). Stubbed go; nothing is downloaded or pushed. It ran in no job before and
+#       had fallen behind the script.
 #   every other tests/e2e/api/**/*.test.{mjs,js,cjs}  found, not listed (TXE-7067): the runners/lib
 #       script tests and any test added later. A test under tests/e2e/api runs here by
 #       existing; none was run by any job before, so a renamed harness row the smoke manifest
@@ -101,6 +105,10 @@ bash "$SCRIPT_DIR/validate-helm-schema.sh"
 echo ""
 echo "🧪 test-migration-fixtures.py (migration seed SQL; ran in no job before TXE-7111)"
 python3 "$SCRIPT_DIR/test-migration-fixtures.py"
+
+echo ""
+echo "🧪 test-plugin-release-dependencies.py (plugin release pins its internal modules, TXE-7113)"
+python3 "$SCRIPT_DIR/test-plugin-release-dependencies.py"
 
 # Every other *.test.mjs, *.test.js and *.test.cjs under tests/e2e/api (lib/pricing.test.js ran
 # in no job while the loop found .mjs only, TXE-7371), found rather than listed, one at a time (some
