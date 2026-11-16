@@ -411,7 +411,7 @@ func (r *BedrockInvokeRequest) ApplyGuardrailHeaders(identifier, version, trace 
 		// The map may be shared with other in-process requests, so this one gets its own copy.
 		r.ExtraParams = maps.Clone(r.ExtraParams)
 	}
-	config, _ := schemas.ExtraParamObject(r.ExtraParams["guardrailConfig"])
+	config, _ := guardrailConfigObject(r.ExtraParams["guardrailConfig"])
 	if config == nil {
 		config = make(map[string]interface{}, 3)
 	} else {
@@ -440,7 +440,7 @@ func liftInvokeGuardrailConfig(req *BedrockConverseRequest) {
 		return
 	}
 	config := req.GuardrailConfig
-	if raw, ok := schemas.ExtraParamObject(req.ExtraParams["guardrailConfig"]); ok {
+	if raw, ok := guardrailConfigObject(req.ExtraParams["guardrailConfig"]); ok {
 		delete(req.ExtraParams, "guardrailConfig")
 		if config == nil {
 			config = &BedrockGuardrailConfig{}
@@ -461,7 +461,7 @@ func liftInvokeGuardrailConfig(req *BedrockConverseRequest) {
 			config.TagSuffix = value
 		}
 	}
-	if raw, ok := schemas.ExtraParamObject(req.ExtraParams["amazon-bedrock-guardrailConfig"]); ok {
+	if raw, ok := guardrailConfigObject(req.ExtraParams["amazon-bedrock-guardrailConfig"]); ok {
 		delete(req.ExtraParams, "amazon-bedrock-guardrailConfig")
 		if config == nil {
 			config = &BedrockGuardrailConfig{}
@@ -477,6 +477,20 @@ func liftInvokeGuardrailConfig(req *BedrockConverseRequest) {
 	if len(req.ExtraParams) == 0 {
 		req.ExtraParams = nil
 	}
+}
+
+// guardrailConfigObject is every Bedrock reading of a guardrailConfig (or
+// amazon-bedrock-guardrailConfig) extra param as a JSON object. It reads the value as
+// schemas.ExtraParamObject does, so a Go caller's struct, map[string]string or json.RawMessage
+// is the object it encodes to. A []byte is also taken as raw JSON, as the InvokeModel lift
+// always took it: a guardrail config is lifted into the typed config or into headers, never
+// merged into the body. Reading it as the base64 string the merge would make of it would drop
+// the guardrail (TXE-7525).
+func guardrailConfigObject(value any) (map[string]interface{}, bool) {
+	if raw, ok := value.([]byte); ok {
+		return schemas.ExtraParamObject(json.RawMessage(raw))
+	}
+	return schemas.ExtraParamObject(value)
 }
 
 func (r *BedrockInvokeRequest) ToBedrockConverseRequest() *BedrockConverseRequest {

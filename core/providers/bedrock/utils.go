@@ -1156,7 +1156,7 @@ func validateGuardTagSuffix(suffix string) error {
 // nor a streamProcessingMode. A malformed tagSuffix is an error the caller surfaces as an
 // invalid request. The two ride in the same AWS object, so each is sent on its own merit.
 func invokeGuardrailBodyConfig(extraParams map[string]any) (map[string]any, error) {
-	config, _ := schemas.ExtraParamObject(extraParams["guardrailConfig"])
+	config, _ := guardrailConfigObject(extraParams["guardrailConfig"])
 	suffix, _ := config["tagSuffix"].(string)
 	mode, _ := config["streamProcessingMode"].(string)
 	if suffix == "" && mode == "" {
@@ -1322,7 +1322,7 @@ func invokeChatGuardTagging(request *schemas.BifrostChatRequest) (*schemas.Bifro
 // The only error is a malformed guardrailConfig.tagSuffix, which the converters return as-is.
 func applyBedrockExtraParams(extraParams map[string]interface{}, bedrockReq *BedrockConverseRequest) error {
 	if guardrailConfig, exists := extraParams["guardrailConfig"]; exists {
-		if gc, ok := schemas.ExtraParamObject(guardrailConfig); ok {
+		if gc, ok := guardrailConfigObject(guardrailConfig); ok {
 			config := &BedrockGuardrailConfig{}
 			if identifier, ok := gc["guardrailIdentifier"].(string); ok {
 				config.GuardrailIdentifier = identifier

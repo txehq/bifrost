@@ -2942,6 +2942,9 @@ func TestGuardrailConfigTypedObject(t *testing.T) {
 		"pointer to struct": &typedGuardrailConfig{GuardrailIdentifier: "gr-1", GuardrailVersion: "3", Trace: "enabled", TagSuffix: "abc"},
 		"map[string]string": map[string]string{"guardrailIdentifier": "gr-1", "guardrailVersion": "3", "trace": "enabled", "tagSuffix": "abc"},
 		"json.RawMessage":   json.RawMessage(`{"guardrailIdentifier":"gr-1","guardrailVersion":"3","trace":"enabled","tagSuffix":"abc"}`),
+		// Raw JSON bytes, which the InvokeModel lift always read: never the base64 string the
+		// merge would make of them.
+		"[]byte": []byte(`{"guardrailIdentifier":"gr-1","guardrailVersion":"3","trace":"enabled","tagSuffix":"abc"}`),
 	} {
 		t.Run(name, func(t *testing.T) {
 			extra := map[string]any{"guardrailConfig": config}
