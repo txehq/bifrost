@@ -15256,6 +15256,49 @@ func TestRequestForAProviderTheGatewayLacks(t *testing.T) {
 	}
 }
 
+// upstream_sent is call-wide (C6): a primary refused before dispatch (a provider the gateway
+// lacks) whose fallback reached its vendor must not report upstream_sent false, whichever error the
+// call returns (connector P1 on #366, TXE-7651).
+func TestUpstreamSentIsCallWideAcrossFallbacks(t *testing.T) {
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"bad request from the vendor","type":"invalid_request_error"}}`))
+	}))
+	defer server.Close()
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 10, server.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "fallback-key", Value: *schemas.NewSecretVar("sk-fallback"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+	client, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewDefaultLogger(schemas.LogLevelError)})
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	defer client.Shutdown()
+
+	text := "ping"
+	_, bifrostErr := client.ChatCompletionRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.BifrostChatRequest{
+		Provider:  schemas.Mistral,
+		Model:     "mistral-small-latest",
+		Input:     []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &text}}},
+		Fallbacks: []schemas.Fallback{{Provider: schemas.OpenAI, Model: "gpt-4o-mini"}},
+	})
+	if bifrostErr == nil {
+		t.Fatal("the fallback's vendor answered 400: the call must fail")
+	}
+	if hits.Load() == 0 {
+		t.Fatal("the fallback never reached its vendor, so this test proves nothing")
+	}
+	if s := bifrostErr.ExtraFields.UpstreamSent; s != nil && !*s {
+		t.Errorf("upstream_sent false although the fallback reached its vendor (error_type %q)", bifrostErr.ExtraFields.ErrorType)
+	}
+}
+
 // TestProviderQueueErrorType: only getProviderQueue's no-config error is the caller's; a
 // provider that fails to start is Bifrost's own fault.
 func TestProviderQueueErrorType(t *testing.T) {

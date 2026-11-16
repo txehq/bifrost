@@ -6373,6 +6373,8 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	// the error that triggered it (primary error for the first iteration, the
 	// prior fallback's error for subsequent iterations).
 	lastErr := primaryErr
+	// upstream_sent is call-wide (C6): the error returned below carries every attempt's.
+	sentAcross := newCallUpstreamSent(primaryErr)
 
 	// Try fallbacks in order
 	for i, fallback := range fallbacks {
@@ -6427,19 +6429,20 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 			tracer.SetAttribute(handle, "error", fallbackErr.Error.Message)
 		}
 		tracer.EndSpan(handle, schemas.SpanStatusError, "fallback failed")
+		sentAcross.observe(fallbackErr)
 
 		// Check if we should continue with more fallbacks
 		if !bifrost.shouldContinueWithFallbacks(fallback, fallbackErr) {
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Fallback %s/%s failed (%s); halting further fallbacks", fallback.Provider, fallback.Model, routingErrorSummary(fallbackErr)))
-			return nil, fallbackErr
+			return nil, sentAcross.apply(fallbackErr)
 		}
 		if injectedToolsRan(ctx) {
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Fallback %s/%s ran a provider-injected tool before failing (%s); halting further fallbacks", fallback.Provider, fallback.Model, routingErrorSummary(fallbackErr)))
-			return nil, fallbackErr
+			return nil, sentAcross.apply(fallbackErr)
 		}
 		if upstreamWriteUnknown(fallbackErr) {
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Fallback %s/%s sent a write-once request and got no response (%s); halting further fallbacks", fallback.Provider, fallback.Model, routingErrorSummary(fallbackErr)))
-			return nil, fallbackErr
+			return nil, sentAcross.apply(fallbackErr)
 		}
 
 		lastErr = fallbackErr
@@ -6448,7 +6451,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("All %d fallback(s) exhausted; returning primary error (%s)", len(fallbacks), routingErrorSummary(primaryErr)))
 	// All providers failed, return the original error, with the provider headers it came with
 	restoreProviderResponseHeaders(ctx, primaryHeaders)
-	return nil, primaryErr
+	return nil, sentAcross.apply(primaryErr)
 }
 
 // continueOnServedRoute sends a later turn of an MCP agent loop to the provider/model that
@@ -6605,6 +6608,8 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Primary %s/%s failed (%s); evaluating %d configured fallback(s)", provider, model, routingErrorSummary(primaryErr), len(fallbacks)))
 
 	lastErr := primaryErr
+	// upstream_sent is call-wide (C6): the error returned below carries every attempt's.
+	sentAcross := newCallUpstreamSent(primaryErr)
 
 	// Try fallbacks in order
 	for i, fallback := range fallbacks {
@@ -6673,19 +6678,20 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 			tracer.SetAttribute(handle, "error", fallbackErr.Error.Message)
 		}
 		tracer.EndSpan(handle, schemas.SpanStatusError, "fallback failed")
+		sentAcross.observe(fallbackErr)
 
 		// Check if we should continue with more fallbacks
 		if !bifrost.shouldContinueWithFallbacks(fallback, fallbackErr) {
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Fallback %s/%s failed (%s); halting further fallbacks", fallback.Provider, fallback.Model, routingErrorSummary(fallbackErr)))
-			return nil, fallbackErr
+			return nil, sentAcross.apply(fallbackErr)
 		}
 		if injectedToolsRan(ctx) {
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Fallback %s/%s ran a provider-injected tool before failing (%s); halting further fallbacks", fallback.Provider, fallback.Model, routingErrorSummary(fallbackErr)))
-			return nil, fallbackErr
+			return nil, sentAcross.apply(fallbackErr)
 		}
 		if upstreamWriteUnknown(fallbackErr) {
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Fallback %s/%s sent a write-once request and got no response (%s); halting further fallbacks", fallback.Provider, fallback.Model, routingErrorSummary(fallbackErr)))
-			return nil, fallbackErr
+			return nil, sentAcross.apply(fallbackErr)
 		}
 
 		lastErr = fallbackErr
@@ -6694,7 +6700,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("All %d fallback(s) exhausted; returning primary error (%s)", len(fallbacks), routingErrorSummary(primaryErr)))
 	// All providers failed, return the original error, with the provider headers it came with
 	restoreProviderResponseHeaders(ctx, primaryHeaders)
-	return nil, primaryErr
+	return nil, sentAcross.apply(primaryErr)
 }
 
 // tryRequest is a generic function that handles common request processing logic

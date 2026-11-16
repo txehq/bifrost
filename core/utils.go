@@ -336,6 +336,53 @@ func declareErrorType(e *schemas.BifrostError, errorType schemas.ErrorType) *sch
 	}
 	if refusedBeforeDispatch(errorType) {
 		e.ExtraFields.UpstreamSent = schemas.Ptr(false)
+	} else {
+		// A reclassified error (a validation helper's literal reused for a nil response after
+		// dispatch) must not keep the refusal's marker: untold, which C6 counts as sent.
+		e.ExtraFields.UpstreamSent = nil
+	}
+	return e
+}
+
+// callUpstreamSent tracks upstream_sent across the attempts of one call, primary and fallbacks:
+// C6 makes it call-wide, false only when every attempt is known not to have written the request,
+// true when any attempt says it did, untold otherwise (TXE-7651, connector P1 on #366).
+type callUpstreamSent struct {
+	allUnsent, anySent bool
+}
+
+func newCallUpstreamSent(primary *schemas.BifrostError) *callUpstreamSent {
+	c := &callUpstreamSent{allUnsent: true}
+	c.observe(primary)
+	return c
+}
+
+// observe records one failed attempt's upstream_sent.
+func (c *callUpstreamSent) observe(e *schemas.BifrostError) {
+	if e == nil {
+		return
+	}
+	s := e.ExtraFields.UpstreamSent
+	if s == nil || *s {
+		c.allUnsent = false
+	}
+	if s != nil && *s {
+		c.anySent = true
+	}
+}
+
+// apply writes the call's value on the error returned for the call.
+func (c *callUpstreamSent) apply(e *schemas.BifrostError) *schemas.BifrostError {
+	if e == nil {
+		return e
+	}
+	switch {
+	case c.anySent:
+		e.ExtraFields.UpstreamSent = schemas.Ptr(true)
+	case c.allUnsent:
+		e.ExtraFields.UpstreamSent = schemas.Ptr(false)
+	default:
+		e.ExtraFields.UpstreamSent = nil
 	}
 	return e
 }

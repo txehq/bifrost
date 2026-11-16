@@ -1011,3 +1011,46 @@ func TestDeclaredErrorTypeIsSentAsDeclared(t *testing.T) {
 		}
 	}
 }
+
+// callUpstreamSent makes upstream_sent call-wide (C6): false only when every attempt was refused
+// before dispatch, true when any attempt says it was sent, untold otherwise.
+func TestCallUpstreamSentAcrossAttempts(t *testing.T) {
+	unsent := func() *schemas.BifrostError {
+		return &schemas.BifrostError{ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false)}}
+	}
+	sent := func() *schemas.BifrostError {
+		return &schemas.BifrostError{ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(true)}}
+	}
+	untold := func() *schemas.BifrostError { return &schemas.BifrostError{} }
+	for _, c := range []struct {
+		name      string
+		primary   *schemas.BifrostError
+		fallbacks []*schemas.BifrostError
+		want      *bool
+	}{
+		{"every attempt refused", unsent(), []*schemas.BifrostError{unsent()}, schemas.Ptr(false)},
+		{"no fallback ran", unsent(), nil, schemas.Ptr(false)},
+		{"a fallback untold", unsent(), []*schemas.BifrostError{untold()}, nil},
+		{"a fallback sent", unsent(), []*schemas.BifrostError{unsent(), sent()}, schemas.Ptr(true)},
+		{"primary untold", untold(), []*schemas.BifrostError{unsent()}, nil},
+	} {
+		acc := newCallUpstreamSent(c.primary)
+		for _, f := range c.fallbacks {
+			acc.observe(f)
+		}
+		got := acc.apply(c.primary).ExtraFields.UpstreamSent
+		if (got == nil) != (c.want == nil) || (got != nil && *got != *c.want) {
+			t.Errorf("%s: upstream_sent %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// A refusal's literal reclassified as bifrost_internal (a nil response after dispatch) drops the
+// refusal's upstream_sent false: untold (connector P2 on #366).
+func TestReclassifyingARefusalClearsUpstreamSentFalse(t *testing.T) {
+	e := &schemas.BifrostError{ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest, UpstreamSent: schemas.Ptr(false)}}
+	declareErrorType(e, schemas.ErrorTypeBifrostInternal)
+	if e.ExtraFields.UpstreamSent != nil {
+		t.Errorf("upstream_sent %v after reclassifying as bifrost_internal, want untold", *e.ExtraFields.UpstreamSent)
+	}
+}
