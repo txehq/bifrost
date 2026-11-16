@@ -189,6 +189,13 @@ BifrostErrorExtraFields:
         milliseconds, read from its retry-after-ms or Retry-After header or
         its google.rpc.RetryInfo error detail, and clamped to between 1000 and
         300000. Absent when the provider gave no explicit hint.
+    upstream_sent:
+      type: boolean
+      description: >-
+        Whether any attempt of the call wrote the request to a provider
+        (contract C6). false on a refusal Bifrost raises before dispatch: a
+        caller_ error (but caller_cancelled) or bifrost_dropped. Absent when
+        Bifrost cannot tell, which counts as sent.
     raw_request:
       description: Raw provider request, when raw request capture is enabled
     raw_response:

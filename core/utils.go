@@ -322,6 +322,10 @@ func newBifrostErrorFromMsg(errorType schemas.ErrorType, message string) *schema
 // bifrost_internal is Bifrost's own fault (IsBifrostError, sent 500); bifrost_dropped is a
 // request shed while a provider is replaced or its queue is full, which the caller may
 // retry (503); every other type keeps the default, 400 for a non-Bifrost error.
+//
+// A caller_ or bifrost_dropped error core raises is a refusal before dispatch: nothing was
+// written to a vendor, so it declares upstream_sent false (TXE-7651). bifrost_internal stays
+// untold: some come after dispatch (a nil response from the provider).
 func declareErrorType(e *schemas.BifrostError, errorType schemas.ErrorType) *schemas.BifrostError {
 	e.ExtraFields.ErrorType = errorType
 	switch errorType {
@@ -330,7 +334,20 @@ func declareErrorType(e *schemas.BifrostError, errorType schemas.ErrorType) *sch
 	case schemas.ErrorTypeBifrostDropped:
 		e.StatusCode = schemas.Ptr(503)
 	}
+	if refusedBeforeDispatch(errorType) {
+		e.ExtraFields.UpstreamSent = schemas.Ptr(false)
+	}
 	return e
+}
+
+// refusedBeforeDispatch reports whether an error of errorType that core raises itself is a
+// refusal before any request was written to a vendor: every caller_ type but caller_cancelled
+// (a client may leave mid-stream, after the vendor answered), and bifrost_dropped.
+func refusedBeforeDispatch(errorType schemas.ErrorType) bool {
+	if errorType == schemas.ErrorTypeCallerCancelled {
+		return false
+	}
+	return strings.HasPrefix(string(errorType), "caller_") || errorType == schemas.ErrorTypeBifrostDropped
 }
 
 // newBifrostCtxDoneError creates a BifrostError from a cancelled/expired context.

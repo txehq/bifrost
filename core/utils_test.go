@@ -1001,6 +1001,13 @@ func TestDeclaredErrorTypeIsSentAsDeclared(t *testing.T) {
 			if got := e.EffectiveHTTPStatus(); got != want {
 				t.Errorf("%s(%s): status %d, want %d", name, errorType, got, want)
 			}
+			// A caller_ (but caller_cancelled) or bifrost_dropped refusal is before dispatch:
+			// upstream_sent false. Any other type stays untold (TXE-7651).
+			wantSent := (strings.HasPrefix(string(errorType), "caller_") && errorType != schemas.ErrorTypeCallerCancelled) ||
+				errorType == schemas.ErrorTypeBifrostDropped
+			if got := e.ExtraFields.UpstreamSent; wantSent != (got != nil && !*got) || (!wantSent && got != nil) {
+				t.Errorf("%s(%s): upstream_sent %v, want false=%v", name, errorType, got, wantSent)
+			}
 		}
 	}
 }
