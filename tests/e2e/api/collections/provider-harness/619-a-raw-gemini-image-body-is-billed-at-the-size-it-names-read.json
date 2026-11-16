@@ -1,0 +1,142 @@
+{
+  "name": "619. A raw Gemini image body is billed at the size it names, read strictly (gemini raw image body read strictly)",
+  "description": "Local fixture regression for TXE-7502, no live provider calls. Start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json and run with providerErrorFixture=1; every case is skipped otherwise. The GenAI route sends an explicitly Gemini image body raw, and core never parses a raw body, so a raw image body was priced at the typed request's size or the default whatever imageSize it named. Core now prices a raw image body only through the provider's strict reading of it (schemas.RawImageBodyReader): Gemini reads generationConfig.imageConfig.imageSize and aspectRatio (or an Imagen predict's parameters.sampleImageSize) member by member, and refuses a body that names one of them twice in Google's two spellings (lowerCamelCase and snake_case), since Gemini could read the other copy than the one Bifrost prices. Red before: the body below reached Gemini and was priced at 1K. A raw body on a priced image operation of a provider without such a reader is refused raw_request_body_unsupported; that, and the size each reader bills, is pinned by Go tests in core (TestEveryProviderReadsOrRefusesRawImageBodies), since only in-process callers reach those providers in raw mode.",
+  "item": [
+    {
+      "name": "619.1 reset the fixture's record (gemini raw image body read strictly)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{providerErrorFixtureUrl}}/__reset",
+          "host": [
+            "{{providerErrorFixtureUrl}}"
+          ],
+          "path": [
+            "__reset"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the fixture reset its record', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "619.2 gemini/gemini-2.5-flash-image generateContent on the GenAI route naming imageSize twice (imageSize and image_size) is refused 400 before any upstream call [EXPECT-400] (gemini raw image body read strictly)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-2.5-flash-image:generateContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "gemini",
+            "gemini-2.5-flash-image:generateContent"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"contents\": [{\"role\": \"user\", \"parts\": [{\"text\": \"a lighthouse at dusk\"}]}],\n  \"generationConfig\": {\n    \"responseModalities\": [\"IMAGE\"],\n    \"imageConfig\": {\"imageSize\": \"1K\", \"image_size\": \"4K\"}\n  }\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('a pricing field named twice is refused, naming it', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  pm.expect(pm.response.text()).to.include('generationConfig.imageConfig.imageSize is named 2 times');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "619.3 Gemini received nothing (gemini raw image body read strictly)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{providerErrorFixtureUrl}}/__wire",
+          "host": [
+            "{{providerErrorFixtureUrl}}"
+          ],
+          "path": [
+            "__wire"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('no call reached Gemini', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var calls = pm.response.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/gemini/') === 0; });",
+              "  pm.expect(calls, JSON.stringify(calls)).to.eql([]);",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

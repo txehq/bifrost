@@ -255,6 +255,68 @@ const imagenPartiallyFilteredResponse = `{"predictions":[
 	{"bytesBase64Encoded":"aW1hZ2Uy","mimeType":"image/png"}
 ]}`
 
+// TXE-7502: the GenAI route sends an explicitly Gemini image body raw. Its size is read from the
+// body as the typed path reads it (ToBifrostImageGenerationRequest), so a raw body is billed at the
+// size the same body would be billed at converted. A pricing field named twice in Google's two
+// spellings, a size named in both places, and a value that is not a string are refused.
+func TestReadRawImageBodyReadsTheSizeTheTypedPathReads(t *testing.T) {
+	for _, body := range []string{
+		`{"contents":[{"parts":[{"text":"x"}]}],"generationConfig":{"imageConfig":{"imageSize":"4K","aspectRatio":"16:9"}}}`,
+		`{"contents":[{"parts":[{"text":"x"}]}],"generationConfig":{"imageConfig":{"imageSize":"2K"}}}`,
+		`{"contents":[{"parts":[{"text":"x"}]}],"generationConfig":{"imageConfig":{"aspectRatio":"3:4"}}}`,
+		`{"contents":[{"parts":[{"text":"x"}]}],"generationConfig":{"responseModalities":["IMAGE"]}}`,
+		`{"instances":[{"prompt":"x"}],"parameters":{"sampleImageSize":"2K","aspectRatio":"9:16","sampleCount":2}}`,
+		`{"instances":[{"prompt":"x"}],"parameters":{"sampleCount":4}}`,
+	} {
+		var typed GeminiGenerationRequest
+		require.NoError(t, sonic.UnmarshalString(body, &typed))
+		converted := typed.ToBifrostImageGenerationRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+		want := ""
+		if converted.Params.Size != nil {
+			want = *converted.Params.Size
+		}
+		billing, bifrostErr := ReadRawImageBody([]byte(body))
+		require.Nil(t, bifrostErr, body)
+		assert.Equal(t, want, billing.Parameters.Size, body)
+	}
+	for _, body := range []string{
+		`{"generationConfig":{"imageConfig":{"imageSize":"1K","image_size":"4K"}}}`,
+		`{"generationConfig":{"imageConfig":{"imageSize":"1K"}},"generation_config":{"imageConfig":{"imageSize":"4K"}}}`,
+		`{"generationConfig":{"imageConfig":{"imageSize":"1K"}},"parameters":{"sampleImageSize":"2K"}}`,
+		`{"parameters":{"sampleImageSize":4}}`,
+		`{"parameters":[]}`,
+		`[{"parameters":{}}]`,
+		`{"contents":[],"Contents":[]}`,
+		// Input images are read as strictly as the size: a list Bifrost cannot read, a name given
+		// twice, or a reference type it would have to guess is refused, never counted as none.
+		`{"contents":{"parts":[]}}`,
+		`{"contents":[{"parts":{"inlineData":{"data":"aW1n"}}}]}`,
+		`{"contents":[{"parts":[],"Parts":[{"inlineData":{"data":"aW1n"}}]}]}`,
+		`{"contents":[{"parts":["aW1n"]}]}`,
+		`{"contents":[{"parts":[{"inlineData":{"data":"a"},"inline_data":{"data":"b"}}]}]}`,
+		`{"instances":[{"referenceImages":{"referenceType":"REFERENCE_TYPE_RAW"}}]}`,
+		`{"instances":[{"referenceImages":[{"referenceType":1}]}]}`,
+		`{"instances":[{"referenceImages":[{"referenceImage":{"bytesBase64Encoded":"aW1n"}}]}]}`,
+		`{"instances":[{"referenceImages":[{"referenceType":"REFERENCE_TYPE_MASK","reference_type":"REFERENCE_TYPE_RAW"}]}]}`,
+	} {
+		_, bifrostErr := ReadRawImageBody([]byte(body))
+		assert.NotNil(t, bifrostErr, "%s was read, want it refused", body)
+	}
+	// Input images are counted as the typed edit path counts them, so an edit priced per input
+	// image is not billed for none (review of #356).
+	for body, want := range map[string]int{
+		`{"contents":[{"parts":[{"text":"x"},{"inlineData":{"mimeType":"image/png","data":"aW1n"}},{"inlineData":{"mimeType":"image/png","data":"aW1n"}}]}]}`:                                                                             2,
+		`{"instances":[{"prompt":"x","referenceImages":[{"referenceType":"REFERENCE_TYPE_RAW","referenceImage":{"bytesBase64Encoded":"aW1n"}},{"referenceType":"REFERENCE_TYPE_MASK","referenceImage":{"bytesBase64Encoded":"aW1n"}}]}]}`: 1,
+		`{"contents":[{"parts":[{"text":"x"}]}]}`: 0,
+		`{"contents":[{"parts":[{"file_data":{"file_uri":"gs://b/a.png"}}]},{"parts":[{"inline_data":{"data":"aW1n"}}]}]}`:                                                                   2,
+		`{"instances":[{"prompt":"x","referenceImages":[{"referenceType":"REFERENCE_TYPE_SUBJECT"},{"referenceType":"REFERENCE_TYPE_STYLE"},{"reference_type":"REFERENCE_TYPE_CONTROL"}]}]}`: 3,
+	} {
+		billing, bifrostErr := ReadRawImageBody([]byte(body))
+		require.Nil(t, bifrostErr, body)
+		assert.Equal(t, want, billing.InputImages, body)
+	}
+}
+
 func TestImagenResponse_FilteredImagesAndOutputCount(t *testing.T) {
 	const reasonA = "Unable to show generated images. Support codes: 58061214"
 	const reasonB = "Your current safety filter settings do not allow generation. Support codes: 17301594"
@@ -1099,7 +1161,9 @@ func TestGeminiImageGenerationAndEditCarryTheServedTier(t *testing.T) {
 		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL},
 	}, testNoopLogger{})
 	key := schemas.Key{Value: *schemas.NewSecretVar("gemini-test")}
-	ctx := func() *schemas.BifrostContext { return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline) }
+	ctx := func() *schemas.BifrostContext {
+		return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	}
 
 	generated, bifrostErr := provider.ImageGeneration(ctx(), key, &schemas.BifrostImageGenerationRequest{
 		Provider: schemas.Gemini, Model: "gemini-2.5-flash-image", Input: &schemas.ImageGenerationInput{Prompt: "a lighthouse"},

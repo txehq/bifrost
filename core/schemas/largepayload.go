@@ -170,6 +170,9 @@ func RequireBodyConversion(ctx *BifrostContext, reason string) {
 //   - a response is also raw when the operation returns opaque content (a file, a video);
 //   - a custom provider converts, because its overrides are not visible to this rule;
 //   - a plugin that called RequireBodyConversion turns both off.
+//
+// A staged priced image request is refused by core whatever this rule says
+// (decideLargePayloadForAttempt, TXE-7502).
 func DecideLargePayloadEligibility(ctx *BifrostContext, provider ModelProvider, custom bool, requestType RequestType, model string) LargePayloadEligibility {
 	if ctx != nil {
 		if reason, _ := ctx.Value(BifrostContextKeyBodyConversionRequired).(string); reason != "" {

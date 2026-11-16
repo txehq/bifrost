@@ -8236,6 +8236,11 @@ func decideLargePayloadForAttempt(ctx *schemas.BifrostContext, baseProvider, pro
 			// Nothing says which model the body names, so nothing shows it suits a fallback.
 			eligibility = schemas.LargePayloadEligibility{Reason: fmt.Sprintf(
 				"the model the request body names is not known and this is a fallback attempt serving %q; a body forwarded unparsed is not rewritten to another model", requestedModel)}
+		case schemas.IsPricedImageRequestType(requestType):
+			// Billed at the size, tier and count the body asks for, which nothing reads from a
+			// body streamed unparsed: not core, and not a provider's raw image body reader
+			// (schemas.RawImageBodyReader, TXE-7502), which needs the bytes.
+			eligibility = schemas.LargePayloadEligibility{Reason: "an image request is priced by the size, tier and image count its body asks for, which Bifrost reads only from a body it holds"}
 		}
 	}
 	ctx.SetValue(schemas.BifrostContextKeyLargePayloadEligibility, eligibility)
@@ -8726,6 +8731,11 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				clearAnthropicPassthroughForUnsupportedStructuredOutput(req.Context, baseProvider, &req.BifrostRequest)
 				// Disable GenAI raw-body passthrough when this attempt's provider isn't Google's.
 				clearGenAIPassthroughForNonGoogleProvider(req.Context, baseProvider, req.RequestType, resolvedModel)
+				// A raw body on a priced image operation reaches only a provider that reads its
+				// size, tier and count itself (TXE-7502); any other attempt is refused here.
+				if refusal := decideRawImageBodyForAttempt(req.Context, provider, req.RequestType, &req.BifrostRequest); refusal != nil {
+					return nil, refusal
+				}
 				// Decide whether this attempt may skip conversion for a large body, and refuse a
 				// staged large request it would have to convert, before anything is sent.
 				if refusal := decideLargePayloadForAttempt(req.Context, baseProvider, provider.GetProviderKey(), req.RequestType, resolvedModel, originalModelRequested); refusal != nil {
@@ -8861,6 +8871,11 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				clearAnthropicPassthroughForUnsupportedStructuredOutput(req.Context, baseProvider, &req.BifrostRequest)
 				// Disable GenAI raw-body passthrough when this attempt's provider isn't Google's.
 				clearGenAIPassthroughForNonGoogleProvider(req.Context, baseProvider, req.RequestType, resolvedModel)
+				// A raw body on a priced image operation reaches only a provider that reads its
+				// size, tier and count itself (TXE-7502); any other attempt is refused here.
+				if refusal := decideRawImageBodyForAttempt(req.Context, provider, req.RequestType, &req.BifrostRequest); refusal != nil {
+					return nil, refusal
+				}
 				// Decide whether this attempt may skip conversion for a large body, and refuse a
 				// staged large request it would have to convert, before anything is sent.
 				if refusal := decideLargePayloadForAttempt(req.Context, baseProvider, provider.GetProviderKey(), req.RequestType, resolvedModel, originalModelRequested); refusal != nil {
@@ -9838,7 +9853,9 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		}
 		if req.RequestType != schemas.ImageTaskRetrieveRequest {
 			// The create is the one billed image task response: it is priced at the size and
-			// tier it asked for, as a sync image response is (TXE-7050).
+			// tier it asked for, as a sync image response is (TXE-7050). A raw body is priced at
+			// what its provider read from it (TXE-7502), which BackfillCreateParams leaves alone.
+			applyRawImageTaskBilling(req.Context, imageTaskResponse)
 			imageTaskResponse.BackfillCreateParams(&req.BifrostRequest)
 		}
 		response.ImageTaskResponse = imageTaskResponse
