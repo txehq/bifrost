@@ -365,7 +365,9 @@ func openFetch(ctx context.Context, resourceURL string, limits fetchLimits, head
 		return nil, redacted, fmt.Errorf("failed to fetch from %q: %w", redacted, err)
 	}
 
-	reqCtx := ctx
+	// A resource fetch is not the vendor call: it must not record on the call's upstream
+	// attempt, or a downloaded attachment would read as a request the vendor received.
+	reqCtx := withoutUpstreamAttempt(ctx)
 	if len(header) > 0 {
 		names := make([]string, 0, len(header))
 		for name := range header {

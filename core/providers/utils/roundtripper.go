@@ -70,6 +70,9 @@ var requestContexts sync.Map // *fasthttp.Request -> context.Context
 // is idempotent and must run after client.Do has returned. A ctx that can never be
 // cancelled or expire binds nothing.
 func bindRequestContext(req *fasthttp.Request, ctx context.Context) (unbind func()) {
+	// A context that cannot be cancelled is not bound, so its upstream attempt is not
+	// recorded either: it stays untold, which C6 counts as sent. Every vendor call runs
+	// on a BifrostContext, which can always be cancelled (TXE-6746).
 	if req == nil || ctx == nil || ctx.Done() == nil {
 		return func() {}
 	}
@@ -159,12 +162,19 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 	// write-once request, which cannot risk it, and kept for a GET, which still
 	// has the retry.
 	checkOpen := writeOnce || req.Header.IsGet() || req.Header.IsHead()
+	// Each exchange records whether it wrote the request on the call's upstream attempt
+	// (contract C6 upstream_sent, TXE-6746). Recording here, once per exchange, keeps a
+	// write that fasthttp's stale-connection retry follows with a failed dial: the
+	// error client.Do returns is only the last exchange's.
+	attempt := schemas.UpstreamAttemptFrom(ctx)
 	cc, err := acquireWithContext(ctx, abort, reqTimeout, hc.AcquireConn, req.ConnectionClose(), releaseAbandoned)
 	if err != nil {
+		attempt.MarkConnectFailed()
 		return false, err
 	}
 	if checkOpen {
 		if cc, err = acquireOpenConn(ctx, abort, reqTimeout, cc, !writeOnce, hc.AcquireConn, req.ConnectionClose(), releaseAbandoned, hc.CloseConn); err != nil {
+			attempt.MarkConnectFailed()
 			return false, err
 		}
 	}
@@ -186,6 +196,7 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 
 	if err = conn.SetWriteDeadline(deadlineFor(hc.WriteTimeout, reqDeadline, ctx)); err != nil {
 		hc.CloseConn(cc)
+		attempt.MarkConnectFailed()
 		return retryOn(err), watcher.classify(err)
 	}
 
@@ -195,6 +206,8 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 		resetConnection = true
 	}
 
+	// From here a byte of the request may reach the upstream, whatever happens next.
+	attempt.MarkWritten()
 	bw := hc.AcquireWriter(conn)
 	err = req.Write(bw)
 	if resetConnection {

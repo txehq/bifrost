@@ -1597,38 +1597,9 @@ func TestContextTransport_StreamedErrorBodyIsBoundedButSuccessIsNot(t *testing.T
 	})
 }
 
-// IsConnectStageError: only errors from before the write are connect stage (TXE-6746). A missed
-// one leaves an attempt counted as sent, which is safe; a wrong one tells a client a request was
-// never written, so every error that may follow a write must answer false.
-func TestIsConnectStageError(t *testing.T) {
-	dial := &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}
-	read := &net.OpError{Op: "read", Net: "tcp", Err: errors.New("connection reset by peer")}
-	for _, c := range []struct {
-		name string
-		err  error
-		want bool
-	}{
-		{"dial refused", dial, true},
-		{"dial refused, wrapped", fmt.Errorf("fasthttp: %w", dial), true},
-		{"dns", &net.DNSError{Err: "no such host", Name: "x.invalid"}, true},
-		{"no free connection", fasthttp.ErrNoFreeConns, true},
-		{"dial timeout", fasthttp.ErrDialTimeout, true},
-		{"tls handshake timeout", fasthttp.ErrTLSHandshakeTimeout, true},
-		{"private target refused", &network.PrivateTargetNotAllowedError{}, true},
-		{"read reset", read, false},
-		{"timeout", fasthttp.ErrTimeout, false},
-		{"connection closed before the first byte", fasthttp.ErrConnectionClosed, false},
-		{"eof", io.EOF, false},
-		{"nil", nil, false},
-	} {
-		if got := IsConnectStageError(c.err); got != c.want {
-			t.Errorf("%s: IsConnectStageError = %v, want %v", c.name, got, c.want)
-		}
-	}
-}
-
-// The shared client records each exchange on the call's upstream attempt (TXE-6746): a refused
-// dial wrote nothing; an answered request, and one the server dropped after reading it, wrote.
+// The shared client records each exchange on the call's upstream attempt (TXE-6746), in
+// contextTransport: a refused dial wrote nothing; an answered request, and one the server dropped
+// after reading it, wrote.
 func TestSharedClientRecordsWhetherTheRequestWasWritten(t *testing.T) {
 	closed, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
@@ -1654,37 +1625,83 @@ func TestSharedClientRecordsWhetherTheRequestWasWritten(t *testing.T) {
 		}
 	}()
 
-	client := &fasthttp.Client{MaxIdemponentCallAttempts: 1, ReadTimeout: testtime.Scale(2 * time.Second)}
+	client := ConfigureDialer(&fasthttp.Client{MaxIdemponentCallAttempts: 1, ReadTimeout: testtime.Scale(2 * time.Second)}, true)
 	for _, c := range []struct {
-		name                   string
-		addr                   string
-		wantWritten, wantFails bool
+		name string
+		addr string
+		want bool
 	}{
-		{"refused dial", refusedAddr, false, true},
-		{"answered 500", answered.Addr().String(), true, false},
-		{"dropped after the request was read", dropped.Addr().String(), true, false},
+		{"refused dial", refusedAddr, false},
+		{"answered 500", answered.Addr().String(), true},
+		{"dropped after the request was read", dropped.Addr().String(), true},
 	} {
-		attempt := &schemas.UpstreamAttempt{}
-		ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyUpstreamAttempt, attempt)
-		req, resp := fasthttp.AcquireRequest(), fasthttp.AcquireResponse()
-		req.SetRequestURI("http://" + c.addr + "/v1/chat/completions")
-		req.Header.SetMethod(http.MethodPost)
-		req.SetBodyString(`{}`)
-		_, _, wait := MakeRequestWithContext(ctx, client, req, resp)
-		wait()
-		fasthttp.ReleaseRequest(req)
-		fasthttp.ReleaseResponse(resp)
-
-		probe := &schemas.BifrostError{}
-		attempt.Apply(probe)
-		got := probe.ExtraFields.UpstreamSent
-		switch {
-		case c.wantWritten && (got == nil || !*got):
-			t.Errorf("%s: upstream_sent %v, want true", c.name, got)
-		case c.wantFails && (got == nil || *got):
-			t.Errorf("%s: upstream_sent %v, want false", c.name, got)
+		if got := upstreamSentAfter(t, client, c.addr); got == nil || *got != c.want {
+			t.Errorf("%s: upstream_sent %v, want %v", c.name, got, c.want)
 		}
 	}
+}
+
+// fasthttp retries a request whose reused connection died after the write on a new connection
+// (network.StaleConnectionRetryIfErr). When that retry's dial is refused, client.Do returns only
+// the dial error, but the first exchange may have reached the vendor: upstream_sent stays true.
+func TestARetriedWriteStaysSentWhenTheRetryCannotConnect(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	addr := ln.Addr().String()
+	secondRead := make(chan struct{})
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		br := bufio.NewReader(conn)
+		first, err := http.ReadRequest(br) // the request that pools the connection
+		if err != nil {
+			return
+		}
+		_, _ = io.Copy(io.Discard, first.Body)
+		_, _ = conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"))
+		if second, err := http.ReadRequest(br); err == nil { // the vendor reads the request...
+			_, _ = io.Copy(io.Discard, second.Body)
+		}
+		close(secondRead) // ...and the connection dies before it answers
+	}()
+
+	client := ConfigureDialer(&fasthttp.Client{ReadTimeout: testtime.Scale(2 * time.Second)}, true)
+	warm := upstreamSentAfter(t, client, addr)
+	require.True(t, warm != nil && *warm, "the first request must be answered")
+	require.NoError(t, ln.Close()) // the retry's dial is refused
+
+	got := upstreamSentAfter(t, client, addr)
+	select {
+	case <-secondRead:
+	default:
+		t.Fatal("the second request never reached the server")
+	}
+	if got == nil || !*got {
+		t.Errorf("upstream_sent %v, want true: the first exchange wrote the request", got)
+	}
+}
+
+// upstreamSentAfter sends one POST to addr through the shared client with a fresh upstream
+// attempt on the context, and returns what the attempt makes of upstream_sent.
+func upstreamSentAfter(t *testing.T, client *fasthttp.Client, addr string) *bool {
+	t.Helper()
+	attempt := &schemas.UpstreamAttempt{}
+	ctx, cancel := context.WithTimeout(context.WithValue(context.Background(), schemas.BifrostContextKeyUpstreamAttempt, attempt), testtime.Scale(5*time.Second))
+	defer cancel()
+	req, resp := fasthttp.AcquireRequest(), fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+	req.SetRequestURI("http://" + addr + "/v1/chat/completions")
+	req.Header.SetMethod(http.MethodPost)
+	req.SetBodyString(`{}`)
+	_, _, wait := MakeRequestWithContext(ctx, client, req, resp)
+	wait()
+	probe := &schemas.BifrostError{}
+	attempt.Apply(probe)
+	return probe.ExtraFields.UpstreamSent
 }
 
 // DoHTTPRequest (net/http: Bedrock, the media fetcher) records the same way, from its client
@@ -1789,8 +1806,12 @@ func BenchmarkMakeRequestWithContext(b *testing.B) {
 	ln := fasthttputil.NewInmemoryListener()
 	defer ln.Close()
 	go func() { _ = fasthttp.Serve(ln, func(ctx *fasthttp.RequestCtx) { ctx.SetStatusCode(200) }) }()
-	client := &fasthttp.Client{Dial: func(string) (net.Conn, error) { return ln.Dial() }}
-	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyUpstreamAttempt, &schemas.UpstreamAttempt{})
+	client := ConfigureDialer(&fasthttp.Client{}, true)
+	client.Dial = func(string) (net.Conn, error) { return ln.Dial() }
+	// Cancellable, as every BifrostContext is, so the request is bound to it with or without
+	// the attempt.
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), schemas.BifrostContextKeyUpstreamAttempt, &schemas.UpstreamAttempt{}))
+	defer cancel()
 	req, resp := fasthttp.AcquireRequest(), fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)

@@ -1476,3 +1476,30 @@ func BenchmarkVideoContentTypeOr(b *testing.B) {
 		})
 	}
 }
+
+// A resource fetch made during a vendor call (a file_url attachment) is not the vendor call: it
+// leaves the call's upstream attempt unrecorded, so a refused vendor dial after it still reads as
+// unsent (TXE-6746).
+func TestFetchDoesNotRecordOnTheVendorAttempt(t *testing.T) {
+	proxy := proxytest.ForwardProxy(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte("PNGDATA"))
+	})
+	attempt := &schemas.UpstreamAttempt{}
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	ctx = context.WithValue(ctx, schemas.BifrostContextKeyUpstreamAttempt, attempt)
+	ctx = context.WithValue(ctx, schemas.BifrostContextKeyProviderProxyConfig, &schemas.ProxyConfig{
+		Type: schemas.HTTPProxy,
+		URL:  schemas.NewSecretVar(proxy.URL),
+	})
+	if _, _, err := FetchMediaURL(ctx, "http://203.0.113.10/image.png"); err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	attempt.MarkConnectFailed() // the vendor dial that follows is refused
+	probe := &schemas.BifrostError{}
+	attempt.Apply(probe)
+	if got := probe.ExtraFields.UpstreamSent; got == nil || *got {
+		t.Errorf("upstream_sent %v after a fetch and a refused vendor dial, want false", got)
+	}
+}
