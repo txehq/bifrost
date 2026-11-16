@@ -4127,8 +4127,6 @@ func TestRecordVideoJobLifecycle_CapturesVideoInputModeAndTokens(t *testing.T) {
 	}{
 		"byteplus video_uri":         {provider: schemas.BytePlus, input: &schemas.VideoGenerationInput{Prompt: "p", VideoURI: schemas.Ptr("https://example.com/in.mp4")}, videoInput: true},
 		"replicate reference_videos": {provider: schemas.Replicate, extra: map[string]interface{}{"reference_videos": []interface{}{"https://example.com/in.mp4"}, "mode": "pro"}, videoInput: true},
-		// Replicate's converter never sends video_uri (TXE-7374): no video input reached the vendor.
-		"replicate video_uri": {provider: schemas.Replicate, input: &schemas.VideoGenerationInput{Prompt: "p", VideoURI: schemas.Ptr("https://example.com/in.mp4")}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			id := "vid_" + strings.ReplaceAll(name, " ", "_")
@@ -5462,7 +5460,8 @@ func TestRecordVideoJobLifecycle_KeepsBillingDimensionsWithoutContent(t *testing
 // TestRecordVideoJobLifecycle_JudgesACustomProviderByItsBase (TXE-7434): what a create sends depends
 // on the converter, and a custom provider's converter is its base provider's, which core resolves
 // only after PreLLMHook. A custom provider on an xAI base sends xAI's own first frame, "image", so
-// it is counted; one on a Replicate base drops video_uri, so the job has no video input. Both with
+// it is counted; one on a Replicate base keeps a video_uri as a video input, since Replicate refuses
+// a create it cannot send (TXE-7374). Both with
 // content logging off (the capture from PreLLMHook) and on (the entry's params).
 func TestRecordVideoJobLifecycle_JudgesACustomProviderByItsBase(t *testing.T) {
 	for name, tc := range map[string]struct {
@@ -5477,8 +5476,10 @@ func TestRecordVideoJobLifecycle_JudgesACustomProviderByItsBase(t *testing.T) {
 		"custom xAI counts its own first frame": {alias: "my-xai", base: schemas.XAI,
 			input: &schemas.VideoGenerationInput{Prompt: "p"}, extra: map[string]any{"image": map[string]any{"url": "https://i/first.png"}},
 			wantImages: 1},
-		"custom Replicate drops video_uri": {alias: "my-replicate", base: schemas.Replicate,
-			input: &schemas.VideoGenerationInput{Prompt: "p", VideoURI: schemas.Ptr("https://v/in.mp4")}, aliasVideoInput: true},
+		// Replicate refuses a video_uri create (TXE-7374), so a recorded one received it: the base
+		// no longer changes the answer.
+		"custom Replicate keeps video_uri as a video input": {alias: "my-replicate", base: schemas.Replicate,
+			input: &schemas.VideoGenerationInput{Prompt: "p", VideoURI: schemas.Ptr("https://v/in.mp4")}, wantVideoInput: true, aliasVideoInput: true},
 	} {
 		for _, content := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/content=%v", name, content), func(t *testing.T) {
