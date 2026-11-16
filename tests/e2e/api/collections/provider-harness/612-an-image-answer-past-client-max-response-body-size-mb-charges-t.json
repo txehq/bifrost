@@ -303,7 +303,103 @@
       }
     },
     {
-      "name": "612.5 [EXPECT-200] restore client.max_response_body_size_mb (response-limit-budget)",
+      "name": "612.5 [EXPECT-500] a token-priced image answer (gpt-image-2.5-flare) past the limit is refused, and the budget is charged the floor: 2 x 7034 tokens at $30/M (response-limit-budget)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "// gpt-image-2.5-flare prices images only per image token and OpenAI publishes no per-image figure for it, so the",
+              "// estimate charges gpt-image-2's dearest published figure, 7034 tokens, as a floor (TXE-7492). Before, it charged $0.",
+              "// A run-scoped virtual key with its own budget, so this row's charge is the only one it reads.",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var run = 'harness-response-limit-budget-token-image-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+              "pm.collectionVariables.set('rlbVk', 'missing');",
+              "pm.sendRequest({ url: BASE + '/api/governance/virtual-keys', method: 'POST', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify({ name: run, provider_configs: [{ provider: 'openai', allowed_models: ['*'], key_ids: ['*'], weight: 1 }], budgets: [{ max_limit: 100, reset_duration: '1h' }] }) } }, function (err, res) {",
+              "  pm.test('response-limit-budget setup: created the virtual key', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code, res.text()).to.eql(200);",
+              "  });",
+              "  var vk = res.json().virtual_key;",
+              "  pm.collectionVariables.set('rlbVk', (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value);",
+              "  pm.collectionVariables.set('rlbId', vk.id);",
+              "  pm.collectionVariables.set('rlbBudget', vk.budgets[0].id);",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "var text = pm.response.text();",
+              "var j = pm.response.json();",
+              "pm.test('the answer past the limit is the gateway\\'s own refusal', function () {",
+              "  pm.expect(pm.response.code, text).to.be.at.least(500);",
+              "  pm.expect(j.is_bifrost_error, text).to.equal(true);",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, text).to.equal('bifrost_internal');",
+              "});",
+              "pm.test('the refusal carries no estimate or billed usage on the wire', function () {",
+              "  pm.expect(j.extra_fields || {}, text).to.not.have.property('billed_usage');",
+              "  pm.expect(text, text).to.not.include('estimated');",
+              "});",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var id = pm.collectionVariables.get('rlbId'), budget = pm.collectionVariables.get('rlbBudget');",
+              "var want = 2 * 7034 * 3e-05;",
+              "function read(tries) {",
+              "  pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id + '?from_memory=true', method: 'GET' }, function (err, key) {",
+              "    var own = ((key.json().virtual_key || {}).budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
+              "    var used = own.current_usage || 0;",
+              "    if (tries > 0 && Math.abs(used - want) > 1e-9) { setTimeout(function () { read(tries - 1); }, 300); return; }",
+              "    pm.test('the budget was read: HTTP 200 and the run-scoped key\\'s own budget', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(key.code, key.text()).to.equal(200); pm.expect(own.id, key.text()).to.equal(budget); });",
+              "    pm.test('the budget is charged the floor: 2 images at 7034 tokens and $30/M, at any quality', function () { pm.expect(used, JSON.stringify(own)).to.be.closeTo(want, 1e-9); });",
+              "    pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id, method: 'DELETE' }, function () {});",
+              "  });",
+              "}",
+              "read(40);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-vk",
+            "value": "{{rlbVk}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/gpt-image-2.5-flare\",\n  \"prompt\": \"a lighthouse at dusk\",\n  \"n\": 2,\n  \"size\": \"1024x1024\",\n  \"quality\": \"low\"\n}"
+        }
+      }
+    },
+    {
+      "name": "612.6 [EXPECT-200] restore client.max_response_body_size_mb (response-limit-budget)",
       "event": [
         {
           "listen": "prerequest",
@@ -359,7 +455,7 @@
       }
     },
     {
-      "name": "612.6 [EXPECT-200] the original limit is stored again (response-limit-budget)",
+      "name": "612.7 [EXPECT-200] the original limit is stored again (response-limit-budget)",
       "event": [
         {
           "listen": "prerequest",

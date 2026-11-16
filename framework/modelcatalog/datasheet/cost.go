@@ -269,7 +269,8 @@ func (s *Store) CalculateCostBreakdownForUsage(usage *schemas.BifrostLLMUsage, p
 // CalculateCostForEstimatedImageUsage prices Bifrost's estimate of an image request whose answer
 // the response limit refused unread (fork, TXE-7302): the requested images and the input images at
 // the request's size, quality, resolution and steps, through the same image pricing a delivered
-// response takes. A row priced only per image token has no count to apply and prices to 0 (TXE-7492).
+// response takes. A row priced only per image token takes the output tokens per image in
+// estimatedimagetokens.go (TXE-7492), and prices to 0 when its model has none.
 // routingInfo is the refused request's, resolved key alias included, so an alias whose label is
 // not itself a catalog row is priced at the model it names. Returns 0 when estimate is nil or the
 // model has no pricing.
@@ -319,6 +320,9 @@ func (s *Store) CalculateCostForEstimatedImageUsage(estimate *schemas.EstimatedI
 		for _, quality := range qualities {
 			cost = max(cost, price(size, quality))
 		}
+	}
+	if cost == 0 {
+		cost = s.estimateImageTokenCost(estimate, routingInfo, normalizeStreamRequestType(requestType), lookupScopes, sizes, qualities)
 	}
 	return cost
 }
