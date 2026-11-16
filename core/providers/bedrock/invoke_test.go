@@ -2923,6 +2923,91 @@ func TestInvokeGuardrailBodyConfig_StreamModeWithoutSuffix(t *testing.T) {
 	assert.Len(t, got["tagSuffix"], bedrockGuardTagSuffixLength)
 }
 
+// typedGuardrailConfig is a Go SDK caller's own guardrailConfig type.
+type typedGuardrailConfig struct {
+	GuardrailIdentifier string `json:"guardrailIdentifier"`
+	GuardrailVersion    string `json:"guardrailVersion"`
+	Trace               string `json:"trace,omitempty"`
+	TagSuffix           string `json:"tagSuffix,omitempty"`
+}
+
+// TestGuardrailConfigTypedObject: a Go caller's typed guardrailConfig (a struct, a
+// map[string]string, json.RawMessage) is sent by the merge as the object it encodes to, so every
+// guardrail reader takes it as that object (TXE-7525). Before, the bedrock-runtime OpenAI-compatible
+// routes and InvokeModel set no guardrail header and ran the request unguarded, a malformed
+// tagSuffix was not refused, and Converse did not lift the config or its inline guard tags.
+func TestGuardrailConfigTypedObject(t *testing.T) {
+	for name, config := range map[string]interface{}{
+		"struct":            typedGuardrailConfig{GuardrailIdentifier: "gr-1", GuardrailVersion: "3", Trace: "enabled", TagSuffix: "abc"},
+		"pointer to struct": &typedGuardrailConfig{GuardrailIdentifier: "gr-1", GuardrailVersion: "3", Trace: "enabled", TagSuffix: "abc"},
+		"map[string]string": map[string]string{"guardrailIdentifier": "gr-1", "guardrailVersion": "3", "trace": "enabled", "tagSuffix": "abc"},
+		"json.RawMessage":   json.RawMessage(`{"guardrailIdentifier":"gr-1","guardrailVersion":"3","trace":"enabled","tagSuffix":"abc"}`),
+		// Raw JSON bytes, which the InvokeModel lift always read: never the base64 string the
+		// merge would make of them.
+		"[]byte": []byte(`{"guardrailIdentifier":"gr-1","guardrailVersion":"3","trace":"enabled","tagSuffix":"abc"}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			extra := map[string]any{"guardrailConfig": config}
+
+			// bedrock-runtime OpenAI-compatible routes: the guardrail travels only in headers.
+			headers := withGuardrailHeaders(nil, extra)
+			assert.Equal(t, "gr-1", headers[guardrailIdentifierHeader].Val)
+			assert.Equal(t, "3", headers[guardrailVersionHeader].Val)
+
+			// InvokeModel: the body field is stripped, so the headers are the guardrail.
+			headers = invokeGuardrailHeaders(nil, extra)
+			assert.Equal(t, "gr-1", headers[guardrailIdentifierHeader].Val)
+			assert.Equal(t, "ENABLED", headers[guardrailTraceHeader].Val)
+
+			body, err := invokeGuardrailBodyConfig(extra)
+			require.NoError(t, err)
+			assert.Equal(t, map[string]any{"tagSuffix": "abc"}, body)
+
+			// Converse: the config is lifted into the typed field, not merged raw.
+			converse := &BedrockConverseRequest{}
+			lifted := map[string]interface{}{"guardrailConfig": config}
+			require.NoError(t, applyBedrockExtraParams(lifted, converse))
+			require.NotNil(t, converse.GuardrailConfig)
+			assert.Equal(t, "gr-1", converse.GuardrailConfig.GuardrailIdentifier)
+			require.NotNil(t, converse.GuardrailConfig.Trace)
+			assert.Equal(t, "enabled", *converse.GuardrailConfig.Trace)
+			assert.NotContains(t, lifted, "guardrailConfig")
+
+			// InvokeModel ingress lifts a Converse-shaped config the same way.
+			invoke := &BedrockConverseRequest{ExtraParams: map[string]interface{}{"guardrailConfig": config}}
+			liftInvokeGuardrailConfig(invoke)
+			require.NotNil(t, invoke.GuardrailConfig)
+			assert.Equal(t, "3", invoke.GuardrailConfig.GuardrailVersion)
+			assert.Nil(t, invoke.ExtraParams)
+		})
+	}
+
+	// A typed config with a malformed tagSuffix is refused, as a decoded one is (TXE-7525).
+	bad := map[string]any{"guardrailConfig": map[string]string{"guardrailIdentifier": "gr-1", "guardrailVersion": "3", "tagSuffix": "not valid!"}}
+	_, err := invokeGuardrailBodyConfig(bad)
+	require.Error(t, err)
+	require.Error(t, applyBedrockExtraParams(map[string]interface{}{"guardrailConfig": bad["guardrailConfig"]}, &BedrockConverseRequest{}))
+}
+
+// BenchmarkInvokeGuardrailHeaders measures the per-request guardrail header read for a decoded
+// and a typed guardrailConfig (TXE-7525).
+func BenchmarkInvokeGuardrailHeaders(b *testing.B) {
+	for name, config := range map[string]interface{}{
+		"a decoded config": map[string]interface{}{"guardrailIdentifier": "gr-1", "guardrailVersion": "3", "trace": "enabled"},
+		"a typed config":   typedGuardrailConfig{GuardrailIdentifier: "gr-1", GuardrailVersion: "3", Trace: "enabled"},
+	} {
+		extra := map[string]any{"guardrailConfig": config}
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				if headers := invokeGuardrailHeaders(nil, extra); len(headers) == 0 {
+					b.Fatal("no guardrail headers")
+				}
+			}
+		})
+	}
+}
+
 // TestInvokeNativeGuardrailOutcomeRoundTrip: a native InvokeModel upstream reports its guardrail
 // outcome as top-level amazon-bedrock-* fields; the provider keeps them on the response and the
 // Bedrock invoke egress renders them verbatim, in AWS's own trace shape.

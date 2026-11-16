@@ -4664,7 +4664,7 @@ func (provider *BedrockProvider) invokeBuildConfig(model string, streaming, vali
 // runs unguarded. The Converse-shaped lowercase trace is uppercased, as the header requires.
 func invokeGuardrailHeaders(base map[string]schemas.SecretVar, extraParams map[string]any) map[string]schemas.SecretVar {
 	out := withGuardrailHeaders(base, extraParams)
-	config, _ := extraParams["guardrailConfig"].(map[string]any)
+	config, _ := guardrailConfigObject(extraParams["guardrailConfig"])
 	traceHeader := out[guardrailTraceHeader]
 	if trace, _ := config["trace"].(string); trace != "" && traceHeader.GetValue() == trace {
 		// out may still be the shared provider headers, so write to a copy.

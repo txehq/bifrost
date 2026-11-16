@@ -74,7 +74,7 @@ func (provider *NebiusProvider) ToNebiusImageGenerationRequest(bifrostReq *schem
 				// Check if lorasValue is an array of maps
 				if lorasArray, ok := lorasValue.([]interface{}); ok {
 					for _, item := range lorasArray {
-						if loraMap, ok := item.(map[string]interface{}); ok {
+						if loraMap, ok := schemas.ExtraParamObject(item); ok {
 							if url, ok := schemas.SafeExtractString(loraMap["url"]); ok {
 								if scale, ok := schemas.SafeExtractInt(loraMap["scale"]); ok {
 									req.Loras = append(req.Loras, NebiusLora{URL: url, Scale: scale})

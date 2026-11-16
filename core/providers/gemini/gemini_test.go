@@ -6509,6 +6509,41 @@ func TestToGeminiResponsesRequest_SafetySettingsAndCachedContentSurviveRetries(t
 	assert.Len(t, bifrostReq.Params.ExtraParams, 3)
 }
 
+// TestSafetySettingsTypedObjects: a Go caller's typed safety settings (a slice of maps or
+// structs, a json.RawMessage, typed entries in a []interface{}) are a list of settings exactly
+// as a decoded []interface{} is (TXE-7525). The converters delete the extra param before
+// reading it, so a list that was not read was dropped and Gemini applied its default
+// thresholds instead of the caller's.
+func TestSafetySettingsTypedObjects(t *testing.T) {
+	type typedSetting struct {
+		Category  string `json:"category"`
+		Threshold string `json:"threshold"`
+	}
+	for name, settings := range map[string]interface{}{
+		"[]map[string]string":      []map[string]string{{"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_LOW_AND_ABOVE"}},
+		"[]struct":                 []typedSetting{{Category: "HARM_CATEGORY_HARASSMENT", Threshold: "BLOCK_LOW_AND_ABOVE"}},
+		"json.RawMessage":          json.RawMessage(`[{"category":"HARM_CATEGORY_HARASSMENT","threshold":"BLOCK_LOW_AND_ABOVE"}]`),
+		"[]interface{} of structs": []interface{}{typedSetting{Category: "HARM_CATEGORY_HARASSMENT", Threshold: "BLOCK_LOW_AND_ABOVE"}},
+		"[]interface{} of map[s]s": []interface{}{map[string]string{"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_LOW_AND_ABOVE"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			geminiReq, err := gemini.ToGeminiResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+				Provider: schemas.Gemini,
+				Model:    "gemini-2.5-flash",
+				Params:   &schemas.ResponsesParameters{ExtraParams: map[string]interface{}{"safety_settings": settings}},
+			})
+			require.NoError(t, err)
+			require.Len(t, geminiReq.SafetySettings, 1)
+			assert.Equal(t, "HARM_CATEGORY_HARASSMENT", geminiReq.SafetySettings[0].Category)
+			assert.Equal(t, "BLOCK_LOW_AND_ABOVE", geminiReq.SafetySettings[0].Threshold)
+		})
+	}
+	for _, notAList := range []interface{}{"BLOCK_NONE", map[string]string{"category": "x"}, []interface{}{"BLOCK_NONE"}} {
+		_, ok := gemini.SafeExtractSafetySettings(notAList)
+		assert.False(t, ok, "%#v is not a list of settings", notAList)
+	}
+}
+
 // The GenAI inbound path maps candidateCount and responseLogprobs into ExtraParams and
 // logprobs into TopLogProbs. The outbound Responses converter used to read none of them,
 // so a bare-model /genai call silently lost all three. They must land back on

@@ -199,7 +199,7 @@ func ValidateBytePlusImageParams(gen *schemas.ImageGenerationParameters, edit *s
 	}
 	if opts, ok := extraParams["sequential_image_generation_options"]; ok && opts != nil {
 		param := "sequential_image_generation_options"
-		if fields, isObject := opts.(map[string]interface{}); isObject {
+		if fields, isObject := schemas.ExtraParamObject(opts); isObject {
 			if len(fields) == 0 {
 				opts = nil
 			} else if _, hasMax := fields["max_images"]; hasMax {

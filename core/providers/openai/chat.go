@@ -602,7 +602,7 @@ func (req *OpenAIChatRequest) applyBytePlusCompatibility() {
 	if req.Reasoning == nil || req.Reasoning.Effort == nil {
 		return
 	}
-	if thinking, ok := req.ExtraParams["thinking"].(map[string]interface{}); ok {
+	if thinking, ok := schemas.ExtraParamObject(req.ExtraParams["thinking"]); ok {
 		if thinking["type"] == "disabled" || *req.Reasoning.Effort == schemas.ReasoningEffortNone {
 			req.Reasoning = nil
 		}

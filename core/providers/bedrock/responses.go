@@ -2337,7 +2337,7 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 								if effortValue, exists := outputConfigOrderedMap.Get("effort"); exists {
 									effortStr, found = schemas.SafeExtractString(effortValue)
 								}
-							} else if outputConfigMap, ok := outputConfig.(map[string]interface{}); ok {
+							} else if outputConfigMap, ok := schemas.ExtraParamObject(outputConfig); ok {
 								effortStr, found = schemas.SafeExtractString(outputConfigMap["effort"])
 							}
 						}
@@ -2382,7 +2382,7 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 							var effortValue interface{}
 							if outputConfigOrderedMap, ok := schemas.SafeExtractOrderedMap(outputConfig); ok && outputConfigOrderedMap != nil {
 								effortValue, _ = outputConfigOrderedMap.Get("effort")
-							} else if outputConfigMap, ok := outputConfig.(map[string]interface{}); ok {
+							} else if outputConfigMap, ok := schemas.ExtraParamObject(outputConfig); ok {
 								effortValue = outputConfigMap["effort"]
 							}
 							if effortStr, ok := schemas.SafeExtractString(effortValue); ok {

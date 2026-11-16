@@ -3251,11 +3251,14 @@ func mergeExtraParamsAt(path string, jsonMap map[string]interface{}, extraParams
 			continue
 		}
 		existing := jsonMap[existingKey]
-		if existingMap, ok := existing.(map[string]interface{}); ok {
-			if newMap, ok := v.(map[string]interface{}); ok {
+		// Either side may be a Go caller's typed object, which is merged as the JSON object it
+		// encodes to (TXE-7525). A typed existing value is replaced by its merged decoding.
+		if existingMap, ok := schemas.ExtraParamObject(existing); ok {
+			if newMap, ok := schemas.ExtraParamObject(v); ok {
 				if err := mergeExtraParamsAt(path+k+".", existingMap, newMap); err != nil {
 					return err
 				}
+				jsonMap[existingKey] = existingMap
 				continue
 			}
 		}
@@ -3366,13 +3369,9 @@ func fillJSONObject(jsonBody []byte, extraParams map[string]interface{}, path st
 		existingTrimmed := bytes.TrimSpace(pairs[idx].val)
 		newTrimmed := bytes.TrimSpace(newValBytes)
 		if len(existingTrimmed) > 0 && existingTrimmed[0] == '{' && len(newTrimmed) > 0 && newTrimmed[0] == '{' {
-			newMap, ok := extraParams[k].(map[string]interface{})
+			newMap, ok := schemas.ExtraParamObject(extraParams[k])
 			if !ok {
-				newDec := json.NewDecoder(bytes.NewReader(newTrimmed))
-				newDec.UseNumber()
-				if err := newDec.Decode(&newMap); err != nil {
-					return nil, ExtraParamConflictError(path+k, pairs[idx].key)
-				}
+				return nil, ExtraParamConflictError(path+k, pairs[idx].key)
 			}
 			merged, err := fillJSONObject(existingTrimmed, newMap, path+k+".", false)
 			if err != nil {

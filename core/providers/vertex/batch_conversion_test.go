@@ -3,6 +3,7 @@ package vertex
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -1043,6 +1044,36 @@ func TestVertexBatchReservedLabelsAreTheGatewaysOnNativeLines(t *testing.T) {
 		labels, _, _ := convert(t, item)
 		assert.Equal(t, map[string]interface{}{"team": "tokun"}, labels)
 	})
+
+	// TXE-7525: a Go caller's typed labels object is sent as the object it encodes to, so its
+	// reserved labels are the gateway's too. Before, a typed object was not read at all: with no
+	// custom_id the line kept bifrost_endpoint=images_generations and was settled as an image
+	// generation.
+	type typedLabels struct {
+		Team            string `json:"team"`
+		BifrostEndpoint string `json:"bifrost_endpoint"`
+		BifrostCustomID string `json:"bifrost_custom_id"`
+	}
+	for name, typed := range map[string]interface{}{
+		"struct":            typedLabels{Team: "tokun", BifrostEndpoint: "images_generations", BifrostCustomID: "someone-else"},
+		"map[string]string": map[string]string{"team": "tokun", "bifrost_endpoint": "images_generations", "bifrost_custom_id": "someone-else"},
+		"json.RawMessage":   json.RawMessage(`{"team":"tokun","bifrost_endpoint":"images_generations","bifrost_custom_id":"someone-else"}`),
+	} {
+		for _, customID := range []string{"", "line-1"} {
+			t.Run("a native line with typed labels as "+name+" and custom_id "+customID, func(t *testing.T) {
+				item := nativeLine(customID)
+				item.Body["labels"] = typed
+				labels, result, endpoint := convert(t, item)
+				want := map[string]interface{}{"team": "tokun"}
+				if customID != "" {
+					want["bifrost_custom_id"] = customID
+				}
+				assert.Equal(t, want, labels)
+				assert.Equal(t, customID, result.CustomID)
+				assert.Equal(t, schemas.BatchEndpointChatCompletions, gemini.AccumulateBatchResultsEndpoint("", endpoint), "a native text line is settled as chat")
+			})
+		}
+	}
 }
 
 func TestVertexBatchCustomIDRoundTripsThroughLabels(t *testing.T) {

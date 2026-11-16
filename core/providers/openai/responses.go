@@ -336,18 +336,11 @@ func effectivePromptCacheMode(ctx *schemas.BifrostContext, options *schemas.Prom
 		return *options.Mode
 	}
 	if ctx != nil && ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true {
-		switch v := extraParams["prompt_cache_options"].(type) {
-		case map[string]interface{}:
-			if mode, ok := v["mode"].(string); ok {
+		// A *PromptCacheOptions, a decoded object or any other Go value is read as the JSON
+		// object the merge sends (TXE-7525).
+		if extraOptions, ok := schemas.ExtraParamObject(extraParams["prompt_cache_options"]); ok {
+			if mode, ok := extraOptions["mode"].(string); ok {
 				return mode
-			}
-		case *schemas.PromptCacheOptions:
-			if v != nil && v.Mode != nil {
-				return *v.Mode
-			}
-		case schemas.PromptCacheOptions:
-			if v.Mode != nil {
-				return *v.Mode
 			}
 		}
 	}

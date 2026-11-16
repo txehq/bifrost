@@ -1156,7 +1156,7 @@ func validateGuardTagSuffix(suffix string) error {
 // nor a streamProcessingMode. A malformed tagSuffix is an error the caller surfaces as an
 // invalid request. The two ride in the same AWS object, so each is sent on its own merit.
 func invokeGuardrailBodyConfig(extraParams map[string]any) (map[string]any, error) {
-	config, _ := extraParams["guardrailConfig"].(map[string]any)
+	config, _ := guardrailConfigObject(extraParams["guardrailConfig"])
 	suffix, _ := config["tagSuffix"].(string)
 	mode, _ := config["streamProcessingMode"].(string)
 	if suffix == "" && mode == "" {
@@ -1322,7 +1322,7 @@ func invokeChatGuardTagging(request *schemas.BifrostChatRequest) (*schemas.Bifro
 // The only error is a malformed guardrailConfig.tagSuffix, which the converters return as-is.
 func applyBedrockExtraParams(extraParams map[string]interface{}, bedrockReq *BedrockConverseRequest) error {
 	if guardrailConfig, exists := extraParams["guardrailConfig"]; exists {
-		if gc, ok := guardrailConfig.(map[string]interface{}); ok {
+		if gc, ok := guardrailConfigObject(guardrailConfig); ok {
 			config := &BedrockGuardrailConfig{}
 			if identifier, ok := gc["guardrailIdentifier"].(string); ok {
 				config.GuardrailIdentifier = identifier
@@ -1382,7 +1382,7 @@ func applyBedrockExtraParams(extraParams map[string]interface{}, bedrockReq *Bed
 	}
 
 	if perfConfig, exists := extraParams["performanceConfig"]; exists {
-		if pc, ok := perfConfig.(map[string]interface{}); ok {
+		if pc, ok := schemas.ExtraParamObject(perfConfig); ok {
 			config := &BedrockPerformanceConfig{}
 			if latency, ok := pc["latency"].(string); ok {
 				config.Latency = &latency
@@ -1393,11 +1393,11 @@ func applyBedrockExtraParams(extraParams map[string]interface{}, bedrockReq *Bed
 	}
 
 	if promptVars, exists := extraParams["promptVariables"]; exists {
-		if vars, ok := promptVars.(map[string]interface{}); ok {
+		if vars, ok := schemas.ExtraParamObject(promptVars); ok {
 			delete(extraParams, "promptVariables")
 			variables := make(map[string]BedrockPromptVariable)
 			for k, v := range vars {
-				if valueMap, ok := v.(map[string]interface{}); ok {
+				if valueMap, ok := schemas.ExtraParamObject(v); ok {
 					variable := BedrockPromptVariable{}
 					if text, ok := valueMap["text"].(string); ok {
 						variable.Text = &text
@@ -1477,12 +1477,16 @@ func toOrderedMap(v any) (*schemas.OrderedMap, bool) {
 		return m.Clone(), true
 	case schemas.OrderedMap:
 		return m.Clone(), true
-	case map[string]interface{}:
-		// Fallback for callers that still provide a plain map. Order cannot be
-		// reconstructed here, but keeping this path preserves compatibility.
-		return schemas.OrderedMapFromMap(m), true
 	default:
-		return nil, false
+		// Fallback for callers that still provide a plain map, or a typed object (a struct,
+		// map[string]string, json.RawMessage), read as the JSON object it encodes to
+		// (TXE-7525). Order cannot be reconstructed here, but keeping this path preserves
+		// compatibility.
+		object, ok := schemas.ExtraParamObject(v)
+		if !ok {
+			return nil, false
+		}
+		return schemas.OrderedMapFromMap(object), true
 	}
 }
 

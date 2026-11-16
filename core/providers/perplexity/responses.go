@@ -151,7 +151,7 @@ func ToPerplexityResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *
 				if webSearchOptionsSlice, ok := webSearchOptionsParam.([]interface{}); ok {
 					var webSearchOptions []WebSearchOption
 					for _, optionInterface := range webSearchOptionsSlice {
-						if optionMap, ok := optionInterface.(map[string]interface{}); ok {
+						if optionMap, ok := schemas.ExtraParamObject(optionInterface); ok {
 							option := WebSearchOption{}
 
 							if searchContextSize, ok := schemas.SafeExtractStringPointer(optionMap["search_context_size"]); ok {
@@ -168,7 +168,7 @@ func ToPerplexityResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *
 
 							// Handle user_location
 							if userLocationParam, ok := schemas.SafeExtractFromMap(optionMap, "user_location"); ok {
-								if userLocationMap, ok := userLocationParam.(map[string]interface{}); ok {
+								if userLocationMap, ok := schemas.ExtraParamObject(userLocationParam); ok {
 									userLocation := &WebSearchOptionUserLocation{}
 
 									if latitude, ok := schemas.SafeExtractFloat64Pointer(userLocationMap["latitude"]); ok {
@@ -200,11 +200,11 @@ func ToPerplexityResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *
 
 			// Handle media_response
 			if mediaResponseParam, ok := schemas.SafeExtractFromMap(bifrostReq.Params.ExtraParams, "media_response"); ok {
-				if mediaResponseMap, ok := mediaResponseParam.(map[string]interface{}); ok {
+				if mediaResponseMap, ok := schemas.ExtraParamObject(mediaResponseParam); ok {
 					mediaResponse := &MediaResponse{}
 
 					if overridesParam, ok := schemas.SafeExtractFromMap(mediaResponseMap, "overrides"); ok {
-						if overridesMap, ok := overridesParam.(map[string]interface{}); ok {
+						if overridesMap, ok := schemas.ExtraParamObject(overridesParam); ok {
 							overrides := MediaResponseOverrides{}
 
 							if returnVideos, ok := schemas.SafeExtractBoolPointer(overridesMap["return_videos"]); ok {
