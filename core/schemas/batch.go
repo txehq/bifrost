@@ -389,10 +389,17 @@ type BifrostBatchResultsRequest struct {
 	BatchID  string        `json:"batch_id"` // ID of the batch to get results for
 
 	// Limit is the page size in result lines. Zero returns the whole result set in one
-	// response, as before paging existed; a caller that must not hold a whole result file
-	// in memory sets it. After is the NextCursor of the previous page.
+	// response, as before paging existed, up to client.max_response_body_size_mb of result
+	// lines; a larger set must be paged. After is the NextCursor of the previous page.
 	Limit int     `json:"limit,omitempty"`
 	After *string `json:"after,omitempty"`
+
+	// Settlement marks the provider job accounting sweeper's read, which must see the whole
+	// result set to price it. Only that read may return an unpaged result set larger than
+	// client.max_response_body_size_mb; every other unpaged read past that size is refused
+	// with a 400 that says to page (TXE-7494). It is never read from a request body, so a
+	// caller cannot set it.
+	Settlement bool `json:"-"`
 
 	RawRequestBody []byte `json:"-"` // Raw request body (not serialized)
 

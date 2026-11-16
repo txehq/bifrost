@@ -399,3 +399,73 @@ func inflateMdat(t *testing.T, data []byte, n int) []byte {
 	t.Fatal("no mdat")
 	return nil
 }
+
+// openAIBatchAccount configures openai alone, at a loopback stand-in.
+type openAIBatchAccount struct{ baseURL string }
+
+func (a *openAIBatchAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.OpenAI}, nil
+}
+
+func (a *openAIBatchAccount) GetKeysForProvider(_ context.Context, _ schemas.ModelProvider) ([]schemas.Key, error) {
+	return []schemas.Key{{ID: "k", Name: "k", Value: *schemas.NewSecretVar("test-key"), Weight: 1, Models: schemas.WhiteList{"*"}, UseForBatchAPI: schemas.Ptr(true)}}, nil
+}
+
+func (a *openAIBatchAccount) GetConfigForProvider(_ schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	return &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{
+		BaseURL: a.baseURL, DefaultRequestTimeoutInSeconds: 5, MaxRetries: 0, AllowPrivateNetwork: true,
+	}}, nil
+}
+
+// TXE-7494: an unpaged results read is held to client.max_response_body_size_mb, but the
+// sweeper's fetcher prices the whole result set, so it alone reads past it. Without that, a
+// finished batch larger than the limit could never be settled, and its usage never billed.
+func TestBatchResultFetcherReadsAResultSetPastTheUnpagedLimit(t *testing.T) {
+	const lines = 1500
+	var output []byte
+	for i := range lines {
+		output = fmt.Appendf(output, `{"id":"r%d","custom_id":"c%d","response":{"status_code":200,"body":{"object":"chat.completion","model":"gpt-4o-mini","choices":[{"index":0,"message":{"role":"assistant","content":"%0900d"}}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}}}`+"\n", i, i, 0)
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/batches/batch_big":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(w, `{"id":"batch_big","object":"batch","endpoint":"/v1/chat/completions","status":"completed","output_file_id":"file_out"}`)
+		case "/v1/files/file_out/content":
+			w.Header().Set("Content-Type", "application/jsonl")
+			_, _ = w.Write(output)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: &openAIBatchAccount{baseURL: upstream.URL}, Logger: bifrost.NewNoOpLogger(), InitialPoolSize: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(client.Shutdown)
+
+	network.SetMaxResponseBodySizeMB(1)
+	t.Cleanup(func() { network.SetMaxResponseBodySizeMB(0) })
+	if len(output) <= 1<<20 {
+		t.Fatalf("the result file is %d bytes, not past the 1 MiB limit", len(output))
+	}
+	job := &cstables.TableProviderJob{Kind: cstables.ProviderJobKindBatch, Provider: string(schemas.OpenAI), JobID: "batch_big"}
+
+	// A caller's unpaged read of the same batch is refused and told to page.
+	_, bifrostErr := client.BatchResultsRequest(internalJobContext(context.Background(), ""), &schemas.BifrostBatchResultsRequest{Provider: schemas.OpenAI, BatchID: "batch_big"})
+	if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest || bifrostErr.Error.Param != "limit" {
+		t.Fatalf("unpaged caller read: error = %+v, want a 400 naming limit", bifrostErr)
+	}
+
+	resp, err := (&bifrostBatchResultFetcher{client: client}).FetchBatchResults(context.Background(), job)
+	if err != nil {
+		t.Fatalf("FetchBatchResults: %v", err)
+	}
+	if len(resp.Results) != lines || resp.HasMore || resp.Partial {
+		t.Fatalf("fetcher returned %d results (has_more %v, partial %v); want all %d as the whole batch", len(resp.Results), resp.HasMore, resp.Partial, lines)
+	}
+}

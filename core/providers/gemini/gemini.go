@@ -3766,7 +3766,7 @@ func (provider *GeminiProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 		// are reported as image generation, which leaves the batch unpriced.
 		pageEndpoint := schemas.BatchEndpoint("")
 		var parseErrors []schemas.BatchError
-		page, pageErr := providerUtils.ReadBatchResultsPage([]providerUtils.BatchResultsSource{source}, request.After, request.Limit, func(_ int, line []byte) {
+		page, pageErr := providerUtils.ReadBatchResultsPage([]providerUtils.BatchResultsSource{source}, request, func(_ int, line []byte) {
 			fallbackID := fmt.Sprintf("request-%d", lineIndex)
 			if cursor.Offset > 0 {
 				fallbackID = fmt.Sprintf("request-at-%d-%d", cursor.Offset, lineIndex)

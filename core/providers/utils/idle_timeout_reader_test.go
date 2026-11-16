@@ -1135,7 +1135,7 @@ func TestResultBodyReader_FiredReadNeverEndsCleanly(t *testing.T) {
 			if !errors.Is(res.err, errResultStreamIdle) || res.n != len(tc.tail) {
 				t.Fatalf("read returned (%d, %v); want (%d, errResultStreamIdle)", res.n, res.err, len(tc.tail))
 			}
-			if _, _, err := ReadJSONLPage(r, 10, func([]byte) {}); !errors.Is(err, errResultStreamIdle) {
+			if _, _, err := readJSONLPage(r, 10, func([]byte) {}); !errors.Is(err, errResultStreamIdle) {
 				t.Fatalf("a page read after the stall returned %v; want errResultStreamIdle", err)
 			}
 		})

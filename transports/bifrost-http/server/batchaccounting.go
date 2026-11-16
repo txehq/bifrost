@@ -56,6 +56,9 @@ func (f *bifrostBatchResultFetcher) FetchBatchResults(ctx context.Context, job *
 		Provider: schemas.ModelProvider(job.Provider),
 		Model:    modelPtr(job.Model),
 		BatchID:  job.JobID,
+		// Settlement prices the whole result set, so this read alone is not held to the
+		// byte bound on an unpaged read (TXE-7494).
+		Settlement: true,
 	}
 	resp, bifrostErr := f.client.BatchResultsRequest(internalJobContext(ctx, job.SelectedKeyID), req)
 	if bifrostErr != nil {

@@ -11336,7 +11336,7 @@
       "get": {
         "operationId": "getBatchResults",
         "summary": "Get batch results",
-        "description": "Retrieves the result lines of a batch job, one per input line the vendor wrote. On\n`openai` and `azure` the lines of the error file (failed and expired lines) follow\nthose of the output file.\n\nWith `limit` the response is one page, read from a streamed download so a result\nfile is never held whole; `has_more` and `next_cursor` say whether and where to\ncontinue. Without `limit` every line is returned in one response.\n\nSend `x-bf-api-key` (key name) or `x-bf-api-key-id` to use only the key the batch was\ncreated with: retrieve, cancel and results then make their upstream calls with that\nkey alone and report it in `x-bifrost-routing-info-key`. Without it the provider's\nbatch-enabled keys are tried in turn.\n",
+        "description": "Retrieves the result lines of a batch job, one per input line the vendor wrote. On\n`openai` and `azure` the lines of the error file (failed and expired lines) follow\nthose of the output file.\n\nWith `limit` the response is one page, read from a streamed download so a result\nfile is never held whole; `has_more` and `next_cursor` say whether and where to\ncontinue. Without `limit` every line is returned in one response.\n\nOne response holds at most `client.max_response_body_size_mb` of result lines. A page\nthat reaches it ends early, at its last whole line, with `has_more` and `next_cursor`.\nA read without `limit` that reaches it is refused with a 400 whose `param` is `limit`:\nread the batch in pages instead.\n\nSend `x-bf-api-key` (key name) or `x-bf-api-key-id` to use only the key the batch was\ncreated with: retrieve, cancel and results then make their upstream calls with that\nkey alone and report it in `x-bifrost-routing-info-key`. Without it the provider's\nbatch-enabled keys are tried in turn.\n",
         "tags": [
           "Batch"
         ],
@@ -11362,7 +11362,7 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "Page size in result lines. Omit to return every line in one response.",
+            "description": "Page size in result lines. Omit to return every line in one response, up to `client.max_response_body_size_mb` of them.",
             "schema": {
               "type": "integer",
               "minimum": 1
