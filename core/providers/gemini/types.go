@@ -254,37 +254,44 @@ type SafetySetting struct {
 }
 
 // SafeExtractSafetySettings safely extracts []SafetySetting from an interface{} with type checking.
-// Handles both direct []SafetySetting and JSON-deserialized []interface{} cases.
+// A []SafetySetting is taken as given. Anything else is read as the JSON array it encodes to,
+// each entry through schemas.ExtraParamObject, which is what the merge would send: a Go
+// caller's []map[string]string, slice of structs or json.RawMessage is a list of safety
+// settings exactly as a decoded []interface{} is. Every caller deletes the extra param before
+// reading it, so a list read as nothing would drop the caller's thresholds (TXE-7525).
 func SafeExtractSafetySettings(value interface{}) ([]SafetySetting, bool) {
 	if value == nil {
 		return nil, false
 	}
-	switch v := value.(type) {
-	case []SafetySetting:
+	if v, ok := value.([]SafetySetting); ok {
 		return v, true
-	case []interface{}:
-		settings := make([]SafetySetting, 0, len(v))
-		for _, item := range v {
-			if m, ok := item.(map[string]interface{}); ok {
-				setting := SafetySetting{}
-				if method, ok := m["method"].(string); ok {
-					setting.Method = method
-				}
-				if category, ok := m["category"].(string); ok {
-					setting.Category = category
-				}
-				if threshold, ok := m["threshold"].(string); ok {
-					setting.Threshold = threshold
-				}
-				settings = append(settings, setting)
-			} else {
-				return nil, false
-			}
-		}
-		return settings, true
-	default:
-		return nil, false
 	}
+	items, ok := value.([]interface{})
+	if !ok {
+		encoded, err := schemas.MarshalSorted(value)
+		if err != nil || sonic.Unmarshal(encoded, &items) != nil || items == nil {
+			return nil, false
+		}
+	}
+	settings := make([]SafetySetting, 0, len(items))
+	for _, item := range items {
+		m, ok := schemas.ExtraParamObject(item)
+		if !ok {
+			return nil, false
+		}
+		setting := SafetySetting{}
+		if method, ok := m["method"].(string); ok {
+			setting.Method = method
+		}
+		if category, ok := m["category"].(string); ok {
+			setting.Category = category
+		}
+		if threshold, ok := m["threshold"].(string); ok {
+			setting.Threshold = threshold
+		}
+		settings = append(settings, setting)
+	}
+	return settings, true
 }
 
 // FunctionCallingConfig represents function calling configuration.

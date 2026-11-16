@@ -164,7 +164,7 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*Coh
 			// Handle thinking parameter
 			cohereReq.ExtraParams = bifrostReq.Params.ExtraParams
 			if thinkingParam, ok := schemas.SafeExtractFromMap(bifrostReq.Params.ExtraParams, "thinking"); ok {
-				if thinkingMap, ok := thinkingParam.(map[string]interface{}); ok {
+				if thinkingMap, ok := schemas.ExtraParamObject(thinkingParam); ok {
 					thinking := &CohereThinking{}
 					if typeStr, ok := schemas.SafeExtractString(thinkingMap["type"]); ok {
 						delete(thinkingMap, "type")

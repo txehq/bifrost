@@ -106,7 +106,7 @@ func ToHuggingFaceImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerat
 					delete(req.ExtraParams, "loras")
 					if lorasArray, ok := lorasValue.([]interface{}); ok {
 						for _, item := range lorasArray {
-							if loraMap, ok := item.(map[string]interface{}); ok {
+							if loraMap, ok := schemas.ExtraParamObject(item); ok {
 								if url, ok := schemas.SafeExtractString(loraMap["url"]); ok {
 									if scale, ok := schemas.SafeExtractInt(loraMap["scale"]); ok {
 										req.Loras = append(req.Loras, nebiusProvider.NebiusLora{URL: url, Scale: scale})

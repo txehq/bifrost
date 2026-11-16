@@ -112,9 +112,11 @@ func ToAssemblyAITranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionRe
 // assemblyAIConfigObject reads the `config` extra field: a JSON object, given as a map by a
 // Go caller or as text by a multipart form.
 func assemblyAIConfigObject(raw interface{}) (map[string]interface{}, error) {
+	// A Go caller's typed object is the JSON object it encodes to (TXE-7525).
+	if object, ok := schemas.ExtraParamObject(raw); ok {
+		return object, nil
+	}
 	switch value := raw.(type) {
-	case map[string]interface{}:
-		return value, nil
 	case string:
 		var object map[string]interface{}
 		if err := sonic.Unmarshal([]byte(value), &object); err != nil || object == nil {

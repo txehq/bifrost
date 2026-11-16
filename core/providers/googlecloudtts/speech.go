@@ -205,8 +205,12 @@ func checkSpeechParams(model string, params *schemas.SpeechParameters) *schemas.
 	// response's Content-Type and file name follow response_format, and headerless PCM
 	// returned under an mp3 request cannot be told from its bytes.
 	for key, value := range params.ExtraParams {
-		audioConfig, ok := value.(map[string]interface{})
-		if !ok || !providerUtils.ExtraParamNamesField(key, "audioConfig") {
+		if !providerUtils.ExtraParamNamesField(key, "audioConfig") {
+			continue
+		}
+		// A Go caller's typed audioConfig is sent as the object it encodes to (TXE-7525).
+		audioConfig, ok := schemas.ExtraParamObject(value)
+		if !ok {
 			continue
 		}
 		for nested := range audioConfig {

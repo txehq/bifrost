@@ -525,11 +525,18 @@ func TestSpeechRefusesProtectedFieldsAsExtraParams(t *testing.T) {
 }
 
 // response_format chooses the encoding and labels the response; an audioEncoding slipped in
-// through extra params would return audio the Content-Type does not describe.
+// through extra params, in any Go type, would return audio the Content-Type does not describe.
 func TestSpeechRefusesAudioEncodingAsExtraParam(t *testing.T) {
 	for name, extra := range map[string]map[string]any{
 		"as the vendor spells it": {"audioConfig": map[string]any{"audioEncoding": "PCM", "pitch": -2.0}},
 		"spelled another way":     {"Audio_Config": map[string]any{"audio_encoding": "PCM"}},
+		// TXE-7525: a Go caller's typed object is sent as the object it encodes to, and was
+		// not read here, so its audioEncoding reached the vendor.
+		"as a typed struct": {"audioConfig": struct {
+			AudioEncoding string `json:"audioEncoding"`
+		}{AudioEncoding: "PCM"}},
+		"as a map[string]string": {"audioConfig": map[string]string{"audioEncoding": "PCM"}},
+		"as json.RawMessage":     {"audioConfig": json.RawMessage(`{"audioEncoding":"PCM"}`)},
 	} {
 		t.Run(name, func(t *testing.T) {
 			provider, captured := newMockCloudTTS(t, jsonResponse(http.StatusOK, sampleResponseBody))

@@ -705,11 +705,10 @@ func ToGeminiImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 
 			// Labels
 			if labels, ok := schemas.SafeExtractFromMap(bifrostReq.Params.ExtraParams, "labels"); ok {
-				switch m := labels.(type) {
-				case map[string]string:
+				if m, isStringMap := labels.(map[string]string); isStringMap {
 					delete(geminiReq.ExtraParams, "labels")
 					geminiReq.Labels = m
-				case map[string]interface{}:
+				} else if m, isObject := schemas.ExtraParamObject(labels); isObject {
 					out := make(map[string]string, len(m))
 					for k, v := range m {
 						if s, ok := schemas.SafeExtractString(v); ok {
@@ -1142,11 +1141,10 @@ func ToGeminiImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) *Gemi
 
 			// Labels
 			if labels, ok := schemas.SafeExtractFromMap(bifrostReq.Params.ExtraParams, "labels"); ok {
-				switch m := labels.(type) {
-				case map[string]string:
+				if m, isStringMap := labels.(map[string]string); isStringMap {
 					delete(geminiReq.ExtraParams, "labels")
 					geminiReq.Labels = m
-				case map[string]interface{}:
+				} else if m, isObject := schemas.ExtraParamObject(labels); isObject {
 					out := make(map[string]string, len(m))
 					for k, v := range m {
 						if s, ok := schemas.SafeExtractString(v); ok {

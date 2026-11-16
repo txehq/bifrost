@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"reflect"
 	"strings"
 	"sync"
@@ -1520,32 +1519,6 @@ func TestDashScopeWanImageTaskReadsTypedExtraObjects(t *testing.T) {
 	nested, _ := placed["parameters"].(map[string]interface{})
 	if nested["watermark"] != "false" {
 		t.Fatalf("GetExtraParams() = %#v, want parameters.watermark placed inside parameters", placed)
-	}
-}
-
-// TestDashScopeReadsExtraObjectsOnlyThroughExtraParamObject is the class check for the test
-// above: a map[string]interface{} assertion in this package's code misses a Go caller's typed
-// object that the merge still sends, so every extra object is read through
-// schemas.ExtraParamObject. This fails when an assertion comes back.
-func TestDashScopeReadsExtraObjectsOnlyThroughExtraParamObject(t *testing.T) {
-	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, entry := range entries {
-		name := entry.Name()
-		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		source, err := os.ReadFile(name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for i, line := range strings.Split(string(source), "\n") {
-			if strings.Contains(line, ".(map[string]interface{})") || strings.Contains(line, ".(map[string]any)") {
-				t.Errorf("%s:%d asserts map[string]interface{}; read an extra object through schemas.ExtraParamObject: %s", name, i+1, strings.TrimSpace(line))
-			}
-		}
 	}
 }
 

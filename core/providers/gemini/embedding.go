@@ -139,7 +139,7 @@ var geminiPerEntryEmbeddingExtraKeys = []string{"taskType", "title", "embedConte
 // ReadEmbedContentConfig returns the documentOcr / audioTrackExtraction a caller nested under
 // embedContentConfig, the only place Gemini and Vertex accept them.
 func ReadEmbedContentConfig(extra map[string]interface{}) *GeminiEmbedContentConfig {
-	nested, ok := extra["embedContentConfig"].(map[string]interface{})
+	nested, ok := schemas.ExtraParamObject(extra["embedContentConfig"])
 	if !ok {
 		return nil
 	}

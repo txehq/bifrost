@@ -411,7 +411,7 @@ func (r *BedrockInvokeRequest) ApplyGuardrailHeaders(identifier, version, trace 
 		// The map may be shared with other in-process requests, so this one gets its own copy.
 		r.ExtraParams = maps.Clone(r.ExtraParams)
 	}
-	config, _ := extraParamObject(r.ExtraParams["guardrailConfig"])
+	config, _ := schemas.ExtraParamObject(r.ExtraParams["guardrailConfig"])
 	if config == nil {
 		config = make(map[string]interface{}, 3)
 	} else {
@@ -440,7 +440,7 @@ func liftInvokeGuardrailConfig(req *BedrockConverseRequest) {
 		return
 	}
 	config := req.GuardrailConfig
-	if raw, ok := extraParamObject(req.ExtraParams["guardrailConfig"]); ok {
+	if raw, ok := schemas.ExtraParamObject(req.ExtraParams["guardrailConfig"]); ok {
 		delete(req.ExtraParams, "guardrailConfig")
 		if config == nil {
 			config = &BedrockGuardrailConfig{}
@@ -461,7 +461,7 @@ func liftInvokeGuardrailConfig(req *BedrockConverseRequest) {
 			config.TagSuffix = value
 		}
 	}
-	if raw, ok := extraParamObject(req.ExtraParams["amazon-bedrock-guardrailConfig"]); ok {
+	if raw, ok := schemas.ExtraParamObject(req.ExtraParams["amazon-bedrock-guardrailConfig"]); ok {
 		delete(req.ExtraParams, "amazon-bedrock-guardrailConfig")
 		if config == nil {
 			config = &BedrockGuardrailConfig{}
@@ -477,28 +477,6 @@ func liftInvokeGuardrailConfig(req *BedrockConverseRequest) {
 	if len(req.ExtraParams) == 0 {
 		req.ExtraParams = nil
 	}
-}
-
-// extraParamObject returns an extra param that is a JSON object, whether it was decoded
-// already (in-process callers) or captured as raw JSON by UnmarshalJSON (HTTP ingress).
-func extraParamObject(value any) (map[string]interface{}, bool) {
-	switch v := value.(type) {
-	case map[string]interface{}:
-		return v, v != nil
-	case json.RawMessage:
-		var out map[string]interface{}
-		if err := sonic.Unmarshal(v, &out); err != nil || out == nil {
-			return nil, false
-		}
-		return out, true
-	case []byte:
-		var out map[string]interface{}
-		if err := sonic.Unmarshal(v, &out); err != nil || out == nil {
-			return nil, false
-		}
-		return out, true
-	}
-	return nil, false
 }
 
 func (r *BedrockInvokeRequest) ToBedrockConverseRequest() *BedrockConverseRequest {

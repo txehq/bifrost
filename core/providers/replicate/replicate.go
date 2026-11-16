@@ -2977,7 +2977,7 @@ func (provider *ReplicateProvider) FileUpload(ctx *schemas.BifrostContext, key s
 
 	// Add metadata field if provided
 	if request.ExtraParams != nil {
-		if metadata, ok := request.ExtraParams["metadata"].(map[string]interface{}); ok {
+		if metadata, ok := schemas.ExtraParamObject(request.ExtraParams["metadata"]); ok {
 			if len(metadata) > 0 {
 				metadataJSON, err := providerUtils.MarshalSorted(metadata)
 				if err != nil {

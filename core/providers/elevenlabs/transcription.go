@@ -104,7 +104,7 @@ func ToElevenlabsTranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionRe
 	}
 
 	if params.WebhookMetadata != nil {
-		if metadataMap, ok := params.WebhookMetadata.(map[string]interface{}); ok {
+		if metadataMap, ok := schemas.ExtraParamObject(params.WebhookMetadata); ok {
 			if len(metadataMap) > 0 {
 				req.WebhookMetadata = metadataMap
 			}

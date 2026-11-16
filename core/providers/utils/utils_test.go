@@ -1648,6 +1648,163 @@ func TestMergeExtraParams_NeverReplacesASetKey(t *testing.T) {
 	assertExtraParamRefusal(t, MergeExtraParams(map[string]interface{}{"obj": map[string]interface{}{"x": 1}}, map[string]interface{}{"obj": map[string]interface{}{"X": 2}}), "obj.X")
 }
 
+// typedExtraObject is a Go SDK caller's typed extra-param object: the merge sends it as the
+// JSON object it encodes to, so every reader must see that object too (TXE-7525).
+type typedExtraObject struct {
+	Y int `json:"y"`
+}
+
+func TestMergeExtraParams_MergesATypedObject(t *testing.T) {
+	for name, extra := range map[string]interface{}{
+		"struct":            typedExtraObject{Y: 2},
+		"map[string]int":    map[string]int{"y": 2},
+		"json.RawMessage":   json.RawMessage(`{"y":2}`),
+		"pointer to struct": &typedExtraObject{Y: 2},
+	} {
+		body := map[string]interface{}{"obj": map[string]interface{}{"x": 1}}
+		if err := MergeExtraParams(body, map[string]interface{}{"obj": extra}); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		got, err := MarshalSorted(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := `{"obj":{"x":1,"y":2}}`; string(got) != want {
+			t.Errorf("%s: got %s, want %s", name, got, want)
+		}
+		// The converted side may be typed too: it is replaced by the merged object.
+		body = map[string]interface{}{"obj": typedExtraObject{Y: 2}}
+		if err := MergeExtraParams(body, map[string]interface{}{"obj": map[string]interface{}{"x": 1}}); err != nil {
+			t.Fatalf("%s: typed existing: %v", name, err)
+		}
+		if got, _ := MarshalSorted(body); string(got) != `{"obj":{"x":1,"y":2}}` {
+			t.Errorf("%s: typed existing: got %s", name, got)
+		}
+		assertExtraParamRefusal(t, MergeExtraParams(map[string]interface{}{"obj": map[string]interface{}{"y": 1}}, map[string]interface{}{"obj": extra}), "obj.y")
+	}
+}
+
+// extraObjectReadAllowlist holds every map[string]interface{} (or map[string]any) type
+// assertion and type-switch case left in core/providers code, keyed by file and line text,
+// with the reason it is not a reading of a caller's extra param. Such a reading misses a Go
+// caller's typed object (a struct, map[string]string, json.RawMessage) that the merge still
+// sends, so it goes through schemas.ExtraParamObject instead (TXE-7525). An entry no line
+// matches any more fails too, so the list cannot go stale.
+var extraObjectReadAllowlist = map[string]string{
+	// Decoded vendor responses and errors.
+	"gemini/batch.go: if usage, ok := raw.(map[string]interface{}); ok {":                                           "a decoded batch output line",
+	"vllm/rerank.go: itemMap, ok := item.(map[string]interface{})":                                                  "a decoded vLLM rerank response",
+	"vllm/rerank.go: usageMap, ok := rawUsage.(map[string]interface{})":                                             "a decoded vLLM rerank response",
+	"utils/utils.go: body, ok := raw.(map[string]interface{})":                                                      "rootErrorMessage reads a decoded vendor error body",
+	"utils/streamterminaldetector.go: case map[string]any:":                                                         "a decoded vendor stream frame",
+	"utils/streamterminaldetector.go: obj, ok := item.(map[string]any)":                                             "a decoded vendor stream frame",
+	"utils/streamterminaldetector.go: if usageMap, ok := usageMetadata.(map[string]any); ok && len(usageMap) > 0 {": "a decoded vendor stream frame",
+	"utils/streamterminaldetector.go: if feedbackMap, ok := promptFeedback.(map[string]any); ok {":                  "a decoded vendor stream frame",
+	"utils/streamterminaldetector.go: candidateMap, ok := candidate.(map[string]any)":                               "a decoded vendor stream frame",
+	"utils/streamterminaldetector.go: errMap, ok := errValue.(map[string]any)":                                      "a decoded vendor stream frame",
+	"typesafe/errors.go: case map[string]interface{}:":                                                              "a decoded vendor error detail",
+	"typesafe/errors.go: item, ok := entry.(map[string]interface{})":                                                "a decoded vendor error detail",
+	"huggingface/huggingface.go: if converted, ok := rawResponse.(map[string]interface{}); ok {":                    "the decoded raw response",
+	"vertex/rerank.go: if errorMap, ok := rawError.(map[string]interface{}); ok {":                                  "a decoded Discovery Engine error body",
+	"openai/batch.go: vendorError, ok := body[\"error\"].(map[string]any)":                                          "a decoded batch output line",
+	"openai/rerank.go: if rawMeta, ok := docMap[\"metadata\"].(map[string]interface{}); ok {":                       "a rerank document decoded from json.RawMessage",
+	"openai/rerank.go: } else if rawMeta, ok := docMap[\"meta\"].(map[string]interface{}); ok {":                    "a rerank document decoded from json.RawMessage",
+	"openai/errors.go: body, ok := rawResponse.(map[string]interface{})":                                            "a decoded vendor error body",
+	"openai/errors.go: errorObject, ok := body[\"error\"].(map[string]interface{})":                                 "a decoded vendor error body",
+	"openai/errors.go: innerError, ok := errorObject[\"inner_error\"].(map[string]interface{})":                     "a decoded vendor error body",
+	// Decoded ingress bodies and the gateway's own values.
+	"cohere/models.go: if nested, ok := fields[\"metadata\"].(map[string]interface{}); ok {":                                                           "UnmarshalJSON of a rerank document",
+	"cohere/utils.go: paramsMap, ok := params.(map[string]interface{})":                                                                                "a tool in a decoded Cohere ingress body",
+	"gemini/passthrough_usage.go: videoMap, _ := video.(map[string]any)":                                                                               "a passthrough request body decoded from its bytes",
+	"gemini/passthrough_usage.go: configMap, _ := config.(map[string]any)":                                                                             "a passthrough request body decoded from its bytes",
+	"bedrock/invoke.go: if choice, ok := r.ToolChoice.(map[string]interface{}); ok && converseReq.ToolConfig != nil && choice[\"type\"] != \"none\" {": "a decoded InvokeModel ingress body",
+	"bedrock/invoke.go: if amrf, ok := r.AdditionalModelRequestFields.(map[string]interface{}); ok {":                                                  "a decoded InvokeModel ingress body",
+	"bedrock/invoke.go: if m, ok := item.(map[string]interface{}); ok {":                                                                               "a decoded InvokeModel ingress body",
+	"bedrock/invoke.go: if cacheControl, ok := m[\"cache_control\"].(map[string]interface{}); ok {":                                                    "a decoded InvokeModel ingress body",
+	"bedrock/invoke.go: toolMap, ok := toolIface.(map[string]interface{})":                                                                             "a decoded InvokeModel ingress body",
+	"bedrock/invoke.go: if cacheControl, ok := toolMap[\"cache_control\"].(map[string]interface{}); ok &&":                                             "a decoded InvokeModel ingress body",
+	"bedrock/invoke.go: choiceMap, ok := choice.(map[string]interface{})":                                                                              "a decoded InvokeModel ingress body",
+	"bedrock/invoke.go: msgStart[\"message\"].(map[string]interface{})[\"model\"] = resp.Response.Model":                                               "a literal built in the same function",
+	"bedrock/invoke.go: msgStart[\"message\"].(map[string]interface{})[\"id\"] = *resp.Response.ID":                                                    "a literal built in the same function",
+	"bedrock/invoke.go: msgStart[\"message\"].(map[string]interface{})[\"usage\"] = usageMap":                                                          "a literal built in the same function",
+	"vertex/batch.go: if tm, ok := t.(map[string]interface{}); ok {":                                                                                   "batch body shape detection: a miss makes Vertex reject the line, nothing is priced",
+	"vertex/batch.go: mm, ok := m.(map[string]interface{})":                                                                                            "batch body shape detection: a miss makes Vertex reject the line, nothing is priced",
+	"vertex/batch.go: if pm, ok := p.(map[string]interface{}); ok && pm[\"type\"] == \"image_url\" {":                                                  "batch body shape detection: a miss makes Vertex reject the line, nothing is priced",
+	// JSON Schema walkers: a tool or response-format schema, never an extra param.
+	"gemini/utils.go: if resultMap, ok := result.(map[string]interface{}); ok {":                  "a JSON Schema decoded from its bytes",
+	"gemini/utils.go: case map[string]interface{}:":                                               "a JSON Schema walker",
+	"gemini/utils.go: if properties, ok := schema[\"properties\"].(map[string]interface{}); ok {": "a JSON Schema walker",
+	"gemini/utils.go: if propMap, ok := prop.(map[string]interface{}); ok {":                      "a JSON Schema walker",
+	"gemini/utils.go: if items, ok := schema[\"items\"].(map[string]interface{}); ok {":           "a JSON Schema walker",
+	"gemini/utils.go: if itemMap, ok := item.(map[string]interface{}); ok {":                      "a JSON Schema walker",
+	"gemini/utils.go: schemaMap, ok = normalized.(map[string]interface{})":                        "a JSON Schema the walker just built",
+	"gemini/utils.go: case map[string]interface{}, *schemas.OrderedMap, schemas.OrderedMap:":      "a JSON Schema walker",
+	"anthropic/utils.go: case map[string]interface{}:":                                            "a JSON Schema walker",
+	"anthropic/utils.go: case map[string]interface{}, *schemas.OrderedMap, schemas.OrderedMap:":   "a JSON Schema walker",
+	"anthropic/toolschema.go: case map[string]interface{}:":                                       "a JSON Schema walker",
+	"bedrock/utils.go: case map[string]interface{}:":                                              "newAnthropicOutputFormatOrderedMap: a JSON Schema",
+	"utils/utils.go: case map[string]any:":                                                        "normalizeSchemaValue: a JSON Schema walker",
+	// Readers with a general fallback for every other Go value.
+	"gemini/videos.go: case map[string]any:":                                "the default branch decodes any other value from its JSON",
+	"typesafe/decision.go: case map[string]any:":                            "criteriaAsMap: a reflection fallback reads every string-keyed map; anything else is refused",
+	"typesafe/decision.go: if typed, ok := criteria.(map[string]any); ok {": "criteriaEntries: a reflection fallback reads every string-keyed map; anything else is refused",
+}
+
+// extraObjectReadPattern matches a map[string]interface{} or map[string]any type assertion,
+// and a type-switch case that names one of them (not a slice of them).
+var extraObjectReadPattern = regexp.MustCompile(`\.\(\s*map\[string\](interface\{\}|any)\s*\)|\bcase\b[^:]*[\s,]map\[string\](interface\{\}|any)\s*[,:]`)
+
+// TestProvidersReadExtraObjectsOnlyThroughExtraParamObject is the class check for TXE-7525
+// (it widens TXE-7050's DashScope scan to every provider): no provider code reads an object
+// by asserting map[string]interface{}, except the lines extraObjectReadAllowlist names.
+func TestProvidersReadExtraObjectsOnlyThroughExtraParamObject(t *testing.T) {
+	root := ".."
+	used := make(map[string]bool, len(extraObjectReadAllowlist))
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			if entry.Name() == "testdata" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		source, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		for i, line := range strings.Split(string(source), "\n") {
+			if !extraObjectReadPattern.MatchString(line) {
+				continue
+			}
+			key := rel + ": " + strings.TrimSpace(line)
+			if _, ok := extraObjectReadAllowlist[key]; ok {
+				used[key] = true
+				continue
+			}
+			t.Errorf("core/providers/%s:%d asserts map[string]interface{}: read an extra-param object through schemas.ExtraParamObject, or add the line to extraObjectReadAllowlist with the reason it reads only decoded JSON: %s", rel, i+1, strings.TrimSpace(line))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key := range extraObjectReadAllowlist {
+		if !used[key] {
+			t.Errorf("extraObjectReadAllowlist entry matches no line any more; remove it: %s", key)
+		}
+	}
+}
+
 func TestExtraParamUnsettableField(t *testing.T) {
 	for key, want := range map[string]string{
 		"stream": "stream", "STREAM": "stream", "modelId": "model_id", "version": "version",
