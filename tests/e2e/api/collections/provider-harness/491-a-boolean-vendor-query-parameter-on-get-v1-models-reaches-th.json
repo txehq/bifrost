@@ -1,0 +1,213 @@
+{
+  "name": "491. A boolean vendor query parameter on GET /v1/models reaches the vendor as sent, or is refused (typed vendor query) [SERIAL]",
+  "description": "TXE-7102 regression. Local fixture regression, no live provider calls: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream (the pp_cohere provider's base_url is the fixture). GET /v1/models forwards the query parameters the gateway does not read to the provider. A query string carries text, and the Cohere provider read default_only with a bool type assertion, so default_only=true never reached Cohere and every model was listed. The fixture keeps each Cohere model list read in /__wire with the query string as it arrived. The rows read back that default_only arrives as true and as false, and that a value that is not a boolean is refused with 400 caller_unsupported_parameter before any vendor call. Run the whole folder in order.",
+  "item": [
+    {
+      "name": "pp_cohere GET /v1/models with default_only=true: the vendor receives default_only=true (typed vendor query)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/models?provider=pp_cohere&default_only=true",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "models"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "pp_cohere"
+            },
+            {
+              "key": "default_only",
+              "value": "true"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('typed vendor query setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var text = pm.response.text();",
+              "pm.test('the client gets 200', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+              "// wire: the request that reached the fixture, with the query string as it arrived.",
+              "pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/cohere/v1/models'; });",
+              "  pm.test('exactly one upstream call', function () { pm.expect(calls, res.text()).to.have.length(1); });",
+              "  pm.test('the vendor received default_only as sent', function () { pm.expect((calls[0] || {}).query, res.text()).to.equal('?default_only=true&page_size=1000'); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "pp_cohere GET /v1/models with default_only=false: the vendor receives default_only=false (typed vendor query)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/models?provider=pp_cohere&default_only=false",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "models"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "pp_cohere"
+            },
+            {
+              "key": "default_only",
+              "value": "false"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('typed vendor query setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var text = pm.response.text();",
+              "pm.test('the client gets 200', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+              "// wire: the request that reached the fixture, with the query string as it arrived.",
+              "pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/cohere/v1/models'; });",
+              "  pm.test('exactly one upstream call', function () { pm.expect(calls, res.text()).to.have.length(1); });",
+              "  pm.test('the vendor received default_only as sent', function () { pm.expect((calls[0] || {}).query, res.text()).to.equal('?default_only=false&page_size=1000'); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "pp_cohere GET /v1/models with default_only=maybe: 400 caller_unsupported_parameter naming default_only, no vendor call (typed vendor query) [EXPECT-400]",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/models?provider=pp_cohere&default_only=maybe",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "models"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "pp_cohere"
+            },
+            {
+              "key": "default_only",
+              "value": "maybe"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('typed vendor query setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var text = pm.response.text();",
+              "pm.test('the client gets 400', function () { pm.expect(pm.response.code, text).to.equal(400); });",
+              "var body = {};",
+              "pm.test('the body is JSON', function () { body = pm.response.json(); });",
+              "pm.test('error_type is caller_unsupported_parameter', function () { pm.expect((body.extra_fields || {}).error_type, text).to.equal('caller_unsupported_parameter'); });",
+              "pm.test('error.code is caller_unsupported_parameter', function () { pm.expect((body.error || {}).code, text).to.equal('caller_unsupported_parameter'); });",
+              "pm.test('error.param names default_only', function () { pm.expect((body.error || {}).param, text).to.equal('default_only'); });",
+              "// wire: nothing reached the fixture, the request was refused before any vendor call.",
+              "pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  pm.test('no upstream call', function () { pm.expect(res.json().data[0].calls, res.text()).to.have.length(0); });",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
