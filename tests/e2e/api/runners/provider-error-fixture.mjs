@@ -2080,6 +2080,33 @@ const fixtureBatch = (status) => ({
 });
 const countHit = (key) => { hits[key] = (hits[key] || 0) + 1; };
 
+// Folder 613 (TXE-7494): the finished batch whose output file is past a 1 MB response limit.
+const RESULTS_BOUND_BATCH_ID = "batch_results_bound";
+const RESULTS_BOUND_FILE_ID = "file-results-bound-output";
+const RESULTS_BOUND_LINES = 1500;
+const RESULTS_BOUND_LINE_BYTES = 1000;
+let resultsBoundBytes;
+function resultsBoundFile() {
+	if (resultsBoundBytes) return resultsBoundBytes;
+	const lines = [];
+	for (let n = 0; n < RESULTS_BOUND_LINES; n++) {
+		const line = {
+			id: `batch_req_rb_${n}`, custom_id: `rb-${n}`,
+			response: { status_code: 200, request_id: `req_rb_${n}`, body: {
+				id: `chatcmpl-rb-${n}`, object: "chat.completion", created: 1, model: "upstream-ok",
+				choices: [{ index: 0, message: { role: "assistant", content: "" }, finish_reason: "stop" }],
+				usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
+			} },
+			error: null,
+		};
+		const bare = JSON.stringify(line).length + 1;
+		line.response.body.choices[0].message.content = "x".repeat(RESULTS_BOUND_LINE_BYTES - bare);
+		lines.push(JSON.stringify(line) + "\n");
+	}
+	resultsBoundBytes = Buffer.from(lines.join(""));
+	return resultsBoundBytes;
+}
+
 // Zhipu bigmodel batch (folder 407, TXE-6665). bigmodel is the z.ai domestic site: OpenAI-shaped files and
 // batches rooted at /api/paas/v4, not /v1. tkp_bigmodel in the fixture config is an openai-based custom provider
 // written as Tokun's reconciler writes it (contract C12), its request_path_overrides naming those paths, and this
@@ -3016,6 +3043,30 @@ const handleRequest = (req, res) => {
 			countHit("file.upload");
 			send(200, {}, JSON.stringify({ id: FIXTURE_FILE_ID, object: "file", bytes: 64, created_at: 1, filename: "batch_requests.jsonl", purpose: "batch", status: "processed" }));
 		});
+	}
+	// Folder 613 (TXE-7494): a finished batch whose output file is 1.5 MB of result lines, past the 1 MB
+	// client.max_response_body_size_mb the folder sets. Each line is RESULTS_BOUND_LINE_BYTES bytes, newline
+	// included, and custom_id rb-<n>, so a case can tell every line came back exactly once. A ranged GET gets
+	// the bytes from its offset with a 206, as OpenAI's files endpoint answers.
+	if (req.method === "GET" && path === `/v1/batches/${RESULTS_BOUND_BATCH_ID}`) {
+		countHit("results_bound.retrieve");
+		return send(200, {}, JSON.stringify({ ...fixtureBatch("completed"), id: RESULTS_BOUND_BATCH_ID, output_file_id: RESULTS_BOUND_FILE_ID, request_counts: { total: RESULTS_BOUND_LINES, completed: RESULTS_BOUND_LINES, failed: 0 } }));
+	}
+	if (req.method === "GET" && path === `/v1/files/${RESULTS_BOUND_FILE_ID}/content`) {
+		countHit("results_bound.content");
+		const file = resultsBoundFile();
+		const range = /^bytes=(\d+)-$/.exec(req.headers.range || "");
+		if (range) {
+			const from = Number(range[1]);
+			if (from >= file.length) {
+				res.writeHead(416, { "Content-Range": `bytes */${file.length}` });
+				return res.end();
+			}
+			res.writeHead(206, { "Content-Type": "application/jsonl", "Content-Range": `bytes ${from}-${file.length - 1}/${file.length}`, "Content-Length": file.length - from });
+			return res.end(file.subarray(from));
+		}
+		res.writeHead(200, { "Content-Type": "application/jsonl", "Content-Length": file.length });
+		return res.end(file);
 	}
 	if (req.method === "GET" && /^\/v1\/files\/[^/]+\/content$/.test(path)) {
 		countHit("file.content");

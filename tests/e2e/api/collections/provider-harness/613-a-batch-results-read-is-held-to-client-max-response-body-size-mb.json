@@ -1,0 +1,497 @@
+{
+  "name": "613. A batch results read is held to client.max_response_body_size_mb: an unpaged read past it is a 400 on limit, and pages end early and walk every line once (batch-results-bound) [SERIAL]",
+  "description": "Local fixture regression for TXE-7494, no live provider calls. Run with the provider error fixture and the gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json (openai base_url -> the fixture) and providerErrorFixture=1; every case is skipped otherwise. [SERIAL]: it lowers client.max_response_body_size_mb to 1 MB, which every other row's answers are read under, so the harness runs it alone and it restores the stored value at the end. The fixture's batch_results_bound is a finished OpenAI batch whose output file is 1,500 lines of exactly 1,000 bytes (custom_id rb-0 to rb-1499), 1.5 MB in all. A results download is streamed, so before TXE-7494 the transport never applied the limit to it: an unpaged read returned all 1.5 MB, and so did one page with a huge limit. Now an unpaged read past the limit is a 400 whose param is limit and whose message says to page; a page with a huge limit ends at its last whole line within the limit, with has_more and next_cursor, and the pages together return every line exactly once; an ordinary small page is unchanged.",
+  "item": [
+    {
+      "name": "613.1 fixture hit counters reset",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('counters cleared', function () { pm.expect(j.data[0].reset, pm.response.text()).to.equal(true); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{providerErrorFixtureUrl}}/__reset",
+          "host": [
+            "{{providerErrorFixtureUrl}}"
+          ],
+          "path": [
+            "__reset"
+          ]
+        }
+      }
+    },
+    {
+      "name": "613.2 [EXPECT-200] read the stored client config (batch-results-bound)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('batch-results-bound: read the stored client config', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+              "  var cc = pm.response.json().client_config;",
+              "  pm.expect(cc, pm.response.text()).to.be.an('object');",
+              "  // A fresh install reads back log_retention_days 0, which PUT /api/config refuses (must be >= 1).",
+              "  if (!cc.log_retention_days || cc.log_retention_days < 1) { cc.log_retention_days = 30; }",
+              "  pm.collectionVariables.set('brbClientConfig', JSON.stringify(cc));",
+              "  pm.collectionVariables.set('brbOriginal', String(cc.max_response_body_size_mb || 0));",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/config?from_db=true",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "config"
+          ],
+          "query": [
+            {
+              "key": "from_db",
+              "value": "true"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "613.3 [EXPECT-200] lower client.max_response_body_size_mb to 1 MB (batch-results-bound)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "var cc = JSON.parse(pm.collectionVariables.get('brbClientConfig') || '{}');",
+              "cc.max_response_body_size_mb = 1;",
+              "pm.variables.set('brbBody', JSON.stringify({ client_config: cc }));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('batch-results-bound: limit lowered to 1 MB', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{{brbBody}}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/config",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "config"
+          ]
+        }
+      }
+    },
+    {
+      "name": "613.4 [EXPECT-400] an unpaged read of a 1.5 MB result set is refused and told to page (batch-results-bound)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// A regressed answer is the whole 1.5 MB result set: a failure quotes only its start.",
+              "var text = pm.response.text().slice(0, 2000);",
+              "pm.test('batch-results-bound: an unpaged read past the limit is a 400 on limit', function () {",
+              "  pm.expect(pm.response.code, text).to.equal(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.error, text).to.be.an('object');",
+              "  pm.expect(j.error.param, text).to.equal('limit');",
+              "  pm.expect(j.error.message, text).to.include('limit 1 MiB').and.to.include('client.max_response_body_size_mb').and.to.include('`limit` and `after`');",
+              "  pm.expect(j.results, text).to.equal(undefined);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches/batch_results_bound/results?provider=openai",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches",
+            "batch_results_bound",
+            "results"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "openai"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "613.5 [EXPECT-200] a page with a huge limit ends at its last whole line within the limit (batch-results-bound)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// A regressed answer is the whole 1.5 MB result set: a failure quotes only its start.",
+              "var text = pm.response.text().slice(0, 2000);",
+              "pm.test('batch-results-bound: the page stops within 1 MiB of lines and says where to go on', function () {",
+              "  pm.expect(pm.response.code, text.slice(0, 2000)).to.equal(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.results, text.slice(0, 2000)).to.be.an('array');",
+              "  // Every fixture line is 1,000 bytes, newline included.",
+              "  pm.expect(j.results.length * 1000, 'lines on the first page').to.be.at.most(1048576);",
+              "  pm.expect(j.results.length, 'lines on the first page').to.be.at.least(1000);",
+              "  pm.expect(j.has_more, 'has_more').to.equal(true);",
+              "  pm.expect(j.next_cursor, 'next_cursor').to.be.a('string').and.not.empty;",
+              "  pm.collectionVariables.set('brbCursor', j.next_cursor);",
+              "  pm.collectionVariables.set('brbSeen', JSON.stringify(j.results.map(function (r) { return r.custom_id; })));",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches/batch_results_bound/results?provider=openai&limit=1000000000",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches",
+            "batch_results_bound",
+            "results"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "openai"
+            },
+            {
+              "key": "limit",
+              "value": "1000000000"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "613.6 [EXPECT-200] the next page returns the rest, and the two pages hold every line exactly once (batch-results-bound)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// A regressed answer is the whole 1.5 MB result set: a failure quotes only its start.",
+              "var text = pm.response.text().slice(0, 2000);",
+              "pm.test('batch-results-bound: every line rb-0 to rb-1499 comes back exactly once', function () {",
+              "  pm.expect(pm.response.code, text.slice(0, 2000)).to.equal(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.has_more, 'has_more on the last page').to.not.equal(true);",
+              "  var seen = JSON.parse(pm.collectionVariables.get('brbSeen') || '[]').concat(j.results.map(function (r) { return r.custom_id; }));",
+              "  pm.expect(seen.length, 'lines across both pages').to.equal(1500);",
+              "  var counts = {};",
+              "  seen.forEach(function (id) { counts[id] = (counts[id] || 0) + 1; });",
+              "  for (var n = 0; n < 1500; n++) { pm.expect(counts['rb-' + n], 'rb-' + n).to.equal(1); }",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches/batch_results_bound/results?provider=openai&limit=1000000000&after={{brbCursor}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches",
+            "batch_results_bound",
+            "results"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "openai"
+            },
+            {
+              "key": "limit",
+              "value": "1000000000"
+            },
+            {
+              "key": "after",
+              "value": "{{brbCursor}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "613.7 [EXPECT-200] an ordinary small page is unchanged (batch-results-bound)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// A regressed answer is the whole 1.5 MB result set: a failure quotes only its start.",
+              "var text = pm.response.text().slice(0, 2000);",
+              "pm.test('batch-results-bound: limit=10 returns rb-0 to rb-9 and more to come', function () {",
+              "  pm.expect(pm.response.code, text.slice(0, 2000)).to.equal(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.results.map(function (r) { return r.custom_id; }).join(','), text.slice(0, 500)).to.equal('rb-0,rb-1,rb-2,rb-3,rb-4,rb-5,rb-6,rb-7,rb-8,rb-9');",
+              "  pm.expect(j.has_more, 'has_more').to.equal(true);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches/batch_results_bound/results?provider=openai&limit=10",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches",
+            "batch_results_bound",
+            "results"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "openai"
+            },
+            {
+              "key": "limit",
+              "value": "10"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "613.8 [EXPECT-200] restore client.max_response_body_size_mb (batch-results-bound)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "var cc = JSON.parse(pm.collectionVariables.get('brbClientConfig') || '{}');",
+              "cc.max_response_body_size_mb = Number(pm.collectionVariables.get('brbOriginal') || 0);",
+              "pm.variables.set('brbBody', JSON.stringify({ client_config: cc }));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('batch-results-bound: original limit restored', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{{brbBody}}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/config",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "config"
+          ]
+        }
+      }
+    },
+    {
+      "name": "613.9 [EXPECT-200] the original limit is stored again (batch-results-bound)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('batch-results-bound: max_response_body_size_mb is back to what it was', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+              "  var cc = pm.response.json().client_config || {};",
+              "  pm.expect(String(cc.max_response_body_size_mb || 0), pm.response.text()).to.equal(pm.collectionVariables.get('brbOriginal') || '0');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/config?from_db=true",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "config"
+          ],
+          "query": [
+            {
+              "key": "from_db",
+              "value": "true"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
