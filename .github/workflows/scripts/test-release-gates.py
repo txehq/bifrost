@@ -16,7 +16,10 @@ workflow turns its shared built-in cache off.
 Usage: python3 test-release-gates.py
 """
 import ast
+import os
 import re
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -460,6 +463,152 @@ class ActionsCacheHasOneBudget(unittest.TestCase):
             with self.subTest(workflow=wf, job=job_name, purpose=purpose):
                 self.assertTrue(any(str(s.get("uses", "")).startswith("actions/setup-go@") for s in steps[:i]),
                                 "go-cache reads `go env`; restore it after actions/setup-go")
+
+
+TRIGGER_SCRIPT = WORKFLOWS / "scripts" / "release-trigger.sh"
+# Jobs that may run in a release pipeline run that releases nothing: the gate itself and
+# the run's report. Every other job builds, tests for, publishes or approves a release.
+NON_RELEASE_JOBS = {"check-skip", "detect-changes", "notify"}
+
+
+def simulate(detect_outputs, may_release):
+    """Replays one run of the pipeline: the detect-changes step gates, its outputs, then every
+    job in needs order, skipping one whose `if:` is false or, with no `if:`, whose needs did
+    not all succeed. Returns the set of jobs that run."""
+    steps = JOBS["detect-changes"]["steps"]
+    trigger = next(s for s in steps if s.get("id") == "trigger")
+    detect = next(s for s in steps if s.get("id") == "detect")
+    assert steps.index(trigger) < steps.index(detect), "the trigger must decide before detection runs"
+    context = {"steps.trigger.outputs.may-release": may_release}
+    detect_runs = "if" not in detect or evaluate(str(detect["if"]), context) == "true"
+    for name in ("core-needs-release", "framework-needs-release", "plugins-need-release",
+                 "bifrost-http-needs-release", "docker-needs-release", "changed-plugins",
+                 "core-version", "framework-version", "transport-version"):
+        # A skipped step's outputs read as empty strings.
+        context[f"steps.detect.outputs.{name}"] = detect_outputs.get(name, "") if detect_runs else ""
+    for name, expression in JOBS["detect-changes"]["outputs"].items():
+        context[f"needs.detect-changes.outputs.{name}"] = evaluate(str(expression), context)
+    context.update({
+        "needs.check-skip.outputs.should-skip": "false",
+        "needs.check-skip.outputs.skip-tests": "false",
+        "needs.check-skip.outputs.skip-core-test": "false",
+    })
+    results, ran = {}, set()
+    pending = list(JOBS)
+    while pending:
+        for job in pending:
+            needs = JOBS[job].get("needs") or []
+            needs = [needs] if isinstance(needs, str) else needs
+            if all(n in results for n in needs):
+                break
+        else:
+            raise AssertionError(f"needs cycle among {pending}")
+        pending.remove(job)
+        for name in JOBS:
+            context[f"needs.{name}.result"] = results.get(name, "skipped")
+        condition = JOBS[job].get("if")
+        runs = (evaluate(str(condition), context) == "true") if condition is not None \
+            else all(results[n] == "success" for n in needs)
+        results[job] = "success" if runs else "skipped"
+        for output in JOBS[job].get("outputs") or {}:
+            # A job that ran reports success through its outputs; a skipped one reports none.
+            context.setdefault(f"needs.{job}.outputs.{output}", "true" if runs else "")
+        if runs:
+            ran.add(job)
+    return ran
+
+
+TRANSPORT_RELEASE = {
+    "core-needs-release": "false", "framework-needs-release": "false", "plugins-need-release": "false",
+    "bifrost-http-needs-release": "true", "docker-needs-release": "true", "changed-plugins": "[]",
+    "core-version": "1.11.2", "framework-version": "1.9.0", "transport-version": "2.4.0-sync.11",
+}
+
+
+class ReleaseOnlyFromAChosenCommit(unittest.TestCase):
+    """A release is attempted from a commit someone chose: the push that changes a version
+    file, or a dispatch. Every other push to main runs no release job and asks nobody for a
+    live-providers approval, even while a version's tag is missing (TXE-7511: after the
+    sync.11 bump merged, each later merge re-attempted the release and waited on Connor)."""
+
+    def test_a_push_that_may_not_release_runs_no_release_job(self):
+        # detect-all-changes.sh would still report the missing tag; the gate must win.
+        ran = simulate(TRANSPORT_RELEASE, may_release="false")
+        self.assertEqual(ran - NON_RELEASE_JOBS, set())
+        for job in ran:
+            with self.subTest(job=job):
+                self.assertNotIn("environment", JOBS[job], "a run that releases nothing asks for no approval")
+
+    def test_a_run_that_may_release_still_releases(self):
+        # The control: the same detection with the gate open reaches the live-providers jobs.
+        ran = simulate(TRANSPORT_RELEASE, may_release="true")
+        self.assertIn("bifrost-http-release", ran)
+        self.assertTrue(any(JOBS[j].get("environment") == "live-providers" for j in ran))
+
+    def run_trigger(self, repo, event, before, after):
+        out = subprocess.run(["bash", str(TRIGGER_SCRIPT), event, before, after], cwd=repo,
+                             capture_output=True, text=True, env={**os.environ, "GITHUB_OUTPUT": ""})
+        self.assertEqual(out.returncode, 0, out.stderr)
+        decided = [line for line in out.stdout.splitlines() if line.startswith("may-release=")]
+        self.assertEqual(len(decided), 1, out.stdout)
+        return decided[0].split("=", 1)[1]
+
+    def test_the_trigger_releases_only_a_version_change_or_a_dispatch(self):
+        with tempfile.TemporaryDirectory() as repo:
+            def git(*args):
+                return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=repo,
+                                      check=True, capture_output=True, text=True).stdout.strip()
+
+            def commit(path, text):
+                full = Path(repo) / path
+                full.parent.mkdir(parents=True, exist_ok=True)
+                full.write_text(text)
+                git("add", "-A")
+                git("commit", "-q", "-m", path)
+                return git("rev-parse", "HEAD")
+
+            git("init", "-q")
+            base = commit("transports/version", "2.4.0-sync.10\n")
+            bump = commit("transports/version", "2.4.0-sync.11\n")
+            code = commit("core/schemas/x.go", "package schemas\n")
+            plugin = commit("plugins/logging/version", "1.0.1\n")
+            nested = commit("plugins/logging/sub/version", "not a plugin version\n")
+            changelog = commit("transports/changelog.md", "- note\n")
+            cases = [
+                ("push", base, bump, "true"),            # the version bump
+                ("push", bump, code, "false"),           # a merge after it
+                ("push", bump, plugin, "true"),          # several commits, one bumps a plugin
+                ("push", plugin, nested, "false"),       # not a version file
+                ("push", nested, changelog, "false"),
+                ("push", "0" * 40, bump, "false"),       # a new branch: no range to read
+                ("push", "f" * 40, bump, "false"),       # an old head that is gone
+                ("push", "", bump, "false"),
+                ("workflow_dispatch", "", code, "true"),  # the retry and the deliberate release
+                ("schedule", base, bump, "false"),
+            ]
+            for event, before, after, expected in cases:
+                with self.subTest(event=event, before=before[:7], after=after[:7]):
+                    self.assertEqual(self.run_trigger(repo, event, before, after), expected)
+
+
+WORKFLOW_DOC = yaml.safe_load(WORKFLOW.read_text())
+
+
+class ReleasesShareOneGroup(unittest.TestCase):
+    """Two runs that may release must never publish at once: both could see the same tag
+    missing and race to create it in release-bifrost-http-finalize.sh. So every run joins
+    one static workflow-level group. It may not be chosen from the push payload's file
+    lists, which Actions leaves out (TXE-7511, connector P1 on #358), and no job may
+    declare a group, because jobs of one run sharing a group serialize and cancel each
+    other. Keeping non-release pushes out of the group is TXE-7566."""
+
+    def test_every_run_joins_one_static_group(self):
+        self.assertEqual(WORKFLOW_DOC["concurrency"], {"group": "release-pipeline", "cancel-in-progress": False})
+
+    def test_no_job_declares_its_own_group(self):
+        for job, spec in JOBS.items():
+            with self.subTest(job=job):
+                self.assertNotIn("concurrency", spec)
 
 
 if __name__ == "__main__":
