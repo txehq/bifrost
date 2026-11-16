@@ -977,6 +977,240 @@
           }
         }
       ]
+    },
+    {
+      "name": "413.22 tkp_ovr_volcengine (base volcengine) GET /v1/videos/{id} carries Ark's own resolution and ratio beside its size (byteplus seedance task contract)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-ovr-volcengine"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/cgt-ovr-video:tkp_ovr_volcengine",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "cgt-ovr-video:tkp_ovr_volcengine"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the volcengine task reads completed with Ark\\'s own resolution and ratio (TXE-7045)', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, 'id: ' + pm.response.text()).to.eql('cgt-ovr-video:tkp_ovr_volcengine');",
+              "  pm.expect(j.status, 'status: ' + pm.response.text()).to.eql('completed');",
+              "  pm.expect(j.resolution, 'resolution: ' + pm.response.text()).to.eql('720p');",
+              "  pm.expect(j.aspect_ratio, 'aspect_ratio: ' + pm.response.text()).to.eql('16:9');",
+              "  pm.expect(j.size, 'size: ' + pm.response.text()).to.eql('1280x720');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "413.23 tkp_ovr_volcengine (base volcengine) GET /v1/videos lists Ark's task with Ark's own resolution and ratio beside its size (byteplus seedance task contract)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-ovr-volcengine"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos?provider=tkp_ovr_volcengine&limit=1",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "tkp_ovr_volcengine"
+            },
+            {
+              "key": "limit",
+              "value": "1"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the volcengine list entry carries Ark\\'s own resolution and ratio (TXE-7045)', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.data, 'data: ' + pm.response.text()).to.be.an('array').with.length(1);",
+              "  var e = j.data[0];",
+              "  pm.expect(e.id, 'id: ' + pm.response.text()).to.eql('cgt-ovr-video:tkp_ovr_volcengine');",
+              "  pm.expect(e.status, 'status: ' + pm.response.text()).to.eql('completed');",
+              "  pm.expect(e.resolution, 'resolution: ' + pm.response.text()).to.eql('720p');",
+              "  pm.expect(e.aspect_ratio, 'aspect_ratio: ' + pm.response.text()).to.eql('16:9');",
+              "  pm.expect(e.size, 'size: ' + pm.response.text()).to.eql('1280x720');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "413.24 tkp_ovr_modelark (base modelark) GET /v1/videos/{id} carries Ark's own resolution and ratio beside its size (byteplus seedance task contract)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-ovr-modelark"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/cgt-ovr-video:tkp_ovr_modelark",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "cgt-ovr-video:tkp_ovr_modelark"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the modelark task reads completed with Ark\\'s own resolution and ratio (TXE-7045)', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, 'id: ' + pm.response.text()).to.eql('cgt-ovr-video:tkp_ovr_modelark');",
+              "  pm.expect(j.status, 'status: ' + pm.response.text()).to.eql('completed');",
+              "  pm.expect(j.resolution, 'resolution: ' + pm.response.text()).to.eql('720p');",
+              "  pm.expect(j.aspect_ratio, 'aspect_ratio: ' + pm.response.text()).to.eql('16:9');",
+              "  pm.expect(j.size, 'size: ' + pm.response.text()).to.eql('1280x720');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "413.25 tkp_ovr_modelark (base modelark) GET /v1/videos lists Ark's task with Ark's own resolution and ratio beside its size (byteplus seedance task contract)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "tk-key-ovr-modelark"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos?provider=tkp_ovr_modelark&limit=1",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "tkp_ovr_modelark"
+            },
+            {
+              "key": "limit",
+              "value": "1"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the modelark list entry carries Ark\\'s own resolution and ratio (TXE-7045)', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.data, 'data: ' + pm.response.text()).to.be.an('array').with.length(1);",
+              "  var e = j.data[0];",
+              "  pm.expect(e.id, 'id: ' + pm.response.text()).to.eql('cgt-ovr-video:tkp_ovr_modelark');",
+              "  pm.expect(e.status, 'status: ' + pm.response.text()).to.eql('completed');",
+              "  pm.expect(e.resolution, 'resolution: ' + pm.response.text()).to.eql('720p');",
+              "  pm.expect(e.aspect_ratio, 'aspect_ratio: ' + pm.response.text()).to.eql('16:9');",
+              "  pm.expect(e.size, 'size: ' + pm.response.text()).to.eql('1280x720');",
+              "});"
+            ]
+          }
+        }
+      ]
     }
   ]
 }

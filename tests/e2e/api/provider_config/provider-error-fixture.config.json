@@ -1107,7 +1107,8 @@
           "video_generation": true,
           "video_retrieve": true,
           "video_download": true,
-          "video_delete": true
+          "video_delete": true,
+          "video_list": true
         },
         "request_path_overrides": {
           "file_retrieve": "/moved/file_retrieve/{file_id}",
@@ -1146,7 +1147,8 @@
           "video_generation": true,
           "video_retrieve": true,
           "video_download": true,
-          "video_delete": true
+          "video_delete": true,
+          "video_list": true
         },
         "request_path_overrides": {
           "file_retrieve": "/moved/file_retrieve/{file_id}",

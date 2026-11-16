@@ -2285,14 +2285,18 @@ const ovrVideoAnswer = (base, method, rest) => {
 	}
 	if (base !== "volcengine" && base !== "modelark") return undefined;
 	const tasks = "/contents/generations/tasks";
+	// Ark names the file in content.video_url and serves no content endpoint (TXE-7493): the gateway fetches the
+	// URL through the hardened media fetcher, which reaches this public-looking address through the media tunnel
+	// (the providers' proxy_config).
+	const task = () => ({
+		id: OVR_VIDEO_TASK, model: "doubao-seedance-1-0-pro-250528", status: "succeeded",
+		content: { video_url: `http://${MEDIA_PUBLIC_HOST}${OVR_ROOT}/${base}/files/video.mp4?X-Fixture-Signature=signed` },
+		usage: { completion_tokens: 108900, total_tokens: 108900 }, resolution: "720p", ratio: "16:9", duration: 5, created_at: 1762700000, updated_at: 1762700090,
+	});
 	if (method === "POST" && rest === tasks) return json({ id: OVR_VIDEO_TASK });
-	if (method === "GET" && rest === `${tasks}/${OVR_VIDEO_TASK}`) {
-		// Ark names the file in content.video_url and serves no content endpoint (TXE-7493): the gateway fetches the
-		// URL through the hardened media fetcher, which reaches this public-looking address through the media tunnel
-		// (the providers' proxy_config).
-		const videoURL = `http://${MEDIA_PUBLIC_HOST}${OVR_ROOT}/${base}/files/video.mp4?X-Fixture-Signature=signed`;
-		return json({ id: OVR_VIDEO_TASK, model: "doubao-seedance-1-0-pro-250528", status: "succeeded", content: { video_url: videoURL }, usage: { completion_tokens: 108900, total_tokens: 108900 }, resolution: "720p", ratio: "16:9", duration: 5, created_at: 1762700000, updated_at: 1762700090 });
-	}
+	if (method === "GET" && rest === `${tasks}/${OVR_VIDEO_TASK}`) return json(task());
+	// Ark's task list, one page holding that task (folder 413, TXE-7045).
+	if (method === "GET" && rest === tasks) return json({ items: [task()], total: 1 });
 	if (method === "GET" && rest === "/files/video.mp4") return { status: 200, contentType: "video/mp4", body: "ovr video bytes" };
 	if (method === "DELETE" && rest === `${tasks}/${OVR_VIDEO_TASK}`) return { status: 200, body: "" };
 	return undefined;
