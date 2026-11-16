@@ -265,7 +265,7 @@ func TestBillingProjectionKeepsImageParams(t *testing.T) {
 	now := time.Now().UTC()
 	for _, entry := range []*Log{
 		{ID: "image-params-1", Timestamp: now, Object: "image_generation", Provider: "openai", Model: "gpt-image-1", Status: "success",
-			ParamsParsed: map[string]any{"n": 3, "quality": "high"}, ImageGenerationOutputParsed: &schemas.BifrostImageGenerationResponse{}},
+			ParamsParsed: map[string]any{"n": 3, "quality": "high", "negative_prompt": strings.Repeat("x", 1<<16)}, ImageGenerationOutputParsed: &schemas.BifrostImageGenerationResponse{}},
 		{ID: "chat-params-1", Timestamp: now, Object: "chat.completion", Provider: "openai", Model: "gpt-4o", Status: "success",
 			ParamsParsed: map[string]any{"temperature": 0.2}},
 	} {
@@ -279,7 +279,7 @@ func TestBillingProjectionKeepsImageParams(t *testing.T) {
 	for _, l := range result.Logs {
 		byID[l.ID] = l
 	}
-	require.JSONEq(t, `{"n":3,"quality":"high"}`, byID["image-params-1"].Params, "an unread image answer is priced at the n in params")
+	require.JSONEq(t, `{"n":3}`, byID["image-params-1"].Params, "only n is projected: the rest of the request body never leaves the database")
 	assert.Empty(t, byID["chat-params-1"].Params, "a chat row's params are not pricing input and stay unselected")
 }
 

@@ -226,7 +226,7 @@ func TestHybrid_SearchLogsForBillingHydratesImageParams(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, hydration.Unpriceable)
 	require.Equal(t, []string{entry.ID}, hydration.Hydrated)
-	require.JSONEq(t, `{"n":3,"quality":"high"}`, result.Logs[0].Params, "hydration keeps the image params pricing reads")
+	require.JSONEq(t, `{"n":3}`, result.Logs[0].Params, "hydration keeps only the image count pricing reads")
 }
 
 // TestHybrid_HydrateBillingChunkSkipsRowsThatNeedNothing pins the skip guard.

@@ -1195,9 +1195,14 @@ func (s *RDBLogStore) BulkBackfillBillingPayloads(ctx context.Context, updates m
 // is a straight path to an OOM on an image-generation window.
 //
 // The serialized column is cleared too: it has already been parsed, and the row is
-// never re-deserialized or written back.
+// never re-deserialized or written back. params is reduced to the image count, which the
+// projection already does in the database; a row hydrated from its object needs it here.
 func stripNonBillingPayloadBytes(l *Log) {
-	if l == nil || l.ImageGenerationOutputParsed == nil {
+	if l == nil {
+		return
+	}
+	slimBillingParams(l)
+	if l.ImageGenerationOutputParsed == nil {
 		return
 	}
 	for i := range l.ImageGenerationOutputParsed.Data {
@@ -1776,6 +1781,44 @@ var billingRequestColumns = map[string][]string{
 	"params": billingPayloadColumns["image_generation_output"],
 }
 
+// billingRequestColumnExpr is the SQL a billing request column is selected as. params is
+// reduced in the database to {"n": <n>}: the request body behind it can approach the request
+// size cap (a negative prompt, input images), and pricing reads only the count. A dialect with
+// no JSON functions here selects NULL, which prices an unread answer at the default count.
+func billingRequestColumnExpr(dialect, column string) string {
+	if column != "params" {
+		return column
+	}
+	switch dialect {
+	case "postgres":
+		return `(CASE WHEN params IS NOT NULL AND params IS JSON OBJECT THEN jsonb_build_object('n', params::jsonb -> 'n')::text ELSE NULL END)`
+	case "sqlite":
+		return `(CASE WHEN params IS NOT NULL AND json_valid(params) THEN json_object('n', json_extract(params, '$.n')) ELSE NULL END)`
+	}
+	return "NULL"
+}
+
+// slimBillingParams reduces a billing row's params to the image count pricing reads, so a
+// hydrated row does not hold its whole request body while its page is priced.
+func slimBillingParams(l *Log) {
+	if l.Params == "" && l.ParamsParsed == nil {
+		return
+	}
+	var logged struct {
+		N *int `json:"n"`
+	}
+	if l.Params != "" {
+		_ = sonic.UnmarshalString(l.Params, &logged)
+	}
+	slim := map[string]interface{}{"n": logged.N}
+	l.ParamsParsed = slim
+	if data, err := sonic.MarshalString(slim); err == nil {
+		l.Params = data
+	} else {
+		l.Params = ""
+	}
+}
+
 // billingRequestColumnsFor returns the request columns an object_type's cost recomputation
 // reads, in a stable order.
 func billingRequestColumnsFor(objectType string) []string {
@@ -1849,9 +1892,13 @@ func (s *RDBLogStore) billingSelectColumns() string {
 			for _, t := range objectTypes {
 				quoted = append(quoted, "'"+t+"'")
 			}
+			expr := col
+			if _, ok := billingRequestColumns[col]; ok {
+				expr = billingRequestColumnExpr(s.db.Dialector.Name(), col)
+			}
 			cols = append(cols, fmt.Sprintf(
 				"CASE WHEN object_type IN (%s) THEN %s ELSE NULL END AS %s",
-				strings.Join(quoted, ", "), col, col,
+				strings.Join(quoted, ", "), expr, col,
 			))
 		}
 	}
