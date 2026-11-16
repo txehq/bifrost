@@ -462,6 +462,63 @@
           }
         }
       ]
+    },
+    {
+      "name": "330.10 [EXPECT-400] mistral/mistral-small-latest a provider the gateway has no config for is caller_model_not_available, refused before any vendor call (fork error types)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"mistral/mistral-small-latest\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"ping\"\n    }\n  ],\n  \"max_tokens\": 1\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Fixture runs only: the fixture gateway has no mistral provider, so the refusal is",
+              "// certain; a live gateway may have one, and this row must never call a vendor.",
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('a provider with no config is a 400 caller_model_not_available, not _OTHER (TXE-7634)', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_model_not_available');",
+              "  pm.expect(pm.response.headers.get('x-bifrost-error-type'), 'header').to.eql('caller_model_not_available');",
+              "  pm.expect(pm.response.text()).to.include('failed to get config for provider mistral');",
+              "});"
+            ]
+          }
+        }
+      ]
     }
   ]
 }

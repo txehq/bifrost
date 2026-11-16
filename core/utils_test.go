@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/http"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -972,5 +973,34 @@ func BenchmarkCustomProviderGetProviderKey(b *testing.B) {
 				_ = provider.GetProviderKey()
 			}
 		})
+	}
+}
+
+// TestDeclaredErrorTypeIsSentAsDeclared: the constructors' declaration survives
+// ResolveErrorType, which the transport runs on every error it sends, and each type is sent
+// with its status: bifrost_internal 500, bifrost_dropped 503, any other 400.
+func TestDeclaredErrorTypeIsSentAsDeclared(t *testing.T) {
+	for _, errorType := range schemas.ErrorTypes {
+		if errorType == schemas.ErrorTypeOther {
+			continue
+		}
+		want := http.StatusBadRequest
+		switch errorType {
+		case schemas.ErrorTypeBifrostInternal:
+			want = http.StatusInternalServerError
+		case schemas.ErrorTypeBifrostDropped:
+			want = http.StatusServiceUnavailable
+		}
+		for name, e := range map[string]*schemas.BifrostError{
+			"newBifrostErrorFromMsg": newBifrostErrorFromMsg(errorType, "refused"),
+			"newBifrostError":        newBifrostError(errorType, context.Canceled),
+		} {
+			if got := e.ResolveErrorType(); got != errorType {
+				t.Errorf("%s(%s): resolved %q", name, errorType, got)
+			}
+			if got := e.EffectiveHTTPStatus(); got != want {
+				t.Errorf("%s(%s): status %d, want %d", name, errorType, got, want)
+			}
+		}
 	}
 }
