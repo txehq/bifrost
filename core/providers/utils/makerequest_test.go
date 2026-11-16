@@ -1738,6 +1738,39 @@ func TestDoHTTPRequestRecordsWhetherTheRequestWasWritten(t *testing.T) {
 	}
 }
 
+// NewProviderHTTPClient's token exchanges (azidentity, golang.org/x/oauth2) run on the inference
+// call's context but are not the inference request: an exchange that succeeds records nothing, so
+// a refused inference dial after it still reads as unsent (TXE-6746).
+func TestTokenExchangeDoesNotRecordOnTheVendorAttempt(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer ln.Close()
+	go func() {
+		_ = http.Serve(ln, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"access_token":"t","token_type":"Bearer","expires_in":3600}`))
+		}))
+	}()
+	attempt := &schemas.UpstreamAttempt{}
+	ctx, cancel := context.WithTimeout(context.WithValue(context.Background(), schemas.BifrostContextKeyUpstreamAttempt, attempt), testtime.Scale(5*time.Second))
+	defer cancel()
+	client := NewProviderHTTPClient(nil, schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 5}, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+ln.Addr().String()+"/oauth2/token", strings.NewReader("grant_type=client_credentials"))
+	require.NoError(t, err)
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	attempt.MarkConnectFailed() // the inference dial that follows is refused
+	probe := &schemas.BifrostError{}
+	attempt.Apply(probe)
+	if got := probe.ExtraFields.UpstreamSent; got == nil || *got {
+		t.Errorf("upstream_sent %v after a token exchange and a refused inference dial, want false", got)
+	}
+}
+
 // Every provider sends through the shared client (MakeRequestWithContext, DoStreamingRequest,
 // DoHTTPRequest, the fasthttp RoundTripper), which records whether the request was written
 // (TXE-6746). A provider that calls an HTTP client itself would leave its attempts unrecorded:
