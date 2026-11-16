@@ -1195,9 +1195,14 @@ func (s *RDBLogStore) BulkBackfillBillingPayloads(ctx context.Context, updates m
 // is a straight path to an OOM on an image-generation window.
 //
 // The serialized column is cleared too: it has already been parsed, and the row is
-// never re-deserialized or written back.
+// never re-deserialized or written back. params is reduced to the image count, which the
+// projection already does in the database; a row hydrated from its object needs it here.
 func stripNonBillingPayloadBytes(l *Log) {
-	if l == nil || l.ImageGenerationOutputParsed == nil {
+	if l == nil {
+		return
+	}
+	slimBillingParams(l)
+	if l.ImageGenerationOutputParsed == nil {
 		return
 	}
 	for i := range l.ImageGenerationOutputParsed.Data {
@@ -1768,6 +1773,75 @@ var billingPayloadColumns = map[string][]string{
 	"ocr_output":              {"ocr"},
 }
 
+// billingRequestColumns are request columns cost recomputation reads, gated to object types
+// like billingPayloadColumns. params carries an image request's n, which prices an answer
+// streamed to the caller unread in large-response mode: its response holds no image and the
+// count it was priced at live is never serialised (TXE-7498).
+var billingRequestColumns = map[string][]string{
+	"params": billingPayloadColumns["image_generation_output"],
+}
+
+// billingRequestColumnExpr is the SQL a billing request column is selected as. params is
+// reduced in the database to {"n": <n>}: the request body behind it can approach the request
+// size cap (a negative prompt, input images), and pricing reads only the count. A dialect with
+// no JSON functions here selects NULL, which prices an unread answer at the default count.
+func billingRequestColumnExpr(dialect, column string) string {
+	if column != "params" {
+		return column
+	}
+	switch dialect {
+	case "postgres":
+		return `(CASE WHEN params IS NOT NULL AND params IS JSON OBJECT THEN jsonb_build_object('n', params::jsonb -> 'n')::text ELSE NULL END)`
+	case "sqlite":
+		return `(CASE WHEN params IS NOT NULL AND json_valid(params) THEN json_object('n', json_extract(params, '$.n')) ELSE NULL END)`
+	}
+	return "NULL"
+}
+
+// slimBillingParams reduces a billing row's params to the image count pricing reads, so a
+// hydrated row does not hold its whole request body while its page is priced.
+func slimBillingParams(l *Log) {
+	if l.Params == "" && l.ParamsParsed == nil {
+		return
+	}
+	var logged struct {
+		N *int `json:"n"`
+	}
+	if l.Params != "" {
+		_ = sonic.UnmarshalString(l.Params, &logged)
+	}
+	slim := map[string]interface{}{"n": logged.N}
+	l.ParamsParsed = slim
+	if data, err := sonic.MarshalString(slim); err == nil {
+		l.Params = data
+	} else {
+		l.Params = ""
+	}
+}
+
+// billingRequestColumnsFor returns the request columns an object_type's cost recomputation
+// reads, in a stable order.
+func billingRequestColumnsFor(objectType string) []string {
+	var cols []string
+	for _, col := range sortedBillingColumns(billingRequestColumns) {
+		if slices.Contains(billingRequestColumns[col], objectType) {
+			cols = append(cols, col)
+		}
+	}
+	return cols
+}
+
+// sortedBillingColumns returns a gated column map's columns sorted, so the generated SQL is
+// stable across calls (map iteration is not).
+func sortedBillingColumns(gated map[string][]string) []string {
+	cols := make([]string, 0, len(gated))
+	for col := range gated {
+		cols = append(cols, col)
+	}
+	sort.Strings(cols)
+	return cols
+}
+
 // billingScalarColumns is every non-payload column cost recomputation reads, and
 // nothing else. Traced from calculateCostForLog, calculateBatchAggregateCost,
 // pricingScopesForLog, servedTierFromLog, isKnownZeroCostLog, and the recalc
@@ -1808,26 +1882,25 @@ var billingScalarColumns = []string{
 // the batch including plain chat rows, and pricing only ever reads len(Data).
 // The same CASE pattern guards output_message in listSelectColumns for realtime turns.
 func (s *RDBLogStore) billingSelectColumns() string {
-	cols := make([]string, 0, len(billingScalarColumns)+len(billingPayloadColumns))
+	cols := make([]string, 0, len(billingScalarColumns)+len(billingPayloadColumns)+len(billingRequestColumns))
 	cols = append(cols, billingScalarColumns...)
 
-	// Sorted so the generated SQL is stable across calls (map iteration is not).
-	payloadCols := make([]string, 0, len(billingPayloadColumns))
-	for col := range billingPayloadColumns {
-		payloadCols = append(payloadCols, col)
-	}
-	sort.Strings(payloadCols)
-
-	for _, col := range payloadCols {
-		objectTypes := billingPayloadColumns[col]
-		quoted := make([]string, 0, len(objectTypes))
-		for _, t := range objectTypes {
-			quoted = append(quoted, "'"+t+"'")
+	for _, gated := range []map[string][]string{billingPayloadColumns, billingRequestColumns} {
+		for _, col := range sortedBillingColumns(gated) {
+			objectTypes := gated[col]
+			quoted := make([]string, 0, len(objectTypes))
+			for _, t := range objectTypes {
+				quoted = append(quoted, "'"+t+"'")
+			}
+			expr := col
+			if _, ok := billingRequestColumns[col]; ok {
+				expr = billingRequestColumnExpr(s.db.Dialector.Name(), col)
+			}
+			cols = append(cols, fmt.Sprintf(
+				"CASE WHEN object_type IN (%s) THEN %s ELSE NULL END AS %s",
+				strings.Join(quoted, ", "), expr, col,
+			))
 		}
-		cols = append(cols, fmt.Sprintf(
-			"CASE WHEN object_type IN (%s) THEN %s ELSE NULL END AS %s",
-			strings.Join(quoted, ", "), col, col,
-		))
 	}
 	return strings.Join(cols, ", ")
 }
@@ -1835,15 +1908,12 @@ func (s *RDBLogStore) billingSelectColumns() string {
 // billingScalarSelectColumns returns the billing projection with every modality
 // payload column replaced by NULL, for pages that must not materialize payloads.
 func billingScalarSelectColumns() string {
-	cols := make([]string, 0, len(billingScalarColumns)+len(billingPayloadColumns))
+	cols := make([]string, 0, len(billingScalarColumns)+len(billingPayloadColumns)+len(billingRequestColumns))
 	cols = append(cols, billingScalarColumns...)
-	payloadCols := make([]string, 0, len(billingPayloadColumns))
-	for col := range billingPayloadColumns {
-		payloadCols = append(payloadCols, col)
-	}
-	sort.Strings(payloadCols)
-	for _, col := range payloadCols {
-		cols = append(cols, "NULL AS "+col)
+	for _, gated := range []map[string][]string{billingPayloadColumns, billingRequestColumns} {
+		for _, col := range sortedBillingColumns(gated) {
+			cols = append(cols, "NULL AS "+col)
+		}
 	}
 	return strings.Join(cols, ", ")
 }

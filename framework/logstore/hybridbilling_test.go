@@ -197,6 +197,38 @@ func TestHybrid_SearchLogsForBillingLeavesNonOffloadedRowsAlone(t *testing.T) {
 	assert.Equal(t, 70_000, result.Logs[0].TokenUsageParsed.PromptTokensDetails.CachedReadTokens)
 }
 
+// TestHybrid_SearchLogsForBillingHydratesImageParams pins TXE-7498 on the hybrid store. Offloading
+// blanks an image row's params with its payload, and billing hydration must bring them back: an
+// answer streamed unread in large-response mode is priced at the n they carry.
+func TestHybrid_SearchLogsForBillingHydratesImageParams(t *testing.T) {
+	hybrid, inner, _ := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+
+	entry := &Log{
+		ID: "bill-image-params-1", Timestamp: time.Now().UTC(), Object: "image_generation", Provider: "openai", Model: "gpt-image-1", Status: "success",
+		ParamsParsed:                map[string]any{"n": 3, "quality": "high"},
+		ImageGenerationOutputParsed: &schemas.BifrostImageGenerationResponse{},
+		TokenUsageParsed:            &schemas.BifrostLLMUsage{},
+	}
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
+	waitForOffload(t, hybrid, inner, entry.ID)
+
+	dbLog, err := inner.FindByID(ctx, entry.ID)
+	require.NoError(t, err)
+	require.Empty(t, dbLog.Params, "precondition: params were offloaded with the payload")
+
+	result, err := hybrid.SearchLogsForBilling(ctx, SearchFilters{}, PaginationOptions{Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, result.Logs, 1)
+	hydration, err := hybrid.HydrateBillingChunk(ctx, []*Log{&result.Logs[0]})
+	require.NoError(t, err)
+	require.Empty(t, hydration.Unpriceable)
+	require.Equal(t, []string{entry.ID}, hydration.Hydrated)
+	require.JSONEq(t, `{"n":3}`, result.Logs[0].Params, "hydration keeps only the image count pricing reads")
+}
+
 // TestHybrid_HydrateBillingChunkSkipsRowsThatNeedNothing pins the skip guard.
 //
 // A deployment can keep token_usage and cache_debug DB-resident via

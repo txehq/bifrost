@@ -1156,6 +1156,11 @@ func billingRowNeedsHydration(l *Log, excluded map[string]struct{}) bool {
 		}
 		// Modality payloads are cleared unconditionally here and are never backfilled,
 		// so an empty column means the object holds the only copy.
+		for _, col := range billingRequestColumnsFor(l.Object) {
+			if billingRequestColumnValue(l, col) == "" {
+				return true
+			}
+		}
 		if col := billingPayloadColumnFor(l.Object); col != "" {
 			return billingPayloadColumnValue(l, col) == ""
 		}
@@ -1185,6 +1190,13 @@ func billingRowNeedsHydration(l *Log, excluded map[string]struct{}) bool {
 
 	if !vouched("token_usage", l.TokenUsage) || !vouched("cache_debug", l.CacheDebug) {
 		return true
+	}
+	// An image request's params carry the n an answer streamed unread in large-response mode is
+	// priced at (TXE-7498). They are offloaded with the payload and never backfilled.
+	for _, col := range billingRequestColumnsFor(l.Object) {
+		if billingRequestColumnValue(l, col) == "" && !resident(col) {
+			return true
+		}
 	}
 	if col := billingPayloadColumnFor(l.Object); col != "" {
 		// Modality payloads are never backfilled — they are precisely what offloading
@@ -1222,6 +1234,16 @@ func billingPayloadColumnValue(l *Log, column string) string {
 	}
 }
 
+// billingRequestColumnValue reads the serialized value of one billing request column.
+func billingRequestColumnValue(l *Log, column string) string {
+	switch column {
+	case "params":
+		return l.Params
+	default:
+		return ""
+	}
+}
+
 // hydrateLogForBilling fetches the offloaded payload and merges back only the
 // fields pricing reads, then re-deserializes so the virtual structs match.
 //
@@ -1236,6 +1258,7 @@ func (h *HybridLogStore) hydrateLogForBilling(ctx context.Context, log *Log) err
 	if col := billingPayloadColumnFor(log.Object); col != "" {
 		fields = append(fields, col)
 	}
+	fields = append(fields, billingRequestColumnsFor(log.Object)...)
 
 	data, _, err := h.getPayload(ctx, h.logKey(log.Timestamp, log.ID))
 	if err != nil {
