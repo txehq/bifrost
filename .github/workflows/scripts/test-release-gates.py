@@ -61,6 +61,19 @@ UPLOAD_ARTIFACT = "actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f0
 # go.work's go directive. An older go on PATH fetches this toolchain from proxy.golang.org,
 # which most release jobs' egress allowlists block.
 WORKSPACE_GO = re.search(r"^go (\S+)$", (WORKFLOWS.parent.parent / "go.work").read_text(), re.M).group(1)
+# Every job gets Go from this action (TXE-7621; check-go-setup.py enforces it), and it is the one
+# place actions/setup-go runs.
+SETUP_GO_ACTION = "./.github/actions/setup-go"
+ACTIONS = WORKFLOWS.parent / "actions"
+
+
+def setup_go_action_steps():
+    """The actions/setup-go steps inside the composite actions: the wrapper's, and any other."""
+    for path in sorted(ACTIONS.glob("*/action.y*ml")):
+        doc = yaml.safe_load(path.read_text()) or {}
+        for step in ((doc.get("runs") or {}).get("steps") or []):
+            if str(step.get("uses", "")).startswith("actions/setup-go@"):
+                yield path, step
 GO_COMMAND = re.compile(r"(?:^|[\s;&|(`])go (?:build|env|generate|get|install|list|mod|run|test|vet|work)\b")
 
 
@@ -352,11 +365,15 @@ class GoStepsHaveTheWorkspaceGo(unittest.TestCase):
                 if not (GO_COMMAND.search(run) or any(script in run for script in go_scripts)):
                     continue
                 checked += 1
-                setups = [s for s in steps[:i] if s.get("uses", "").startswith("actions/setup-go@")]
+                setups = [s for s in steps[:i] if s.get("uses", "") == SETUP_GO_ACTION]
                 with self.subTest(job=job_name, step=step.get("name")):
-                    self.assertTrue(setups, "runs go with no actions/setup-go step before it")
-                    self.assertEqual(str(setups[-1].get("with", {}).get("go-version")), WORKSPACE_GO)
+                    self.assertTrue(setups, f"runs go with no {SETUP_GO_ACTION} step before it")
         self.assertGreater(checked, 0)
+
+    def test_the_setup_go_action_installs_the_workspace_version(self):
+        steps = [step for path, step in setup_go_action_steps() if path.parent.name == "setup-go"]
+        self.assertEqual(len(steps), 1, f"{SETUP_GO_ACTION} runs actions/setup-go once")
+        self.assertEqual(str((steps[0].get("with") or {}).get("go-version")), WORKSPACE_GO)
 
 
 class SetupGoCacheIsOff(unittest.TestCase):
@@ -381,6 +398,12 @@ class SetupGoCacheIsOff(unittest.TestCase):
                     with self.subTest(workflow=path.name, job=job_name, step=step.get("name")):
                         self.assertIs((step.get("with") or {}).get("cache"), False,
                                       "set `cache: false` on actions/setup-go (TXE-6242)")
+        # Since TXE-7621 the workflows reach actions/setup-go through ./.github/actions/setup-go.
+        for path, step in setup_go_action_steps():
+            checked += 1
+            with self.subTest(action=str(path.relative_to(WORKFLOWS.parent.parent)), step=step.get("name")):
+                self.assertIs((step.get("with") or {}).get("cache"), False,
+                              "set `cache: false` on actions/setup-go (TXE-6242)")
         self.assertGreater(checked, 0)
 
 
@@ -476,8 +499,8 @@ class ActionsCacheHasOneBudget(unittest.TestCase):
                 continue
             steps = doc["jobs"][job_name]["steps"]
             with self.subTest(workflow=wf, job=job_name, purpose=purpose):
-                self.assertTrue(any(str(s.get("uses", "")).startswith("actions/setup-go@") for s in steps[:i]),
-                                "go-cache reads `go env`; restore it after actions/setup-go")
+                self.assertTrue(any(s.get("uses", "") == SETUP_GO_ACTION for s in steps[:i]),
+                                f"go-cache reads `go env`; restore it after {SETUP_GO_ACTION}")
 
 
 TRIGGER_SCRIPT = WORKFLOWS / "scripts" / "release-trigger.sh"

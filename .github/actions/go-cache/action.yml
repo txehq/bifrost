@@ -20,7 +20,7 @@
 #
 # ⚠️ SAVED ON MAIN ONLY. An entry saved by any other ref is readable by that ref alone.
 #
-# Usage, in this order within one job, after actions/setup-go:
+# Usage, in this order within one job, after ./.github/actions/setup-go:
 #
 #   - uses: ./.github/actions/go-cache
 #     with: {purpose: framework-race}
@@ -76,7 +76,7 @@ runs:
             exit 1
           fi
         else
-          command -v go >/dev/null || { echo "::error::go-cache: no go on PATH; put this after actions/setup-go"; exit 1; }
+          command -v go >/dev/null || { echo "::error::go-cache: no go on PATH; put this after ./.github/actions/setup-go"; exit 1; }
         fi
 
     - name: Resolve the Go cache key
