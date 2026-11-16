@@ -41,6 +41,27 @@ Before TXE-7511, every merge after a version bump re-attempted that release from
 commit, and each attempt waited for an approval. On sync.11 five such runs queued behind the
 release, and two had to be cancelled by hand.
 
+## For operators: where releases run now
+
+Since TXE-7566 the Release Pipeline's workflow file is `release.yml`, and
+`release-pipeline.yml` only holds the release jobs it calls.
+
+- Dispatch a release with `gh workflow run release.yml -R txehq/bifrost --ref main`. A
+  dispatch of `release-pipeline.yml` is refused, because that file no longer has a dispatch
+  trigger.
+- List runs with `gh run list -R txehq/bifrost --workflow release.yml`. Runs from before the
+  change stay listed under `release-pipeline.yml`, so a watcher or script that filters on
+  that name sees no new runs.
+- A release run's jobs appear as `release / <job>`, for example
+  `release / build-binaries-x86`. The approval for `live-providers` is asked on those jobs as
+  before.
+- Every push still starts a run. A push that may not release shows `gate` succeeded and
+  `release` skipped.
+
+The provider keys are `live-providers` environment secrets that the called jobs read
+themselves. No run has yet shown them reaching a called workflow, because the environment held
+no keys when this changed. TXE-7574 is the check to run at the first release that has keys.
+
 ## Retrying a release that failed
 
 Retry it on the same commit, by re-running the failed jobs of the release run:
