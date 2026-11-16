@@ -2772,10 +2772,7 @@ func (provider *AzureProvider) batchResultBlobSource(ctx *schemas.BifrostContext
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
-		return &providerUtils.ResultStream{
-			Reader:  bytes.NewReader(content[min(offset, int64(len(content))):]),
-			Latency: time.Duration(latencyMs) * time.Millisecond,
-		}, nil
+		return providerUtils.NewResultStream(bytes.NewReader(content[min(offset, int64(len(content))):]), time.Duration(latencyMs)*time.Millisecond), nil
 	}
 }
 

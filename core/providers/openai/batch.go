@@ -271,7 +271,7 @@ func batchResultErrorFromBody(body map[string]any) *schemas.BatchResultError {
 func ReadBatchResults(sources []providerUtils.BatchResultsSource, request *schemas.BifrostBatchResultsRequest, endpoint schemas.BatchEndpoint, logger schemas.Logger) (*schemas.BifrostBatchResultsResponse, *schemas.BifrostError) {
 	results := []schemas.BatchResultItem{}
 	var parseErrors []schemas.BatchError
-	page, bifrostErr := providerUtils.ReadBatchResultsPage(sources, request.After, request.Limit, func(_ int, line []byte) {
+	page, bifrostErr := providerUtils.ReadBatchResultsPage(sources, request, func(_ int, line []byte) {
 		item, err := ParseBatchResultLine(line, endpoint)
 		if err != nil {
 			if logger != nil {

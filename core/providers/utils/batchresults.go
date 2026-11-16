@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/capsohq/bifrost/core/network"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
@@ -92,11 +93,13 @@ func PageBatchResultItems(total int, after *string, limit int) (start, end int, 
 	return start, end, nextCursor, nil
 }
 
-// ReadJSONLPage reads up to limit non-empty lines from r, calling onLine for each. It
+// readJSONLPage reads up to limit non-empty lines from r, calling onLine for each. It
 // returns the bytes consumed, which is the offset of the next unread line relative to
 // where r started, and whether any line remains after the page. limit <= 0 reads to the
 // end. A line is passed without its line ending; the slice is only valid during the call.
-func ReadJSONLPage(r io.Reader, limit int, onLine func(line []byte)) (consumed int64, more bool, err error) {
+// It is unexported so a provider reads result lines only through ReadBatchResultsPage,
+// which bounds an unpaged read (TXE-7494).
+func readJSONLPage(r io.Reader, limit int, onLine func(line []byte)) (consumed int64, more bool, err error) {
 	br := bufio.NewReaderSize(r, 64*1024)
 	count := 0
 	for {
@@ -118,6 +121,11 @@ func ReadJSONLPage(r io.Reader, limit int, onLine func(line []byte)) (consumed i
 			}
 		}
 		line, readErr := br.ReadBytes('\n')
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			// A line a failed read cut short is not handed on as if it were whole, and is
+			// not counted, so the next page starts at it.
+			return consumed, false, readErr
+		}
 		consumed += int64(len(line))
 		if trimmed := bytes.TrimSpace(line); len(trimmed) > 0 {
 			onLine(trimmed)
@@ -132,11 +140,19 @@ func ReadJSONLPage(r io.Reader, limit int, onLine func(line []byte)) (consumed i
 	}
 }
 
-// ResultStream is one result source opened as a streamed download.
+// ResultStream is one result source opened as a streamed download. Its body is unexported:
+// only ReadBatchResultsPage reads it, so every provider's results read is under the same
+// bound, and a provider that tried to read a stream itself would not compile (TXE-7494).
 type ResultStream struct {
-	Reader  io.Reader
+	reader  io.Reader
 	Latency time.Duration // Time to the response headers
 	release func()
+}
+
+// NewResultStream wraps a result source that is already in hand (a blob downloaded whole)
+// as a stream starting at its first unread byte.
+func NewResultStream(r io.Reader, latency time.Duration) *ResultStream {
+	return &ResultStream{reader: r, Latency: latency}
 }
 
 // Close ends the download. A stream that was not read to its end drops its connection
@@ -215,7 +231,7 @@ func OpenResultStream(
 	statusCode := resp.StatusCode()
 	if statusCode == fasthttp.StatusRequestedRangeNotSatisfiable && offset > 0 {
 		releaseResponse()
-		return &ResultStream{Reader: bytes.NewReader(nil), Latency: latency}, nil
+		return &ResultStream{reader: bytes.NewReader(nil), Latency: latency}, nil
 	}
 
 	// The transport stops watching the request context once the headers are in, so the
@@ -241,7 +257,7 @@ func OpenResultStream(
 	}()
 	var releaseOnce sync.Once
 	stream := &ResultStream{
-		Reader:  &resultBodyReader{ctx: ctx, reader: reader, idle: idle},
+		reader:  &resultBodyReader{ctx: ctx, reader: reader, idle: idle},
 		Latency: latency,
 		release: func() {
 			releaseOnce.Do(func() {
@@ -256,7 +272,7 @@ func OpenResultStream(
 
 	if statusCode != fasthttp.StatusOK && statusCode != fasthttp.StatusPartialContent {
 		// Read the vendor's error for parsing, bounded in size and by the same watch.
-		errorBody, _ := io.ReadAll(io.LimitReader(stream.Reader, resultStreamErrorBodyLimit))
+		errorBody, _ := io.ReadAll(io.LimitReader(stream.reader, resultStreamErrorBodyLimit))
 		errorResp := fasthttp.AcquireResponse()
 		defer fasthttp.ReleaseResponse(errorResp)
 		resp.Header.CopyTo(&errorResp.Header)
@@ -267,10 +283,10 @@ func OpenResultStream(
 
 	if statusCode == fasthttp.StatusOK && offset > 0 {
 		// The server sent the whole file: skip to the offset without keeping the bytes.
-		if _, skipErr := io.CopyN(io.Discard, stream.Reader, offset); skipErr != nil {
+		if _, skipErr := io.CopyN(io.Discard, stream.reader, offset); skipErr != nil {
 			stream.Close()
 			if errors.Is(skipErr, io.EOF) {
-				return &ResultStream{Reader: bytes.NewReader(nil), Latency: latency}, nil
+				return &ResultStream{reader: bytes.NewReader(nil), Latency: latency}, nil
 			}
 			return nil, NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, skipErr)
 		}
@@ -315,14 +331,93 @@ type BatchResultsPage struct {
 	Latency    time.Duration
 }
 
+// errResultsByteBudget ends a results read that reached its byte budget.
+var errResultsByteBudget = errors.New("batch results byte budget reached")
+
+// resultsByteBudget is how many bytes of result lines one read may return, across all of its
+// sources: client.max_response_body_size_mb, the limit every buffered upstream body is held to.
+// A results download is streamed, so the transport does not apply that limit itself; without
+// this budget an unpaged read of a large batch, or a page with a huge limit, would hold the
+// whole result set in memory (TXE-7494).
+type resultsByteBudget struct {
+	limit int64 // bytes
+	used  int64 // bytes of whole lines already returned
+}
+
+// wrap returns r limited to the bytes the budget has left. Reading the first byte past them
+// fails with errResultsByteBudget, so a source that ends exactly at the budget still ends
+// with io.EOF.
+func (b *resultsByteBudget) wrap(r io.Reader) io.Reader {
+	return &budgetReader{r: r, left: b.limit - b.used}
+}
+
+type budgetReader struct {
+	r    io.Reader
+	left int64
+}
+
+func (r *budgetReader) Read(p []byte) (int, error) {
+	if r.left < 0 {
+		return 0, errResultsByteBudget
+	}
+	// Read at most one byte past the budget: that byte proves the source goes on.
+	if room := r.left + 1; room > 0 && int64(len(p)) > room {
+		p = p[:room]
+	}
+	n, err := r.r.Read(p)
+	r.left -= int64(n)
+	if r.left < 0 {
+		return n + int(r.left), errResultsByteBudget
+	}
+	return n, err
+}
+
+// newBatchResultsTooLargeError is the 400 for a results read that reached the byte budget
+// with nothing it could return as a page.
+func newBatchResultsTooLargeError(limit int64, paged bool) *schemas.BifrostError {
+	message := fmt.Sprintf("batch results exceed the gateway's response %s (client.max_response_body_size_mb): read them in pages with `limit` and `after`", formatByteLimit(limit))
+	if paged {
+		message = fmt.Sprintf("a batch result line exceeds the gateway's response %s (client.max_response_body_size_mb)", formatByteLimit(limit))
+	}
+	return &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     schemas.Ptr(fasthttp.StatusBadRequest),
+		// Another provider holds a different batch, so a fallback cannot answer this read.
+		AllowFallbacks: schemas.Ptr(false),
+		Error: &schemas.ErrorField{
+			Message: message,
+			Param:   "limit",
+			Error:   errResultsByteBudget,
+		},
+		ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeBifrostInternal},
+	}
+}
+
 // ReadBatchResultsPage reads one page of result lines across sources, in order, starting
-// at the `after` cursor, and calls onLine for each line with the index of its source.
-// limit <= 0 reads every source to its end. Every non-empty line counts toward the limit,
-// whether or not the caller can parse it, so the cursor always advances by whole lines.
+// at the request's `after` cursor, and calls onLine for each line with the index of its
+// source. A request without a limit reads every source to its end. Every non-empty line
+// counts toward the limit, whether or not the caller can parse it, so the cursor always
+// advances by whole lines.
 //
 // When the page ends exactly at the end of a source and a later source exists, HasMore is
 // true and the next page starts at that source; that page is empty if the source is.
-func ReadBatchResultsPage(sources []BatchResultsSource, after *string, limit int, onLine func(source int, line []byte)) (*BatchResultsPage, *schemas.BifrostError) {
+//
+// A read returns at most client.max_response_body_size_mb of result lines. A page that
+// reaches it ends at its last whole line, with HasMore and the cursor of the next line, as if
+// its limit were smaller. An unpaged read that reaches it is refused with a 400 telling the
+// caller to page, since a caller that sent no limit expects the whole set. Only the provider
+// job accounting sweeper's read (request.Settlement) is not bounded: it must see the whole
+// set to price it.
+func ReadBatchResultsPage(sources []BatchResultsSource, request *schemas.BifrostBatchResultsRequest, onLine func(source int, line []byte)) (*BatchResultsPage, *schemas.BifrostError) {
+	var after *string
+	limit := 0
+	var budget *resultsByteBudget
+	if request != nil {
+		after, limit = request.After, request.Limit
+	}
+	if request == nil || !request.Settlement {
+		budget = &resultsByteBudget{limit: network.MaxResponseBodyBytes()}
+	}
 	cursor, err := DecodeBatchResultsCursor(after)
 	if err != nil {
 		return nil, NewInvalidResultsCursorError(err)
@@ -334,6 +429,7 @@ func ReadBatchResultsPage(sources []BatchResultsSource, after *string, limit int
 
 	remaining := limit
 	offset := cursor.Offset
+	pageLines := 0
 	for source := cursor.Source; source < len(sources); source++ {
 		stream, bifrostErr := sources[source](offset)
 		if bifrostErr != nil {
@@ -344,12 +440,28 @@ func ReadBatchResultsPage(sources []BatchResultsSource, after *string, limit int
 			continue
 		}
 		page.Latency += stream.Latency
+		reader := stream.reader
+		if budget != nil {
+			reader = budget.wrap(reader)
+		}
 		read := 0
-		consumed, more, readErr := ReadJSONLPage(stream.Reader, remaining, func(line []byte) {
+		consumed, more, readErr := readJSONLPage(reader, remaining, func(line []byte) {
 			read++
+			pageLines++
 			onLine(source, line)
 		})
 		stream.Close()
+		if budget != nil {
+			budget.used += consumed
+		}
+		if errors.Is(readErr, errResultsByteBudget) {
+			if limit > 0 && pageLines > 0 {
+				page.HasMore = true
+				page.NextCursor = schemas.Ptr(BatchResultsCursor{Source: source, Offset: offset + consumed}.Encode())
+				return page, nil
+			}
+			return nil, newBatchResultsTooLargeError(budget.limit, limit > 0)
+		}
 		if readErr != nil {
 			return nil, NewBifrostUpstreamConnectionError("failed to read batch results", readErr)
 		}

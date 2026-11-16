@@ -3705,7 +3705,7 @@ func (provider *VertexProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 	results := []schemas.BatchResultItem{}
 	var parseErrors []schemas.BatchError
 	endpoint := schemas.BatchEndpoint("")
-	page, pageErr := providerUtils.ReadBatchResultsPage(sources, request.After, request.Limit, func(_ int, rawLine []byte) {
+	page, pageErr := providerUtils.ReadBatchResultsPage(sources, request, func(_ int, rawLine []byte) {
 		item, lineEndpoint, err := vertexBatchOutputLineToResultItem(rawLine, isAnthropic, includeRaw)
 		if err != nil {
 			// A line that cannot be parsed is counted, not silently skipped: its usage is

@@ -79,7 +79,7 @@ func TestReadJSONLPage(t *testing.T) {
 	data := "{\"a\":1}\n\n{\"a\":2}\r\n{\"a\":3}\n   \n{\"a\":4}"
 	collect := func(r io.Reader, limit int) ([]string, int64, bool) {
 		var lines []string
-		consumed, more, err := ReadJSONLPage(r, limit, func(line []byte) { lines = append(lines, string(line)) })
+		consumed, more, err := readJSONLPage(r, limit, func(line []byte) { lines = append(lines, string(line)) })
 		if err != nil {
 			t.Fatalf("ReadJSONLPage: %v", err)
 		}
@@ -120,7 +120,7 @@ func TestReadJSONLPage(t *testing.T) {
 func memorySource(data string, opened *[]int64) BatchResultsSource {
 	return func(offset int64) (*ResultStream, *schemas.BifrostError) {
 		*opened = append(*opened, offset)
-		return &ResultStream{Reader: strings.NewReader(data[min(offset, int64(len(data))):])}, nil
+		return &ResultStream{reader: strings.NewReader(data[min(offset, int64(len(data))):])}, nil
 	}
 }
 
@@ -140,7 +140,7 @@ func TestReadBatchResultsPageAcrossSources(t *testing.T) {
 			if pages > 20 {
 				t.Fatalf("limit %d: paging did not terminate", limit)
 			}
-			page, bifrostErr := ReadBatchResultsPage(sources(), after, limit, func(source int, l []byte) {
+			page, bifrostErr := ReadBatchResultsPage(sources(), &schemas.BifrostBatchResultsRequest{After: after, Limit: limit}, func(source int, l []byte) {
 				got = append(got, line{source, string(l)})
 			})
 			if bifrostErr != nil {
@@ -181,7 +181,7 @@ func TestReadBatchResultsPageAcrossSources(t *testing.T) {
 
 	// A cursor this gateway did not issue is a 400 naming the parameter.
 	bad := "garbage"
-	_, bifrostErr := ReadBatchResultsPage([]BatchResultsSource{absent}, &bad, 2, func(int, []byte) {})
+	_, bifrostErr := ReadBatchResultsPage([]BatchResultsSource{absent}, &schemas.BifrostBatchResultsRequest{After: &bad, Limit: 2}, func(int, []byte) {})
 	if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400 || bifrostErr.Error.Param != "after" {
 		t.Fatalf("bad cursor error = %+v, want a 400 with param after", bifrostErr)
 	}
@@ -190,7 +190,7 @@ func TestReadBatchResultsPageAcrossSources(t *testing.T) {
 	failing := func(int64) (*ResultStream, *schemas.BifrostError) {
 		return nil, NewProviderAPIError("file not found", nil, 404, nil, nil)
 	}
-	_, bifrostErr = ReadBatchResultsPage([]BatchResultsSource{failing}, nil, 2, func(int, []byte) {})
+	_, bifrostErr = ReadBatchResultsPage([]BatchResultsSource{failing}, &schemas.BifrostBatchResultsRequest{Limit: 2}, func(int, []byte) {})
 	if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 404 {
 		t.Fatalf("failing source error = %+v, want the 404", bifrostErr)
 	}
@@ -291,7 +291,7 @@ func TestOpenResultStreamReadsOnePageOfALargeFile(t *testing.T) {
 				if bifrostErr != nil {
 					t.Fatalf("OpenResultStream: %v", bifrostErr.Error.Message)
 				}
-				consumed, more, err := ReadJSONLPage(stream.Reader, pageLines, func(line []byte) {
+				consumed, more, err := readJSONLPage(stream.reader, pageLines, func(line []byte) {
 					if want := bytes.TrimSpace(resultLine(next, lineSize)); !bytes.Equal(line, want) {
 						t.Fatalf("line %d differs: got %.60q", next, line)
 					}
@@ -335,7 +335,7 @@ func TestOpenResultStreamEdges(t *testing.T) {
 			if bifrostErr != nil {
 				t.Fatalf("honourRange=%v offset=%d: %v", honourRange, offset, bifrostErr.Error.Message)
 			}
-			rest, _ := io.ReadAll(stream.Reader)
+			rest, _ := io.ReadAll(stream.reader)
 			stream.Close()
 			if len(rest) != 0 {
 				t.Fatalf("honourRange=%v offset=%d: read %d bytes past the end", honourRange, offset, len(rest))
@@ -348,7 +348,7 @@ func TestOpenResultStreamEdges(t *testing.T) {
 			t.Fatalf("honourRange=%v: %v", honourRange, bifrostErr.Error.Message)
 		}
 		var ids []string
-		_, more, err := ReadJSONLPage(stream.Reader, 0, func(line []byte) { ids = append(ids, string(line[:22])) })
+		_, more, err := readJSONLPage(stream.reader, 0, func(line []byte) { ids = append(ids, string(line[:22])) })
 		stream.Close()
 		stream.Close() // idempotent
 		if err != nil || more || len(ids) != 2 || !strings.Contains(ids[0], "line-8") || !strings.Contains(ids[1], "line-9") {
@@ -394,7 +394,7 @@ func TestOpenResultStreamStopsOnContextCancel(t *testing.T) {
 	lines := 0
 	done := make(chan error, 1)
 	go func() {
-		_, _, err := ReadJSONLPage(stream.Reader, 0, func([]byte) { lines++; cancel() })
+		_, _, err := readJSONLPage(stream.reader, 0, func([]byte) { lines++; cancel() })
 		done <- err
 	}()
 	if err := <-done; err == nil {
@@ -481,7 +481,7 @@ func TestOpenResultStreamCountsBodyReadsAsUpstreamLatency(t *testing.T) {
 	}
 	afterHeaders, _ := schemas.GetUpstreamLatency(ctx)
 	lines := 0
-	if _, _, err := ReadJSONLPage(stream.Reader, 0, func([]byte) { lines++ }); err != nil || lines != 1 {
+	if _, _, err := readJSONLPage(stream.reader, 0, func([]byte) { lines++ }); err != nil || lines != 1 {
 		t.Fatalf("read %d lines, err %v", lines, err)
 	}
 	stream.Close()
