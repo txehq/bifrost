@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/capsohq/bifrost/core/internal/llmtests"
+	"github.com/capsohq/bifrost/core/livetest"
 	"github.com/capsohq/bifrost/core/schemas"
 )
 
@@ -21,6 +22,9 @@ import (
 func TestGithubCopilot(t *testing.T) {
 	t.Parallel()
 
+	// Copilot takes either of two credential sets, so only the opt-in is required here and
+	// hasCopilotCredentials keeps choosing between them.
+	livetest.Require(t)
 	if !hasCopilotCredentials(os.Getenv) {
 		t.Skip("Skipping GitHub Copilot tests: set GITHUB_COPILOT_APP_ID (with " +
 			"GITHUB_COPILOT_INSTALLATION_ID, GITHUB_COPILOT_REPOSITORY_ID and " +

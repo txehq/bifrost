@@ -4,12 +4,12 @@ package maxim
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"os"
 	"testing"
 
 	bifrost "github.com/capsohq/bifrost/core"
+	"github.com/capsohq/bifrost/core/livetest"
 	"github.com/capsohq/bifrost/core/schemas"
 )
 
@@ -23,15 +23,10 @@ import (
 // Returns:
 //   - schemas.LLMPlugin: A configured plugin instance for request/response tracing
 //   - error: Any error that occurred during plugin initialization
-func getPlugin() (schemas.LLMPlugin, error) {
-	// check if Maxim Logger variables are set
-	if os.Getenv("MAXIM_API_KEY") == "" {
-		return nil, fmt.Errorf("MAXIM_API_KEY is not set, please set it in your environment variables")
-	}
-
+func getPlugin(t *testing.T) (schemas.LLMPlugin, error) {
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
 	plugin, err := Init(&Config{
-		APIKey:    os.Getenv("MAXIM_API_KEY"),
+		APIKey:    livetest.Key(t, "MAXIM_API_KEY"),
 		LogRepoID: os.Getenv("MAXIM_LOG_REPO_ID"),
 	}, logger)
 	if err != nil {
@@ -84,13 +79,11 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 //   - MAXIM_LOGGER_ID: Your Maxim logger repository ID
 //   - OPENAI_API_KEY: Your OpenAI API key for the test request
 func TestMaximLoggerPlugin(t *testing.T) {
-	if os.Getenv("MAXIM_API_KEY") == "" {
-		t.Skip("MAXIM_API_KEY not set, skipping integration test")
-	}
+	livetest.Require(t, "MAXIM_API_KEY")
 
 	ctx := context.Background()
 	// Initialize the Maxim plugin
-	plugin, err := getPlugin()
+	plugin, err := getPlugin(t)
 	if err != nil {
 		t.Fatalf("Error setting up the plugin: %v", err)
 	}

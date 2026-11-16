@@ -5,9 +5,11 @@ package llmtests
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	bifrost "github.com/capsohq/bifrost/core"
+	"github.com/capsohq/bifrost/core/livetest"
 	"github.com/capsohq/bifrost/core/schemas"
 )
 
@@ -46,8 +48,16 @@ func getBifrost(ctx context.Context) (*bifrost.Bifrost, error) {
 	return b, nil
 }
 
-// SetupTest initializes a test environment with timeout context
+// SetupTest initializes a test environment with timeout context.
+//
+// The client it builds reads vendor keys from the environment and calls the vendors, so it is
+// built only when live tests are switched on (TXE-7530): a suite calls livetest.Require first and
+// skips, and a suite that forgot to gets this error instead of spending money because a key
+// happened to be exported.
 func SetupTest() (*bifrost.Bifrost, context.Context, context.CancelFunc, error) {
+	if !livetest.Enabled() {
+		return nil, nil, nil, fmt.Errorf("llmtests: live provider tests are off; call livetest.Require(t, ...) first and set %s=1 to run them", livetest.OptIn)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), TestTimeout)
 	client, err := getBifrost(ctx)
 	if err != nil {

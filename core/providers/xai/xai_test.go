@@ -7,13 +7,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync"
 	"testing"
 
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/internal/llmtests"
+	"github.com/capsohq/bifrost/core/livetest"
 	"github.com/capsohq/bifrost/core/providers/xai"
 
 	"github.com/capsohq/bifrost/core/schemas"
@@ -22,9 +22,7 @@ import (
 
 func TestXAI(t *testing.T) {
 	t.Parallel()
-	if strings.TrimSpace(os.Getenv("XAI_API_KEY")) == "" {
-		t.Skip("Skipping XAI tests because XAI_API_KEY is not set")
-	}
+	livetest.Require(t, "XAI_API_KEY")
 
 	client, ctx, cancel, err := llmtests.SetupTest()
 	if err != nil {

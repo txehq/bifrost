@@ -17,6 +17,7 @@ import (
 
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/internal/llmtests"
+	"github.com/capsohq/bifrost/core/livetest"
 	"github.com/capsohq/bifrost/core/network"
 	"github.com/capsohq/bifrost/core/providers/anthropic"
 	"github.com/capsohq/bifrost/core/providers/bedrock"
@@ -155,9 +156,7 @@ func assertBedrockRequestEqual(t *testing.T, expected, actual *bedrock.BedrockCo
 func TestBedrock(t *testing.T) {
 	t.Parallel()
 
-	if strings.TrimSpace(os.Getenv("AWS_ACCESS_KEY_ID")) == "" || strings.TrimSpace(os.Getenv("AWS_SECRET_ACCESS_KEY")) == "" {
-		t.Skip("Skipping Bedrock tests because AWS_ACCESS_KEY_ID or AWS_SECRET_ACCESS_KEY is not set")
-	}
+	livetest.Require(t, "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")
 
 	client, ctx, cancel, err := llmtests.SetupTest()
 	if err != nil {

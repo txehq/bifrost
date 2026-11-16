@@ -17,6 +17,7 @@ import (
 
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/internal/llmtests"
+	"github.com/capsohq/bifrost/core/livetest"
 	"github.com/capsohq/bifrost/core/providers/azurespeech"
 	"github.com/capsohq/bifrost/core/schemas"
 )
@@ -34,9 +35,7 @@ const speechInput = "I'm excited to try text to speech!"
 // endpoint). AZURE_SPEECH_VOICE overrides the voice.
 func TestAzureSpeech(t *testing.T) {
 	t.Parallel()
-	if strings.TrimSpace(os.Getenv("AZURE_SPEECH_API_KEY")) == "" || strings.TrimSpace(os.Getenv("AZURE_SPEECH_ENDPOINT")) == "" {
-		t.Skip("Skipping Azure AI Speech tests because AZURE_SPEECH_API_KEY or AZURE_SPEECH_ENDPOINT is not set")
-	}
+	livetest.Require(t, "AZURE_SPEECH_API_KEY", "AZURE_SPEECH_ENDPOINT")
 
 	client, ctx, cancel, err := llmtests.SetupTest()
 	if err != nil {

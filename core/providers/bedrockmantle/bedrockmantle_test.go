@@ -5,7 +5,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -13,6 +12,7 @@ import (
 
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/internal/llmtests"
+	"github.com/capsohq/bifrost/core/livetest"
 	"github.com/capsohq/bifrost/core/providers/bedrockmantle"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	schemas "github.com/capsohq/bifrost/core/schemas"
@@ -35,9 +35,7 @@ import (
 func TestBedrockMantle(t *testing.T) {
 	t.Parallel()
 
-	if strings.TrimSpace(os.Getenv("AWS_ACCESS_KEY_ID")) == "" || strings.TrimSpace(os.Getenv("AWS_SECRET_ACCESS_KEY")) == "" {
-		t.Skip("Skipping Bedrock Mantle tests because AWS_ACCESS_KEY_ID or AWS_SECRET_ACCESS_KEY is not set")
-	}
+	livetest.Require(t, "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")
 
 	client, ctx, cancel, err := llmtests.SetupTest()
 	if err != nil {

@@ -2,11 +2,11 @@ package jsonparser
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
 	bifrost "github.com/capsohq/bifrost/core"
+	"github.com/capsohq/bifrost/core/livetest"
 	"github.com/capsohq/bifrost/core/schemas"
 )
 
@@ -44,12 +44,8 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 
 func skipUnlessJsonParserLiveTestEnabled(t *testing.T) {
 	t.Helper()
-	if os.Getenv("RUN_JSONPARSER_LIVE_TESTS") != "1" {
-		t.Skip("RUN_JSONPARSER_LIVE_TESTS=1 is not set, skipping live OpenAI test")
-	}
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		t.Skip("OPENAI_API_KEY is not set, skipping live OpenAI test")
-	}
+	// BIFROST_LIVE_TESTS=1 replaces the plugin's own RUN_JSONPARSER_LIVE_TESTS=1 opt-in (TXE-7530).
+	livetest.Require(t, "OPENAI_API_KEY")
 }
 
 // TestJsonParserPluginEndToEnd tests the integration of the JSON parser plugin with Bifrost.

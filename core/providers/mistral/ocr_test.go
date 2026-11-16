@@ -4,11 +4,11 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/capsohq/bifrost/core/livetest"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -715,12 +715,9 @@ func TestOCRRequestValidation(t *testing.T) {
 
 // TestMistralOCRIntegration tests the OCR endpoint with the real Mistral API.
 // This test requires MISTRAL_API_KEY environment variable to be set.
-// Run with: MISTRAL_API_KEY=xxx go test -v -run TestMistralOCRIntegration
+// Run with: BIFROST_LIVE_TESTS=1 MISTRAL_API_KEY=xxx go test -v -run TestMistralOCRIntegration
 func TestMistralOCRIntegration(t *testing.T) {
-	apiKey := os.Getenv("MISTRAL_API_KEY")
-	if apiKey == "" {
-		t.Skip("Skipping integration test: MISTRAL_API_KEY not set")
-	}
+	apiKey := livetest.Key(t, "MISTRAL_API_KEY")
 
 	provider := NewMistralProvider(&schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{

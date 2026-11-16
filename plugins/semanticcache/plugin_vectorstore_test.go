@@ -1,11 +1,11 @@
 package semanticcache
 
 import (
-	"os"
 	"strings"
 	"testing"
 
 	bifrost "github.com/capsohq/bifrost/core"
+	"github.com/capsohq/bifrost/core/livetest"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/vectorstore"
 	"github.com/google/uuid"
@@ -25,8 +25,9 @@ func requiresVectors(storeType vectorstore.VectorStoreType) bool {
 
 // skipIfNoAPIKey skips the test if OPENAI_API_KEY is not set and the store requires vectors.
 func skipIfNoAPIKey(t *testing.T, storeType vectorstore.VectorStoreType) {
-	if requiresVectors(storeType) && os.Getenv("OPENAI_API_KEY") == "" {
-		t.Skipf("Skipping %s test: OPENAI_API_KEY not set (required for embedding generation)", storeType)
+	if requiresVectors(storeType) {
+		// Embeddings come from the live OpenAI API.
+		livetest.Require(t, "OPENAI_API_KEY")
 	}
 }
 

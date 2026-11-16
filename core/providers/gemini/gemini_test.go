@@ -5,13 +5,13 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/capsohq/bifrost/core/internal/llmtests"
+	"github.com/capsohq/bifrost/core/livetest"
 	"github.com/capsohq/bifrost/core/providers/gemini"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -21,9 +21,7 @@ import (
 
 func TestGemini(t *testing.T) {
 	t.Parallel()
-	if strings.TrimSpace(os.Getenv("GEMINI_API_KEY")) == "" {
-		t.Skip("Skipping Gemini tests because GEMINI_API_KEY is not set")
-	}
+	livetest.Require(t, "GEMINI_API_KEY")
 
 	client, ctx, cancel, err := llmtests.SetupTest()
 	if err != nil {

@@ -1,10 +1,10 @@
 package nebius_test
 
 import (
-	"os"
 	"testing"
 
 	"github.com/capsohq/bifrost/core/internal/llmtests"
+	"github.com/capsohq/bifrost/core/livetest"
 
 	"github.com/capsohq/bifrost/core/schemas"
 )
@@ -12,9 +12,7 @@ import (
 func TestNebius(t *testing.T) {
 	t.Skip("Nebius tests are disabled")
 	t.Parallel()
-	if os.Getenv("NEBIUS_API_KEY") == "" {
-		t.Skip("Skipping Nebius tests because NEBIUS_API_KEY is not set")
-	}
+	livetest.Require(t, "NEBIUS_API_KEY")
 
 	client, ctx, cancel, err := llmtests.SetupTest()
 	if err != nil {

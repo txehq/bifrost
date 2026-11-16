@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/internal/llmtests"
+	"github.com/capsohq/bifrost/core/livetest"
 	"github.com/capsohq/bifrost/core/providers/huggingface"
 
 	"github.com/capsohq/bifrost/core/schemas"
@@ -18,9 +18,7 @@ import (
 
 func TestHuggingface(t *testing.T) {
 	t.Parallel()
-	if os.Getenv("HUGGING_FACE_API_KEY") == "" {
-		t.Skip("Skipping HuggingFace tests because HUGGING_FACE_API_KEY is not set")
-	}
+	livetest.Require(t, "HUGGING_FACE_API_KEY")
 
 	client, ctx, cancel, err := llmtests.SetupTest()
 	if err != nil {

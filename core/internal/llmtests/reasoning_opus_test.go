@@ -2,11 +2,14 @@ package llmtests
 
 import (
 	"testing"
+
+	"github.com/capsohq/bifrost/core/livetest"
 )
 
 // TestOpusReasoningAnthropicOpus45 tests Opus 4.5 extended thinking via direct Anthropic API
 func TestOpusReasoningAnthropicOpus45(t *testing.T) {
 	t.Parallel()
+	livetest.Require(t)
 	t.Skip("Skipping Opus 4.5 reasoning test - requires valid API keys and model access")
 
 	client, ctx, cancel, err := SetupTest()
@@ -29,6 +32,7 @@ func TestOpusReasoningAnthropicOpus45(t *testing.T) {
 // TestOpusReasoningAnthropicOpus46 tests Opus 4.6 adaptive thinking via direct Anthropic API
 func TestOpusReasoningAnthropicOpus46(t *testing.T) {
 	t.Parallel()
+	livetest.Require(t)
 	t.Skip("Skipping Opus 4.6 reasoning test - requires valid API keys and model access")
 
 	client, ctx, cancel, err := SetupTest()
@@ -51,6 +55,7 @@ func TestOpusReasoningAnthropicOpus46(t *testing.T) {
 // TestOpusReasoningBedrockOpus45 tests Opus 4.5 extended thinking via AWS Bedrock
 func TestOpusReasoningBedrockOpus45(t *testing.T) {
 	t.Parallel()
+	livetest.Require(t)
 	t.Skip("Skipping Opus 4.5 reasoning test - requires valid AWS credentials and model access")
 
 	client, ctx, cancel, err := SetupTest()
@@ -73,6 +78,7 @@ func TestOpusReasoningBedrockOpus45(t *testing.T) {
 // TestOpusReasoningBedrockOpus46 tests Opus 4.6 adaptive thinking via AWS Bedrock
 func TestOpusReasoningBedrockOpus46(t *testing.T) {
 	t.Parallel()
+	livetest.Require(t)
 	t.Skip("Skipping Opus 4.6 reasoning test - requires valid AWS credentials and model access")
 
 	client, ctx, cancel, err := SetupTest()
@@ -95,6 +101,7 @@ func TestOpusReasoningBedrockOpus46(t *testing.T) {
 // TestOpusReasoningAzureOpus45 tests Opus 4.5 extended thinking via Azure
 func TestOpusReasoningAzureOpus45(t *testing.T) {
 	t.Parallel()
+	livetest.Require(t)
 	t.Skip("Skipping Opus 4.5 reasoning test - requires valid Azure credentials and model deployment")
 
 	client, ctx, cancel, err := SetupTest()
@@ -117,6 +124,7 @@ func TestOpusReasoningAzureOpus45(t *testing.T) {
 // TestOpusReasoningAzureOpus46 tests Opus 4.6 adaptive thinking via Azure
 func TestOpusReasoningAzureOpus46(t *testing.T) {
 	t.Parallel()
+	livetest.Require(t)
 	t.Skip("Skipping Opus 4.6 reasoning test - requires valid Azure credentials and model deployment")
 
 	client, ctx, cancel, err := SetupTest()
@@ -139,6 +147,7 @@ func TestOpusReasoningAzureOpus46(t *testing.T) {
 // TestOpusReasoningVertexOpus45 tests Opus 4.5 extended thinking via Google Vertex AI
 func TestOpusReasoningVertexOpus45(t *testing.T) {
 	t.Parallel()
+	livetest.Require(t)
 	t.Skip("Skipping Opus 4.5 reasoning test - requires valid Vertex credentials and model access")
 
 	client, ctx, cancel, err := SetupTest()
@@ -161,6 +170,7 @@ func TestOpusReasoningVertexOpus45(t *testing.T) {
 // TestOpusReasoningVertexOpus46 tests Opus 4.6 adaptive thinking via Google Vertex AI
 func TestOpusReasoningVertexOpus46(t *testing.T) {
 	t.Parallel()
+	livetest.Require(t)
 	t.Skip("Skipping Opus 4.6 reasoning test - requires valid Vertex credentials and model access")
 
 	client, ctx, cancel, err := SetupTest()
@@ -184,6 +194,7 @@ func TestOpusReasoningVertexOpus46(t *testing.T) {
 // This is a comprehensive test that can be un-skipped for integration testing
 func TestAllOpusReasoning(t *testing.T) {
 	t.Parallel()
+	livetest.Require(t)
 	t.Skip("Skipping all Opus reasoning tests - requires valid credentials for all providers")
 
 	client, ctx, cancel, err := SetupTest()
