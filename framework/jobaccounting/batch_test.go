@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -886,6 +888,10 @@ type fakeBatchResultFetcher struct {
 	// retrieveErr models a provider that refuses the retrieve outright, which is
 	// how a forgotten batch or a revoked key actually presents.
 	retrieveErr error
+	// pages, when set, replaces resultsResp with a batch read page by page (TXE-7513).
+	pages    []*schemas.BifrostBatchResultsResponse
+	failPage int
+	afters   []int
 }
 
 func (f *fakeBatchResultFetcher) RetrieveBatch(ctx context.Context, job *cstables.TableProviderJob) (*schemas.BifrostBatchRetrieveResponse, error) {
@@ -896,9 +902,32 @@ func (f *fakeBatchResultFetcher) RetrieveBatch(ctx context.Context, job *cstable
 	return f.retrieveResp, nil
 }
 
-func (f *fakeBatchResultFetcher) FetchBatchResults(ctx context.Context, job *cstables.TableProviderJob) (*schemas.BifrostBatchResultsResponse, error) {
+func (f *fakeBatchResultFetcher) FetchBatchResultsPage(ctx context.Context, job *cstables.TableProviderJob, after *string) (*schemas.BifrostBatchResultsResponse, error) {
 	f.resultsCalls++
-	return f.resultsResp, nil
+	if f.pages == nil {
+		return f.resultsResp, nil
+	}
+	// pages serves a batch page by page: page n answers after = "page-n", and each page but
+	// the last names the next. failPage, when set, is the page that fails.
+	n := 0
+	if after != nil {
+		if _, err := fmt.Sscanf(*after, "page-%d", &n); err != nil {
+			return nil, fmt.Errorf("cursor %q was not issued", *after)
+		}
+	}
+	f.afters = append(f.afters, n)
+	if f.failPage > 0 && n == f.failPage {
+		return nil, fmt.Errorf("page %d: upstream connection reset", n)
+	}
+	if n >= len(f.pages) {
+		return nil, fmt.Errorf("page %d was not issued", n)
+	}
+	page := *f.pages[n]
+	if n+1 < len(f.pages) {
+		page.HasMore = true
+		page.NextCursor = schemas.Ptr(fmt.Sprintf("page-%d", n+1))
+	}
+	return &page, nil
 }
 
 type fakeKVStore struct {
@@ -2746,4 +2775,200 @@ func (textOnlyBatchPricing) CalculateBatchCostDetailsForUsage(usage *schemas.Bif
 		return modelcatalog.BatchCostDetails{Cost: float64(usage.TotalTokens) * 0.000001, Priced: true}
 	}
 	return modelcatalog.BatchCostDetails{}
+}
+
+// recordingBatchPricing prices every line it is asked about at a rate that depends on its
+// model and request type, and records each call, so two settlements can be compared call by
+// call (TXE-7513).
+type recordingBatchPricing struct {
+	fakePricing
+	calls []string
+}
+
+func (p *recordingBatchPricing) CalculateBatchCostDetailsForUsage(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) modelcatalog.BatchCostDetails {
+	encoded, _ := sonic.Marshal(usage)
+	p.calls = append(p.calls, fmt.Sprintf("%s %s %s %s", provider, model, requestType, encoded))
+	if model == "unpriced-model" {
+		return modelcatalog.BatchCostDetails{}
+	}
+	rate := 1e-06 * float64(1+len(model)%5+len(requestType)%3)
+	return modelcatalog.BatchCostDetails{Cost: float64(usage.PromptTokens)*rate + float64(usage.CompletionTokens)*2*rate, Priced: true}
+}
+
+// settlementLinesFixture is one batch of every line shape settlement reads, bodies included
+// that settlement does not: completions, embedding vectors and images.
+func settlementLinesFixture() []schemas.BatchResultItem {
+	ok := func(id string, body map[string]interface{}) schemas.BatchResultItem {
+		return schemas.BatchResultItem{ID: "req-" + id, CustomID: id, Status: schemas.BatchResultStatusSucceeded, Response: &schemas.BatchResultResponse{StatusCode: 200, RequestID: "r-" + id, Body: body}}
+	}
+	return []schemas.BatchResultItem{
+		ok("chat", map[string]interface{}{
+			"object": "chat.completion", "model": "gpt-4o-mini", "id": "chatcmpl-1",
+			"choices": []interface{}{map[string]interface{}{"message": map[string]interface{}{"role": "assistant", "content": strings.Repeat("words ", 200)}}},
+			"usage": map[string]interface{}{"prompt_tokens": 120, "completion_tokens": 40, "total_tokens": 160,
+				"prompt_tokens_details": map[string]interface{}{"cached_tokens": 64, "audio_tokens": 3}},
+		}),
+		ok("embeddings", map[string]interface{}{
+			"object": "list", "model": "gemini-embedding-001",
+			"data":  []interface{}{map[string]interface{}{"object": "embedding", "index": 0, "embedding": []interface{}{0.1, 0.2, 0.3}}},
+			"usage": map[string]interface{}{"prompt_tokens": 9, "total_tokens": 9},
+		}),
+		ok("image", map[string]interface{}{
+			"model": "gemini-2.5-flash-image",
+			"data":  []interface{}{map[string]interface{}{"b64_json": strings.Repeat("aW1hZ2U", 500)}},
+			"usage": map[string]interface{}{"input_tokens": 8, "output_tokens": 1300, "total_tokens": 1308},
+		}),
+		ok("image-detailed", map[string]interface{}{
+			"model": "gemini-2.5-flash-image",
+			"data":  []interface{}{map[string]interface{}{"b64_json": "aW1hZ2U="}},
+			"usage": map[string]interface{}{"input_tokens": 8, "output_tokens": 1300, "total_tokens": 1308,
+				"output_tokens_details": map[string]interface{}{"image_tokens": 1290, "text_tokens": 10}},
+		}),
+		ok("data-not-a-list", map[string]interface{}{"model": "gpt-4o", "data": "opaque", "usage": map[string]interface{}{"prompt_tokens": 5, "completion_tokens": 5}}),
+		ok("empty-list", map[string]interface{}{"object": "list", "model": "gpt-4o", "data": []interface{}{}, "usage": map[string]interface{}{"prompt_tokens": 2, "completion_tokens": 1}}),
+		ok("no-model", map[string]interface{}{"object": "chat.completion", "usage": map[string]interface{}{"prompt_tokens": 7, "completion_tokens": 3}}),
+		ok("unpriced", map[string]interface{}{"object": "chat.completion", "model": "unpriced-model", "usage": map[string]interface{}{"prompt_tokens": 11, "completion_tokens": 4}}),
+		ok("no-usage", map[string]interface{}{"object": "chat.completion", "model": "gpt-4o"}),
+		{CustomID: "failed", Status: schemas.BatchResultStatusFailed, Error: &schemas.BatchResultError{Code: "rate_limit", Message: "slow down"}},
+		{CustomID: "non-2xx", Response: &schemas.BatchResultResponse{StatusCode: 500, Body: map[string]interface{}{"error": map[string]interface{}{"message": "boom"}}}},
+		{CustomID: "anthropic-ok", Result: &schemas.BatchResultData{Type: "succeeded", Message: map[string]interface{}{
+			"model": "claude-3-5-haiku", "content": []interface{}{map[string]interface{}{"type": "text", "text": strings.Repeat("x", 400)}},
+			"usage": map[string]interface{}{"input_tokens": 30, "output_tokens": 12, "cache_read_input_tokens": 5, "cache_creation_input_tokens": 6,
+				"cache_creation": map[string]interface{}{"ephemeral_5m_input_tokens": 4, "ephemeral_1h_input_tokens": 2}},
+		}}},
+		{CustomID: "anthropic-errored", Result: &schemas.BatchResultData{Type: "errored", Message: map[string]interface{}{"model": "claude-3-5-haiku"}}},
+	}
+}
+
+// TXE-7513: the sweeper keeps only settlementLine of each result line, so a batch settles from
+// the cut exactly as it does from the whole lines: the same pricing calls, the same totals,
+// breakdowns, counts and reasons, for every provider's extractor and every endpoint. A field
+// settlement starts to read but settlementLine drops fails here.
+func TestSettlementLineSettlesExactlyAsTheWholeLine(t *testing.T) {
+	whole := settlementLinesFixture()
+	var cut []schemas.BatchResultItem
+	for _, item := range whole {
+		cut = append(cut, settlementLine(item))
+	}
+	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.Gemini, schemas.Anthropic} {
+		for _, endpoint := range []schemas.BatchEndpoint{schemas.BatchEndpointMixed, schemas.BatchEndpointChatCompletions, schemas.BatchEndpointImageGeneration, schemas.BatchEndpointEmbeddings} {
+			settle := func(results []schemas.BatchResultItem) (*Settlement, []string) {
+				pricing := &recordingBatchPricing{}
+				settlement, err := summarizeResults(pricing, batchInput{Provider: provider, BatchID: "b", FallbackModel: "", BatchPayload: BatchPayload{Endpoint: endpoint, Results: results}})
+				if err != nil {
+					t.Fatalf("%s %s: summarizeResults: %v", provider, endpoint, err)
+				}
+				return settlement, pricing.calls
+			}
+			wantSettlement, wantCalls := settle(whole)
+			gotSettlement, gotCalls := settle(cut)
+			if !reflect.DeepEqual(gotCalls, wantCalls) {
+				t.Errorf("%s %s: pricing calls from the cut lines\n%v\nwant\n%v", provider, endpoint, gotCalls, wantCalls)
+			}
+			if !reflect.DeepEqual(gotSettlement, wantSettlement) {
+				t.Errorf("%s %s: settlement from the cut lines %+v, want %+v", provider, endpoint, gotSettlement, wantSettlement)
+			}
+			if wantSettlement.PricedCount == 0 && provider != schemas.Anthropic {
+				t.Errorf("%s %s: the fixture priced nothing, so it compares nothing", provider, endpoint)
+			}
+		}
+	}
+	if got, want := schemas.BatchRequestCountsFromResults(cut), schemas.BatchRequestCountsFromResults(whole); got != want {
+		t.Errorf("request counts from the cut lines %+v, want %+v", got, want)
+	}
+
+	// What the cut drops: the completion, the vectors and the images.
+	encoded, _ := sonic.Marshal(cut)
+	for _, dropped := range []string{"choices", "embedding\":[", "b64_json", "content", "words words", "aW1hZ2U"} {
+		if strings.Contains(string(encoded), dropped) {
+			t.Errorf("the cut lines still hold %q", dropped)
+		}
+	}
+	if wholeBytes, _ := sonic.Marshal(whole); len(encoded)*3 > len(wholeBytes) {
+		t.Errorf("the cut lines are %d bytes of the whole lines' %d", len(encoded), len(wholeBytes))
+	}
+}
+
+// pagedBatchFetcher returns a fake fetcher that serves lines as pages of perPage lines, the
+// endpoint of each page given by endpoints (the last one repeats).
+func pagedBatchFetcher(lines []schemas.BatchResultItem, perPage int, endpoints ...schemas.BatchEndpoint) *fakeBatchResultFetcher {
+	f := &fakeBatchResultFetcher{retrieveResp: &schemas.BifrostBatchRetrieveResponse{
+		ID: "batch_paged", Status: schemas.BatchStatusCompleted, Endpoint: string(schemas.BatchEndpointChatCompletions),
+		RequestCounts: schemas.BatchRequestCounts{Total: len(lines), Completed: len(lines)},
+	}}
+	for start := 0; start < len(lines); start += perPage {
+		endpoint := endpoints[min(len(f.pages), len(endpoints)-1)]
+		f.pages = append(f.pages, &schemas.BifrostBatchResultsResponse{BatchID: "batch_paged", Endpoint: endpoint, Results: lines[start:min(start+perPage, len(lines))]})
+	}
+	return f
+}
+
+// TXE-7513: the sweeper reads a finished batch page by page, under the same response limit as
+// any other results read, and settles it once it has every page. A batch past the limit is
+// billed in full: the payload holds every line of every page, cut to what settlement reads,
+// and prices to the same total as the whole lines.
+func TestBatchPollWalksEveryPageAndBillsTheWholeBatch(t *testing.T) {
+	var lines []schemas.BatchResultItem
+	for round := range 3 {
+		for _, item := range settlementLinesFixture()[:9] {
+			item.CustomID = fmt.Sprintf("%s-%d", item.CustomID, round)
+			lines = append(lines, item)
+		}
+	}
+	fetcher := pagedBatchFetcher(lines, 10, schemas.BatchEndpointChatCompletions, schemas.BatchEndpointChatCompletions, schemas.BatchEndpointImageGeneration)
+	job := &cstables.TableProviderJob{ID: "batch:gemini:batch_paged", Kind: cstables.ProviderJobKindBatch, Provider: string(schemas.Gemini), JobID: "batch_paged"}
+
+	poll, err := NewBatchSettler(fetcher).Poll(context.Background(), job)
+	if err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+	if !poll.Settleable || poll.Retry {
+		t.Fatalf("poll = %+v, want settleable", poll)
+	}
+	if fmt.Sprint(fetcher.afters) != "[0 1 2]" {
+		t.Fatalf("pages read = %v, want [0 1 2]", fetcher.afters)
+	}
+	payload := poll.Payload.(BatchPayload)
+	if len(payload.Results) != len(lines) {
+		t.Fatalf("payload holds %d lines, want all %d", len(payload.Results), len(lines))
+	}
+	// Two pages of chat lines and one of image lines are a mixed batch, priced line by line.
+	if payload.Endpoint != schemas.BatchEndpointMixed {
+		t.Fatalf("endpoint = %s, want mixed", payload.Endpoint)
+	}
+	for _, item := range payload.Results {
+		if item.Response != nil && (item.Response.Body["choices"] != nil || item.Response.RequestID != "") {
+			t.Fatalf("line %s kept its body: %+v", item.CustomID, item.Response)
+		}
+	}
+	got, err := summarizeResults(&recordingBatchPricing{}, batchInput{Provider: schemas.Gemini, BatchID: "batch_paged", BatchPayload: payload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := summarizeResults(&recordingBatchPricing{}, batchInput{Provider: schemas.Gemini, BatchID: "batch_paged", BatchPayload: BatchPayload{Endpoint: schemas.BatchEndpointMixed, Results: lines}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) || got.PricedCount == 0 {
+		t.Fatalf("settled from the pages %+v, want the whole batch's %+v", got, want)
+	}
+}
+
+// TXE-7513: a page that fails leaves the batch unsettled. Pricing the pages read so far would
+// mark the job accounted, and an accounted job is never claimed again, so the rest would never
+// be billed. The poll asks to be retried instead.
+func TestBatchPollSettlesNothingWhenALaterPageFails(t *testing.T) {
+	fetcher := pagedBatchFetcher(settlementLinesFixture(), 4, schemas.BatchEndpointChatCompletions)
+	fetcher.failPage = 2
+	job := &cstables.TableProviderJob{ID: "batch:openai:batch_paged", Kind: cstables.ProviderJobKindBatch, Provider: string(schemas.OpenAI), JobID: "batch_paged"}
+	poll, err := NewBatchSettler(fetcher).Poll(context.Background(), job)
+	if err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+	if poll.Settleable || !poll.Retry || poll.Payload != nil {
+		t.Fatalf("poll after a failed page = %+v, want a retry with nothing to settle", poll)
+	}
+	if fmt.Sprint(fetcher.afters) != "[0 1 2]" {
+		t.Fatalf("pages read = %v, want [0 1 2] (stopped at the failed page)", fetcher.afters)
+	}
 }

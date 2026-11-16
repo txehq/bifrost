@@ -3951,7 +3951,7 @@ func (noopBatchFetcher) RetrieveBatch(context.Context, *cstables.TableProviderJo
 	return nil, nil
 }
 
-func (noopBatchFetcher) FetchBatchResults(context.Context, *cstables.TableProviderJob) (*schemas.BifrostBatchResultsResponse, error) {
+func (noopBatchFetcher) FetchBatchResultsPage(context.Context, *cstables.TableProviderJob, *string) (*schemas.BifrostBatchResultsResponse, error) {
 	return nil, nil
 }
 

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -652,18 +653,52 @@ func TestReadBatchResultsPageRefusesALineLargerThanTheLimit(t *testing.T) {
 	}
 }
 
-func TestReadBatchResultsPageLetsTheSettlementReadSeeTheWholeSet(t *testing.T) {
-	setResultsLimitMB(t, 1)
-	// The accounting sweeper prices the whole set, so its read alone is not bounded.
+// No request reads past the bound (TXE-7513). Each field of the request is set in turn to a
+// value that is not its zero value, so a field added later to exempt a read (as Settlement did
+// until the sweeper paged) fails here instead of reading a batch whole.
+func TestReadBatchResultsPageBoundsEveryRequest(t *testing.T) {
+	limit := setResultsLimitMB(t, 1)
 	output := jsonlOf(2048, 1024, "o")
-	var pulled int64
-	lines := 0
-	page, bifrostErr := ReadBatchResultsPage([]BatchResultsSource{countingSource(output, &pulled)}, &schemas.BifrostBatchResultsRequest{Settlement: true}, func(int, []byte) { lines++ })
-	if bifrostErr != nil {
-		t.Fatalf("the settlement read was refused: %s", bifrostErr.Error.Message)
-	}
-	if lines != 2048 || page.HasMore {
-		t.Fatalf("lines = %d, has_more = %v; want all 2048", lines, page.HasMore)
+	start := BatchResultsCursor{}.Encode()
+	requestType := reflect.TypeOf(schemas.BifrostBatchResultsRequest{})
+	for i := range requestType.NumField() {
+		field := requestType.Field(i)
+		request := &schemas.BifrostBatchResultsRequest{}
+		value := reflect.ValueOf(request).Elem().Field(i)
+		switch {
+		case field.Name == "After":
+			value.Set(reflect.ValueOf(&start))
+		case value.Kind() == reflect.Bool:
+			value.SetBool(true)
+		case value.Kind() == reflect.Int:
+			value.SetInt(1 << 30)
+		case value.Kind() == reflect.String:
+			value.SetString("openai")
+		case value.Kind() == reflect.Pointer && value.Type().Elem().Kind() == reflect.String:
+			s := "x"
+			value.Set(reflect.ValueOf(&s))
+		case value.Kind() == reflect.Slice && value.Type().Elem().Kind() == reflect.Uint8:
+			value.SetBytes([]byte("{}"))
+		case value.Kind() == reflect.Map && value.Type().Key().Kind() == reflect.String:
+			m := reflect.MakeMap(value.Type())
+			m.SetMapIndex(reflect.ValueOf("x").Convert(value.Type().Key()), reflect.Zero(value.Type().Elem()))
+			value.Set(m)
+		default:
+			t.Fatalf("field %s (%s): add a non-zero value for it to this test", field.Name, value.Type())
+		}
+		var pulled, returned int64
+		page, bifrostErr := ReadBatchResultsPage([]BatchResultsSource{countingSource(output, &pulled)}, request, func(_ int, line []byte) {
+			returned += int64(len(line)) + 1
+		})
+		if bifrostErr == nil && (returned > limit || !page.HasMore) {
+			t.Errorf("with %s set, the read returned %d bytes of lines (has_more %v) under a %d-byte limit", field.Name, returned, page.HasMore, limit)
+		}
+		if bifrostErr != nil && (bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400) {
+			t.Errorf("with %s set: error %+v, want the bounded 400", field.Name, bifrostErr)
+		}
+		if pulled > limit+64*1024+1 {
+			t.Errorf("with %s set, the read pulled %d bytes from the stream under a %d-byte limit", field.Name, pulled, limit)
+		}
 	}
 }
 

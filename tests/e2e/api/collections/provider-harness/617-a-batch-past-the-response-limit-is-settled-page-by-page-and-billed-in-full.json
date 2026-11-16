@@ -1,0 +1,185 @@
+{
+  "name": "617. A batch past the response limit is settled page by page and billed in full (batch settlement paging)",
+  "description": "Local fixture regression for TXE-7513, no live provider calls. fixture-folders.mjs's video-settlement group starts tests/e2e/api/runners/provider-error-fixture.mjs and a gateway on tests/e2e/api/provider_config/video-settlement.config.json, with provider job accounting and request logging on and client.max_response_body_size_mb at 1. Its openai provider has one batch-enabled key for results-bound-model on the fixture, and the fixture's pricing sheet prices that model's batches at $0.000001 a prompt token and $0.000002 a completion token. Run with videoSettlementFixture=1 and videoSettlementFixtureUrl; every case is skipped otherwise. A batch whose input names results-bound-model is created at the fixture as batch_results_bound, which is already completed: its output file is 1,500 lines of exactly 1,000 bytes (1.5 MB, past the 1 MB limit), each line 3 prompt and 2 completion tokens. No row reads its results, so only the batch sweeper can settle it. It must settle it whole, read by its settlement row id (UUIDv5 of the batch namespace and openai:batch_results_bound): $0.0105 for all 1,500 lines of results-bound-model, not marked incomplete. It must also read the output file in more than one page: every results read is held to the limit (TXE-7494), and the sweeper's no longer has an exemption. Red before: on main after TXE-7494 the sweeper read the whole file in one exempt request, so the content hit count is 1; a sweeper that read unpaged without the exemption would get a 400 and leave the settlement row absent.",
+  "item": [
+    {
+      "name": "617.1 reset the fixture's record (batch settlement paging)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the fixture record is reset', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{videoSettlementFixtureUrl}}/__reset",
+          "host": [
+            "{{videoSettlementFixtureUrl}}"
+          ],
+          "path": [
+            "__reset"
+          ]
+        }
+      }
+    },
+    {
+      "name": "617.2 openai/results-bound-model POST /v1/batches is accepted as batch_results_bound (batch settlement paging)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the create is batch_results_bound, not yet finished', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, pm.response.text()).to.eql('batch_results_bound');",
+              "  pm.expect(['validating', 'in_progress'], pm.response.text()).to.include(j.status);",
+              "  pm.variables.set('batchPagingBatchId', j.id);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/results-bound-model\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"completion_window\": \"24h\",\n  \"requests\": [\n    {\n      \"custom_id\": \"rb-create\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/chat/completions\",\n      \"body\": {\n        \"model\": \"results-bound-model\",\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"hi\"\n          }\n        ],\n        \"max_tokens\": 8\n      }\n    }\n  ]\n}"
+        }
+      }
+    },
+    {
+      "name": "617.3 with no caller reading its results, the batch sweeper bills all 1,500 lines, $0.0105 (batch settlement paging)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// The settlement row's id is jobaccounting.AccountingLogID: UUIDv5 (SHA-1) of the batch namespace and",
+              "// '<provider>:<batch id>'.",
+              "var CryptoJS = require('crypto-js');",
+              "function uuidv5(namespace, name) {",
+              "  var hash = CryptoJS.SHA1(CryptoJS.enc.Hex.parse(namespace.replace(/-/g, '')).concat(CryptoJS.enc.Utf8.parse(name))).toString();",
+              "  var b = hash.slice(0, 32).split('');",
+              "  b[12] = '5';",
+              "  b[16] = ((parseInt(b[16], 16) & 0x3) | 0x8).toString(16);",
+              "  var s = b.join('');",
+              "  return s.slice(0, 8) + '-' + s.slice(8, 12) + '-' + s.slice(12, 16) + '-' + s.slice(16, 20) + '-' + s.slice(20, 32);",
+              "}",
+              "var batchId = pm.variables.get('batchPagingBatchId');",
+              "var logId = uuidv5('90a2f576-5276-481f-a753-2c78ccf97607', 'openai:' + batchId);",
+              "var token = pm.variables.get('setupToken');",
+              "var last = '';",
+              "function check(attempt) {",
+              "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + logId, method: 'GET', header: { 'X-Bifrost-Setup-Token': token } }, function (err, res) {",
+              "    if (!err && res.code === 200 && res.json().cost !== undefined && res.json().cost !== null) {",
+              "      var j = res.json();",
+              "      var text = JSON.stringify(j).slice(0, 2000);",
+              "      pm.test('the batch is billed for every line: 1,500 x (3 x $0.000001 + 2 x $0.000002) = $0.0105', function () {",
+              "        pm.expect(j.cost, text).to.be.closeTo(0.0105, 1e-9);",
+              "        var accounting = j.batch_debug && j.batch_debug.accounting;",
+              "        pm.expect(accounting, text).to.be.ok;",
+              "        var breakdown = accounting.model_breakdowns && accounting.model_breakdowns['results-bound-model'];",
+              "        pm.expect(breakdown, text).to.be.ok;",
+              "        pm.expect(breakdown.request_count, text).to.eql(1500);",
+              "        pm.expect(breakdown.usage.prompt_tokens, text).to.eql(4500);",
+              "        pm.expect(breakdown.usage.completion_tokens, text).to.eql(3000);",
+              "        pm.expect(accounting.incomplete, text).to.not.be.ok;",
+              "      });",
+              "      return;",
+              "    }",
+              "    last = err ? String(err) : (res.code + ' ' + res.text().slice(0, 300));",
+              "    if (attempt < 180) { setTimeout(function () { check(attempt + 1); }, 1000); return; }",
+              "    pm.test('the settlement row appeared', function () { pm.expect.fail('settlement row ' + logId + ' for ' + batchId + ' never appeared: ' + last); });",
+              "  });",
+              "}",
+              "check(0);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/logs?providers=openai&limit=1",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "logs"
+          ],
+          "query": [
+            {
+              "key": "providers",
+              "value": "openai"
+            },
+            {
+              "key": "limit",
+              "value": "1"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "617.4 the sweeper read the 1.5 MB output file in more than one page (batch settlement paging)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var hits = pm.response.json().data[0].hits;",
+              "pm.test('the batch was created once and its output file read in pages under the 1 MB limit', function () {",
+              "  pm.expect(hits['results_bound.create'], JSON.stringify(hits)).to.equal(1);",
+              "  pm.expect(hits['results_bound.content'] || 0, JSON.stringify(hits)).to.be.at.least(2);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{videoSettlementFixtureUrl}}/__hits",
+          "host": [
+            "{{videoSettlementFixtureUrl}}"
+          ],
+          "path": [
+            "__hits"
+          ]
+        }
+      }
+    }
+  ]
+}
