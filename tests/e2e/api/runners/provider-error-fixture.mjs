@@ -1344,7 +1344,8 @@ const isBedrockConverseStreamPath = (path) => /^\/model\/[^/]+\/converse-stream$
 // state its id names (cgt-fixture-queued, -running, -succeeded, -failed, -cancelled, -expired), in the shape
 // core/providers/byteplus/videos_test.go pins, and DELETE answers 200 with no body, as Ark does. Every query and
 // DELETE is counted as "seedance.retrieve <id>" or "seedance.delete <id>", so a cancel row can prove that a
-// queued task was queried once and deleted once, and that a finished one was never deleted.
+// queued task was queried once and deleted once, and that a finished one was never deleted. A GET of the
+// collection itself is Ark's list, one page holding the succeeded task (folder 413, TXE-7045).
 const SEEDANCE_TASKS = "/pp/byteplus/api/v3/contents/generations/tasks";
 
 // VolcEngine's task DELETE, TXE-7366, served on /pp/volcengine/contents/generations/tasks (folder 590). Ark documents a
@@ -2719,6 +2720,12 @@ const handleRequest = (req, res) => {
 		const answer = miniMaxBaseRespAnswer(taskId);
 		if (answer) return send(answer.status, {}, answer.body);
 		return send(404, {}, JSON.stringify({ error: "unknown fixture task" }));
+	}
+	// Ark's task list (folder 413, TXE-7045): one page holding the succeeded task, counted as "seedance.list".
+	if (req.method === "GET" && path === SEEDANCE_TASKS) {
+		req.resume();
+		countHit("seedance.list");
+		return send(200, {}, JSON.stringify({ items: [seedanceTask("cgt-fixture-succeeded")], total: 1 }));
 	}
 	if ((req.method === "GET" || req.method === "DELETE") && path.startsWith(SEEDANCE_TASKS + "/")) {
 		const id = decodeURIComponent(path.slice(SEEDANCE_TASKS.length + 1));

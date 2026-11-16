@@ -916,6 +916,67 @@
           }
         }
       ]
+    },
+    {
+      "name": "413.21 byteplus GET /v1/videos lists Ark's succeeded task with Ark's own resolution and ratio beside its size (byteplus seedance task contract)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos?provider=byteplus&limit=1",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "byteplus"
+            },
+            {
+              "key": "limit",
+              "value": "1"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the list holds Ark\\'s succeeded task as completed', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.data, 'data: ' + pm.response.text()).to.be.an('array').with.length(1);",
+              "  pm.expect(j.data[0].id, 'id: ' + pm.response.text()).to.eql('cgt-fixture-succeeded:byteplus');",
+              "  pm.expect(j.data[0].status, 'status: ' + pm.response.text()).to.eql('completed');",
+              "});",
+              "pm.test('Ark\\'s own resolution and ratio travel verbatim on a list entry beside the size derived from them (TXE-7045)', function () {",
+              "  var e = pm.response.json().data[0];",
+              "  pm.expect(e.resolution, 'resolution: ' + pm.response.text()).to.eql('720p');",
+              "  pm.expect(e.aspect_ratio, 'aspect_ratio: ' + pm.response.text()).to.eql('16:9');",
+              "  pm.expect(e.size, 'size: ' + pm.response.text()).to.eql('1280x720');",
+              "});"
+            ]
+          }
+        }
+      ]
     }
   ]
 }
