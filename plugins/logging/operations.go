@@ -2074,6 +2074,13 @@ func (p *LoggerPlugin) calculateCostBreakdownForLog(logEntry *logstore.Log) (*sc
 		if len(resp.ImageGenerationResponse.Data) == 0 {
 			resp.ImageGenerationResponse.Data = parsed.Data
 		}
+		// An answer streamed to the caller unread in large-response mode (TXE-7017) was stored with
+		// no data and no vendor usage, and the requested count it was priced at (NImages) is never
+		// serialised. Restore it from the logged n, as live pricing did, so a recalculation prices
+		// the n images, not one (TXE-7498). output_images stays unset: it is not the vendor's count.
+		if isUnreadLargeResponseImage(parsed) {
+			resp.ImageGenerationResponse.MarkLargeResponseUnread(imageRequestFromLoggedParams(logEntry.ParamsParsed))
+		}
 	}
 
 	// VideoGeneration: patch in Seconds from the stored output so that
@@ -2351,4 +2358,32 @@ func applyRefusalLogOutcome(entry *logstore.Log) {
 			},
 		}
 	}
+}
+
+// isUnreadLargeResponseImage reports whether a stored image response is an answer streamed to the
+// caller unread in large-response mode (TXE-7017): no images, no vendor image count and no vendor
+// tokens. A delivered answer always carries output_images (BackfillParams writes it from Data), and
+// a streamed one carries the vendor's token usage.
+func isUnreadLargeResponseImage(parsed *schemas.BifrostImageGenerationResponse) bool {
+	if parsed == nil || len(parsed.Data) > 0 {
+		return false
+	}
+	usage := parsed.Usage
+	return usage == nil || (usage.OutputImages == nil && usage.InputTokens == 0 && usage.OutputTokens == 0 && usage.TotalTokens == 0)
+}
+
+// imageRequestFromLoggedParams rebuilds the part of an image request MarkLargeResponseUnread reads,
+// the requested n, from the log's params column (the request's image parameters, as logged).
+func imageRequestFromLoggedParams(params interface{}) *schemas.BifrostRequest {
+	var logged struct {
+		N *int `json:"n"`
+	}
+	if params != nil {
+		if raw, err := sonic.Marshal(params); err == nil {
+			_ = sonic.Unmarshal(raw, &logged)
+		}
+	}
+	return &schemas.BifrostRequest{ImageGenerationRequest: &schemas.BifrostImageGenerationRequest{
+		Params: &schemas.ImageGenerationParameters{N: logged.N},
+	}}
 }
