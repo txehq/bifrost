@@ -16,6 +16,8 @@ workflow turns its shared built-in cache off.
 Usage: python3 test-release-gates.py
 """
 import ast
+import importlib.util
+import json
 import os
 import re
 import subprocess
@@ -399,6 +401,20 @@ def workflow_steps():
                 yield path.name, doc, job_name, i, step
 
 
+def push_branches(workflow_file):
+    """The branches a push runs this workflow on: its own push trigger, or, for a workflow that
+    only runs when called, its callers' (release-pipeline.yml runs from release.yml)."""
+    doc = yaml.safe_load((WORKFLOWS / workflow_file).read_text()) or {}
+    on = doc.get("on", doc.get(True)) or {}
+    branches = list((on.get("push") or {}).get("branches", []))
+    if "workflow_call" in on:
+        for path in sorted(WORKFLOWS.glob("*.y*ml")):
+            caller = yaml.safe_load(path.read_text()) or {}
+            if any(j.get("uses") == f"./.github/workflows/{workflow_file}" for j in (caller.get("jobs") or {}).values()):
+                branches += push_branches(path.name)
+    return branches
+
+
 class ActionsCacheHasOneBudget(unittest.TestCase):
     """Every write to the Actions cache goes through the purpose-keyed go-cache action, whose
     saves declare their compressed size, and the declared sizes fit the budget (TXE-6254).
@@ -443,8 +459,7 @@ class ActionsCacheHasOneBudget(unittest.TestCase):
                 savers[purpose] = f"{wf} {job_name}"
                 self.assertRegex(str(w.get("max-mb", "")), r"^[0-9]+$", "a save declares max-mb")
                 total += int(w["max-mb"])
-                on = doc.get("on", doc.get(True)) or {}
-                self.assertIn("main", (on.get("push") or {}).get("branches", []),
+                self.assertIn("main", push_branches(wf),
                               "a save runs only on main, so its workflow must run on a push to main")
                 steps = doc["jobs"][job_name]["steps"]
                 self.assertTrue(any(s.get("uses") == GO_CACHE_ACTION
@@ -466,84 +481,70 @@ class ActionsCacheHasOneBudget(unittest.TestCase):
 
 
 TRIGGER_SCRIPT = WORKFLOWS / "scripts" / "release-trigger.sh"
-# Jobs that may run in a release pipeline run that releases nothing: the gate itself and
-# the run's report. Every other job builds, tests for, publishes or approves a release.
-NON_RELEASE_JOBS = {"check-skip", "detect-changes", "notify"}
+ENTRY = WORKFLOWS / "release.yml"
+ENTRY_DOC = yaml.safe_load(ENTRY.read_text())
+ENTRY_JOBS = ENTRY_DOC["jobs"]
+WORKFLOW_DOC = yaml.safe_load(WORKFLOW.read_text())
+CALL = "./.github/workflows/release-pipeline.yml"
+# Real Actions push payloads, captured from $GITHUB_EVENT_PATH (TXE-7566); see each file's _captured.
+PAYLOADS = {name: json.loads((WORKFLOWS / "scripts" / "testdata" / name).read_text())
+            for name in ("push-event-new-branch.json", "push-event-two-commits.json")}
 
 
-def simulate(detect_outputs, may_release):
-    """Replays one run of the pipeline: the detect-changes step gates, its outputs, then every
-    job in needs order, skipping one whose `if:` is false or, with no `if:`, whose needs did
-    not all succeed. Returns the set of jobs that run."""
-    steps = JOBS["detect-changes"]["steps"]
-    trigger = next(s for s in steps if s.get("id") == "trigger")
-    detect = next(s for s in steps if s.get("id") == "detect")
-    assert steps.index(trigger) < steps.index(detect), "the trigger must decide before detection runs"
-    context = {"steps.trigger.outputs.may-release": may_release}
-    detect_runs = "if" not in detect or evaluate(str(detect["if"]), context) == "true"
-    for name in ("core-needs-release", "framework-needs-release", "plugins-need-release",
-                 "bifrost-http-needs-release", "docker-needs-release", "changed-plugins",
-                 "core-version", "framework-version", "transport-version"):
-        # A skipped step's outputs read as empty strings.
-        context[f"steps.detect.outputs.{name}"] = detect_outputs.get(name, "") if detect_runs else ""
-    for name, expression in JOBS["detect-changes"]["outputs"].items():
-        context[f"needs.detect-changes.outputs.{name}"] = evaluate(str(expression), context)
-    context.update({
-        "needs.check-skip.outputs.should-skip": "false",
-        "needs.check-skip.outputs.skip-tests": "false",
-        "needs.check-skip.outputs.skip-core-test": "false",
-    })
-    results, ran = {}, set()
-    pending = list(JOBS)
-    while pending:
-        for job in pending:
-            needs = JOBS[job].get("needs") or []
-            needs = [needs] if isinstance(needs, str) else needs
-            if all(n in results for n in needs):
-                break
-        else:
-            raise AssertionError(f"needs cycle among {pending}")
-        pending.remove(job)
-        for name in JOBS:
-            context[f"needs.{name}.result"] = results.get(name, "skipped")
-        condition = JOBS[job].get("if")
-        runs = (evaluate(str(condition), context) == "true") if condition is not None \
-            else all(results[n] == "success" for n in needs)
-        results[job] = "success" if runs else "skipped"
-        for output in JOBS[job].get("outputs") or {}:
-            # A job that ran reports success through its outputs; a skipped one reports none.
-            context.setdefault(f"needs.{job}.outputs.{output}", "true" if runs else "")
-        if runs:
-            ran.add(job)
-    return ran
-
-
-TRANSPORT_RELEASE = {
-    "core-needs-release": "false", "framework-needs-release": "false", "plugins-need-release": "false",
-    "bifrost-http-needs-release": "true", "docker-needs-release": "true", "changed-plugins": "[]",
-    "core-version": "1.11.2", "framework-version": "1.9.0", "transport-version": "2.4.0-sync.11",
-}
+def triggers(doc):
+    return doc.get("on", doc.get(True)) or {}
 
 
 class ReleaseOnlyFromAChosenCommit(unittest.TestCase):
     """A release is attempted from a commit someone chose: the push that changes a version
-    file, or a dispatch. Every other push to main runs no release job and asks nobody for a
-    live-providers approval, even while a version's tag is missing (TXE-7511: after the
-    sync.11 bump merged, each later merge re-attempted the release and waited on Connor)."""
+    file, or a dispatch. release.yml's gate decides from the git range, and only its gated
+    `release` job calls the release jobs, so every other push to main runs no release job and
+    asks nobody for a live-providers approval (TXE-7511, TXE-7566)."""
 
-    def test_a_push_that_may_not_release_runs_no_release_job(self):
-        # detect-all-changes.sh would still report the missing tag; the gate must win.
-        ran = simulate(TRANSPORT_RELEASE, may_release="false")
-        self.assertEqual(ran - NON_RELEASE_JOBS, set())
-        for job in ran:
-            with self.subTest(job=job):
-                self.assertNotIn("environment", JOBS[job], "a run that releases nothing asks for no approval")
+    def test_the_release_jobs_start_only_from_the_gated_caller(self):
+        self.assertEqual(set(triggers(WORKFLOW_DOC)), {"workflow_call"}, "release-pipeline.yml must not start on its own")
+        self.assertEqual(set(ENTRY_JOBS), {"gate", "release"})
+        release = ENTRY_JOBS["release"]
+        self.assertEqual(release["uses"], CALL)
+        self.assertIn("gate", release["needs"])
+        self.assertIn("if", release, "the caller must run only when the gate says the run may release")
+        for may, expected in (("false", "false"), ("true", "true"), ("", "false")):
+            with self.subTest(may_release=may):
+                self.assertEqual(evaluate(str(release["if"]), {"needs.gate.outputs.may-release": may}), expected)
+        callers = [(wf, job) for wf, doc, job, _, _ in workflow_jobs() if (doc["jobs"][job].get("uses") == CALL)]
+        self.assertEqual(callers, [("release.yml", "release")], "only the gated caller may call the release jobs")
 
-    def test_a_run_that_may_release_still_releases(self):
-        # The control: the same detection with the gate open reaches the live-providers jobs.
-        ran = simulate(TRANSPORT_RELEASE, may_release="true")
-        self.assertIn("bifrost-http-release", ran)
-        self.assertTrue(any(JOBS[j].get("environment") == "live-providers" for j in ran))
+    def test_the_gate_reads_the_range_of_the_event(self):
+        steps = ENTRY_JOBS["gate"]["steps"]
+        trigger = next(s for s in steps if s.get("id") == "trigger")
+        self.assertIn("release-trigger.sh", trigger["run"])
+        self.assertEqual(trigger["env"], {"EVENT_NAME": "${{ github.event_name }}",
+                                          "BEFORE_SHA": "${{ github.event.before }}",
+                                          "AFTER_SHA": "${{ github.sha }}"})
+        checkout = next(s for s in steps if str(s.get("uses", "")).startswith("actions/checkout@"))
+        self.assertEqual(checkout["with"]["fetch-depth"], 0, "the gate diffs before..after, so it needs the history")
+        self.assertLess(steps.index(checkout), steps.index(trigger))
+        self.assertEqual(ENTRY_JOBS["gate"]["outputs"]["may-release"], "${{ steps.trigger.outputs.may-release }}")
+
+    def test_every_event_field_read_exists_in_a_real_push_payload(self):
+        # A field Actions leaves out of the push payload reads as empty, silently: the file
+        # lists that sank the first concurrency fix (#358). Fields read only on a dispatch
+        # (inputs) are not push fields.
+        paths = set()
+        for path in (ENTRY, WORKFLOW):
+            paths |= set(re.findall(r"github\.event\.([A-Za-z0-9_.*]+)", path.read_text()))
+        paths = {p.rstrip(".") for p in paths if not p.startswith("inputs")}
+        self.assertIn("before", paths)
+        for name, payload in PAYLOADS.items():
+            for field in sorted(paths):
+                with self.subTest(payload=name, field=field):
+                    self.assertTrue(resolve(payload, field.split(".")), f"github.event.{field} is not in a real push payload")
+
+    def test_a_new_branch_push_from_a_real_payload_releases_nothing(self):
+        payload = PAYLOADS["push-event-new-branch.json"]
+        with tempfile.TemporaryDirectory() as repo:
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            self.assertEqual(self.run_trigger(repo, "push", payload["before"], payload["after"]), "false")
 
     def run_trigger(self, repo, event, before, after):
         out = subprocess.run(["bash", str(TRIGGER_SCRIPT), event, before, after], cwd=repo,
@@ -591,24 +592,71 @@ class ReleaseOnlyFromAChosenCommit(unittest.TestCase):
                     self.assertEqual(self.run_trigger(repo, event, before, after), expected)
 
 
-WORKFLOW_DOC = yaml.safe_load(WORKFLOW.read_text())
+def workflow_jobs():
+    for path in sorted(WORKFLOWS.glob("*.y*ml")):
+        doc = yaml.safe_load(path.read_text()) or {}
+        for job in (doc.get("jobs") or {}):
+            yield path.name, doc, job, None, None
+
+
+def resolve(value, parts):
+    """True when the dotted path exists in value; `*` maps over a list and needs every item."""
+    if not parts:
+        return value is not None
+    head, rest = parts[0], parts[1:]
+    if head == "*":
+        return isinstance(value, list) and bool(value) and all(resolve(v, rest) for v in value)
+    return isinstance(value, dict) and head in value and resolve(value[head], rest)
+
+
+class TheCallerPassesEverySecretTheReleaseJobsRead(unittest.TestCase):
+    """A called workflow sees a repository secret only when its caller passes it, and an
+    unpassed one reads as empty, silently. Provider credentials are never passed: they are
+    live-providers environment secrets read by the jobs that name it, and passing one, or
+    `secrets: inherit`, fails check-provider-key-environment.py. So every other secret the
+    release jobs read is declared by release-pipeline.yml and passed by name from release.yml."""
+
+    def test_declared_passed_and_read_are_one_list(self):
+        spec = importlib.util.spec_from_file_location("provider_keys", WORKFLOWS / "scripts" / "check-provider-key-environment.py")
+        keys = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(keys)
+        read = {n for n in re.findall(r"secrets\.([A-Z0-9_]+)", WORKFLOW.read_text())
+                if n != "GITHUB_TOKEN" and not keys.is_provider_credential(n)}
+        declared = set(triggers(WORKFLOW_DOC)["workflow_call"].get("secrets") or {})
+        passed = ENTRY_JOBS["release"].get("secrets")
+        self.assertIsInstance(passed, dict, "pass secrets by name, never `inherit`")
+        self.assertEqual(declared, read, "release-pipeline.yml declares exactly the repository secrets it reads")
+        self.assertEqual(set(passed), read, "release.yml passes exactly those")
+        for name, value in passed.items():
+            with self.subTest(secret=name):
+                self.assertEqual(value, f"${{{{ secrets.{name} }}}}")
+                self.assertFalse(keys.is_provider_credential(name))
 
 
 class ReleasesShareOneGroup(unittest.TestCase):
-    """Two runs that may release must never publish at once: both could see the same tag
-    missing and race to create it in release-bifrost-http-finalize.sh. So every run joins
-    one static workflow-level group. It may not be chosen from the push payload's file
-    lists, which Actions leaves out (TXE-7511, connector P1 on #358), and no job may
-    declare a group, because jobs of one run sharing a group serialize and cancel each
-    other. Keeping non-release pushes out of the group is TXE-7566."""
+    """Two releases must never publish at once (both could see the same tag missing and race
+    to create it in release-bifrost-http-finalize.sh), and a push that may not release must
+    never replace a release run pending in the group. GitHub keeps one pending run per group
+    and cancels the older one when another joins. So the one group sits on release.yml's gated
+    caller job: it covers the whole called workflow, and a caller skipped by its `if:` never
+    joins it (both measured with a scratch probe, 2026-11-16, TXE-7566)."""
 
-    def test_every_run_joins_one_static_group(self):
-        self.assertEqual(WORKFLOW_DOC["concurrency"], {"group": "release-pipeline", "cancel-in-progress": False})
-
-    def test_no_job_declares_its_own_group(self):
+    def test_the_group_is_on_the_gated_caller_only(self):
+        self.assertEqual(ENTRY_JOBS["release"]["concurrency"], {"group": "release-pipeline", "cancel-in-progress": False})
+        self.assertNotIn("concurrency", ENTRY_DOC, "a workflow-level group would hold every push")
+        self.assertNotIn("concurrency", WORKFLOW_DOC, "the called workflow is already inside the caller's group")
+        self.assertNotIn("concurrency", ENTRY_JOBS["gate"])
         for job, spec in JOBS.items():
             with self.subTest(job=job):
-                self.assertNotIn("concurrency", spec)
+                self.assertNotIn("concurrency", spec, "a job-level group in a run serializes or cancels its own jobs")
+
+    def test_no_other_workflow_joins_the_release_group(self):
+        for path in sorted(WORKFLOWS.glob("*.y*ml")):
+            text = path.read_text()
+            if path.name == "release.yml":
+                continue
+            with self.subTest(workflow=path.name):
+                self.assertNotRegex(text, r"group:\s*['\"]?release-pipeline['\"]?\s*$")
 
 
 if __name__ == "__main__":

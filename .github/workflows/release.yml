@@ -1,0 +1,105 @@
+name: Release Pipeline
+
+# The entry point of every release (TXE-7566). A push to main, or a dispatch, starts this
+# workflow; the gate decides from the git range whether the run may release
+# (release-trigger.sh, TXE-7511), and only then does the `release` job call the release jobs
+# in release-pipeline.yml.
+#
+# The concurrency group is on the `release` job, not on this workflow. A caller job's group
+# covers the whole called workflow, and a caller job skipped by its `if:` never enters the
+# group, so a push that may not release can neither wait behind a release nor replace a
+# release run pending in the group (measured with a scratch probe on 2026-11-16, TXE-7566).
+# The group cannot be chosen at the workflow level from the push payload: Actions' push payload
+# carries no added/modified/removed file lists (TXE-7511, connector P1 on #358).
+on:
+  push:
+    branches: ["main", "v2.0.0"]
+  workflow_dispatch:
+    inputs:
+      skip_tests:
+        description: "Skip all tests and jump directly to release (admin only)"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
+    outputs:
+      may-release: ${{ steps.trigger.outputs.may-release }}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      # A push may release only when it changes a version file; a dispatch always may.
+      - name: Decide whether this run may release
+        id: trigger
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.sha }}
+        run: ./.github/workflows/scripts/release-trigger.sh "$EVENT_NAME" "$BEFORE_SHA" "$AFTER_SHA"
+
+  release:
+    needs: [gate]
+    if: needs.gate.outputs.may-release == 'true'
+    # One release at a time. GitHub keeps one pending run per group and cancels the older
+    # one when another joins; only runs that may release ever join it.
+    concurrency:
+      group: release-pipeline
+      cancel-in-progress: false
+    # The called jobs can only narrow these; they need no more than this between them.
+    permissions:
+      contents: write
+      packages: write
+    uses: ./.github/workflows/release-pipeline.yml
+    with:
+      skip_tests: ${{ github.event_name == 'workflow_dispatch' && inputs.skip_tests }}
+    # The repository secrets release-pipeline.yml declares, by name; never `inherit`, which
+    # would hand it every provider credential (check-provider-key-environment.py). Provider
+    # keys are secrets of the live-providers environment, which the called jobs name.
+    secrets:
+      AWS_ARN: ${{ secrets.AWS_ARN }}
+      AWS_BEDROCK_ROLE_ARN: ${{ secrets.AWS_BEDROCK_ROLE_ARN }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
+      AZURE_API_VERSION: ${{ secrets.AZURE_API_VERSION }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_ENDPOINT: ${{ secrets.AZURE_ENDPOINT }}
+      AZURE_SPEECH_ENDPOINT: ${{ secrets.AZURE_SPEECH_ENDPOINT }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      BEDROCK_GUARDRAIL_IDENTIFIER: ${{ secrets.BEDROCK_GUARDRAIL_IDENTIFIER }}
+      BIFROST_ENCRYPTION_KEY: ${{ secrets.BIFROST_ENCRYPTION_KEY }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+      DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
+      DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}
+      GITHUB_COPILOT_APP_ID: ${{ secrets.GITHUB_COPILOT_APP_ID }}
+      GITHUB_COPILOT_INSTALLATION_ID: ${{ secrets.GITHUB_COPILOT_INSTALLATION_ID }}
+      GITHUB_COPILOT_REPOSITORY_ID: ${{ secrets.GITHUB_COPILOT_REPOSITORY_ID }}
+      GOOGLE_LOCATION: ${{ secrets.GOOGLE_LOCATION }}
+      MAXIM_LOG_REPO_ID: ${{ secrets.MAXIM_LOG_REPO_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      REPLICATE_OWNER: ${{ secrets.REPLICATE_OWNER }}
+      RUNPOD_NETWORK_VOLUME_ID: ${{ secrets.RUNPOD_NETWORK_VOLUME_ID }}
+      RUNPOD_REASONING_NETWORK_VOLUME_ID: ${{ secrets.RUNPOD_REASONING_NETWORK_VOLUME_ID }}
+      VERTEX_GCS_BUCKET: ${{ secrets.VERTEX_GCS_BUCKET }}
+      VERTEX_GCS_PREFIX: ${{ secrets.VERTEX_GCS_PREFIX }}
+      VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}

@@ -1,26 +1,85 @@
-name: Release Pipeline
+name: Release Pipeline jobs
 
-# Triggers automatically on push to main when any version file changes
+# The release jobs, called by release.yml's `release` job only when its gate says this run may
+# release (TXE-7566): a push that changes a version file, or a dispatch. That caller job holds
+# the `release-pipeline` concurrency group for the whole of this workflow (measured with a
+# scratch probe, 2026-11-16), so this file declares no group of its own.
+# github.event, github.event_name and github.sha are the caller's: the push or the dispatch.
 on:
-  push:
-    branches: ["main", "v2.0.0"]
-  workflow_dispatch:
+  workflow_call:
     inputs:
       skip_tests:
-        description: "Skip all tests and jump directly to release (admin only)"
+        description: "Skip all tests and jump directly to release (admin only; release.yml passes it from a dispatch)"
         required: false
         type: boolean
         default: false
-
-# One release at a time: every run joins this group. GitHub keeps one pending run per group
-# and cancels the older one when another joins, so a later push's run can still replace a
-# pending release run; such a run releases nothing (release-trigger.sh), and the release is
-# re-run (docs/release.md). Keeping a push that may not release out of this group needs the
-# decision from the git range before the group is chosen (TXE-7566): the Actions push payload
-# has no file lists to choose it from.
-concurrency:
-  group: release-pipeline
-  cancel-in-progress: false
+    # Repository secrets the release jobs read, passed by name from release.yml. Provider
+    # credentials are not here: they are secrets of the live-providers environment, which the
+    # jobs that read them name (check-provider-key-environment.py). test-release-gates.py keeps
+    # this list equal to the non-provider secrets this file reads.
+    secrets:
+      AWS_ARN:
+        required: false
+      AWS_BEDROCK_ROLE_ARN:
+        required: false
+      AWS_REGION:
+        required: false
+      AWS_S3_BUCKET:
+        required: false
+      AZURE_API_VERSION:
+        required: false
+      AZURE_CLIENT_ID:
+        required: false
+      AZURE_ENDPOINT:
+        required: false
+      AZURE_SPEECH_ENDPOINT:
+        required: false
+      AZURE_TENANT_ID:
+        required: false
+      BEDROCK_GUARDRAIL_IDENTIFIER:
+        required: false
+      BIFROST_ENCRYPTION_KEY:
+        required: false
+      CLOUDFLARE_ACCOUNT_ID:
+        required: false
+      CODECOV_TOKEN:
+        required: false
+      DATABRICKS_WORKSPACE_URL:
+        required: false
+      DISCORD_WEBHOOK:
+        required: false
+      GH_TOKEN:
+        required: false
+      GITHUB_COPILOT_APP_ID:
+        required: false
+      GITHUB_COPILOT_INSTALLATION_ID:
+        required: false
+      GITHUB_COPILOT_REPOSITORY_ID:
+        required: false
+      GOOGLE_LOCATION:
+        required: false
+      MAXIM_LOG_REPO_ID:
+        required: false
+      R2_ACCESS_KEY_ID:
+        required: false
+      R2_BUCKET:
+        required: false
+      R2_ENDPOINT:
+        required: false
+      R2_SECRET_ACCESS_KEY:
+        required: false
+      REPLICATE_OWNER:
+        required: false
+      RUNPOD_NETWORK_VOLUME_ID:
+        required: false
+      RUNPOD_REASONING_NETWORK_VOLUME_ID:
+        required: false
+      VERTEX_GCS_BUCKET:
+        required: false
+      VERTEX_GCS_PREFIX:
+        required: false
+      VERTEX_PROJECT_ID:
+        required: false
 
 permissions:
   contents: read
@@ -167,20 +226,9 @@ jobs:
           go-version: "1.27.3"
           cache: false
 
-      # A push releases only when it changes a version file; a dispatch always may
-      # (TXE-7511). When this says no, the detect step below is skipped, every
-      # *-needs-release output is empty, and no release or live-providers job runs.
-      - name: Decide whether this run may release
-        id: trigger
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          BEFORE_SHA: ${{ github.event.before }}
-          AFTER_SHA: ${{ github.sha }}
-        run: ./.github/workflows/scripts/release-trigger.sh "$EVENT_NAME" "$BEFORE_SHA" "$AFTER_SHA"
-
+      # Reached only when release.yml's gate said this run may release (TXE-7511, TXE-7566).
       - name: Detect what needs release
         id: detect
-        if: steps.trigger.outputs.may-release == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./.github/workflows/scripts/detect-all-changes.sh "auto"
