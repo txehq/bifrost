@@ -1073,6 +1073,8 @@ func TestFetchMediaStreamReturnsItsConnections(t *testing.T) {
 // client, to an address they read off another value, and why that address is not the
 // vendor's to choose. The key is "<provider dir>/<file>:<function>".
 var vendorNamedRequestSites = map[string]string{
+	"byteplus/arkvideo.go:Generate":                    "the path is ArkVideoAPI.TasksPath, a constant each provider sets (TXE-7493), sent under the configured base URL",
+	"byteplus/arkvideo.go:List":                        "the path is ArkVideoAPI.TasksPath, a constant each provider sets (TXE-7493), sent under the configured base URL",
 	"azure/azure.go:BatchResults":                      "the blob URL is fetched by downloadBlobURL, which refuses any host but https://*.blob.core.windows.net or *.dfs.core.windows.net before sending",
 	"githubcopilot/token.go:exchangeInstallationToken": "the address is a field of the provider's own endpoint config, built from the configured GitHub API base",
 	"githubcopilot/token.go:exchangeCopilotToken":      "the address is a field of the provider's own endpoint config, built from the configured GitHub API base",

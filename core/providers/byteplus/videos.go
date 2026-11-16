@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"maps"
 	"math"
-	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -490,37 +489,14 @@ var seedanceVideoGenerationFields = []string{
 // SupportedUnifiedFields declares the unified fields video create delivers, so core refuses any
 // other with caller_unsupported_parameter before a key is chosen (contract C4 BF4, C7 BF12).
 func (provider *BytePlusProvider) SupportedUnifiedFields(requestType schemas.RequestType) ([]string, bool) {
+	return SeedanceSupportedUnifiedFields(requestType)
+}
+
+// SeedanceSupportedUnifiedFields is the unified-field declaration of Seedance video create on any
+// Ark host: byteplus, and volcengine and modelark through ArkVideoAPI (fork, TXE-7493).
+func SeedanceSupportedUnifiedFields(requestType schemas.RequestType) ([]string, bool) {
 	if requestType == schemas.VideoGenerationRequest {
 		return seedanceVideoGenerationFields, true
 	}
 	return nil, false
-}
-
-// VideoCancel cancels a Seedance task that is still queued (fork, TXE-6426, contract C7 BF13).
-// Ark's only cancel is DELETE on the task, which on a finished task deletes its record, so the
-// task is queried once and DELETE is sent only while Ark reports it queued; in any other state
-// the answer is 400 provider_cancel_unsupported and DELETE is never sent. A task Ark started
-// between the query and the DELETE is refused by Ark, and that refusal is reported the same way.
-func (provider *BytePlusProvider) VideoCancel(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoCancelRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
-	return providerUtils.CancelVideoWhileQueued(
-		func() (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
-			return provider.VideoRetrieve(ctx, key, &schemas.BifrostVideoRetrieveRequest{Provider: request.Provider, ID: request.ID})
-		},
-		func() *schemas.BifrostError {
-			_, bifrostErr := provider.VideoDelete(ctx, key, &schemas.BifrostVideoDeleteRequest{Provider: request.Provider, ID: request.ID})
-			if bifrostErr == nil || bifrostErr.IsBifrostError || bifrostErr.StatusCode == nil {
-				return bifrostErr
-			}
-			if status := *bifrostErr.StatusCode; status != http.StatusBadRequest && status != http.StatusConflict {
-				return bifrostErr
-			}
-			message := "the task can no longer be cancelled"
-			if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
-				message += ": " + bifrostErr.Error.Message
-			}
-			unsupported := schemas.NewVideoCancelUnsupportedError(message)
-			unsupported.ExtraFields.RawResponse = bifrostErr.ExtraFields.RawResponse
-			return unsupported
-		},
-	)
 }

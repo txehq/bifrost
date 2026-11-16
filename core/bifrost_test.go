@@ -12797,10 +12797,17 @@ func TestConvertersReadNoUnlistedVendorPriceName(t *testing.T) {
 	if len(seen) < 100 {
 		t.Fatalf("only %d extra-param reads found under providers; the scan is not seeing the converters", len(seen))
 	}
-	// A stale entry hides nothing but misleads the next reader.
+	// A stale entry hides nothing but misleads the next reader. A provider that runs another
+	// directory's converter is checked against that directory: Vertex runs Gemini's for Gemini
+	// models, and VolcEngine and ModelArk run byteplus's Ark video converter (TXE-7493).
+	converterDirOf := map[string]string{"vertex": "gemini", "volcengine": "byteplus", "modelark": "byteplus"}
 	for key := range mapped {
-		geminiKey := "gemini/" + strings.TrimPrefix(key, "vertex/")
-		if !seen[key] && !seen[geminiKey] && !written[key] && !written[geminiKey] {
+		provider, name, _ := strings.Cut(key, "/")
+		otherKey := key
+		if dir, ok := converterDirOf[provider]; ok {
+			otherKey = dir + "/" + name
+		}
+		if !seen[key] && !seen[otherKey] && !written[key] && !written[otherKey] {
 			t.Errorf("schemas.VendorPriceFieldNames lists %s, but no converter of that provider reads it or writes it", key)
 		}
 	}

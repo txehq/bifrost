@@ -564,11 +564,10 @@ var baseURLVideoDownloads = map[string]struct {
 	calls  int
 	reason string
 }{
-	"openai/openai.go":         {1, "the address is the provider's base URL plus /videos/{id}/content"},
-	"azure/azure.go":           {1, "the address is the deployment endpoint plus /videos/{id}/content"},
-	"azure/sorajobs.go":        {1, "the address is the key's endpoint plus /video/generations/{id}/content/{video|thumbnail}; the job names only the generation id, escaped as one path segment"},
-	"volcengine/volcengine.go": {1, "the address is the provider's base URL plus the videos path"},
-	"vertex/vertex.go":         {1, "the gs:// object is read from the Cloud Storage API base, never from an address in the URI"},
+	"openai/openai.go":  {1, "the address is the provider's base URL plus /videos/{id}/content"},
+	"azure/azure.go":    {1, "the address is the deployment endpoint plus /videos/{id}/content"},
+	"azure/sorajobs.go": {1, "the address is the key's endpoint plus /video/generations/{id}/content/{video|thumbnail}; the job names only the generation id, escaped as one path segment"},
+	"vertex/vertex.go":  {1, "the gs:// object is read from the Cloud Storage API base, never from an address in the URI"},
 }
 
 // videoDownloadTransportCalls are the calls that send a request on a provider's own client. A
