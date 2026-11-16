@@ -136,6 +136,20 @@ func TestBillingRowNeedsHydration(t *testing.T) {
 			why:  "per-image pricing needs the image count from image_generation_output",
 		},
 		{
+			name:     "image row whose output is configured resident but whose params were offloaded",
+			log:      Log{Object: "image_generation", TokenUsage: usageJSON, CacheDebug: cacheJSON, ImageGenerationOutput: `{"data":[]}`},
+			excluded: excludedSet("image_generation_output"),
+			want:     true,
+			why:      "an answer streamed unread is priced at the request's n, which only params carries (TXE-7498)",
+		},
+		{
+			name:     "image row with its output and params resident",
+			log:      Log{Object: "image_generation", TokenUsage: usageJSON, CacheDebug: cacheJSON, ImageGenerationOutput: `{"data":[]}`, Params: `{"n":3}`},
+			excluded: excludedSet("image_generation_output"),
+			want:     false,
+			why:      "every pricing input is on the row",
+		},
+		{
 			name: "video row with its payload resident",
 			log:  Log{Object: "video_generation", TokenUsage: usageJSON, CacheDebug: cacheJSON, VideoGenerationOutput: `{"seconds":"8"}`},
 			want: false,

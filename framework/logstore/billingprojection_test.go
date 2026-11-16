@@ -255,6 +255,34 @@ func TestBillingProjectionStripsGeneratedImageBytes(t *testing.T) {
 		"the serialized column still holds the base64 and must be released once parsed")
 }
 
+// TestBillingProjectionKeepsImageParams pins TXE-7498. An image answer streamed to the caller
+// unread in large-response mode stores no image, and the n it was priced at live is never
+// serialised, so a recalculation reads n from the row's params. The billing projection selects
+// params for image rows only: a chat row's params are never pricing input.
+func TestBillingProjectionKeepsImageParams(t *testing.T) {
+	store := newProjectionTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	for _, entry := range []*Log{
+		{ID: "image-params-1", Timestamp: now, Object: "image_generation", Provider: "openai", Model: "gpt-image-1", Status: "success",
+			ParamsParsed: map[string]any{"n": 3, "quality": "high"}, ImageGenerationOutputParsed: &schemas.BifrostImageGenerationResponse{}},
+		{ID: "chat-params-1", Timestamp: now, Object: "chat.completion", Provider: "openai", Model: "gpt-4o", Status: "success",
+			ParamsParsed: map[string]any{"temperature": 0.2}},
+	} {
+		require.NoError(t, entry.SerializeFields())
+		require.NoError(t, store.Create(ctx, entry))
+	}
+
+	result, err := store.SearchLogsForBilling(ctx, SearchFilters{}, PaginationOptions{Limit: 10})
+	require.NoError(t, err)
+	byID := map[string]Log{}
+	for _, l := range result.Logs {
+		byID[l.ID] = l
+	}
+	require.JSONEq(t, `{"n":3,"quality":"high"}`, byID["image-params-1"].Params, "an unread image answer is priced at the n in params")
+	assert.Empty(t, byID["chat-params-1"].Params, "a chat row's params are not pricing input and stay unselected")
+}
+
 // containsColumn matches a bare column name in a SELECT clause. It deliberately does
 // not match a name that only appears inside a CASE expression, so the gating tests can
 // tell "selected unconditionally" from "selected for its own object_type".

@@ -5609,33 +5609,38 @@ func BenchmarkVideoPricingFromRequest(b *testing.B) {
 	}
 }
 
-// TestCalculateCostForLog_UnreadLargeResponseImagePricesTheRequestedImages pins TXE-7498. An image
+// TestRecalculateCosts_UnreadLargeResponseImagePricesTheRequestedImages pins TXE-7498. An image
 // answer streamed to the caller unread in large-response mode (TXE-7017) is priced live at the
-// requested n images through the unserialised NImages count. The stored log keeps empty data and
-// no output_images, so a recalculation must restore n from the logged params, not price one image.
-func TestCalculateCostForLog_UnreadLargeResponseImagePricesTheRequestedImages(t *testing.T) {
+// requested n images through the unserialised NImages count. The stored row keeps empty data and
+// no output_images, so the recalculation job, reading rows through SearchLogsForBilling as in
+// production, must restore n from the row's params, not price one image.
+func TestRecalculateCosts_UnreadLargeResponseImagePricesTheRequestedImages(t *testing.T) {
 	sheet := filepath.Join(t.TempDir(), "pricing.json")
 	require.NoError(t, os.WriteFile(sheet, []byte(`{"gpt-image-1": {"provider": "openai", "mode": "image_generation", "output_cost_per_image": 0.04, "output_cost_per_image_high_quality": 0.17}}`), 0o600))
 	ds := datasheet.New(nil, testLogger{}, datasheet.Config{URL: "file://" + sheet})
 	require.NoError(t, ds.LoadFromURLIntoMemory(context.Background()))
-	p := &LoggerPlugin{store: newFakeRecalcStore(nil), pricingManager: modelcatalog.NewTestCatalogWithDatasheet(ds), logger: testLogger{}}
+	store := newTestStore(t)
+	t.Cleanup(func() { require.NoError(t, store.Close(context.Background())) })
+	p := &LoggerPlugin{store: store, pricingManager: modelcatalog.NewTestCatalogWithDatasheet(ds), logger: testLogger{}}
+	ctx := context.Background()
 
 	params := &schemas.ImageGenerationParameters{N: schemas.Ptr(3), Size: schemas.Ptr("1024x1024"), Quality: schemas.Ptr("high")}
 	req := &schemas.BifrostRequest{ImageGenerationRequest: &schemas.BifrostImageGenerationRequest{Provider: schemas.OpenAI, Model: "gpt-image-1", Params: params}}
 	extra := schemas.BifrostResponseExtraFields{RequestType: schemas.ImageGenerationRequest, Provider: schemas.OpenAI, OriginalModelRequested: "gpt-image-1", ResolvedModelUsed: "gpt-image-1",
 		RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenAI, Model: "gpt-image-1"}}
-	logOf := func(id string, live *schemas.BifrostImageGenerationResponse) logstore.Log {
+	seed := func(id string, live *schemas.BifrostImageGenerationResponse) {
 		t.Helper()
-		output, err := json.Marshal(live)
+		// The log row as live logging writes it: the response, the request's image params, and
+		// the normalised usage. Round-tripped through JSON so no unserialised field survives.
+		raw, err := json.Marshal(live)
 		require.NoError(t, err)
-		loggedParams, err := json.Marshal(params)
-		require.NoError(t, err)
-		usage, err := json.Marshal((&schemas.BifrostResponse{ImageGenerationResponse: live}).NormalizedUsage())
-		require.NoError(t, err)
-		entry := logstore.Log{ID: id, Object: string(schemas.ImageGenerationRequest), Provider: "openai", Model: "gpt-image-1", Status: "success",
-			ImageGenerationOutput: string(output), Params: string(loggedParams), TokenUsage: string(usage)}
-		require.NoError(t, entry.DeserializeFields())
-		return entry
+		var stored schemas.BifrostImageGenerationResponse
+		require.NoError(t, json.Unmarshal(raw, &stored))
+		entry := &logstore.Log{ID: id, Timestamp: time.Now().UTC(), Object: string(schemas.ImageGenerationRequest), Provider: "openai", Model: "gpt-image-1", Status: "success",
+			ImageGenerationOutputParsed: &stored, ParamsParsed: params,
+			TokenUsageParsed: (&schemas.BifrostResponse{ImageGenerationResponse: live}).NormalizedUsage()}
+		require.NoError(t, entry.SerializeFields())
+		require.NoError(t, store.Create(ctx, entry))
 	}
 
 	unread := &schemas.BifrostImageGenerationResponse{ExtraFields: extra}
@@ -5643,18 +5648,24 @@ func TestCalculateCostForLog_UnreadLargeResponseImagePricesTheRequestedImages(t 
 	unread.BackfillParams(req)
 	live := p.pricingManager.CalculateCost(&schemas.BifrostResponse{ImageGenerationResponse: unread}, nil)
 	require.InDelta(t, 3*0.17, live, 1e-12, "live pricing charged the requested images")
-
-	entry := logOf("unread-1", unread)
-	cost, err := p.calculateCostForLog(&entry)
-	require.NoError(t, err)
-	require.InDelta(t, live, cost, 1e-12, "a recalculation prices the 3 requested images, as live pricing did")
-	require.Nil(t, entry.ImageGenerationOutputParsed.Usage.OutputImages, "the restored count is not shown as the vendor's output_images")
+	seed("unread-1", unread)
 
 	// A delivered answer keeps the count it delivered, whatever n asked for.
 	delivered := &schemas.BifrostImageGenerationResponse{ExtraFields: extra, Data: []schemas.ImageData{{B64JSON: "iVBORw0KGgo="}, {B64JSON: "iVBORw0KGgo="}}}
 	delivered.BackfillParams(req)
-	entry = logOf("delivered-1", delivered)
-	cost, err = p.calculateCostForLog(&entry)
+	seed("delivered-1", delivered)
+
+	result, err := p.RecalculateCosts(ctx, logstore.SearchFilters{}, 10)
 	require.NoError(t, err)
-	require.InDelta(t, 2*0.17, cost, 1e-12)
+	require.Equal(t, 2, result.Updated, "%+v", result)
+	for id, want := range map[string]float64{"unread-1": live, "delivered-1": 2 * 0.17} {
+		row, err := store.FindByID(ctx, id)
+		require.NoError(t, err)
+		require.NotNil(t, row.Cost, id)
+		require.InDelta(t, want, *row.Cost, 1e-12, "%s: the recalculation prices the images the request was charged for live", id)
+	}
+	row, err := store.FindByID(ctx, "unread-1")
+	require.NoError(t, err)
+	require.NoError(t, row.DeserializeFields())
+	require.Nil(t, row.ImageGenerationOutputParsed.Usage.OutputImages, "the restored count is not stored as the vendor's output_images")
 }
