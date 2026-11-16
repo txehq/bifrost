@@ -140,5 +140,7 @@ func (s *Store) estimateImageTokenCost(estimate *schemas.EstimatedImageUsage, ro
 			tokens = max(tokens, figures.perImage(size, quality))
 		}
 	}
-	return float64(estimate.OutputImages*tokens) * *pricing.OutputCostPerImageToken
+	// The product is taken in float64: n comes from the client, and an int product can wrap to a
+	// negative or tiny charge.
+	return float64(estimate.OutputImages) * float64(tokens) * *pricing.OutputCostPerImageToken
 }

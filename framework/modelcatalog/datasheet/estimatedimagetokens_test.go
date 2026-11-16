@@ -2,6 +2,7 @@ package datasheet
 
 import (
 	"encoding/json"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,6 +28,9 @@ func TestCalculateCostForEstimatedImageUsage_TokenPricedRows(t *testing.T) {
 
 	gptImage2 := tokenRow("openai", "gpt-image-2", 3e-05)
 	assert.InDelta(t, 3*7034*3e-05, estimate(gptImage2, schemas.OpenAI, "gpt-image-2", schemas.EstimatedImageUsage{OutputImages: 3, Size: "1024x1024", Quality: "high"}), 1e-12)
+	// A client-supplied n large enough to wrap an int product still charges a positive estimate.
+	huge := math.MaxInt64 / 1000
+	assert.InDelta(t, float64(huge)*7034*3e-05, estimate(gptImage2, schemas.OpenAI, "gpt-image-2", schemas.EstimatedImageUsage{OutputImages: huge, Size: "1024x1024", Quality: "high"}), float64(huge)*1e-09)
 	assert.InDelta(t, 200*3e-05, estimate(gptImage2, schemas.OpenAI, "gpt-image-2", schemas.EstimatedImageUsage{OutputImages: 1, Size: "1024x1024", Quality: "low"}), 1e-12)
 	assert.InDelta(t, 1767*3e-05, estimate(gptImage2, schemas.OpenAI, "gpt-image-2", schemas.EstimatedImageUsage{OutputImages: 1, Size: "2048x2048", Quality: "medium"}),
 		1e-12, "a size OpenAI publishes no figure for takes the dearest at that quality")
