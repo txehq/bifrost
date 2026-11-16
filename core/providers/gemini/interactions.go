@@ -502,15 +502,59 @@ func ToBifrostInteractionVideoResponse(interaction *GeminiInteraction, opts Inte
 	}
 
 	if interaction.Usage != nil {
+		var usage schemas.VideoUsage
 		for _, entry := range interaction.Usage.OutputTokensByModality {
 			if entry.Modality == "video" && entry.Tokens != nil {
-				response.Usage = &schemas.VideoUsage{OutputTokens: schemas.Ptr(*entry.Tokens)}
+				usage.OutputTokens = schemas.Ptr(*entry.Tokens)
 				break
 			}
+		}
+		usage.InputTokens, usage.InputTokensDetails = interactionInputTokens(interaction.Usage.InputTokensByModality)
+		if usage.OutputTokens != nil || usage.InputTokens != nil {
+			response.Usage = &usage
 		}
 	}
 
 	return response, nil
+}
+
+// interactionInputTokens is an interaction's input tokens by modality as the task object carries
+// them (fork, TXE-7239): their sum and each modality the vendor reported. A modality other than
+// text, image, video and audio counts toward the sum only. Nil when the vendor reported none.
+func interactionInputTokens(byModality []GeminiInteractionModalityTokens) (*int, *schemas.VideoTokenDetails) {
+	total := 0
+	reported := false
+	var details schemas.VideoTokenDetails
+	add := func(field **int, tokens int) {
+		if *field == nil {
+			*field = schemas.Ptr(0)
+		}
+		**field += tokens
+	}
+	for _, entry := range byModality {
+		if entry.Tokens == nil {
+			continue
+		}
+		reported = true
+		total += *entry.Tokens
+		switch strings.ToLower(entry.Modality) {
+		case "text":
+			add(&details.TextTokens, *entry.Tokens)
+		case "image":
+			add(&details.ImageTokens, *entry.Tokens)
+		case "video":
+			add(&details.VideoTokens, *entry.Tokens)
+		case "audio":
+			add(&details.AudioTokens, *entry.Tokens)
+		}
+	}
+	if !reported {
+		return nil, nil
+	}
+	if details == (schemas.VideoTokenDetails{}) {
+		return &total, nil
+	}
+	return &total, &details
 }
 
 func parseInteractionTime(value string) (int64, bool) {

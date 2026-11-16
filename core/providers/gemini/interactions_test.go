@@ -337,8 +337,8 @@ func decodeInteraction(t *testing.T, body string) *GeminiInteraction {
 func TestToBifrostInteractionVideoResponse_ArtifactUsageAndExpiry(t *testing.T) {
 	uriBody := strings.Replace(omniInteractionCompletedURITemplate, "FILE_URI", "https://generativelanguage.googleapis.com/v1beta/files/abc123:download?alt=media", 1)
 
-	// delivery=uri: a "content" entry with no url and no bytes, usage from the video modality
-	// only, and expires_at 48 hours after completion.
+	// delivery=uri: a "content" entry with no url and no bytes, output usage from the video
+	// modality only, input usage by modality, and expires_at 48 hours after completion.
 	resp, bifrostErr := ToBifrostInteractionVideoResponse(decodeInteraction(t, uriBody), GeminiInteractionVideoOptions)
 	require.Nil(t, bifrostErr)
 	assert.Equal(t, schemas.VideoStatusCompleted, resp.Status)
@@ -346,7 +346,13 @@ func TestToBifrostInteractionVideoResponse_ArtifactUsageAndExpiry(t *testing.T) 
 	require.Len(t, resp.Videos, 1)
 	assert.Equal(t, schemas.VideoOutput{Type: schemas.VideoOutputTypeContent, ContentType: "video/mp4"}, resp.Videos[0])
 	require.NotNil(t, resp.Usage)
-	assert.Equal(t, schemas.VideoUsage{OutputTokens: schemas.Ptr(46336)}, *resp.Usage)
+	// TXE-7239: the input side by modality too, as the task object carries it: text 12 and image
+	// 258, summed to 270.
+	assert.Equal(t, schemas.VideoUsage{
+		OutputTokens:       schemas.Ptr(46336),
+		InputTokens:        schemas.Ptr(270),
+		InputTokensDetails: &schemas.VideoTokenDetails{TextTokens: schemas.Ptr(12), ImageTokens: schemas.Ptr(258)},
+	}, *resp.Usage)
 	require.NotNil(t, resp.CompletedAt)
 	require.NotNil(t, resp.ExpiresAt)
 	assert.Equal(t, *resp.CompletedAt+48*3600, *resp.ExpiresAt)

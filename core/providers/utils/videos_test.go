@@ -1,6 +1,10 @@
 package utils
 
 import (
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -210,4 +214,60 @@ func TestCancelVideoWhileQueued(t *testing.T) {
 			t.Fatalf("err/cancels = %v/%d, want a refusal and no cancel call", bifrostErr, cancels)
 		}
 	})
+}
+
+// vendorInputTokenTag matches a vendor field that reports a task's input tokens: Gemini Omni's
+// input_tokens_by_modality, an OpenAI-style input_tokens or prompt_tokens, Gemini's
+// promptTokenCount.
+var vendorInputTokenTag = regexp.MustCompile(`json:"(input_tokens[a-z_]*|prompt_tokens[a-z_]*|promptTokenCount|inputTokens[A-Za-z]*)[",]`)
+
+// setsVideoInputTokens matches a converter setting VideoUsage's input tokens.
+var setsVideoInputTokens = regexp.MustCompile(`\.InputTokens\b|\bInputTokens:\s`)
+
+// TestVideoConvertersThatReadInputTokensReportThem is TXE-7239's class check: a provider file that
+// builds the task object's VideoUsage and declares a vendor field reporting input tokens must set
+// VideoUsage.InputTokens (and InputTokensDetails when the vendor splits them by modality), so a
+// vendor's input usage reaches the task object and not only extra_fields.raw_response. Before
+// TXE-7239 the Gemini Interactions converter read input_tokens_by_modality's vendor type and
+// dropped it. A file whose vendor field cannot be carried goes in videoInputTokensNotCarried with
+// the reason.
+func TestVideoConvertersThatReadInputTokensReportThem(t *testing.T) {
+	videoInputTokensNotCarried := map[string]string{}
+	files, err := filepath.Glob(filepath.Join("..", "*", "*.go"))
+	if err != nil || len(files) < 50 {
+		t.Fatalf("provider sources not found: %d files, %v", len(files), err)
+	}
+	readers := 0
+	for _, file := range files {
+		if strings.HasSuffix(file, "_test.go") || strings.Contains(file, string(filepath.Separator)+"utils"+string(filepath.Separator)) {
+			continue
+		}
+		source, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(source)
+		if !strings.Contains(text, "VideoUsage{") && !strings.Contains(text, "schemas.VideoUsage") {
+			continue
+		}
+		if !vendorInputTokenTag.MatchString(text) {
+			continue
+		}
+		readers++
+		rel := filepath.ToSlash(strings.TrimPrefix(file, ".."+string(filepath.Separator)))
+		if _, exempt := videoInputTokensNotCarried[rel]; exempt {
+			continue
+		}
+		if !setsVideoInputTokens.MatchString(text) {
+			t.Errorf("%s builds a VideoUsage and declares a vendor input-token field (%s), but never sets VideoUsage.InputTokens: carry the vendor's input tokens on the task object (and InputTokensDetails by modality), or list the file in videoInputTokensNotCarried with the reason", rel, vendorInputTokenTag.FindString(text))
+		}
+	}
+	if readers == 0 {
+		t.Fatal("no video converter declares a vendor input-token field; the scan is not seeing gemini/interactions.go")
+	}
+	for rel := range videoInputTokensNotCarried {
+		if _, err := os.Stat(filepath.Join("..", filepath.FromSlash(rel))); err != nil {
+			t.Errorf("videoInputTokensNotCarried lists %s, which no longer exists", rel)
+		}
+	}
 }
