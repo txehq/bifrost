@@ -326,6 +326,7 @@ const INPUT_COST_LABELS: [keyof InputCostDetails, string][] = [
 	["text_cost", "Text"],
 	["audio_cost", "Audio"],
 	["image_cost", "Image"],
+	["video_cost", "Video"],
 	["cached_read_cost", "Cache read"],
 	["cached_write_cost", "Cache write"],
 	["request_cost", "Per-request fee"],

@@ -1357,3 +1357,58 @@ test.describe("sessions longer than one page", () => {
     await expect(page.getByTestId("log-row-kind-session")).toHaveCount(0);
   });
 });
+
+// TXE-7373: video sent as input is reported under its own cost category, and the Input Cost
+// tooltip lists it beside text. Outside "LLM Logs", whose beforeEach opens the page before
+// any route is mocked and so fails offline (TXE-7392); this test answers the logs API itself.
+test.describe("input cost breakdown", () => {
+  test("should list the video input cost in the input cost tooltip", async ({ page, logsPage }) => {
+    const timestamp = new Date().toISOString();
+    const id = `synthetic-video-cost-${Date.now()}`;
+    const log = {
+      id,
+      object: "embedding",
+      timestamp,
+      created_at: timestamp,
+      provider: "vertex",
+      model: "gemini-embedding-2",
+      number_of_retries: 0,
+      fallback_index: 0,
+      status: "success",
+      stream: false,
+      latency: 120,
+      cost: 0.023496,
+      token_usage: { prompt_tokens: 1300, completion_tokens: 0, total_tokens: 1300 },
+      cost_breakdown: {
+        input_cost: 0.023496,
+        input_cost_details: { text_cost: 0.0084, video_cost: 0.015096 },
+        total_cost: 0.023496,
+      },
+      input_history: [],
+      responses_input_history: [],
+    };
+    await page.route((url) => url.pathname === "/api/logs", async (route) => {
+      if (route.request().method() !== "GET") return route.continue();
+      await route.fulfill({ json: {
+        logs: [log],
+        pagination: { limit: 50, offset: 0, sort_by: "timestamp", order: "desc" },
+        stats: { total_requests: 1, success_rate: 100, user_facing_success_rate: 100, user_facing_total_requests: 1, average_latency: 120, total_tokens: 1300, prompt_tokens: 1300, completion_tokens: 0, total_cost: 0.023496 },
+        has_logs: true,
+      } });
+    });
+    await page.route((url) => url.pathname === `/api/logs/${id}`, async (route) => route.fulfill({ json: log }));
+
+    await logsPage.goto();
+    // At 1280x720 the only row sits under the sticky table header, which takes a real click.
+    await logsPage.tableRows.first().locator("td").first().dispatchEvent("click");
+    await expect(logsPage.logDetailSheet).toBeVisible();
+    // The cost breakdown is in the collapsed "More details" section.
+    await logsPage.logDetailSheet.getByText("More details", { exact: true }).click();
+    const label = logsPage.logDetailSheet.getByText("INPUT COST", { exact: true });
+    await expect(label).toBeVisible();
+    await label.locator("svg").hover();
+    const tooltip = page.getByRole("tooltip");
+    await expect(tooltip).toContainText("Video: $0.015096");
+    await expect(tooltip).toContainText("Text: $0.0084");
+  });
+});
