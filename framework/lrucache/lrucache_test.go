@@ -445,7 +445,10 @@ func TestCache_IndexKeyCollisionEvictsPreviousOwner(t *testing.T) {
 // the sole, reachable owner of "id".
 func TestCache_IndexOwnerEvictionBumpsGeneration(t *testing.T) {
 	c := New[string](4)
-	_, err := c.Fill(context.Background(), "k1", fillWith("v1", "id"))
+	// k0 owns the index key "id". A fill of k1, which is not cached, is in
+	// flight and will also claim "id". (A refill of a key that is already
+	// cached cannot be in flight: the leader reads the cache first, TXE-4982.)
+	_, err := c.Fill(context.Background(), "k0", fillWith("v0", "id"))
 	require.NoError(t, err)
 
 	started := make(chan struct{})
@@ -458,28 +461,30 @@ func TestCache_IndexOwnerEvictionBumpsGeneration(t *testing.T) {
 		v, err := c.Fill(context.Background(), "k1", func() (string, string, error) {
 			close(started)
 			<-release
-			return "v1-stale-refill", "id", nil
+			return "v1-stale", "id", nil
 		})
 		assert.NoError(t, err)
-		assert.Equal(t, "v1-stale-refill", v)
+		assert.Equal(t, "v1-stale", v)
 	}()
 
 	<-started
-	// k2 rebinds "id" while k1's refill is still blocked in its loader —
-	// this must evict k1 (the current owner) as a side effect AND bump
+	// k2 rebinds "id" while k1's fill is still blocked in its loader: this
+	// evicts k0 (the current owner) as a side effect and must bump
 	// c.generation, exactly like any other eviction in this file.
 	_, err = c.Fill(context.Background(), "k2", fillWith("v2", "id"))
 	require.NoError(t, err)
+	_, ok := c.Get("k0")
+	assert.False(t, ok, "rebinding the index key evicts its previous owner")
 
 	close(release)
 	wg.Wait()
 
 	got, ok := c.Get("k2")
-	assert.True(t, ok, "k2 must still be cached and reachable through the index — a stale racing refill of the evicted previous owner must not steal the index binding back")
+	assert.True(t, ok, "k2 must still be cached and reachable through the index; the racing fill must not steal the index binding")
 	assert.Equal(t, "v2", got)
 
 	_, ok = c.Get("k1")
-	assert.False(t, ok, "k1's stale refill must be discarded by the generation guard, not reinstalled")
+	assert.False(t, ok, "k1's racing fill must be discarded by the generation guard, not installed")
 }
 
 func TestCache_IndexKeyRebindOnFullCachePreservesCapacity(t *testing.T) {
@@ -651,4 +656,87 @@ func TestDecodeKey_RejectsMalformedInput(t *testing.T) {
 			assert.False(t, ok)
 		})
 	}
+}
+
+// TestCache_FillAfterLeaderFinishedReturnsStoredValue pins the end state the
+// InflightDedup race used to reach (TXE-4982): a caller that missed on Get
+// before the leader stored its value, and reaches Fill after the leader has
+// cleared its inflight slot, finds no inflight call and becomes a leader
+// itself. That leader must return the stored value, not load it again.
+// Calling Fill twice in sequence reaches the same state with no timing.
+func TestCache_FillAfterLeaderFinishedReturnsStoredValue(t *testing.T) {
+	c := New[string](4)
+	var calls atomic.Int32
+	loader := func() (string, string, error) {
+		n := calls.Add(1)
+		return fmt.Sprintf("v%d", n), "id1", nil
+	}
+
+	first, err := c.Fill(context.Background(), "k1", loader)
+	require.NoError(t, err)
+	second, err := c.Fill(context.Background(), "k1", loader)
+	require.NoError(t, err)
+
+	assert.Equal(t, int32(1), calls.Load(), "a stored value must not be loaded again")
+	assert.Equal(t, "v1", first)
+	assert.Equal(t, "v1", second)
+}
+
+// TestCache_FillLoadsAgainAfterInvalidation: the cache read in Fill is a Get,
+// so an evicted, flushed or validator-rejected entry is a miss and is loaded
+// afresh rather than served stale.
+func TestCache_FillLoadsAgainAfterInvalidation(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		opts       []Option[string]
+		invalidate func(c *Cache[string])
+	}{
+		{name: "evict", invalidate: func(c *Cache[string]) { c.Evict("k1") }},
+		{name: "evict by index", invalidate: func(c *Cache[string]) { c.EvictByIndex("id1") }},
+		{name: "flush", invalidate: func(c *Cache[string]) { c.Flush() }},
+		{
+			name:       "validator rejects",
+			opts:       []Option[string]{WithValidator(func(v string) bool { return v != "v1" })},
+			invalidate: func(*Cache[string]) {},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := New[string](4, tc.opts...)
+			var calls atomic.Int32
+			loader := func() (string, string, error) {
+				n := calls.Add(1)
+				return fmt.Sprintf("v%d", n), "id1", nil
+			}
+
+			_, err := c.Fill(context.Background(), "k1", loader)
+			require.NoError(t, err)
+			tc.invalidate(c)
+			v, err := c.Fill(context.Background(), "k1", loader)
+			require.NoError(t, err)
+
+			assert.Equal(t, int32(2), calls.Load())
+			assert.Equal(t, "v2", v)
+		})
+	}
+}
+
+// TestCache_FillDoesNotCacheErrorsAcrossLeaders: a failed load stores nothing,
+// so the next leader's cache read misses and it loads again.
+func TestCache_FillDoesNotCacheErrorsAcrossLeaders(t *testing.T) {
+	c := New[string](4)
+	var calls atomic.Int32
+	loader := func() (string, string, error) {
+		if calls.Add(1) == 1 {
+			return "", "", errors.New("upstream down")
+		}
+		return "v2", "id1", nil
+	}
+
+	_, err := c.Fill(context.Background(), "k1", loader)
+	require.Error(t, err)
+	v, err := c.Fill(context.Background(), "k1", loader)
+	require.NoError(t, err)
+
+	assert.Equal(t, int32(2), calls.Load())
+	assert.Equal(t, "v2", v)
 }
