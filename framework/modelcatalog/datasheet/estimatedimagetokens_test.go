@@ -5,6 +5,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -56,6 +57,26 @@ func TestCalculateCostForEstimatedImageUsage_TokenPricedRows(t *testing.T) {
 	perImage := batchStore(t, "openai", "gpt-image-1.5", "image_generation",
 		`{"provider": "openai", "mode": "image_generation", "output_cost_per_image_token": 3.2e-05, "output_cost_per_image_high_quality": 0.133}`)
 	assert.InDelta(t, 0.133, estimate(perImage, schemas.OpenAI, "gpt-image-1.5", schemas.EstimatedImageUsage{OutputImages: 1, Size: "1024x1024", Quality: "high"}), 1e-12)
+
+	// An explicit per-image price of 0 is a free image, not a missing price: no token fallback.
+	freeImage := batchStore(t, "openai", "gpt-image-1.5", "image_generation",
+		`{"provider": "openai", "mode": "image_generation", "output_cost_per_image_token": 3.2e-05, "output_cost_per_image_high_quality": 0}`)
+	assert.Zero(t, estimate(freeImage, schemas.OpenAI, "gpt-image-1.5", schemas.EstimatedImageUsage{OutputImages: 1, Size: "1024x1024", Quality: "high"}))
+}
+
+// The fallback's per-image field list is read from the struct; it must find the known fields and
+// never a token rate.
+func TestPerImageOutputPriceFields(t *testing.T) {
+	typ := reflect.TypeFor[configstoreTables.TableModelPricing]()
+	var names []string
+	for _, i := range perImageOutputPriceFields() {
+		names = append(names, typ.Field(i).Name)
+	}
+	assert.Contains(t, names, "OutputCostPerImage")
+	assert.Contains(t, names, "OutputCostPerPixel")
+	assert.Contains(t, names, "OutputCostPerImageHighQuality")
+	assert.Contains(t, names, "OutputCostPerImageAbove1024x1024Pixels")
+	assert.NotContains(t, names, "OutputCostPerImageToken")
 }
 
 func BenchmarkCalculateCostForEstimatedImageUsage_TokenPricedRow(b *testing.B) {

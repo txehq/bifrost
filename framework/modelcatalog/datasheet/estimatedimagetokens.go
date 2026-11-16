@@ -1,10 +1,13 @@
 package datasheet
 
 import (
+	"reflect"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/capsohq/bifrost/core/schemas"
+	configstoreTables "github.com/capsohq/bifrost/framework/configstore/tables"
 )
 
 // Output tokens per image for image models whose datasheet row prices images only per image
@@ -124,10 +127,11 @@ func estimatedImageTokensFor(model string) (estimatedImageTokens, bool) {
 // estimateImageTokenCost prices an estimate on a row that prices images only per image token: the
 // estimated images at the table's tokens per image (the dearest over sizes and qualities when the
 // request named none) at the row's output_cost_per_image_token. It returns 0 for a row with no
-// image token rate or a model with no figures.
+// image token rate, a row that sets any per-image or per-pixel output price (zero included: an
+// explicit 0 is a free image, not a missing price), or a model with no figures.
 func (s *Store) estimateImageTokenCost(estimate *schemas.EstimatedImageUsage, routingInfo schemas.RoutingInfo, requestType schemas.RequestType, scopes LookupScopes, sizes, qualities []string) float64 {
 	pricing := s.resolvePricing(routingInfo, requestType, scopes)
-	if pricing == nil || pricing.OutputCostPerImageToken == nil || *pricing.OutputCostPerImageToken <= 0 {
+	if pricing == nil || pricing.OutputCostPerImageToken == nil || *pricing.OutputCostPerImageToken <= 0 || setsPerImageOutputPrice(pricing) {
 		return 0
 	}
 	figures, ok := estimatedImageTokensFor(pricing.Model)
@@ -143,4 +147,33 @@ func (s *Store) estimateImageTokenCost(estimate *schemas.EstimatedImageUsage, ro
 	// The product is taken in float64: n comes from the client, and an int product can wrap to a
 	// negative or tiny charge.
 	return float64(estimate.OutputImages) * float64(tokens) * *pricing.OutputCostPerImageToken
+}
+
+// perImageOutputPriceFields are the pricing row's per-image and per-pixel output price fields:
+// every *float64 field whose name starts OutputCostPerImage or OutputCostPerPixel, except the
+// per-image-token rates. They are read from the struct so a field added later is covered.
+var perImageOutputPriceFields = sync.OnceValue(func() []int {
+	var fields []int
+	t := reflect.TypeFor[configstoreTables.TableModelPricing]()
+	for i := range t.NumField() {
+		f := t.Field(i)
+		if f.Type != reflect.TypeFor[*float64]() || strings.Contains(f.Name, "Token") {
+			continue
+		}
+		if strings.HasPrefix(f.Name, "OutputCostPerImage") || strings.HasPrefix(f.Name, "OutputCostPerPixel") {
+			fields = append(fields, i)
+		}
+	}
+	return fields
+})
+
+// setsPerImageOutputPrice reports whether the row sets any per-image or per-pixel output price.
+func setsPerImageOutputPrice(pricing *configstoreTables.TableModelPricing) bool {
+	v := reflect.ValueOf(pricing).Elem()
+	for _, i := range perImageOutputPriceFields() {
+		if !v.Field(i).IsNil() {
+			return true
+		}
+	}
+	return false
 }
