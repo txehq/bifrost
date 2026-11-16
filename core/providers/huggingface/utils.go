@@ -106,6 +106,15 @@ func (provider *HuggingFaceProvider) buildModelHubURL(request *schemas.BifrostLi
 			if typed != "" {
 				values.Set(key, typed)
 			}
+		case []string:
+			// A parameter the caller sent more than once (filter, expand[]) reaches the
+			// hub with every value, in the order sent (TXE-7086).
+			values.Del(key)
+			for _, item := range typed {
+				if item != "" {
+					values.Add(key, item)
+				}
+			}
 		case fmt.Stringer:
 			values.Set(key, typed.String())
 		case int:

@@ -154,3 +154,41 @@ func CopyQueryAllValues(args *fasthttp.Args, skip func(name []byte) bool) map[st
 	}
 	return all
 }
+
+// QueryExtraParams is the one place a handler turns the query parameters it does not read
+// into the ExtraParams of a request, for the provider code to forward to its vendor
+// (fork, TXE-7086). skip claims the names the handler reads itself. A name sent once is
+// a string; a name sent more than once is a []string with every value in the order
+// sent, so no value is dropped on the way to the provider. Empty values are left out,
+// and a name with no other value is left out with them. It returns nil when nothing is left.
+//
+// Provider code reads a parameter its vendor takes once with
+// schemas.SingleExtraParamString, which refuses a repeated one with 400
+// caller_unsupported_parameter; a string type assertion would read it as absent.
+//
+// A handler that builds this map any other way keeps one value of a repeated name, which
+// is the fault this replaced on GET /v1/models and GET /v1/files.
+// TestUnreadQueryParametersBecomeExtraParamsInOnePlace fails on such a handler.
+func QueryExtraParams(args *fasthttp.Args, skip func(name []byte) bool) map[string]interface{} {
+	// One pass and no intermediate map: a request with nothing to forward allocates
+	// nothing, and a name sent once costs its key, its value and the map entry, as the
+	// loops this replaced did. Only a repeated name allocates a slice.
+	var extra map[string]interface{}
+	for name, value := range args.All() {
+		if len(value) == 0 || (skip != nil && skip(name)) {
+			continue
+		}
+		if extra == nil {
+			extra = make(map[string]interface{})
+		}
+		switch sent := extra[string(name)].(type) {
+		case nil:
+			extra[string(name)] = string(value)
+		case string:
+			extra[string(name)] = []string{sent, string(value)}
+		case []string:
+			extra[string(name)] = append(sent, string(value))
+		}
+	}
+	return extra
+}

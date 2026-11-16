@@ -242,7 +242,12 @@ func (provider *CohereProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 	q := u.Query()
 	q.Set("page_size", strconv.Itoa(schemas.DefaultPageSize))
 	if request.ExtraParams != nil {
-		if endpoint, ok := request.ExtraParams["endpoint"].(string); ok && endpoint != "" {
+		// endpoint sent more than once is refused: the vendor takes it once (TXE-7086).
+		endpoint, bifrostErr := schemas.SingleExtraParamString(request.ExtraParams, "endpoint")
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+		if endpoint != "" {
 			q.Set("endpoint", endpoint)
 		}
 		if defaultOnly, ok := request.ExtraParams["default_only"].(bool); ok && defaultOnly {
