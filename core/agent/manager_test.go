@@ -1786,9 +1786,15 @@ func TestConcurrentFirstMessagesShareInitializationAndSteadyState(t *testing.T) 
 	require.Equal(t, int64(1), state.calls.Load(), "healthy steady state performs no discovery")
 }
 
+// TestSharedInitializationFailureThenRetrySucceeds: callers that join one initialization attempt
+// share its failure and start no second attempt; a caller after the failure retries. Discovery is
+// held until all ten have joined (TXE-7643): released by a channel alone, a caller scheduled after
+// the fast failure was published is a later caller and starts an attempt of its own, by design.
 func TestSharedInitializationFailureThenRetrySucceeds(t *testing.T) {
 	upstream, _, state := fixture(t, nil, nil)
 	defer upstream.Close()
+	release := make(chan struct{})
+	state.discovery = release
 	state.fail.Store(true)
 	store := &memoryStore{regs: map[string]schemas.AgentRegistration{"fixture": {Name: "fixture", AgentCardURL: upstream.URL + agentCardPath, Enabled: true}}}
 	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
@@ -1805,6 +1811,12 @@ func TestSharedInitializationFailureThenRetrySucceeds(t *testing.T) {
 		}()
 	}
 	close(start)
+	require.Eventually(t, func() bool {
+		runtime.mu.Lock()
+		defer runtime.mu.Unlock()
+		return runtime.initializing != nil && runtime.initializing.waiters == 10
+	}, testtime.Scale(time.Second), testtime.Scale(time.Millisecond))
+	close(release)
 	for range 10 {
 		require.Error(t, <-errs)
 	}
