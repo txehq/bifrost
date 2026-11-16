@@ -132,6 +132,16 @@ VideoGenerationResponse:
       description: Duration of the generated video in seconds as a string (e.g., "4")
     size:
       $ref: '#/VideoSize'
+    resolution:
+      type: string
+      description: |
+        The provider's own resolution tier for the task, verbatim (e.g. Seedance `720p`). Absent
+        when the provider reports none. `size` is derived from it where Bifrost knows the pixels.
+    aspect_ratio:
+      type: string
+      description: |
+        The provider's own aspect ratio for the task, verbatim, `adaptive` included (e.g.
+        Seedance `16:9`). Absent when the provider reports none.
     created_at:
       type: integer
       format: int64
@@ -419,6 +429,16 @@ VideoObject:
       description: Duration of the video in seconds as a string (e.g., "4")
     size:
       $ref: '#/VideoSize'
+    resolution:
+      type: string
+      description: |
+        The provider's own resolution tier for the task, verbatim (e.g. Seedance `720p`). Absent
+        when the provider reports none. `size` is derived from it where Bifrost knows the pixels.
+    aspect_ratio:
+      type: string
+      description: |
+        The provider's own aspect ratio for the task, verbatim, `adaptive` included (e.g.
+        Seedance `16:9`). Absent when the provider reports none.
     created_at:
       type: integer
       format: int64

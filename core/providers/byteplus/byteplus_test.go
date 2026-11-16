@@ -2300,3 +2300,48 @@ func BenchmarkBytePlusImageGenerationResponse(b *testing.B) {
 		})
 	}
 }
+
+// TestSeedanceTaskCarriesArksResolutionAndRatio is TXE-7045 (contract C5): the task object and a
+// listed task carry Ark's own resolution tier and ratio, verbatim, beside the size Bifrost derives
+// from them. "adaptive" and a tier Bifrost has no pixels for are kept although size is empty, and
+// both fields are absent when Ark reports neither. size is unchanged.
+func TestSeedanceTaskCarriesArksResolutionAndRatio(t *testing.T) {
+	cases := []struct {
+		name, body                  string
+		resolution, ratio, wantSize string
+	}{
+		{"a tier and ratio Bifrost sizes", `{"id":"cgt-1","model":"seedance-1-0-pro-250528","status":"succeeded","resolution":"720p","ratio":"16:9","duration":5}`, "720p", "16:9", "1280x720"},
+		{"adaptive ratio", `{"id":"cgt-1","model":"seedance-1-0-pro-250528","status":"succeeded","resolution":"1080p","ratio":"adaptive","duration":5}`, "1080p", "adaptive", ""},
+		{"a tier Bifrost does not know", `{"id":"cgt-1","model":"seedance-1-0-pro-250528","status":"running","resolution":"ultra","ratio":"21:9"}`, "ultra", "21:9", ""},
+		{"neither reported", `{"id":"cgt-1","model":"seedance-1-0-pro-250528","status":"queued"}`, "", "", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var task byteplus.BytePlusVideoTask
+			if err := json.Unmarshal([]byte(c.body), &task); err != nil {
+				t.Fatal(err)
+			}
+			resp, bifrostErr := byteplus.ToBifrostVideoGenerationResponse(&task)
+			if bifrostErr != nil {
+				t.Fatalf("convert: %+v", bifrostErr)
+			}
+			listed := byteplus.ToBifrostVideoObject(&task, schemas.BytePlus)
+			for name, got := range map[string][3]string{
+				"task object": {string(resp.Resolution), string(resp.AspectRatio), resp.Size},
+				"list entry":  {string(listed.Resolution), string(listed.AspectRatio), listed.Size},
+			} {
+				if got != [3]string{c.resolution, c.ratio, c.wantSize} {
+					t.Errorf("%s: resolution %q aspect_ratio %q size %q, want %q %q %q", name, got[0], got[1], got[2], c.resolution, c.ratio, c.wantSize)
+				}
+			}
+			encoded, _ := json.Marshal(resp)
+			var fields map[string]any
+			_ = json.Unmarshal(encoded, &fields)
+			_, hasResolution := fields["resolution"]
+			_, hasRatio := fields["aspect_ratio"]
+			if hasResolution != (c.resolution != "") || hasRatio != (c.ratio != "") {
+				t.Errorf("JSON %s: resolution present %v, aspect_ratio present %v; want each only when Ark reported it", encoded, hasResolution, hasRatio)
+			}
+		})
+	}
+}

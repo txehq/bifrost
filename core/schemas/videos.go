@@ -92,6 +92,8 @@ type VideoObject struct {
 	RemixedFromVideoID *string           `json:"remixed_from_video_id,omitempty"`
 	Seconds            *string           `json:"seconds"`
 	Size               string            `json:"size"`
+	Resolution         TolerantString    `json:"resolution,omitempty"`   // the vendor's resolution tier, verbatim (fork, TXE-7045)
+	AspectRatio        TolerantString    `json:"aspect_ratio,omitempty"` // the vendor's aspect ratio, verbatim (fork, TXE-7045)
 	Error              *VideoCreateError `json:"error,omitempty"`
 }
 
@@ -278,6 +280,8 @@ type BifrostVideoGenerationResponse struct {
 	Size               string             `json:"size,omitempty"`                  // Resolution of the generated video
 	Status             VideoStatus        `json:"status,omitempty"`                // Current lifecycle status of the video job
 	ProviderStatus     string             `json:"provider_status,omitempty"`       // The vendor's raw status string, verbatim (fork, TXE-6521, contract C7 BF11)
+	Resolution         TolerantString     `json:"resolution,omitempty"`            // The vendor's resolution tier, verbatim (fork, TXE-7045, contract C5)
+	AspectRatio        TolerantString     `json:"aspect_ratio,omitempty"`          // The vendor's aspect ratio, verbatim, "adaptive" included (fork, TXE-7045)
 	Videos             []VideoOutput      `json:"videos,omitempty"`                // Generated videos (supports multiple videos)
 	ContentFilter      *ContentFilterInfo `json:"content_filter,omitempty"`        // Information about content filtering (if applicable)
 	Usage              *VideoUsage        `json:"usage,omitempty"`                 // Provider-reported usage/cost, when the provider returns it

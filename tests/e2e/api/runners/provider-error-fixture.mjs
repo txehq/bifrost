@@ -1344,7 +1344,8 @@ const isBedrockConverseStreamPath = (path) => /^\/model\/[^/]+\/converse-stream$
 // state its id names (cgt-fixture-queued, -running, -succeeded, -failed, -cancelled, -expired), in the shape
 // core/providers/byteplus/videos_test.go pins, and DELETE answers 200 with no body, as Ark does. Every query and
 // DELETE is counted as "seedance.retrieve <id>" or "seedance.delete <id>", so a cancel row can prove that a
-// queued task was queried once and deleted once, and that a finished one was never deleted.
+// queued task was queried once and deleted once, and that a finished one was never deleted. A GET of the
+// collection itself is Ark's list, one page holding the succeeded task (folder 413, TXE-7045).
 const SEEDANCE_TASKS = "/pp/byteplus/api/v3/contents/generations/tasks";
 
 // VolcEngine's task DELETE, TXE-7366, served on /pp/volcengine/contents/generations/tasks (folder 590). Ark documents a
@@ -2284,14 +2285,18 @@ const ovrVideoAnswer = (base, method, rest) => {
 	}
 	if (base !== "volcengine" && base !== "modelark") return undefined;
 	const tasks = "/contents/generations/tasks";
+	// Ark names the file in content.video_url and serves no content endpoint (TXE-7493): the gateway fetches the
+	// URL through the hardened media fetcher, which reaches this public-looking address through the media tunnel
+	// (the providers' proxy_config).
+	const task = () => ({
+		id: OVR_VIDEO_TASK, model: "doubao-seedance-1-0-pro-250528", status: "succeeded",
+		content: { video_url: `http://${MEDIA_PUBLIC_HOST}${OVR_ROOT}/${base}/files/video.mp4?X-Fixture-Signature=signed` },
+		usage: { completion_tokens: 108900, total_tokens: 108900 }, resolution: "720p", ratio: "16:9", duration: 5, created_at: 1762700000, updated_at: 1762700090,
+	});
 	if (method === "POST" && rest === tasks) return json({ id: OVR_VIDEO_TASK });
-	if (method === "GET" && rest === `${tasks}/${OVR_VIDEO_TASK}`) {
-		// Ark names the file in content.video_url and serves no content endpoint (TXE-7493): the gateway fetches the
-		// URL through the hardened media fetcher, which reaches this public-looking address through the media tunnel
-		// (the providers' proxy_config).
-		const videoURL = `http://${MEDIA_PUBLIC_HOST}${OVR_ROOT}/${base}/files/video.mp4?X-Fixture-Signature=signed`;
-		return json({ id: OVR_VIDEO_TASK, model: "doubao-seedance-1-0-pro-250528", status: "succeeded", content: { video_url: videoURL }, usage: { completion_tokens: 108900, total_tokens: 108900 }, resolution: "720p", ratio: "16:9", duration: 5, created_at: 1762700000, updated_at: 1762700090 });
-	}
+	if (method === "GET" && rest === `${tasks}/${OVR_VIDEO_TASK}`) return json(task());
+	// Ark's task list, one page holding that task (folder 413, TXE-7045).
+	if (method === "GET" && rest === tasks) return json({ items: [task()], total: 1 });
 	if (method === "GET" && rest === "/files/video.mp4") return { status: 200, contentType: "video/mp4", body: "ovr video bytes" };
 	if (method === "DELETE" && rest === `${tasks}/${OVR_VIDEO_TASK}`) return { status: 200, body: "" };
 	return undefined;
@@ -2719,6 +2724,12 @@ const handleRequest = (req, res) => {
 		const answer = miniMaxBaseRespAnswer(taskId);
 		if (answer) return send(answer.status, {}, answer.body);
 		return send(404, {}, JSON.stringify({ error: "unknown fixture task" }));
+	}
+	// Ark's task list (folder 413, TXE-7045): one page holding the succeeded task, counted as "seedance.list".
+	if (req.method === "GET" && path === SEEDANCE_TASKS) {
+		req.resume();
+		countHit("seedance.list");
+		return send(200, {}, JSON.stringify({ items: [seedanceTask("cgt-fixture-succeeded")], total: 1 }));
 	}
 	if ((req.method === "GET" || req.method === "DELETE") && path.startsWith(SEEDANCE_TASKS + "/")) {
 		const id = decodeURIComponent(path.slice(SEEDANCE_TASKS.length + 1));
