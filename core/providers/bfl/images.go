@@ -542,16 +542,21 @@ func bflRawInputImages(members []providerUtils.JSONMember) (int, *schemas.Bifros
 		if isJSONNull(member.Value) {
 			continue
 		}
+		// Types are checked without decoding: an image string may be most of a large body.
 		if member.Name == "images" {
-			var images []string
-			if json.Unmarshal(member.Value, &images) != nil {
+			images, err := providerUtils.JSONArrayElements(member.Value)
+			if err != nil {
 				return 0, schemas.NewUnsupportedParameterError("images", "bfl: images must be an array of image strings")
+			}
+			for _, image := range images {
+				if !providerUtils.IsJSONString(image) {
+					return 0, schemas.NewUnsupportedParameterError("images", "bfl: images must be an array of image strings")
+				}
 			}
 			count += len(images)
 			continue
 		}
-		var image string
-		if json.Unmarshal(member.Value, &image) != nil {
+		if !providerUtils.IsJSONString(member.Value) {
 			return 0, schemas.NewUnsupportedParameterError(member.Name, fmt.Sprintf("bfl: %s must be an image string", member.Name))
 		}
 		count++

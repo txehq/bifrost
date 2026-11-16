@@ -1,10 +1,8 @@
 package utils
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
-	"io"
 )
 
 // Strict reading of a body the caller wrote whole (raw request body mode). A provider that bills
@@ -12,45 +10,76 @@ import (
 // encoding/json keeps only the last copy of a repeated name, silently, and matches names without
 // regard to case, while the vendor's parser may take another copy, so a name repeated in any
 // spelling the vendor may read as the same field is refused rather than guessed.
+//
+// A raw image body can be as large as the request limit (inline base64 images), and a reader
+// descends several levels into it, so nothing here copies a value: a member's or an element's
+// value is a slice of the caller's bytes. Only names are decoded.
 
-// JSONMember is one member of a JSON object, in document order.
+// JSONMember is one member of a JSON object, in document order. Value is a slice of the bytes
+// that were read, not a copy: it is valid while they are, and must not be modified.
 type JSONMember struct {
 	Name  string
 	Value json.RawMessage
 }
 
 // JSONObjectMembers reads data as exactly one JSON object and returns every member in order,
-// duplicates included. Anything else (an array, a scalar, a second value after the object) is an
-// error.
+// duplicates included. Anything else (invalid JSON, an array, a scalar, a second value after the
+// object) is an error.
 func JSONObjectMembers(data []byte) ([]JSONMember, error) {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	token, err := decoder.Token()
-	if err != nil {
-		return nil, err
+	if !json.Valid(data) {
+		return nil, errors.New("not one valid JSON value")
 	}
-	if delim, ok := token.(json.Delim); !ok || delim != '{' {
+	i := skipJSONSpace(data, 0)
+	if data[i] != '{' {
 		return nil, errors.New("not a JSON object")
 	}
 	var members []JSONMember
-	for decoder.More() {
-		token, err := decoder.Token()
-		if err != nil {
+	i = skipJSONSpace(data, i+1)
+	for data[i] != '}' {
+		nameEnd := jsonValueEnd(data, i)
+		var name string
+		if err := json.Unmarshal(data[i:nameEnd], &name); err != nil {
 			return nil, err
 		}
-		name, _ := token.(string)
-		var value json.RawMessage
-		if err := decoder.Decode(&value); err != nil {
-			return nil, err
+		i = skipJSONSpace(data, nameEnd) + 1 // the colon
+		i = skipJSONSpace(data, i)
+		valueEnd := jsonValueEnd(data, i)
+		members = append(members, JSONMember{Name: name, Value: json.RawMessage(data[i:valueEnd:valueEnd])})
+		i = skipJSONSpace(data, valueEnd)
+		if data[i] == ',' {
+			i = skipJSONSpace(data, i+1)
 		}
-		members = append(members, JSONMember{Name: name, Value: value})
-	}
-	if _, err := decoder.Token(); err != nil {
-		return nil, err
-	}
-	if _, err := decoder.Token(); err != io.EOF {
-		return nil, errors.New("data after the JSON object")
 	}
 	return members, nil
+}
+
+// JSONArrayElements reads data as exactly one JSON array and returns its elements in order, each
+// a slice of data, not a copy. Anything else is an error.
+func JSONArrayElements(data []byte) ([]json.RawMessage, error) {
+	if !json.Valid(data) {
+		return nil, errors.New("not one valid JSON value")
+	}
+	i := skipJSONSpace(data, 0)
+	if data[i] != '[' {
+		return nil, errors.New("not a JSON array")
+	}
+	var elements []json.RawMessage
+	i = skipJSONSpace(data, i+1)
+	for data[i] != ']' {
+		end := jsonValueEnd(data, i)
+		elements = append(elements, json.RawMessage(data[i:end:end]))
+		i = skipJSONSpace(data, end)
+		if data[i] == ',' {
+			i = skipJSONSpace(data, i+1)
+		}
+	}
+	return elements, nil
+}
+
+// IsJSONString reports whether value (one valid JSON value) is a string, without decoding it.
+func IsJSONString(value json.RawMessage) bool {
+	i := skipJSONSpace(value, 0)
+	return i < len(value) && value[i] == '"'
 }
 
 // OnlyJSONMember returns the value of the member same treats as field, nil when there is none,
@@ -65,4 +94,60 @@ func OnlyJSONMember(members []JSONMember, field string, same func(a, b string) b
 		}
 	}
 	return found, seen
+}
+
+// skipJSONSpace returns the index of the first byte at or after i that is not JSON whitespace.
+func skipJSONSpace(data []byte, i int) int {
+	for i < len(data) {
+		switch data[i] {
+		case ' ', '\t', '\n', '\r':
+			i++
+		default:
+			return i
+		}
+	}
+	return i
+}
+
+// jsonValueEnd returns the index just past the JSON value starting at i. data must be valid JSON
+// (json.Valid), so only string and nesting boundaries need tracking.
+func jsonValueEnd(data []byte, i int) int {
+	switch data[i] {
+	case '"':
+		for j := i + 1; j < len(data); j++ {
+			switch data[j] {
+			case '\\':
+				j++
+			case '"':
+				return j + 1
+			}
+		}
+		return len(data)
+	case '{', '[':
+		depth := 0
+		for j := i; j < len(data); j++ {
+			switch data[j] {
+			case '"':
+				j = jsonValueEnd(data, j) - 1
+			case '{', '[':
+				depth++
+			case '}', ']':
+				depth--
+				if depth == 0 {
+					return j + 1
+				}
+			}
+		}
+		return len(data)
+	default:
+		j := i
+		for j < len(data) {
+			switch data[j] {
+			case ',', '}', ']', ' ', '\t', '\n', '\r':
+				return j
+			}
+			j++
+		}
+		return j
+	}
 }

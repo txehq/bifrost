@@ -43,7 +43,7 @@
       ]
     },
     {
-      "name": "619.2 gemini/gemini-2.5-flash-image generateContent on the GenAI route naming imageSize twice (imageSize and image_size) is refused 400 before any upstream call (gemini raw image body read strictly)",
+      "name": "619.2 gemini/gemini-2.5-flash-image generateContent on the GenAI route naming imageSize twice (imageSize and image_size) is refused 400 before any upstream call [EXPECT-400] (gemini raw image body read strictly)",
       "request": {
         "method": "POST",
         "header": [

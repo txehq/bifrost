@@ -485,8 +485,9 @@ func rawArrayObjects(members []utils.JSONMember, field, param string) ([][]utils
 	if bifrostErr != nil || value == nil {
 		return nil, bifrostErr
 	}
-	var elements []json.RawMessage
-	if json.Unmarshal(value, &elements) != nil {
+	// Elements are slices of the body, not copies: an inline image may be most of a large body.
+	elements, err := utils.JSONArrayElements(value)
+	if err != nil {
 		return nil, schemas.NewUnsupportedParameterError(param, fmt.Sprintf("gemini: %s must be a JSON array in a raw request body", param))
 	}
 	objects := make([][]utils.JSONMember, 0, len(elements))
