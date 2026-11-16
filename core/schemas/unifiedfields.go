@@ -425,6 +425,14 @@ func foldJSONFieldRune(r rune) rune {
 	return smallest
 }
 
+// ExtraParamObject is extraParamObject for a provider: the one reading of an extra param's value
+// as a JSON object. A provider that looks inside an extra param (a nested parameters object, a
+// billed switch) must read it through this and never by a map[string]interface{} assertion,
+// which misses the Go caller's typed objects that the merge still sends (TXE-7050).
+func ExtraParamObject(value interface{}) (map[string]interface{}, bool) {
+	return extraParamObject(value)
+}
+
 // extraParamObject returns value as the JSON object the extra-params merge would apply, and
 // whether it is one. The merge serializes each extra param and treats whatever comes out as
 // an object as one, so a Go caller's map[string]int, struct or json.RawMessage is an object

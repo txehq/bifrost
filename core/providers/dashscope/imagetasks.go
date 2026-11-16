@@ -115,7 +115,7 @@ func validateDashScopeImageTask(model string, n *int, size, responseFormat *stri
 	// image. Core's nested price-field check does not run for the image task request types yet,
 	// so the refusal is made here.
 	for name, value := range extraParams {
-		object, ok := value.(map[string]interface{})
+		object, ok := schemas.ExtraParamObject(value)
 		if !ok || !providerUtils.ExtraParamNamesField(name, "parameters") {
 			continue
 		}
@@ -155,7 +155,7 @@ func wanNonASCIIExtraName(extraParams map[string]interface{}) string {
 		if !isASCII(key) {
 			return key
 		}
-		if object, ok := value.(map[string]interface{}); ok && wanIsParametersKey(key) {
+		if object, ok := schemas.ExtraParamObject(value); ok && wanIsParametersKey(key) {
 			for nested := range object {
 				if !isASCII(nested) {
 					return key + "." + nested
@@ -197,7 +197,7 @@ func wanBilledParameterAlias(extraParams map[string]interface{}) (name, field st
 		return ""
 	}
 	for key, value := range extraParams {
-		if object, ok := value.(map[string]interface{}); ok && wanIsParametersKey(key) {
+		if object, ok := schemas.ExtraParamObject(value); ok && wanIsParametersKey(key) {
 			for nested := range object {
 				if field := check(nested); field != "" {
 					return key + "." + nested, field
@@ -271,7 +271,7 @@ func wanInterleaveSwitch(extraParams map[string]interface{}) string {
 		return name
 	}
 	for name, value := range extraParams {
-		if object, ok := value.(map[string]interface{}); ok && wanIsParametersKey(name) {
+		if object, ok := schemas.ExtraParamObject(value); ok && wanIsParametersKey(name) {
 			for nested, nestedValue := range object {
 				if found := check(nested, nestedValue); found != "" {
 					return name + "." + found

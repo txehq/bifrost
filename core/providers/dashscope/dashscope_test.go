@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"strings"
 	"sync"
@@ -1464,6 +1465,86 @@ func TestDashScopeWanImageTaskBilledDefaults(t *testing.T) {
 		})
 		if bifrostErr == nil || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter || bifrostErr.Error.Param != "resolution" {
 			t.Errorf("resolution %q: error %+v, want caller_unsupported_parameter naming resolution", resolution, bifrostErr)
+		}
+	}
+}
+
+// TestDashScopeWanImageTaskReadsTypedExtraObjects: an in-process Go caller may put a typed value
+// (map[string]string, a struct, json.RawMessage) under parameters, and the shared merge sends it
+// as the JSON object it serializes to. Every check reads it as that object, so a billed field or
+// switch inside it is refused as it would be in a map[string]interface{}, before any upstream
+// call (Codex security review on #336: typed objects skipped the checks while DashScope still
+// received them).
+func TestDashScopeWanImageTaskReadsTypedExtraObjects(t *testing.T) {
+	provider, mock := newMockDashScopeImageTasks(t, map[string]mockResponse{"POST /api/v1/services/aigc/image-generation/generation": {http.StatusOK, wanImageTaskCreated}})
+	refused := []struct {
+		name  string
+		extra map[string]interface{}
+	}{
+		{"a map[string]string setting size", map[string]interface{}{"parameters": map[string]string{"size": "4K"}}},
+		{"a struct setting image set mode and n", map[string]interface{}{"parameters": struct {
+			EnableSequential bool `json:"enable_sequential"`
+			N                int  `json:"n"`
+		}{true, 12}}},
+		{"a struct setting image set mode alone", map[string]interface{}{"parameters": struct {
+			EnableSequential bool `json:"enable_sequential"`
+		}{true}}},
+		{"a json.RawMessage setting max_images", map[string]interface{}{"parameters": json.RawMessage(`{"max_images":4}`)}},
+		{"a map[string]int with a separator alias of n", map[string]interface{}{"parameters": map[string]int{"-n": 4}}},
+		{"a map[string]bool with a name outside ASCII", map[string]interface{}{"parameters": map[string]bool{"wätermark": true}}},
+	}
+	for _, c := range refused {
+		t.Run(c.name, func(t *testing.T) {
+			_, genErr := provider.ImageGenerationTask(imageTestContext(t), imageTestKey(), &schemas.BifrostImageGenerationRequest{
+				Provider: schemas.DashScope, Model: "wan2.6-image", Input: &schemas.ImageGenerationInput{Prompt: "x"},
+				Params: &schemas.ImageGenerationParameters{N: schemas.Ptr(1), ExtraParams: c.extra},
+			})
+			_, editErr := provider.ImageEditTask(imageTestContext(t), imageTestKey(), &schemas.BifrostImageEditRequest{
+				Provider: schemas.DashScope, Model: "wan2.6-image",
+				Input:  &schemas.ImageEditInput{Prompt: "x", Images: []schemas.ImageInput{{URL: "https://example.com/a.png"}}},
+				Params: &schemas.ImageEditParameters{N: schemas.Ptr(1), ExtraParams: c.extra},
+			})
+			for _, bifrostErr := range []*schemas.BifrostError{genErr, editErr} {
+				if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+					t.Fatalf("error = %+v, want a 400 refusal", bifrostErr)
+				}
+			}
+		})
+	}
+	if len(mock.requests) != 0 {
+		t.Fatalf("%d calls reached DashScope, want none", len(mock.requests))
+	}
+
+	// A typed parameters object's members are placed inside parameters, as a map's are.
+	placed := (&DashScopeImageRequest{ExtraParams: map[string]interface{}{"parameters": map[string]string{"watermark": "false"}}}).GetExtraParams()
+	nested, _ := placed["parameters"].(map[string]interface{})
+	if nested["watermark"] != "false" {
+		t.Fatalf("GetExtraParams() = %#v, want parameters.watermark placed inside parameters", placed)
+	}
+}
+
+// TestDashScopeReadsExtraObjectsOnlyThroughExtraParamObject is the class check for the test
+// above: a map[string]interface{} assertion in this package's code misses a Go caller's typed
+// object that the merge still sends, so every extra object is read through
+// schemas.ExtraParamObject. This fails when an assertion comes back.
+func TestDashScopeReadsExtraObjectsOnlyThroughExtraParamObject(t *testing.T) {
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		source, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, line := range strings.Split(string(source), "\n") {
+			if strings.Contains(line, ".(map[string]interface{})") || strings.Contains(line, ".(map[string]any)") {
+				t.Errorf("%s:%d asserts map[string]interface{}; read an extra object through schemas.ExtraParamObject: %s", name, i+1, strings.TrimSpace(line))
+			}
 		}
 	}
 }
