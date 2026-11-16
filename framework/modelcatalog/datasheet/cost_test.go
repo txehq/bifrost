@@ -10727,12 +10727,16 @@ func TestVideoInputs_ResolvedForTheConverterThatSends(t *testing.T) {
 
 	video := ReadVideoInputs(&schemas.VideoGenerationInput{Prompt: "p", VideoURI: bifrost.Ptr("https://v/in.mp4")}, "", nil, nil)
 	assert.True(t, video.HasVideoInput("my-replicate"))
-	assert.False(t, video.HasVideoInput(schemas.Replicate), "Replicate's converter drops video_uri")
+	assert.True(t, video.HasVideoInput(schemas.Replicate), "Replicate refuses a video_uri create (TXE-7374), so a recorded one received it")
 
 	dims := VideoPricingDimensions{VideoInput: bifrost.Ptr(true), InputImages: bifrost.Ptr(1)}
-	dims.ApplyVideoInputs(schemas.Replicate, video)
-	assert.Nil(t, dims.VideoInput)
+	dims.ApplyVideoInputs(schemas.Replicate, ReadVideoInputs(&schemas.VideoGenerationInput{Prompt: "p"}, "", nil, nil))
+	assert.Nil(t, dims.VideoInput, "a text-only create clears a stale video input")
 	assert.Nil(t, dims.InputImages)
+	dims.ApplyVideoInputs(schemas.Replicate, video)
+	if assert.NotNil(t, dims.VideoInput) {
+		assert.True(t, *dims.VideoInput)
+	}
 	dims.ApplyVideoInputs(schemas.XAI, native)
 	if assert.NotNil(t, dims.InputImages) {
 		assert.Equal(t, 2, *dims.InputImages)
