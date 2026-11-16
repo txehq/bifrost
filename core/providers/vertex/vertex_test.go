@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/capsohq/bifrost/core/internal/llmtests"
+	"github.com/capsohq/bifrost/core/livetest"
 	"github.com/capsohq/bifrost/core/providers/gemini"
 	"github.com/capsohq/bifrost/core/providers/vertex"
 
@@ -18,6 +19,9 @@ import (
 
 func TestVertex(t *testing.T) {
 	t.Parallel()
+	// Vertex runs on an API key, or on a project ID with credentials, so only the opt-in is required
+	// here and the credential check stays the provider's own.
+	livetest.Require(t)
 	if strings.TrimSpace(os.Getenv("VERTEX_API_KEY")) == "" && (strings.TrimSpace(os.Getenv("VERTEX_PROJECT_ID")) == "" || strings.TrimSpace(os.Getenv("VERTEX_CREDENTIALS")) == "") {
 		t.Skip("Skipping Vertex tests because VERTEX_API_KEY is not set and VERTEX_PROJECT_ID or VERTEX_CREDENTIALS is not set")
 	}

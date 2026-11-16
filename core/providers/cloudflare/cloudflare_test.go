@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"reflect"
 	"slices"
 	"sort"
@@ -17,6 +16,7 @@ import (
 
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/internal/llmtests"
+	"github.com/capsohq/bifrost/core/livetest"
 	"github.com/capsohq/bifrost/core/providers/cloudflare"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
@@ -24,9 +24,7 @@ import (
 
 func TestCloudflare(t *testing.T) {
 	t.Parallel()
-	if strings.TrimSpace(os.Getenv("CLOUDFLARE_API_TOKEN")) == "" || strings.TrimSpace(os.Getenv("CLOUDFLARE_ACCOUNT_ID")) == "" {
-		t.Skip("Skipping Cloudflare tests because CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID is not set")
-	}
+	livetest.Require(t, "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID")
 
 	client, ctx, cancel, err := llmtests.SetupTest()
 	if err != nil {

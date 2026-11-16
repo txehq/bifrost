@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	bifrost "github.com/capsohq/bifrost/core"
+	"github.com/capsohq/bifrost/core/livetest"
 	"github.com/capsohq/bifrost/core/schemas"
 )
 
@@ -23,15 +24,10 @@ import (
 // Returns:
 //   - schemas.LLMPlugin: A configured plugin instance for request/response tracing
 //   - error: Any error that occurred during plugin initialization
-func getPlugin() (schemas.LLMPlugin, error) {
-	// check if Maxim Logger variables are set
-	if os.Getenv("MAXIM_API_KEY") == "" {
-		return nil, fmt.Errorf("MAXIM_API_KEY is not set, please set it in your environment variables")
-	}
-
+func getPlugin(t *testing.T) (schemas.LLMPlugin, error) {
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
 	plugin, err := Init(&Config{
-		APIKey:    os.Getenv("MAXIM_API_KEY"),
+		APIKey:    livetest.Key(t, "MAXIM_API_KEY"),
 		LogRepoID: os.Getenv("MAXIM_LOG_REPO_ID"),
 	}, logger)
 	if err != nil {
@@ -55,6 +51,10 @@ func (baseAccount *BaseAccount) GetConfiguredProviders() ([]schemas.ModelProvide
 // GetKeysForProvider returns a mock API key configuration for testing.
 // Uses the OPENAI_API_KEY environment variable for authentication.
 func (baseAccount *BaseAccount) GetKeysForProvider(ctx context.Context, providerKey schemas.ModelProvider) ([]schemas.Key, error) {
+	// The key reaches the live OpenAI API, so it is handed out only on the opt-in (TXE-7530).
+	if !livetest.Enabled() {
+		return nil, fmt.Errorf("live tests are off: set %s=1", livetest.OptIn)
+	}
 	return []schemas.Key{
 		{
 			Value:  *schemas.NewSecretVar("env.OPENAI_API_KEY"),
@@ -84,13 +84,11 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 //   - MAXIM_LOGGER_ID: Your Maxim logger repository ID
 //   - OPENAI_API_KEY: Your OpenAI API key for the test request
 func TestMaximLoggerPlugin(t *testing.T) {
-	if os.Getenv("MAXIM_API_KEY") == "" {
-		t.Skip("MAXIM_API_KEY not set, skipping integration test")
-	}
+	livetest.Require(t, "MAXIM_API_KEY")
 
 	ctx := context.Background()
 	// Initialize the Maxim plugin
-	plugin, err := getPlugin()
+	plugin, err := getPlugin(t)
 	if err != nil {
 		t.Fatalf("Error setting up the plugin: %v", err)
 	}

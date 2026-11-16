@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/capsohq/bifrost/core/internal/llmtests"
+	"github.com/capsohq/bifrost/core/livetest"
 	"github.com/capsohq/bifrost/core/schemas"
 )
 
@@ -19,9 +20,7 @@ func envOrDefault(key, fallback string) string {
 func TestGLM(t *testing.T) {
 	t.Parallel()
 
-	if strings.TrimSpace(os.Getenv("GLM_API_KEY")) == "" {
-		t.Skip("Skipping GLM tests because GLM_API_KEY is not set")
-	}
+	livetest.Require(t, "GLM_API_KEY")
 
 	client, ctx, cancel, err := llmtests.SetupTest()
 	if err != nil {

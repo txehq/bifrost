@@ -14,6 +14,7 @@ import (
 
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/internal/llmtests"
+	"github.com/capsohq/bifrost/core/livetest"
 	"github.com/capsohq/bifrost/core/network/proxytest"
 	"github.com/capsohq/bifrost/core/providers/byteplus"
 	"github.com/capsohq/bifrost/core/providers/volcengine"
@@ -32,9 +33,7 @@ func envOrDefault(key, fallback string) string {
 func TestVolcengine(t *testing.T) {
 	t.Parallel()
 
-	if strings.TrimSpace(os.Getenv("VOLCENGINE_API_KEY")) == "" {
-		t.Skip("Skipping Volcengine tests because VOLCENGINE_API_KEY is not set")
-	}
+	livetest.Require(t, "VOLCENGINE_API_KEY")
 
 	client, ctx, cancel, err := llmtests.SetupTest()
 	if err != nil {

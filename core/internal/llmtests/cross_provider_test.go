@@ -3,11 +3,13 @@ package llmtests
 import (
 	"testing"
 
+	"github.com/capsohq/bifrost/core/livetest"
 	"github.com/capsohq/bifrost/core/schemas"
 )
 
 func TestCrossProviderScenarios(t *testing.T) {
 	t.Parallel()
+	livetest.Require(t)
 	t.Skip("Skipping cross provider scenarios test")
 
 	client, ctx, cancel, err := SetupTest()
@@ -113,6 +115,7 @@ func TestCrossProviderScenarios(t *testing.T) {
 
 func TestCrossProviderConsistency(t *testing.T) {
 	t.Parallel()
+	livetest.Require(t)
 	t.Skip("Skipping cross provider consistency test")
 
 	client, ctx, cancel, err := SetupTest()

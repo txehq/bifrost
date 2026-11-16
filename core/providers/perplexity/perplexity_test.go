@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/internal/llmtests"
+	"github.com/capsohq/bifrost/core/livetest"
 	"github.com/capsohq/bifrost/core/providers/perplexity"
 	"github.com/capsohq/bifrost/core/providers/typesafe"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
@@ -21,9 +21,7 @@ import (
 
 func TestPerplexity(t *testing.T) {
 	t.Parallel()
-	if strings.TrimSpace(os.Getenv("PERPLEXITY_API_KEY")) == "" {
-		t.Skip("Skipping Perplexity tests because PERPLEXITY_API_KEY is not set")
-	}
+	livetest.Require(t, "PERPLEXITY_API_KEY")
 
 	client, ctx, cancel, err := llmtests.SetupTest()
 	if err != nil {

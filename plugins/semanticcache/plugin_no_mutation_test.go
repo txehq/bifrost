@@ -3,12 +3,12 @@ package semanticcache
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"reflect"
 	"sync"
 	"testing"
 
 	bifrost "github.com/capsohq/bifrost/core"
+	"github.com/capsohq/bifrost/core/livetest"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/vectorstore"
 )
@@ -69,9 +69,7 @@ func TestCachingDoesNotMutateRequestSentToProvider(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping real-LLM test in -short mode")
 	}
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		t.Skip("OPENAI_API_KEY not set; needed for live LLM contract test")
-	}
+	livetest.Require(t, "OPENAI_API_KEY")
 	t.Parallel()
 
 	// Stand up the cache plugin against the shared Weaviate test namespace,

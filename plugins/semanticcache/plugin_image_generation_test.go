@@ -1,10 +1,10 @@
 package semanticcache
 
 import (
-	"os"
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/core/livetest"
 	"github.com/capsohq/bifrost/core/schemas"
 )
 
@@ -17,9 +17,7 @@ func TestImageGenerationCacheBasicFunctionality(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in -short mode")
 	}
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		t.Skip("OPENAI_API_KEY not set")
-	}
+	livetest.Require(t, "OPENAI_API_KEY")
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
@@ -127,9 +125,7 @@ func TestImageGenerationSemanticSearch(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in -short mode")
 	}
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		t.Skip("OPENAI_API_KEY not set")
-	}
+	livetest.Require(t, "OPENAI_API_KEY")
 	// Initialize test with custom threshold
 	config := &Config{
 		Provider:       schemas.OpenAI,
@@ -249,9 +245,7 @@ func TestImageGenerationDifferentParameters(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in -short mode")
 	}
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		t.Skip("OPENAI_API_KEY not set")
-	}
+	livetest.Require(t, "OPENAI_API_KEY")
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
@@ -311,9 +305,7 @@ func TestImageGenerationStreamCaching(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in -short mode")
 	}
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		t.Skip("OPENAI_API_KEY not set")
-	}
+	livetest.Require(t, "OPENAI_API_KEY")
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 

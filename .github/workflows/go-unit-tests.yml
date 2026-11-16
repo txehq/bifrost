@@ -718,9 +718,58 @@ jobs:
           if-no-files-found: ignore
 
   # The one check to require on main: it fails unless every job above passed.
+  # A live test runs only on BIFROST_LIVE_TESTS=1, through core/livetest (TXE-7530). A plain
+  # `go test ./...` with DEEPSEEK_API_KEY exported called api.deepseek.com until the package
+  # timed out. The scan fails a test that reads a vendor credential, or builds the live provider
+  # harness, without the helper. The proof sets every credential the live tests read to a fake
+  # value, with no opt-in and egress blocked, and fails unless every live test skips.
+  live-tests-off:
+    if: github.event_name == 'pull_request'
+    name: Live tests stay off without the opt-in
+    environment: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'pr-testing' || 'ci-trusted-branch' }}
+    runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
+    timeout-minutes: 20
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: block
+          # The Go hosts for the build. No vendor host: a live test that ran would be refused here.
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            proxy.golang.org:443
+            release-assets.githubusercontent.com:443
+            storage.googleapis.com:443
+            sum.golang.org:443
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: "1.27.3"
+          cache: false
+
+      - name: Restore the Go build cache
+        uses: ./.github/actions/go-cache
+        with:
+          purpose: go-unit
+
+      - name: Every live test goes through core/livetest
+        run: |
+          python3 .github/workflows/scripts/check-live-tests-opt-in.py --self-test
+          python3 .github/workflows/scripts/check-live-tests-opt-in.py
+
+      - name: Every live test skips with every key set and no opt-in
+        run: python3 .github/workflows/scripts/test-live-tests-stay-off.py
+
   go-unit-tests:
     if: always() && github.event_name == 'pull_request'
-    needs: [shard, fixture-folders, live-fake, agentgateway, migrations, migrations-fork, cost-accuracy, api-integrations]
+    needs: [shard, fixture-folders, live-fake, agentgateway, migrations, migrations-fork, cost-accuracy, api-integrations, live-tests-off]
     name: Go unit tests (offline)
     runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     timeout-minutes: 5
@@ -742,6 +791,7 @@ jobs:
           SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
           COST_ACCURACY: ${{ needs.cost-accuracy.result }}
           API_INTEGRATIONS: ${{ needs.api-integrations.result }}
+          LIVE_TESTS_OFF: ${{ needs.live-tests-off.result }}
         run: |
           echo "shards: $RESULT"
           echo "harness fixture folders: $FIXTURE_FOLDERS"
@@ -750,11 +800,12 @@ jobs:
           echo "Migration tests: $MIGRATIONS (fork PR notice: $MIGRATIONS_FORK)"
           echo "Cost accuracy: $COST_ACCURACY"
           echo "API integrations: $API_INTEGRATIONS"
+          echo "Live tests stay off without the opt-in: $LIVE_TESTS_OFF"
           # A PR from this repository must pass the migrations; a fork's PR gets the notice job.
           if [ "$SAME_REPO" = true ]; then migrations_ok=$MIGRATIONS; else migrations_ok=$MIGRATIONS_FORK; fi
           [ "$RESULT" = success ] && [ "$FIXTURE_FOLDERS" = success ] && [ "$LIVE_FAKE" = success ] &&
             [ "$AGENTGATEWAY" = success ] && [ "$migrations_ok" = success ] && [ "$COST_ACCURACY" = success ] &&
-            [ "$API_INTEGRATIONS" = success ]
+            [ "$API_INTEGRATIONS" = success ] && [ "$LIVE_TESTS_OFF" = success ]
 
   warm-cache:
     if: github.event_name == 'push'

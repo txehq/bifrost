@@ -8,11 +8,11 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/capsohq/bifrost/core/internal/testtime"
+	"github.com/capsohq/bifrost/core/livetest"
 
 	"github.com/bytedance/sonic"
 	"github.com/capsohq/bifrost/core/schemas"
@@ -1526,12 +1526,9 @@ func (l *testLogger) LogHTTPRequest(level schemas.LogLevel, msg string) schemas.
 
 // TestMistralTranscriptionIntegration tests the transcription endpoint with the real Mistral API.
 // This test requires MISTRAL_API_KEY environment variable to be set.
-// Run with: MISTRAL_API_KEY=xxx go test -v -run TestMistralTranscriptionIntegration
+// Run with: BIFROST_LIVE_TESTS=1 MISTRAL_API_KEY=xxx go test -v -run TestMistralTranscriptionIntegration
 func TestMistralTranscriptionIntegration(t *testing.T) {
-	apiKey := os.Getenv("MISTRAL_API_KEY")
-	if apiKey == "" {
-		t.Skip("Skipping integration test: MISTRAL_API_KEY not set")
-	}
+	apiKey := livetest.Key(t, "MISTRAL_API_KEY")
 
 	// Create provider
 	provider := NewMistralProvider(&schemas.ProviderConfig{
@@ -1586,12 +1583,9 @@ func TestMistralTranscriptionIntegration(t *testing.T) {
 
 // TestMistralTranscriptionStreamIntegration tests the streaming transcription endpoint with the real Mistral API.
 // This test requires MISTRAL_API_KEY environment variable to be set.
-// Run with: MISTRAL_API_KEY=xxx go test -v -run TestMistralTranscriptionStreamIntegration
+// Run with: BIFROST_LIVE_TESTS=1 MISTRAL_API_KEY=xxx go test -v -run TestMistralTranscriptionStreamIntegration
 func TestMistralTranscriptionStreamIntegration(t *testing.T) {
-	apiKey := os.Getenv("MISTRAL_API_KEY")
-	if apiKey == "" {
-		t.Skip("Skipping integration test: MISTRAL_API_KEY not set")
-	}
+	apiKey := livetest.Key(t, "MISTRAL_API_KEY")
 
 	// Create provider
 	provider := NewMistralProvider(&schemas.ProviderConfig{

@@ -18,6 +18,7 @@ import (
 
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/internal/llmtests"
+	"github.com/capsohq/bifrost/core/livetest"
 	"github.com/capsohq/bifrost/core/network/proxytest"
 	"github.com/capsohq/bifrost/core/providers/byteplus"
 	"github.com/capsohq/bifrost/core/schemas"
@@ -27,9 +28,7 @@ import (
 // TestByteplus is named to match the make test-core recipe, which derives TestByteplus from PROVIDER=byteplus.
 func TestByteplus(t *testing.T) {
 	t.Parallel()
-	if strings.TrimSpace(os.Getenv("BYTEPLUS_API_KEY")) == "" {
-		t.Skip("Skipping BytePlus tests because BYTEPLUS_API_KEY is not set")
-	}
+	livetest.Require(t, "BYTEPLUS_API_KEY")
 
 	client, ctx, cancel, err := llmtests.SetupTest()
 	if err != nil {

@@ -1379,7 +1379,8 @@ jobs:
 
       - name: Run vLLM provider tests
         if: steps.runpod-credentials.outputs.available == 'true'
-        run: VLLM_ENABLED=1 make test-core PROVIDER=vllm
+        # The explicit live-test opt-in (TXE-7530): a key or base URL alone never runs a live suite.
+        run: BIFROST_LIVE_TESTS=1 make test-core PROVIDER=vllm
 
       - name: Delete vLLM pods on RunPod
         if: always() && steps.runpod-credentials.outputs.available == 'true'
@@ -1637,6 +1638,9 @@ jobs:
 
       - name: Run plugin tests
         env:
+          # The explicit live-test opt-in (TXE-7530): this job's keys reach the semantic cache and
+          # Maxim integration suites only with it. A key alone never runs a live suite.
+          BIFROST_LIVE_TESTS: "1"
           MAXIM_API_KEY: ${{ secrets.MAXIM_API_KEY }}
           MAXIM_LOGGER_ID: ${{ secrets.MAXIM_LOG_REPO_ID }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}

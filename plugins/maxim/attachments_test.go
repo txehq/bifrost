@@ -6,12 +6,12 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
 	bifrost "github.com/capsohq/bifrost/core"
+	"github.com/capsohq/bifrost/core/livetest"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/maximhq/maxim-go/logging"
 )
@@ -514,15 +514,7 @@ func TestExtractAttachmentsFromRequest_ChatFileDataFromBase64(t *testing.T) {
 // requireIntegrationEnv skips the test if required env vars for real API calls are not set.
 func requireIntegrationEnv(t *testing.T) {
 	t.Helper()
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		t.Skip("OPENAI_API_KEY not set, skipping integration test")
-	}
-	if os.Getenv("MAXIM_API_KEY") == "" {
-		t.Skip("MAXIM_API_KEY not set, skipping integration test")
-	}
-	if os.Getenv("MAXIM_LOG_REPO_ID") == "" {
-		t.Skip("MAXIM_LOG_REPO_ID not set, skipping integration test")
-	}
+	livetest.Require(t, "OPENAI_API_KEY", "MAXIM_API_KEY", "MAXIM_LOG_REPO_ID")
 }
 
 // TestVisionWithImageUrl_Integration sends a real OpenAI vision request via Bifrost
@@ -531,7 +523,7 @@ func requireIntegrationEnv(t *testing.T) {
 func TestVisionWithImageUrl_Integration(t *testing.T) {
 	requireIntegrationEnv(t)
 
-	plugin, err := getPlugin()
+	plugin, err := getPlugin(t)
 	if err != nil {
 		t.Fatalf("failed to get plugin: %v", err)
 	}
@@ -602,7 +594,7 @@ func TestVisionWithImageData_Integration(t *testing.T) {
 	}
 	dataURL := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(imgData)
 
-	plugin, err := getPlugin()
+	plugin, err := getPlugin(t)
 	if err != nil {
 		t.Fatalf("failed to get plugin: %v", err)
 	}

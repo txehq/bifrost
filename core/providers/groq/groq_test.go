@@ -4,13 +4,13 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync"
 	"testing"
 
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/internal/llmtests"
+	"github.com/capsohq/bifrost/core/livetest"
 	"github.com/capsohq/bifrost/core/providers/groq"
 
 	"github.com/capsohq/bifrost/core/schemas"
@@ -19,9 +19,7 @@ import (
 
 func TestGroq(t *testing.T) {
 	t.Parallel()
-	if strings.TrimSpace(os.Getenv("GROQ_API_KEY")) == "" {
-		t.Skip("Skipping Groq tests because GROQ_API_KEY is not set")
-	}
+	livetest.Require(t, "GROQ_API_KEY")
 
 	client, ctx, cancel, err := llmtests.SetupTest()
 	if err != nil {

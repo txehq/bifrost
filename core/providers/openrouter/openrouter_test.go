@@ -1,20 +1,17 @@
 package openrouter_test
 
 import (
-	"os"
-	"strings"
 	"testing"
 
 	"github.com/capsohq/bifrost/core/internal/llmtests"
+	"github.com/capsohq/bifrost/core/livetest"
 
 	"github.com/capsohq/bifrost/core/schemas"
 )
 
 func TestOpenRouter(t *testing.T) {
 	t.Parallel()
-	if strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY")) == "" {
-		t.Skip("Skipping OpenRouter tests because OPENROUTER_API_KEY is not set")
-	}
+	livetest.Require(t, "OPENROUTER_API_KEY")
 
 	client, ctx, cancel, err := llmtests.SetupTest()
 	if err != nil {

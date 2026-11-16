@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"reflect"
 	"slices"
 	"strings"
@@ -18,15 +17,14 @@ import (
 
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/internal/llmtests"
+	"github.com/capsohq/bifrost/core/livetest"
 	"github.com/capsohq/bifrost/core/providers/databricks"
 	"github.com/capsohq/bifrost/core/schemas"
 )
 
 func TestDatabricks(t *testing.T) {
 	t.Parallel()
-	if strings.TrimSpace(os.Getenv("DATABRICKS_TOKEN")) == "" || strings.TrimSpace(os.Getenv("DATABRICKS_WORKSPACE_URL")) == "" {
-		t.Skip("Skipping Databricks tests because DATABRICKS_TOKEN or DATABRICKS_WORKSPACE_URL is not set")
-	}
+	livetest.Require(t, "DATABRICKS_TOKEN", "DATABRICKS_WORKSPACE_URL")
 
 	client, ctx, cancel, err := llmtests.SetupTest()
 	if err != nil {

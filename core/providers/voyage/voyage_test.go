@@ -4,16 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/capsohq/bifrost/core/internal/llmtests"
 	"io"
 	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/capsohq/bifrost/core/internal/llmtests"
+	"github.com/capsohq/bifrost/core/livetest"
 
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/providers/openai"
@@ -186,9 +187,7 @@ func BenchmarkVoyageEmbeddingConversion(b *testing.B) {
 }
 
 func TestVoyage(t *testing.T) {
-	if strings.TrimSpace(os.Getenv("VOYAGE_API_KEY")) == "" {
-		t.Skip("VOYAGE_API_KEY is not set")
-	}
+	livetest.Require(t, "VOYAGE_API_KEY")
 	client, ctx, cancel, err := llmtests.SetupTest()
 	require.NoError(t, err)
 	defer cancel()

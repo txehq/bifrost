@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -14,6 +13,7 @@ import (
 	"time"
 
 	"github.com/capsohq/bifrost/core/internal/testtime"
+	"github.com/capsohq/bifrost/core/livetest"
 
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/internal/llmtests"
@@ -26,9 +26,7 @@ import (
 
 func TestMistral(t *testing.T) {
 	t.Parallel()
-	if strings.TrimSpace(os.Getenv("MISTRAL_API_KEY")) == "" {
-		t.Skip("Skipping Mistral tests because MISTRAL_API_KEY is not set")
-	}
+	livetest.Require(t, "MISTRAL_API_KEY")
 
 	client, ctx, cancel, err := llmtests.SetupTest()
 	if err != nil {

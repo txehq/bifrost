@@ -6,18 +6,14 @@ import (
 	"testing"
 
 	"github.com/capsohq/bifrost/core/internal/llmtests"
+	"github.com/capsohq/bifrost/core/livetest"
 	"github.com/capsohq/bifrost/core/schemas"
 )
 
 func TestVLLM(t *testing.T) {
-	if os.Getenv("VLLM_ENABLED") != "1" {
-		t.Skip("Skipping vLLM tests: set VLLM_ENABLED=1 to enable (requires a live vLLM instance, see VLLM_BASE_URL)")
-	}
+	// A live vLLM instance: BIFROST_LIVE_TESTS=1 replaces the suite's own VLLM_ENABLED=1 opt-in.
+	livetest.Require(t, "VLLM_BASE_URL")
 	t.Parallel()
-	baseURL := strings.TrimSpace(os.Getenv("VLLM_BASE_URL"))
-	if baseURL == "" {
-		t.Skip("Skipping vLLM tests because VLLM_BASE_URL is not set")
-	}
 
 	client, ctx, cancel, err := llmtests.SetupTest()
 	if err != nil {

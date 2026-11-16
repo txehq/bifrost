@@ -2,11 +2,13 @@ package jsonparser
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 	"time"
 
 	bifrost "github.com/capsohq/bifrost/core"
+	"github.com/capsohq/bifrost/core/livetest"
 	"github.com/capsohq/bifrost/core/schemas"
 )
 
@@ -24,6 +26,10 @@ func (baseAccount *BaseAccount) GetConfiguredProviders() ([]schemas.ModelProvide
 // GetKeysForProvider returns a mock API key configuration for testing.
 // Uses the OPENAI_API_KEY environment variable for authentication.
 func (baseAccount *BaseAccount) GetKeysForProvider(ctx context.Context, providerKey schemas.ModelProvider) ([]schemas.Key, error) {
+	// The key reaches the live OpenAI API, so it is handed out only on the opt-in (TXE-7530).
+	if !livetest.Enabled() {
+		return nil, fmt.Errorf("live tests are off: set %s=1", livetest.OptIn)
+	}
 	return []schemas.Key{
 		{
 			Value:  *schemas.NewSecretVar("env.OPENAI_API_KEY"),
@@ -44,11 +50,12 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 
 func skipUnlessJsonParserLiveTestEnabled(t *testing.T) {
 	t.Helper()
+	livetest.Require(t, "OPENAI_API_KEY")
+	// These ran in no release job before TXE-7530 (the release's plugin job never set this), and
+	// that job now sets BIFROST_LIVE_TESTS=1 for the semantic cache and Maxim suites. Keeping the
+	// plugin's own switch on top of the gate leaves the release running what it ran before.
 	if os.Getenv("RUN_JSONPARSER_LIVE_TESTS") != "1" {
 		t.Skip("RUN_JSONPARSER_LIVE_TESTS=1 is not set, skipping live OpenAI test")
-	}
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		t.Skip("OPENAI_API_KEY is not set, skipping live OpenAI test")
 	}
 }
 

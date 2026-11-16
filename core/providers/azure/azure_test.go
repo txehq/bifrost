@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/capsohq/bifrost/core/internal/llmtests"
+	"github.com/capsohq/bifrost/core/livetest"
 
 	"github.com/capsohq/bifrost/core/providers/azure"
 	"github.com/capsohq/bifrost/core/providers/typesafe"
@@ -24,9 +25,7 @@ import (
 func TestAzure(t *testing.T) {
 	t.Parallel()
 
-	if strings.TrimSpace(os.Getenv("AZURE_API_KEY")) == "" {
-		t.Skip("Skipping Azure tests because AZURE_API_KEY is not set")
-	}
+	livetest.Require(t, "AZURE_API_KEY")
 	if strings.TrimSpace(os.Getenv("AZURE_ENDPOINT")) == "" {
 		t.Skip("Skipping Azure tests because AZURE_ENDPOINT is not set")
 	}

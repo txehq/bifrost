@@ -7,13 +7,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync"
 	"testing"
 
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/internal/llmtests"
+	"github.com/capsohq/bifrost/core/livetest"
 	"github.com/capsohq/bifrost/core/providers/ollama"
 	"github.com/capsohq/bifrost/core/providers/typesafe"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
@@ -24,9 +24,7 @@ import (
 
 func TestOllama(t *testing.T) {
 	t.Parallel()
-	if strings.TrimSpace(os.Getenv("OLLAMA_BASE_URL")) == "" {
-		t.Skip("Skipping Ollama tests because OLLAMA_BASE_URL is not set")
-	}
+	livetest.Require(t, "OLLAMA_BASE_URL")
 
 	client, ctx, cancel, err := llmtests.SetupTest()
 	if err != nil {

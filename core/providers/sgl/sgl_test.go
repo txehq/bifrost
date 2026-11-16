@@ -1,19 +1,17 @@
 package sgl_test
 
 import (
-	"os"
 	"testing"
 
 	"github.com/capsohq/bifrost/core/internal/llmtests"
+	"github.com/capsohq/bifrost/core/livetest"
 
 	"github.com/capsohq/bifrost/core/schemas"
 )
 
 func TestSGL(t *testing.T) {
 	t.Parallel()
-	if os.Getenv("SGL_BASE_URL") == "" {
-		t.Skip("Skipping SGL tests because SGL_BASE_URL is not set")
-	}
+	livetest.Require(t, "SGL_BASE_URL")
 
 	client, ctx, cancel, err := llmtests.SetupTest()
 	if err != nil {

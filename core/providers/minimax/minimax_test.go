@@ -20,6 +20,7 @@ import (
 
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/internal/llmtests"
+	"github.com/capsohq/bifrost/core/livetest"
 	"github.com/capsohq/bifrost/core/network/proxytest"
 	"github.com/capsohq/bifrost/core/providers/minimax"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
@@ -29,9 +30,7 @@ import (
 
 func TestMinimax(t *testing.T) {
 	t.Parallel()
-	if strings.TrimSpace(os.Getenv("MINIMAX_API_KEY")) == "" {
-		t.Skip("Skipping MiniMax tests because MINIMAX_API_KEY is not set")
-	}
+	livetest.Require(t, "MINIMAX_API_KEY")
 
 	client, ctx, cancel, err := llmtests.SetupTest()
 	if err != nil {

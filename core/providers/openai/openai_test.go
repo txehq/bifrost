@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -14,6 +13,7 @@ import (
 	"time"
 
 	"github.com/capsohq/bifrost/core/internal/llmtests"
+	"github.com/capsohq/bifrost/core/livetest"
 	"github.com/capsohq/bifrost/core/providers/openai"
 
 	"github.com/capsohq/bifrost/core/schemas"
@@ -416,9 +416,7 @@ func TestKeylessCustomProviderUnchanged(t *testing.T) {
 
 func TestOpenAI(t *testing.T) {
 	t.Parallel()
-	if strings.TrimSpace(os.Getenv("OPENAI_API_KEY")) == "" {
-		t.Skip("Skipping OpenAI tests because OPENAI_API_KEY is not set")
-	}
+	livetest.Require(t, "OPENAI_API_KEY")
 
 	client, ctx, cancel, err := llmtests.SetupTest()
 	if err != nil {

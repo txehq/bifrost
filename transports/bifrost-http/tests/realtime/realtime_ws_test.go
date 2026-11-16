@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/capsohq/bifrost/core/livetest"
 	ws "github.com/fasthttp/websocket"
 )
 
@@ -24,12 +25,11 @@ import (
 //
 // Run:
 //
-//	BIFROST_API_KEY=sk-... go test ./transports/bifrost-http/tests/realtime/... -run TestBifrostRealtimeWebSocket -v
+//	BIFROST_LIVE_TESTS=1 BIFROST_API_KEY=sk-... go test ./transports/bifrost-http/tests/realtime/... -run TestBifrostRealtimeWebSocket -v
+//
+// It opens a real realtime session through the gateway, so it is a live test (TXE-7530).
 func TestBifrostRealtimeWebSocket(t *testing.T) {
-	apiKey := os.Getenv("BIFROST_API_KEY")
-	if apiKey == "" {
-		t.Skip("BIFROST_API_KEY not set; skipping realtime WS test")
-	}
+	apiKey := livetest.Key(t, "BIFROST_API_KEY")
 
 	baseURL := os.Getenv("BIFROST_BASE_URL")
 	if baseURL == "" {
