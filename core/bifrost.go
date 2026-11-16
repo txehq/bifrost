@@ -2680,7 +2680,8 @@ func (bifrost *Bifrost) VideoCancelRequest(ctx *schemas.BifrostContext, req *sch
 		return nil, err
 	}
 	if response == nil || response.VideoGenerationResponse == nil {
-		return nil, invalid("received nil response from provider", req.Provider)
+		// A missing response after dispatch is not the caller's: the request was valid and sent.
+		return nil, declareErrorType(invalid("received nil response from provider", req.Provider), schemas.ErrorTypeBifrostInternal)
 	}
 	return response.VideoGenerationResponse, nil
 }
@@ -2704,7 +2705,8 @@ func imageTaskRequestError(requestType schemas.RequestType, provider schemas.Mod
 // a provider that returned none.
 func imageTaskResponse(response *schemas.BifrostResponse, requestType schemas.RequestType, provider schemas.ModelProvider, model string) (*schemas.BifrostImageTaskResponse, *schemas.BifrostError) {
 	if response == nil || response.ImageTaskResponse == nil {
-		return nil, imageTaskRequestError(requestType, provider, model, "received nil response from provider")
+		// A missing response after dispatch is not the caller's: the request was valid and sent.
+		return nil, declareErrorType(imageTaskRequestError(requestType, provider, model, "received nil response from provider"), schemas.ErrorTypeBifrostInternal)
 	}
 	return response.ImageTaskResponse, nil
 }

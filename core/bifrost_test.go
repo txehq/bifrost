@@ -14983,6 +14983,90 @@ func TestCoreRaisedErrorsDeclareTheirType(t *testing.T) {
 	}
 }
 
+// TestNilProviderResponseIsBifrostInternal: "received nil response from provider" is raised
+// after dispatch, for a valid request, so it is never the caller's (connector P2 on #365): every
+// error carrying that message is declared bifrost_internal, in its literal or by wrapping it in
+// declareErrorType(..., schemas.ErrorTypeBifrostInternal), never a caller_ type a meter could
+// charge.
+func TestNilProviderResponseIsBifrostInternal(t *testing.T) {
+	const message = `"received nil response from provider"`
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fset := token.NewFileSet()
+	found := 0
+	for _, path := range files {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+		var stack []ast.Node
+		ast.Inspect(file, func(n ast.Node) bool {
+			if n == nil {
+				stack = stack[:len(stack)-1]
+				return true
+			}
+			if lit, ok := n.(*ast.BasicLit); ok && lit.Value == message {
+				found++
+				if !enclosedAsBifrostInternal(stack) {
+					t.Errorf("%s: %s is not declared bifrost_internal", fset.Position(lit.Pos()), message)
+				}
+			}
+			stack = append(stack, n)
+			return true
+		})
+	}
+	if found < 9 {
+		t.Fatalf("found the message %d times; expected the package's 9", found)
+	}
+}
+
+// enclosedAsBifrostInternal reports whether one of the enclosing nodes declares
+// bifrost_internal: a BifrostError literal whose ExtraFields.ErrorType is
+// schemas.ErrorTypeBifrostInternal, or a declareErrorType call naming it.
+func enclosedAsBifrostInternal(stack []ast.Node) bool {
+	isInternal := func(e ast.Expr) bool {
+		sel, ok := e.(*ast.SelectorExpr)
+		return ok && sel.Sel.Name == "ErrorTypeBifrostInternal"
+	}
+	for i := len(stack) - 1; i >= 0; i-- {
+		switch node := stack[i].(type) {
+		case *ast.CallExpr:
+			if id, ok := node.Fun.(*ast.Ident); ok && id.Name == "declareErrorType" && len(node.Args) == 2 && isInternal(node.Args[1]) {
+				return true
+			}
+		case *ast.CompositeLit:
+			sel, ok := node.Type.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "BifrostError" {
+				continue
+			}
+			for _, elt := range node.Elts {
+				kv, ok := elt.(*ast.KeyValueExpr)
+				if !ok {
+					continue
+				}
+				if k, ok := kv.Key.(*ast.Ident); !ok || k.Name != "ExtraFields" {
+					continue
+				}
+				if extra, ok := kv.Value.(*ast.CompositeLit); ok {
+					for _, e := range extra.Elts {
+						if ekv, ok := e.(*ast.KeyValueExpr); ok {
+							if k, ok := ekv.Key.(*ast.Ident); ok && k.Name == "ErrorType" && isInternal(ekv.Value) {
+								return true
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
 func literalDeclaresType(lit *ast.CompositeLit) bool {
 	for _, elt := range lit.Elts {
 		kv, ok := elt.(*ast.KeyValueExpr)
