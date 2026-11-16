@@ -1,6 +1,6 @@
 {
   "name": "430. An extra param cannot supply a price-affecting unified field the request did not send (extra-params-price-field)",
-  "description": "Contract C4, agreement three: a field that affects the price is either delivered or refused with 400 caller_unsupported_parameter naming it. Core checked that for the request's own unified fields only. A price-affecting field named among the extra params (extra_params.size, .n, .dimensions, .speed) was merged into the vendor's body, or read there by the converter, with no unified field showing it, so the vendor billed for a size, a count or a speed the gateway never saw. Only the Tencent provider guarded it, with its own list. schemas.CheckExtraParamPriceFields now refuses, in the request worker before a key is chosen and for every provider, an extra param that names a price-affecting field of the operation's C4 table when the request did not send that field itself. The name is compared ignoring letter case. A field the request did send keeps working, including where the handlers keep it among the extra params for converters that read it there; a vendor's own name for the field (BytePlus ratio) and the three fields C4 exempts (prompt, seed, negative_prompt) are not refused. The rule is pinned in Go over every operation and field of the table and through the real worker (TestCheckExtraParamPriceFieldsRefusesEveryC4FieldOfEveryOperation, TestRequestWorkerRejectsPriceFieldAmongExtraParamsBeforeUpstream). These rows pin it on the /openai drop-in routes, the HTTP routes on which extra_params is unwrapped: embeddings, image generation and speech. The last row is the control: the same field sent as the request's own is delivered. Video create has no row because no HTTP route unwraps extra_params for it; its fields are covered in Go.",
+  "description": "Contract C4, agreement three: a field that affects the price is either delivered or refused with 400 caller_unsupported_parameter naming it. Core checked that for the request's own unified fields only. A price-affecting field named among the extra params (extra_params.size, .n, .dimensions, .speed) was merged into the vendor's body, or read there by the converter, with no unified field showing it, so the vendor billed for a size, a count or a speed the gateway never saw. Only the Tencent provider guarded it, with its own list. schemas.CheckExtraParamPriceFields now refuses, in the request worker before a key is chosen and for every provider, an extra param that names a price-affecting field of the operation's C4 table when the request did not send that field itself. The name is compared ignoring letter case. A field the request did send keeps working, including where the handlers keep it among the extra params for converters that read it there; a vendor's own name for the field (BytePlus ratio) and the three fields C4 exempts (prompt, seed, negative_prompt) are not refused. The rule is pinned in Go over every operation and field of the table and through the real worker (TestCheckExtraParamPriceFieldsRefusesEveryC4FieldOfEveryOperation, TestRequestWorkerRejectsPriceFieldAmongExtraParamsBeforeUpstream). These rows pin it on the /openai drop-in routes, the HTTP routes on which extra_params is unwrapped: embeddings, image generation and speech. The last row is the control: the same field sent as the request's own is delivered. An accepted embedding is a billed call at a real vendor, so the control runs only on the provider error fixture (providerErrorFixture=1), on a model the fixture config's key serves, and reads from /__wire that dimensions reached the vendor (TXE-7137); elsewhere it is skipped. The five refusals are answered before a key is chosen and run anywhere. Video create has no row because no HTTP route unwraps extra_params for it; its fields are covered in Go.",
   "item": [
     {
       "name": "[EXPECT-400] openai text-embedding-3-small extra-params-price-field: /openai/v1/embeddings - extra_params.dimensions is refused",
@@ -256,18 +256,40 @@
       }
     },
     {
-      "name": "openai text-embedding-3-small extra-params-price-field: /openai/v1/embeddings - dimensions sent as the request's own field is delivered",
+      "name": "openai pp-embedding extra-params-price-field: /openai/v1/embeddings - dimensions sent as the request's own field is delivered (fixture)",
       "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// An accepted embedding is a billed call at a real vendor, so the control runs on the provider error fixture only.",
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('extra-params-price-field control setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
         {
           "listen": "test",
           "script": {
             "type": "text/javascript",
             "exec": [
               "pm.test('extra-params-price-field control: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 600)).to.eql(200); });",
-              "var j = pm.response.json();",
-              "pm.test('extra-params-price-field control: the request field dimensions reached the vendor', function () {",
-              "  pm.expect(j.data, 'data').to.be.an('array').with.lengthOf(1);",
-              "  pm.expect(j.data[0].embedding, 'embedding').to.be.an('array').with.lengthOf(256);",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('extra-params-price-field control: the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls;",
+              "  pm.test('extra-params-price-field control: the request field dimensions reached the vendor', function () {",
+              "    pm.expect(calls, JSON.stringify(calls).slice(0, 600)).to.have.length(1);",
+              "    pm.expect(calls[0].path).to.equal('/v1/embeddings');",
+              "    pm.expect(JSON.parse(calls[0].body).dimensions).to.eql(256);",
+              "  });",
               "});"
             ]
           }
@@ -287,7 +309,7 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"model\": \"openai/text-embedding-3-small\",\n  \"input\": \"ok\",\n  \"dimensions\": 256\n}"
+          "raw": "{\n  \"model\": \"openai/pp-embedding\",\n  \"input\": \"ok\",\n  \"dimensions\": 256\n}"
         },
         "url": {
           "raw": "{{baseUrl}}/openai/v1/embeddings",
