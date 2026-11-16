@@ -77,6 +77,29 @@ def main():
         root = module_root(directory)
         by_module[root][os.path.relpath(os.path.join(REPO, directory), root)].add(name)
 
+    # The build needs the module proxy, and the dead proxy below would refuse it on a runner whose
+    # module cache is empty. So each module's test binaries are built first, with the network but
+    # without the fake keys; -exec true builds them and runs none, so no test code executes (not
+    # even a TestMain). The test run then has every module it needs, and GOPROXY=off makes a module
+    # that is still missing fail at once instead of reaching for the network.
+    build_env = dict(os.environ)
+    build_env.pop(OPT_IN, None)
+    for name in names:
+        build_env.pop(name, None)
+    for root, packages in sorted(by_module.items()):
+        # A download the module proxy drops mid-transfer fails the build; it is retried, since
+        # that is the network and not the change under test.
+        build = ["go", "test", "-count=1", "-exec", "true"] + ["./" + p for p in sorted(packages)]
+        proc = subprocess.run(build, cwd=root, env=build_env, capture_output=True, text=True)
+        for _ in range(2):
+            if proc.returncode == 0:
+                break
+            proc = subprocess.run(build, cwd=root, env=build_env, capture_output=True, text=True)
+        if proc.returncode != 0:
+            print(f"FAIL building the live tests in {os.path.relpath(root, REPO)}: {(proc.stdout + proc.stderr)[-1500:]}")
+            return 1
+    env["GOPROXY"] = "off"
+
     outcome = {}
     failures = []
     for root, packages in sorted(by_module.items()):
