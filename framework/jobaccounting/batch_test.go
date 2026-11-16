@@ -2829,6 +2829,10 @@ func settlementLinesFixture() []schemas.BatchResultItem {
 		ok("no-model", map[string]interface{}{"object": "chat.completion", "usage": map[string]interface{}{"prompt_tokens": 7, "completion_tokens": 3}}),
 		ok("unpriced", map[string]interface{}{"object": "chat.completion", "model": "unpriced-model", "usage": map[string]interface{}{"prompt_tokens": 11, "completion_tokens": 4}}),
 		ok("no-usage", map[string]interface{}{"object": "chat.completion", "model": "gpt-4o"}),
+		// TXE-7526: a line too large to read whole, read from a slim copy with no usage, is
+		// counted as unbilled, so the cut must keep the mark.
+		{CustomID: "truncated-no-usage", Status: schemas.BatchResultStatusSucceeded, Truncated: &schemas.BatchResultTruncation{Reason: "line_too_large", Bytes: 2 << 20},
+			Response: &schemas.BatchResultResponse{StatusCode: 200, Body: map[string]interface{}{"object": "chat.completion", "model": "gpt-4o"}}},
 		{CustomID: "failed", Status: schemas.BatchResultStatusFailed, Error: &schemas.BatchResultError{Code: "rate_limit", Message: "slow down"}},
 		{CustomID: "non-2xx", Response: &schemas.BatchResultResponse{StatusCode: 500, Body: map[string]interface{}{"error": map[string]interface{}{"message": "boom"}}}},
 		{CustomID: "anthropic-ok", Result: &schemas.BatchResultData{Type: "succeeded", Message: map[string]interface{}{
@@ -2970,5 +2974,65 @@ func TestBatchPollSettlesNothingWhenALaterPageFails(t *testing.T) {
 	}
 	if fmt.Sprint(fetcher.afters) != "[0 1 2]" {
 		t.Fatalf("pages read = %v, want [0 1 2] (stopped at the failed page)", fetcher.afters)
+	}
+}
+
+// warnRecorder is a schemas.Logger that keeps its warnings.
+type warnRecorder struct {
+	schemas.Logger
+	warnings []string
+}
+
+func (r *warnRecorder) Warn(msg string, args ...any) {
+	r.warnings = append(r.warnings, fmt.Sprintf(msg, args...))
+}
+
+// TXE-7526: a line too large to read whole is billed from its slim copy's usage. One whose
+// slim copy shows no usage is not billed, and that is never silent: settlement counts it on
+// the row (unbilled_lines, incomplete) and the sweeper's settler logs UnbilledLinesLogMessage.
+func TestBatchSettlementCountsAndLogsATruncatedLineWithNoUsage(t *testing.T) {
+	ok := schemas.BatchResultItem{CustomID: "ok", Status: schemas.BatchResultStatusSucceeded, Response: &schemas.BatchResultResponse{StatusCode: 200, Body: map[string]interface{}{
+		"model": "gpt-4o-mini", "usage": map[string]interface{}{"prompt_tokens": 10, "completion_tokens": 5},
+	}}}
+	billed := ok
+	billed.CustomID = "big-billed"
+	billed.Truncated = &schemas.BatchResultTruncation{Reason: "line_too_large", Bytes: 3 << 20}
+	unbilled := schemas.BatchResultItem{CustomID: "big-unbilled", Status: schemas.BatchResultStatusSucceeded, Truncated: &schemas.BatchResultTruncation{Reason: "line_too_large", Bytes: 2 << 20},
+		Response: &schemas.BatchResultResponse{StatusCode: 200, Body: map[string]interface{}{"model": "gpt-4o-mini", "data": []interface{}{map[string]interface{}{"b64_json": ""}}}}}
+
+	recorder := &warnRecorder{}
+	sweeper := NewBatchSweeper(nil, nil, fakePricing{}, &fakeBatchResultFetcher{}, nil, nil, SweeperConfig{Logger: recorder})
+	settler, isBatch := sweeper.settler.(*BatchSettler)
+	if !isBatch || settler.logger != recorder {
+		t.Fatalf("the batch sweeper's settler does not log through the sweeper's logger")
+	}
+
+	settlement, err := settler.Settle(context.Background(), fakePricing{}, JobRequest{
+		Provider: schemas.OpenAI, ProviderJobID: "batch_big",
+		Payload: BatchPayload{Results: []schemas.BatchResultItem{settlementLine(ok), settlementLine(billed), settlementLine(unbilled)}},
+	})
+	if err != nil {
+		t.Fatalf("Settle: %v", err)
+	}
+	if settlement.PricedCount != 2 || settlement.UnbilledLines != 1 {
+		t.Fatalf("priced %d lines, %d unbilled; want the truncated line with usage billed (2) and the other counted (1)", settlement.PricedCount, settlement.UnbilledLines)
+	}
+	entry := &logstore.Log{}
+	settlement.ApplyDebug(entry)
+	if accounting := entry.BatchDebugParsed.Accounting; accounting.UnbilledLines != 1 || !accounting.Incomplete {
+		t.Fatalf("row accounting %+v: want unbilled_lines 1 and incomplete", accounting)
+	}
+	if len(recorder.warnings) != 1 || !strings.HasPrefix(recorder.warnings[0], UnbilledLinesLogMessage) || !strings.Contains(recorder.warnings[0], "batch=batch_big unbilled_lines=1") {
+		t.Fatalf("warnings = %q, want one %q naming batch_big and the count", recorder.warnings, UnbilledLinesLogMessage)
+	}
+
+	// Without unbilled lines, nothing is logged and the row is complete.
+	recorder.warnings = nil
+	settlement, err = settler.Settle(context.Background(), fakePricing{}, JobRequest{
+		Provider: schemas.OpenAI, ProviderJobID: "batch_ok",
+		Payload: BatchPayload{Results: []schemas.BatchResultItem{settlementLine(ok), settlementLine(billed)}},
+	})
+	if err != nil || settlement.UnbilledLines != 0 || len(recorder.warnings) != 0 {
+		t.Fatalf("a batch with every line billed: unbilled %d, warnings %q, err %v", settlement.UnbilledLines, recorder.warnings, err)
 	}
 }

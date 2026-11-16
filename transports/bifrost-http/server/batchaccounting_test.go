@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	bifrost "github.com/capsohq/bifrost/core"
@@ -17,6 +18,7 @@ import (
 	"github.com/capsohq/bifrost/framework/configstore"
 	cstables "github.com/capsohq/bifrost/framework/configstore/tables"
 	"github.com/capsohq/bifrost/framework/jobaccounting"
+	"github.com/capsohq/bifrost/framework/logstore"
 	"github.com/capsohq/bifrost/framework/modelcatalog"
 	"github.com/capsohq/bifrost/plugins/logging"
 	"github.com/capsohq/bifrost/transports/v2/bifrost-http/handlers"
@@ -489,6 +491,126 @@ func TestBatchSettlerBillsAResultSetPastTheResponseLimitInFull(t *testing.T) {
 	}
 	if want := float64(5*lines) * 1e-06; math.Abs(settlement.Cost-want) > 1e-9 {
 		t.Fatalf("cost = %v, want %v for the whole batch", settlement.Cost, want)
+	}
+}
+
+// TXE-7526: one result line larger than client.max_response_body_size_mb fits no page. Before,
+// every poll of such a batch failed, and it was parked unbilled after MaxPollAttempts. Now the
+// line is read from a slim copy and billed from its usage like any other line. When the slim
+// copy shows no usage, or the line has none at all, every other line is billed and the row
+// says how much it is short.
+func TestBatchSettlerBillsABatchWithALinePastTheLimit(t *testing.T) {
+	line := func(i int, pad int) []byte {
+		return fmt.Appendf(nil, `{"id":"r%d","custom_id":"c%d","response":{"status_code":200,"body":{"object":"chat.completion","model":"gpt-4o-mini","choices":[{"index":0,"message":{"role":"assistant","content":"%s"}}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}}}`+"\n", i, i, strings.Repeat("x", pad))
+	}
+	big := strings.Repeat("x", 1200<<10) // 1.2 MiB: past the 1 MiB limit on its own
+	const lines = 600
+	for _, tc := range []struct {
+		name                         string
+		huge                         string
+		results, parseErrors, priced int
+		unbilled                     int
+		incomplete                   bool
+	}{
+		{
+			name:    "the slim copy has its usage: billed in full",
+			huge:    string(line(300, len(big))),
+			results: lines, priced: lines,
+		},
+		{
+			name:    "the line carries no usage: unbilled, counted, incomplete",
+			huge:    `{"id":"r300","custom_id":"c300","response":{"status_code":200,"body":{"object":"chat.completion","model":"gpt-4o-mini","choices":[{"message":{"content":"` + big + `"}}]}}}` + "\n",
+			results: lines, priced: lines - 1, unbilled: 1, incomplete: true,
+		},
+		{
+			name:    "the line is not JSON: a parse error, incomplete",
+			huge:    `not json ` + big + "\n",
+			results: lines - 1, parseErrors: 1, priced: lines - 1, incomplete: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testBatchSettlerWithAnOversizedLine(t, lines, line, tc.huge, tc.results, tc.parseErrors, tc.priced, tc.unbilled, tc.incomplete)
+		})
+	}
+}
+
+func testBatchSettlerWithAnOversizedLine(t *testing.T, lines int, line func(i, pad int) []byte, huge string, wantResults, wantParseErrors, wantPriced, wantUnbilled int, wantIncomplete bool) {
+	var output []byte
+	for i := range lines {
+		if i == 300 {
+			output = append(output, huge...)
+			continue
+		}
+		output = append(output, line(i, 900)...)
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/batches/batch_oversized":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(w, `{"id":"batch_oversized","object":"batch","endpoint":"/v1/chat/completions","status":"completed","output_file_id":"file_out"}`)
+		case "/v1/files/file_out/content":
+			w.Header().Set("Content-Type", "application/jsonl")
+			_, _ = w.Write(output)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: &openAIBatchAccount{baseURL: upstream.URL}, Logger: bifrost.NewNoOpLogger(), InitialPoolSize: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(client.Shutdown)
+	network.SetMaxResponseBodySizeMB(1)
+	t.Cleanup(func() { network.SetMaxResponseBodySizeMB(0) })
+
+	job := &cstables.TableProviderJob{Kind: cstables.ProviderJobKindBatch, Provider: string(schemas.OpenAI), JobID: "batch_oversized"}
+	if len(output) < 1<<20 {
+		t.Fatalf("the result file is %d bytes, so its long line is not past the 1 MiB limit", len(output))
+	}
+	settler := jobaccounting.NewBatchSettler(&bifrostBatchResultFetcher{client: client})
+	poll, err := settler.Poll(context.Background(), job)
+	if err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+	if !poll.Settleable {
+		t.Fatalf("poll = %+v: a batch with one line past the limit was not settleable", poll)
+	}
+	payload := poll.Payload.(jobaccounting.BatchPayload)
+	if len(payload.Results) != wantResults || len(payload.ParseErrors) != wantParseErrors {
+		t.Fatalf("payload holds %d lines and parse errors %+v; want %d lines and %d parse errors", len(payload.Results), payload.ParseErrors, wantResults, wantParseErrors)
+	}
+	for _, parseErr := range payload.ParseErrors {
+		if parseErr.Code != "line_too_large" {
+			t.Fatalf("parse error %+v, want line_too_large", parseErr)
+		}
+	}
+	truncated := 0
+	for _, item := range payload.Results {
+		if item.Truncated != nil {
+			truncated++
+			if item.CustomID != "c300" || item.Truncated.Reason != "line_too_large" || item.Truncated.Bytes != int64(len(huge)) {
+				t.Fatalf("truncated item %s: %+v, want c300 marked line_too_large at %d bytes", item.CustomID, item.Truncated, len(huge))
+			}
+		}
+	}
+	if truncated != wantResults-(lines-1) {
+		t.Fatalf("%d items are marked truncated, want %d", truncated, wantResults-(lines-1))
+	}
+	settlement, err := settler.Settle(context.Background(), perTokenBatchPricing{}, jobaccounting.JobRequest{Provider: schemas.OpenAI, ProviderJobID: "batch_oversized", Job: poll.Job, Payload: poll.Payload})
+	if err != nil {
+		t.Fatalf("Settle: %v", err)
+	}
+	if settlement.PricedCount != wantPriced || settlement.Usage.TotalTokens != 5*wantPriced || settlement.UnbilledLines != wantUnbilled {
+		t.Fatalf("settled %d lines, %d tokens, %d unbilled; want %d lines, %d tokens, %d unbilled", settlement.PricedCount, settlement.Usage.TotalTokens, settlement.UnbilledLines, wantPriced, 5*wantPriced, wantUnbilled)
+	}
+	entry := &logstore.Log{}
+	settlement.ApplyDebug(entry)
+	accounting := entry.BatchDebugParsed.Accounting
+	if accounting == nil || accounting.Incomplete != wantIncomplete || accounting.ParseErrorCount != wantParseErrors || accounting.UnbilledLines != wantUnbilled {
+		t.Fatalf("settlement debug %+v: want incomplete %v, %d parse errors, %d unbilled lines", accounting, wantIncomplete, wantParseErrors, wantUnbilled)
 	}
 }
 

@@ -3766,7 +3766,9 @@ func (provider *GeminiProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 		// are reported as image generation, which leaves the batch unpriced.
 		pageEndpoint := schemas.BatchEndpoint("")
 		var parseErrors []schemas.BatchError
-		page, pageErr := providerUtils.ReadBatchResultsPage([]providerUtils.BatchResultsSource{source}, request, func(_ int, line []byte) {
+		// readLine converts one line in its place in the file, so every line keeps its fallback id
+		// whether or not it can be read. truncation marks a line read from its slim copy.
+		readLine := func(line []byte, truncation *schemas.BatchResultTruncation) error {
 			fallbackID := fmt.Sprintf("request-%d", lineIndex)
 			if cursor.Offset > 0 {
 				fallbackID = fmt.Sprintf("request-at-%d-%d", cursor.Offset, lineIndex)
@@ -3780,14 +3782,31 @@ func (provider *GeminiProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 				item, lineEndpoint, parseErr = geminiFileResultLineToBatchResultItem(resultLine, fallbackID, model, includeRaw)
 			}
 			if parseErr != nil {
-				provider.logger.Warn("gemini batch results file parse error: %s", strconv.QuoteToASCII(parseErr.Error()))
-				parseErrors = append(parseErrors, schemas.BatchError{Code: "parse_error", Message: parseErr.Error()})
-				return
+				return parseErr
 			}
 			if lineEndpoint != "" {
 				pageEndpoint = AccumulateBatchResultsEndpoint(pageEndpoint, lineEndpoint)
 			}
+			item.Truncated = truncation
 			batchResultsResp.Results = append(batchResultsResp.Results, item)
+			return nil
+		}
+		page, pageErr := providerUtils.ReadBatchResultsPage([]providerUtils.BatchResultsSource{source}, request, func(_ int, line []byte) {
+			if parseErr := readLine(line, nil); parseErr != nil {
+				provider.logger.Warn("gemini batch results file parse error: %s", strconv.QuoteToASCII(parseErr.Error()))
+				parseErrors = append(parseErrors, schemas.BatchError{Code: "parse_error", Message: parseErr.Error()})
+			}
+		}, func(_ int, big providerUtils.BatchOversizedLine) {
+			// A line too large for any page is read from its slim copy, so it is still billed
+			// from its usage (TXE-7526).
+			if big.Slim != nil && readLine(big.Slim, big.Truncation()) == nil {
+				return
+			}
+			if big.Slim == nil {
+				lineIndex++
+			}
+			provider.logger.Warn("gemini batch results file: %s", big.Error().Message)
+			parseErrors = append(parseErrors, big.Error())
 		})
 		if pageErr != nil {
 			return nil, pageErr

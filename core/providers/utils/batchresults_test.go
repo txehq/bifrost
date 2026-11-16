@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -77,11 +78,27 @@ func TestPageBatchResultItems(t *testing.T) {
 	}
 }
 
+// readAllLines is readJSONLPage with no byte bound, for the tests of line splitting alone.
+func readAllLines(r io.Reader, limit int, onLine func(line []byte)) (int64, bool, error) {
+	consumed, _, more, err := readJSONLPage(r, limit, math.MaxInt64, math.MaxInt64, onLine, func(size int64, _ []byte) {
+		panic(fmt.Sprintf("a %d-byte line was too large with no bound", size))
+	})
+	return consumed, more, err
+}
+
+// readPage is ReadBatchResultsPage for the tests in which every line fits the bound: a line
+// reported too large to read fails the test (TXE-7526 has its own tests).
+func readPage(sources []BatchResultsSource, request *schemas.BifrostBatchResultsRequest, onLine func(source int, line []byte)) (*BatchResultsPage, *schemas.BifrostError) {
+	return ReadBatchResultsPage(sources, request, onLine, func(source int, big BatchOversizedLine) {
+		panic(fmt.Sprintf("source %d: a %d-byte line was too large", source, big.Size))
+	})
+}
+
 func TestReadJSONLPage(t *testing.T) {
 	data := "{\"a\":1}\n\n{\"a\":2}\r\n{\"a\":3}\n   \n{\"a\":4}"
 	collect := func(r io.Reader, limit int) ([]string, int64, bool) {
 		var lines []string
-		consumed, more, err := readJSONLPage(r, limit, func(line []byte) { lines = append(lines, string(line)) })
+		consumed, more, err := readAllLines(r, limit, func(line []byte) { lines = append(lines, string(line)) })
 		if err != nil {
 			t.Fatalf("ReadJSONLPage: %v", err)
 		}
@@ -142,7 +159,7 @@ func TestReadBatchResultsPageAcrossSources(t *testing.T) {
 			if pages > 20 {
 				t.Fatalf("limit %d: paging did not terminate", limit)
 			}
-			page, bifrostErr := ReadBatchResultsPage(sources(), &schemas.BifrostBatchResultsRequest{After: after, Limit: limit}, func(source int, l []byte) {
+			page, bifrostErr := readPage(sources(), &schemas.BifrostBatchResultsRequest{After: after, Limit: limit}, func(source int, l []byte) {
 				got = append(got, line{source, string(l)})
 			})
 			if bifrostErr != nil {
@@ -183,7 +200,7 @@ func TestReadBatchResultsPageAcrossSources(t *testing.T) {
 
 	// A cursor this gateway did not issue is a 400 naming the parameter.
 	bad := "garbage"
-	_, bifrostErr := ReadBatchResultsPage([]BatchResultsSource{absent}, &schemas.BifrostBatchResultsRequest{After: &bad, Limit: 2}, func(int, []byte) {})
+	_, bifrostErr := readPage([]BatchResultsSource{absent}, &schemas.BifrostBatchResultsRequest{After: &bad, Limit: 2}, func(int, []byte) {})
 	if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400 || bifrostErr.Error.Param != "after" {
 		t.Fatalf("bad cursor error = %+v, want a 400 with param after", bifrostErr)
 	}
@@ -192,7 +209,7 @@ func TestReadBatchResultsPageAcrossSources(t *testing.T) {
 	failing := func(int64) (*ResultStream, *schemas.BifrostError) {
 		return nil, NewProviderAPIError("file not found", nil, 404, nil, nil)
 	}
-	_, bifrostErr = ReadBatchResultsPage([]BatchResultsSource{failing}, &schemas.BifrostBatchResultsRequest{Limit: 2}, func(int, []byte) {})
+	_, bifrostErr = readPage([]BatchResultsSource{failing}, &schemas.BifrostBatchResultsRequest{Limit: 2}, func(int, []byte) {})
 	if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 404 {
 		t.Fatalf("failing source error = %+v, want the 404", bifrostErr)
 	}
@@ -293,7 +310,7 @@ func TestOpenResultStreamReadsOnePageOfALargeFile(t *testing.T) {
 				if bifrostErr != nil {
 					t.Fatalf("OpenResultStream: %v", bifrostErr.Error.Message)
 				}
-				consumed, more, err := readJSONLPage(stream.reader, pageLines, func(line []byte) {
+				consumed, more, err := readAllLines(stream.reader, pageLines, func(line []byte) {
 					if want := bytes.TrimSpace(resultLine(next, lineSize)); !bytes.Equal(line, want) {
 						t.Fatalf("line %d differs: got %.60q", next, line)
 					}
@@ -350,7 +367,7 @@ func TestOpenResultStreamEdges(t *testing.T) {
 			t.Fatalf("honourRange=%v: %v", honourRange, bifrostErr.Error.Message)
 		}
 		var ids []string
-		_, more, err := readJSONLPage(stream.reader, 0, func(line []byte) { ids = append(ids, string(line[:22])) })
+		_, more, err := readAllLines(stream.reader, 0, func(line []byte) { ids = append(ids, string(line[:22])) })
 		stream.Close()
 		stream.Close() // idempotent
 		if err != nil || more || len(ids) != 2 || !strings.Contains(ids[0], "line-8") || !strings.Contains(ids[1], "line-9") {
@@ -396,7 +413,7 @@ func TestOpenResultStreamStopsOnContextCancel(t *testing.T) {
 	lines := 0
 	done := make(chan error, 1)
 	go func() {
-		_, _, err := readJSONLPage(stream.reader, 0, func([]byte) { lines++; cancel() })
+		_, _, err := readAllLines(stream.reader, 0, func([]byte) { lines++; cancel() })
 		done <- err
 	}()
 	if err := <-done; err == nil {
@@ -483,7 +500,7 @@ func TestOpenResultStreamCountsBodyReadsAsUpstreamLatency(t *testing.T) {
 	}
 	afterHeaders, _ := schemas.GetUpstreamLatency(ctx)
 	lines := 0
-	if _, _, err := readJSONLPage(stream.reader, 0, func([]byte) { lines++ }); err != nil || lines != 1 {
+	if _, _, err := readAllLines(stream.reader, 0, func([]byte) { lines++ }); err != nil || lines != 1 {
 		t.Fatalf("read %d lines, err %v", lines, err)
 	}
 	stream.Close()
@@ -544,7 +561,7 @@ func TestReadBatchResultsPageRefusesAnUnpagedReadPastTheLimit(t *testing.T) {
 	var pulled int64
 	sources := []BatchResultsSource{countingSource(output, &pulled), countingSource(errorFile, &pulled)}
 
-	_, bifrostErr := ReadBatchResultsPage(sources, &schemas.BifrostBatchResultsRequest{}, func(int, []byte) {})
+	_, bifrostErr := readPage(sources, &schemas.BifrostBatchResultsRequest{}, func(int, []byte) {})
 	if bifrostErr == nil {
 		t.Fatal("an unpaged read of 2 MiB under a 1 MiB limit succeeded")
 	}
@@ -557,18 +574,19 @@ func TestReadBatchResultsPageRefusesAnUnpagedReadPastTheLimit(t *testing.T) {
 	if bifrostErr.AllowFallbacks == nil || *bifrostErr.AllowFallbacks {
 		t.Fatal("a too-large results read must not fall back to another provider")
 	}
-	if pulled > limit+1 {
-		t.Fatalf("read pulled %d bytes from the stream, more than the %d-byte limit", pulled, limit)
+	// The read stops at the limit; the reader may have read ahead one buffer past it.
+	if pulled > limit+64*1024 {
+		t.Fatalf("read pulled %d bytes from the stream, more than the %d-byte limit and one buffer", pulled, limit)
 	}
 
 	// Split the other way, the output alone is past the limit.
 	pulled = 0
-	_, bifrostErr = ReadBatchResultsPage([]BatchResultsSource{countingSource(jsonlOf(2048, 1024, "o"), &pulled)}, nil, func(int, []byte) {})
+	_, bifrostErr = readPage([]BatchResultsSource{countingSource(jsonlOf(2048, 1024, "o"), &pulled)}, nil, func(int, []byte) {})
 	if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400 {
 		t.Fatalf("one 2 MiB source: error = %+v, want a 400", bifrostErr)
 	}
-	if pulled > limit+1 {
-		t.Fatalf("read pulled %d bytes from one source, more than the %d-byte limit", pulled, limit)
+	if pulled > limit+64*1024 {
+		t.Fatalf("read pulled %d bytes from one source, more than the %d-byte limit and one buffer", pulled, limit)
 	}
 }
 
@@ -578,7 +596,7 @@ func TestReadBatchResultsPageReturnsAResultSetExactlyAtTheLimit(t *testing.T) {
 	output, errorFile := jsonlOf(768, 1024, "o"), jsonlOf(256, 1024, "e")
 	var pulled int64
 	lines := 0
-	page, bifrostErr := ReadBatchResultsPage([]BatchResultsSource{countingSource(output, &pulled), countingSource(errorFile, &pulled)}, nil, func(int, []byte) { lines++ })
+	page, bifrostErr := readPage([]BatchResultsSource{countingSource(output, &pulled), countingSource(errorFile, &pulled)}, nil, func(int, []byte) { lines++ })
 	if bifrostErr != nil {
 		t.Fatalf("a result set of exactly the limit was refused: %s", bifrostErr.Error.Message)
 	}
@@ -603,7 +621,7 @@ func TestReadBatchResultsPageEndsAPageWithAHugeLimitAtTheLimit(t *testing.T) {
 		}
 		var pulled int64
 		pageBytes := int64(0)
-		page, bifrostErr := ReadBatchResultsPage(
+		page, bifrostErr := readPage(
 			[]BatchResultsSource{countingSource(output, &pulled), countingSource(errorFile, &pulled)},
 			&schemas.BifrostBatchResultsRequest{Limit: 1 << 30, After: after},
 			func(_ int, line []byte) {
@@ -639,17 +657,139 @@ func TestReadBatchResultsPageEndsAPageWithAHugeLimitAtTheLimit(t *testing.T) {
 	}
 }
 
-func TestReadBatchResultsPageRefusesALineLargerThanTheLimit(t *testing.T) {
-	setResultsLimitMB(t, 1)
-	// Paging cannot help a single line past the limit, so a page with nothing to return is
-	// a 400, not an empty page with a cursor that never advances.
-	huge := jsonlOf(1, (1<<20)+10, "big")
-	var pulled int64
-	_, bifrostErr := ReadBatchResultsPage([]BatchResultsSource{countingSource(huge, &pulled)}, &schemas.BifrostBatchResultsRequest{Limit: 10}, func(int, []byte) {
-		t.Fatal("a line past the limit was handed on")
-	})
+// TXE-7526 review: the slim copies a page hands on count against its byte budget like any line.
+// 24 oversized lines whose slim copies are about 50 KB each (1.2 MB together) cannot come back
+// in one page under a 1 MiB limit: pages end before a slim copy that would pass it, every line
+// still comes back exactly once, and an unpaged read is the 400.
+func TestReadBatchResultsPageCountsSlimCopiesAgainstTheLimit(t *testing.T) {
+	limit := setResultsLimitMB(t, 1)
+	var file strings.Builder
+	for i := range 24 {
+		// 1,000 short fields make a ~50 KB slim copy; the padding makes the line past the limit.
+		fmt.Fprintf(&file, `{"custom_id":"big-%02d"`, i)
+		for f := range 1000 {
+			fmt.Fprintf(&file, `,"f%03d":"%036d"`, f, f)
+		}
+		fmt.Fprintf(&file, `,"pad":"%s"}`+"\n", strings.Repeat("x", int(limit)))
+	}
+	data := file.String()
+
+	seen := map[string]int{}
+	var after *string
+	pages := 0
+	for {
+		pages++
+		if pages > 50 {
+			t.Fatal("paging did not terminate")
+		}
+		var pageSlim int64
+		page, bifrostErr := ReadBatchResultsPage([]BatchResultsSource{countingSource(data, new(int64))}, &schemas.BifrostBatchResultsRequest{Limit: 1 << 30, After: after},
+			func(int, []byte) { t.Fatal("no line here fits a page whole") },
+			func(_ int, big BatchOversizedLine) {
+				pageSlim += int64(len(big.Slim))
+				seen[string(big.Slim[:len(`{"custom_id":"big-00"`)])]++
+			})
+		if bifrostErr != nil {
+			t.Fatalf("page %d: %s", pages, bifrostErr.Error.Message)
+		}
+		if pageSlim > limit {
+			t.Fatalf("page %d handed on %d bytes of slim copies under a %d-byte limit", pages, pageSlim, limit)
+		}
+		if !page.HasMore {
+			break
+		}
+		after = page.NextCursor
+	}
+	if len(seen) != 24 || pages < 2 {
+		t.Fatalf("%d distinct lines in %d pages; want all 24 in more than one page", len(seen), pages)
+	}
+	for id, n := range seen {
+		if n != 1 {
+			t.Fatalf("%s came back %d times", id, n)
+		}
+	}
+	_, bifrostErr := ReadBatchResultsPage([]BatchResultsSource{countingSource(data, new(int64))}, nil, func(int, []byte) {}, func(int, BatchOversizedLine) {})
 	if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400 {
-		t.Fatalf("error = %+v, want a 400", bifrostErr)
+		t.Fatalf("unpaged read of 1.2 MB of slim copies: error %+v, want the 400", bifrostErr)
+	}
+}
+
+// TXE-7526: a line larger than the limit on its own fits no page. It is skipped without being
+// held, reported once as line_too_large, and the pages walk past it: every other line comes
+// back exactly once, in both sources, paged or not. Before, every page that reached it was a
+// 400, so no caller, and not the accounting sweeper, could read the rest of the batch.
+func TestReadBatchResultsPageSkipsALineLargerThanTheLimit(t *testing.T) {
+	limit := setResultsLimitMB(t, 1)
+	huge := jsonlOf(1, int(limit)+10, "big")
+	output := jsonlOf(400, 1000, "o") + huge + jsonlOf(400, 1000, "p")
+	errorFile := huge + jsonlOf(300, 1000, "e")
+	for _, pageLimit := range []int{0, 1 << 30, 500, 1} {
+		seen := map[string]int{}
+		var skipped []string
+		var after *string
+		for pages := 1; ; pages++ {
+			if pages > 2000 {
+				t.Fatalf("limit %d: paging did not terminate", pageLimit)
+			}
+			var pulled, pageBytes int64
+			page, bifrostErr := ReadBatchResultsPage(
+				[]BatchResultsSource{countingSource(output, &pulled), countingSource(errorFile, &pulled)},
+				&schemas.BifrostBatchResultsRequest{Limit: pageLimit, After: after},
+				func(_ int, line []byte) {
+					pageBytes += int64(len(line)) + 1
+					seen[string(line[:strings.IndexByte(string(line), ',')])]++
+				},
+				func(source int, big BatchOversizedLine) {
+					if big.Size != int64(len(huge)) || string(big.Slim) != `{"custom_id":"big-0","pad":""}` {
+						t.Fatalf("limit %d: oversized line reported as size %d, slim %q", pageLimit, big.Size, big.Slim)
+					}
+					if lineErr := big.Error(); lineErr.Code != BatchLineTooLargeCode || !strings.Contains(lineErr.Message, fmt.Sprintf("%d bytes", len(huge))) {
+						t.Fatalf("limit %d: its parse error is %+v", pageLimit, lineErr)
+					}
+					skipped = append(skipped, fmt.Sprint(source))
+				})
+			if pageLimit == 0 {
+				// 1.1 MB of readable lines is still past the limit for one unpaged response.
+				if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400 {
+					t.Fatalf("unpaged: error = %+v, want the 400 telling the caller to page", bifrostErr)
+				}
+				break
+			}
+			if bifrostErr != nil {
+				t.Fatalf("limit %d, page %d: %s", pageLimit, pages, bifrostErr.Error.Message)
+			}
+			// A skipped line is read through, so the stream gives more than the page holds; what
+			// the page hands on stays within the limit.
+			if pageBytes > limit {
+				t.Fatalf("limit %d, page %d returned %d bytes of lines under a %d-byte limit", pageLimit, pages, pageBytes, limit)
+			}
+			if !page.HasMore {
+				break
+			}
+			after = page.NextCursor
+		}
+		if pageLimit == 0 {
+			continue
+		}
+		if fmt.Sprint(skipped) != "[0 1]" {
+			t.Fatalf("limit %d: skipped lines reported from sources %v, want one in each [0 1]", pageLimit, skipped)
+		}
+		if len(seen) != 1100 {
+			t.Fatalf("limit %d: %d distinct lines came back, want all 1100 others", pageLimit, len(seen))
+		}
+		for id, n := range seen {
+			if n != 1 {
+				t.Fatalf("limit %d: line %s came back %d times", pageLimit, id, n)
+			}
+		}
+	}
+
+	// A set of small lines with one huge line, under the limit once it is skipped, reads whole.
+	var lines, skips int
+	page, bifrostErr := ReadBatchResultsPage([]BatchResultsSource{countingSource(jsonlOf(10, 1000, "a")+huge+jsonlOf(10, 1000, "b"), new(int64))}, nil,
+		func(int, []byte) { lines++ }, func(int, BatchOversizedLine) { skips++ })
+	if bifrostErr != nil || lines != 20 || skips != 1 || page.HasMore {
+		t.Fatalf("unpaged read with one huge line: %d lines, %d skipped, has_more %v, err %v; want 20, 1, false, nil", lines, skips, page != nil && page.HasMore, bifrostErr)
 	}
 }
 
@@ -687,7 +827,7 @@ func TestReadBatchResultsPageBoundsEveryRequest(t *testing.T) {
 			t.Fatalf("field %s (%s): add a non-zero value for it to this test", field.Name, value.Type())
 		}
 		var pulled, returned int64
-		page, bifrostErr := ReadBatchResultsPage([]BatchResultsSource{countingSource(output, &pulled)}, request, func(_ int, line []byte) {
+		page, bifrostErr := readPage([]BatchResultsSource{countingSource(output, &pulled)}, request, func(_ int, line []byte) {
 			returned += int64(len(line)) + 1
 		})
 		if bifrostErr == nil && (returned > limit || !page.HasMore) {
@@ -705,7 +845,7 @@ func TestReadBatchResultsPageBoundsEveryRequest(t *testing.T) {
 func TestReadJSONLPageDoesNotHandOnALineAFailedReadCutShort(t *testing.T) {
 	r := io.MultiReader(strings.NewReader("{\"a\":1}\n{\"b\":"), iotestErrReader{})
 	var lines []string
-	consumed, _, err := readJSONLPage(r, 0, func(line []byte) { lines = append(lines, string(line)) })
+	consumed, _, err := readAllLines(r, 0, func(line []byte) { lines = append(lines, string(line)) })
 	if err == nil {
 		t.Fatal("read error was dropped")
 	}
@@ -742,7 +882,7 @@ func BenchmarkReadBatchResultsPage(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
 				lines := 0
-				if _, bifrostErr := ReadBatchResultsPage(sources(), request, func(int, []byte) { lines++ }); bifrostErr != nil || lines != bc.want {
+				if _, bifrostErr := readPage(sources(), request, func(int, []byte) { lines++ }); bifrostErr != nil || lines != bc.want {
 					b.Fatalf("lines = %d, err %v", lines, bifrostErr)
 				}
 			}

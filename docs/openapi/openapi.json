@@ -11384,7 +11384,7 @@
       "get": {
         "operationId": "getBatchResults",
         "summary": "Get batch results",
-        "description": "Retrieves the result lines of a batch job, one per input line the vendor wrote. On\n`openai` and `azure` the lines of the error file (failed and expired lines) follow\nthose of the output file.\n\nWith `limit` the response is one page, read from a streamed download so a result\nfile is never held whole; `has_more` and `next_cursor` say whether and where to\ncontinue. Without `limit` every line is returned in one response.\n\nOne response holds at most `client.max_response_body_size_mb` of result lines. A page\nthat reaches it ends early, at its last whole line, with `has_more` and `next_cursor`.\nA read without `limit` that reaches it is refused with a 400 whose `param` is `limit`:\nread the batch in pages instead.\n\nSend `x-bf-api-key` (key name) or `x-bf-api-key-id` to use only the key the batch was\ncreated with: retrieve, cancel and results then make their upstream calls with that\nkey alone and report it in `x-bifrost-routing-info-key`. Without it the provider's\nbatch-enabled keys are tried in turn.\n",
+        "description": "Retrieves the result lines of a batch job, one per input line the vendor wrote. On\n`openai` and `azure` the lines of the error file (failed and expired lines) follow\nthose of the output file.\n\nWith `limit` the response is one page, read from a streamed download so a result\nfile is never held whole; `has_more` and `next_cursor` say whether and where to\ncontinue. Without `limit` every line is returned in one response.\n\nOne response holds at most `client.max_response_body_size_mb` of result lines. A page\nthat reaches it ends early, at its last whole line, with `has_more` and `next_cursor`.\nA read without `limit` that reaches it is refused with a 400 whose `param` is `limit`:\nread the batch in pages instead. A single result line larger than the limit fits no\npage. It comes back from a slim copy, marked `truncated` with its size: its ids, status,\nmodel and usage are the vendor's, but long strings in it are `\"\"` and long arrays keep\nonly their first elements. A line that cannot be read even so is listed in\n`extra_fields.parse_errors` with code `line_too_large`.\n\nSend `x-bf-api-key` (key name) or `x-bf-api-key-id` to use only the key the batch was\ncreated with: retrieve, cancel and results then make their upstream calls with that\nkey alone and report it in `x-bifrost-routing-info-key`. Without it the provider's\nbatch-enabled keys are tried in turn.\n",
         "tags": [
           "Batch"
         ],
@@ -11493,6 +11493,27 @@
                                 "type": "string"
                               }
                             }
+                          },
+                          "truncated": {
+                            "type": "object",
+                            "description": "Set on a line larger than `client.max_response_body_size_mb` on its own, which no page\ncan hold. The line was read from a slim copy: its ids, status, model and usage are the\nvendor's, but long strings in it are `\"\"` and long arrays keep only their first\nelements.\n",
+                            "properties": {
+                              "reason": {
+                                "type": "string",
+                                "enum": [
+                                  "line_too_large"
+                                ]
+                              },
+                              "bytes": {
+                                "type": "integer",
+                                "format": "int64",
+                                "description": "The line's size as the vendor wrote it."
+                              }
+                            },
+                            "required": [
+                              "reason",
+                              "bytes"
+                            ]
                           }
                         }
                       }

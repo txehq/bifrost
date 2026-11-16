@@ -114,6 +114,10 @@ type BatchAccountingDebug struct {
 	// be parsed at all. Their usage is unrecoverable — the raw results are not
 	// persisted — so the count is kept as the record of how much the row omits.
 	ParseErrorCount int `json:"parse_error_count,omitempty"`
+	// UnbilledLines is how many result lines too large for client.max_response_body_size_mb
+	// were read from a slim copy but carried no usage settlement could read (TXE-7526). Their
+	// usage is not billed; the count marks the row Incomplete, and the batch sweeper logs it.
+	UnbilledLines int `json:"unbilled_lines,omitempty"`
 	// Echo marks a read-only copy of another row's settled price, written onto the
 	// log row of a /results call that did not settle the batch. Such a row is never
 	// billed, so its NULL cost is final rather than pending: without this marker it
@@ -435,6 +439,18 @@ type BatchResultItem struct {
 
 	// Error if the individual request failed
 	Error *BatchResultError `json:"error,omitempty"`
+
+	// Truncated marks a line too large for client.max_response_body_size_mb on its own, read
+	// from a slim copy (TXE-7526): its ids, status, model and usage are the vendor's, but long
+	// strings in its body are "" and long arrays keep only their first elements. Settlement
+	// bills it from its usage.
+	Truncated *BatchResultTruncation `json:"truncated,omitempty"`
+}
+
+// BatchResultTruncation says why and how much of a result line was not kept.
+type BatchResultTruncation struct {
+	Reason string `json:"reason"` // "line_too_large"
+	Bytes  int64  `json:"bytes"`  // the line's size as the vendor wrote it
 }
 
 // Failed reports whether the result item represents a failed per-request batch result.

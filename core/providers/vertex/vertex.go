@@ -3715,6 +3715,18 @@ func (provider *VertexProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 		}
 		endpoint = gemini.AccumulateBatchResultsEndpoint(endpoint, lineEndpoint)
 		results = append(results, item)
+	}, func(_ int, big providerUtils.BatchOversizedLine) {
+		// A line too large for any page is read from its slim copy, so it is still billed
+		// from its usage (TXE-7526).
+		if big.Slim != nil {
+			if item, lineEndpoint, err := vertexBatchOutputLineToResultItem(big.Slim, isAnthropic, includeRaw); err == nil {
+				item.Truncated = big.Truncation()
+				endpoint = gemini.AccumulateBatchResultsEndpoint(endpoint, lineEndpoint)
+				results = append(results, item)
+				return
+			}
+		}
+		parseErrors = append(parseErrors, big.Error())
 	})
 	if pageErr != nil {
 		return nil, pageErr

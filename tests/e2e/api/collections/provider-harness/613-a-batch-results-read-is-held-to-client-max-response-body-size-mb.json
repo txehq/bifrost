@@ -1,6 +1,6 @@
 {
   "name": "613. A batch results read is held to client.max_response_body_size_mb: an unpaged read past it is a 400 on limit, and pages end early and walk every line once (batch-results-bound) [SERIAL]",
-  "description": "Local fixture regression for TXE-7494, no live provider calls. Run with the provider error fixture and the gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json (openai base_url -> the fixture) and providerErrorFixture=1; every case is skipped otherwise. [SERIAL]: it lowers client.max_response_body_size_mb to 1 MB, which every other row's answers are read under, so the harness runs it alone and it restores the stored value at the end. The fixture's batch_results_bound is a finished OpenAI batch whose output file is 1,500 lines of exactly 1,000 bytes (custom_id rb-0 to rb-1499), 1.5 MB in all. A results download is streamed, so before TXE-7494 the transport never applied the limit to it: an unpaged read returned all 1.5 MB, and so did one page with a huge limit. Now an unpaged read past the limit is a 400 whose param is limit and whose message says to page; a page with a huge limit ends at its last whole line within the limit, with has_more and next_cursor, and the pages together return every line exactly once; an ordinary small page is unchanged.",
+  "description": "Local fixture regression for TXE-7494, no live provider calls. Run with the provider error fixture and the gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json (openai base_url -> the fixture) and providerErrorFixture=1; every case is skipped otherwise. [SERIAL]: it lowers client.max_response_body_size_mb to 1 MB, which every other row's answers are read under, so the harness runs it alone and it restores the stored value at the end. The fixture's batch_results_bound is a finished OpenAI batch whose output file is 1,500 lines of exactly 1,000 bytes (custom_id rb-0 to rb-1499), 1.5 MB in all. A results download is streamed, so before TXE-7494 the transport never applied the limit to it: an unpaged read returned all 1.5 MB, and so did one page with a huge limit. Now an unpaged read past the limit is a 400 whose param is limit and whose message says to page; a page with a huge limit ends at its last whole line within the limit, with has_more and next_cursor, and the pages together return every line exactly once; an ordinary small page is unchanged. TXE-7526: batch_results_oversized has one 1.2 MB line among 20 ordinary ones; no page can hold that line, so it comes back from a slim copy, its ids and usage kept, its long content \"\", marked truncated, with the 20 others (613.8). Before, every page that reached it was a 400.",
   "item": [
     {
       "name": "613.1 fixture hit counters reset",
@@ -392,7 +392,75 @@
       }
     },
     {
-      "name": "613.8 [EXPECT-200] restore client.max_response_body_size_mb (batch-results-bound)",
+      "name": "613.8 [EXPECT-200] a line past the limit on its own comes back from a slim copy with its usage, marked truncated (batch-results-bound)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// TXE-7526: batch_results_oversized has one 1.2 MB line, rb-big-huge, between rb-big-9 and rb-big-10. No page",
+              "// can hold it, so it is read from a slim copy: its ids and usage are kept, its long content is \"\", and it is",
+              "// marked truncated. Before, every page that reached it was a 400, and the rest of the batch was unreadable.",
+              "var text = pm.response.text().slice(0, 2000);",
+              "pm.test('batch-results-bound: all 21 lines come back, rb-big-huge truncated with its usage', function () {",
+              "  pm.expect(pm.response.code, text).to.equal(200);",
+              "  var j = pm.response.json();",
+              "  var want = [];",
+              "  for (var n = 0; n < 20; n++) { if (n === 10) { want.push('rb-big-huge'); } want.push('rb-big-' + n); }",
+              "  pm.expect(j.results.map(function (r) { return r.custom_id; }).join(','), text).to.equal(want.join(','));",
+              "  pm.expect(j.has_more, 'has_more').to.not.equal(true);",
+              "  pm.expect(((j.extra_fields || {}).parse_errors || []).length, text).to.equal(0);",
+              "  var huge = j.results[10];",
+              "  pm.expect(huge.truncated, JSON.stringify(huge)).to.eql({ reason: 'line_too_large', bytes: 1228800 });",
+              "  pm.expect(huge.response.body.usage.total_tokens, JSON.stringify(huge)).to.equal(5);",
+              "  pm.expect(huge.response.body.choices[0].message.content, JSON.stringify(huge)).to.equal('');",
+              "  j.results.forEach(function (r, i) { if (i !== 10) { pm.expect(r.truncated, r.custom_id).to.equal(undefined); } });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches/batch_results_oversized/results?provider=openai&limit=100",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches",
+            "batch_results_oversized",
+            "results"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "openai"
+            },
+            {
+              "key": "limit",
+              "value": "100"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "613.9 [EXPECT-200] restore client.max_response_body_size_mb (batch-results-bound)",
       "event": [
         {
           "listen": "prerequest",
@@ -445,7 +513,7 @@
       }
     },
     {
-      "name": "613.9 [EXPECT-200] the original limit is stored again (batch-results-bound)",
+      "name": "613.10 [EXPECT-200] the original limit is stored again (batch-results-bound)",
       "event": [
         {
           "listen": "prerequest",

@@ -281,6 +281,20 @@ func ReadBatchResults(sources []providerUtils.BatchResultsSource, request *schem
 			return
 		}
 		results = append(results, item)
+	}, func(_ int, big providerUtils.BatchOversizedLine) {
+		// A line too large for any page is read from its slim copy, so it is still billed
+		// from its usage (TXE-7526).
+		if big.Slim != nil {
+			if item, err := ParseBatchResultLine(big.Slim, endpoint); err == nil {
+				item.Truncated = big.Truncation()
+				results = append(results, item)
+				return
+			}
+		}
+		if logger != nil {
+			logger.Warn("batch result line not read: %s", big.Error().Message)
+		}
+		parseErrors = append(parseErrors, big.Error())
 	})
 	if bifrostErr != nil {
 		return nil, bifrostErr
