@@ -335,6 +335,10 @@ func (provider *CohereProvider) ModelRetrieve(ctx *schemas.BifrostContext, key s
 	if idErr != nil {
 		return nil, idErr
 	}
+	requestURL, urlErr := providerUtils.ResourceRequestURLInContext(ctx, provider.networkConfig.BaseURL, "/v1/models/"+escapedModel, provider.customProviderConfig, escapedModel, schemas.ModelRetrieveRequest)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 
 	// Create request
 	req := fasthttp.AcquireRequest()
@@ -345,7 +349,7 @@ func (provider *CohereProvider) ModelRetrieve(ctx *schemas.BifrostContext, key s
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-	req.SetRequestURI(provider.buildRequestURL(ctx, "/v1/models/"+escapedModel, schemas.ModelRetrieveRequest))
+	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
 	if key.Value.GetValue() != "" {

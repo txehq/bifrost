@@ -935,13 +935,14 @@ func (provider *VolcengineProvider) ImageVariation(ctx *schemas.BifrostContext, 
 // in_progress with no seconds, size or usage.
 func (provider *VolcengineProvider) arkVideo(ctx *schemas.BifrostContext) *byteplus.ArkVideoAPI {
 	return &byteplus.ArkVideoAPI{
-		Client:              provider.client,
-		NetworkConfig:       provider.networkConfig,
-		TasksPath:           volcenginePathVideos,
-		ProviderName:        provider.GetProviderKey(),
-		BaseProvider:        provider.providerKey,
-		SendBackRawRequest:  providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
-		SendBackRawResponse: providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		Client:               provider.client,
+		NetworkConfig:        provider.networkConfig,
+		TasksPath:            volcenginePathVideos,
+		CustomProviderConfig: provider.customProviderConfig,
+		ProviderName:         provider.GetProviderKey(),
+		BaseProvider:         provider.providerKey,
+		SendBackRawRequest:   providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		SendBackRawResponse:  providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 	}
 }
 

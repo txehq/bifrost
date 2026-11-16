@@ -2263,7 +2263,9 @@ const OVR_BASES = ["anthropic", "gemini", "modelark", "volcengine", "replicate"]
 const ovrKeyName = (headers) => {
 	const sent = [headers.authorization, headers["x-api-key"], headers["x-goog-api-key"]].filter(Boolean).join(" ");
 	const base = OVR_BASES.find((b) => sent.includes(`ovr-fixture-key-${b}`));
-	return base ? `tk-key-ovr-${base}` : "unknown";
+	if (!base) return "unknown";
+	// tkp_ovr_moved_volcengine (folder 592) carries ovr-fixture-key-volcengine-moved.
+	return sent.includes(`ovr-fixture-key-${base}-moved`) ? `tk-key-ovr-moved-${base}` : `tk-key-ovr-${base}`;
 };
 const ovrAnthropicBatch = (status) => ({
 	id: OVR_BATCH_ID, type: "message_batch", processing_status: status, created_at: "2026-11-11T00:00:00Z", expires_at: "2026-11-12T00:00:00Z",
@@ -2304,7 +2306,25 @@ const ovrAnswers = {
 		"DELETE file_delete": { status: 204, raw: "" },
 	},
 };
+// The model and video calls moved by request_path_overrides (folder 592, TXE-7096): tkp_ovr_anthropic and
+// tkp_ovr_gemini move model_retrieve, and tkp_ovr_moved_volcengine moves video_retrieve, video_download and
+// video_delete, each to /moved/<request type>/{id}. Only OVR_MODEL_ID and OVR_VIDEO_TASK answer there.
+const OVR_MODEL_ID = "om-7096";
+ovrAnswers.anthropic["GET model_retrieve"] = { body: { type: "model", id: OVR_MODEL_ID, display_name: "Moved model", created_at: "2026-11-11T00:00:00Z" } };
+ovrAnswers.gemini["GET model_retrieve"] = { body: { name: `models/${OVR_MODEL_ID}`, displayName: "Moved model", inputTokenLimit: 1048576, outputTokenLimit: 8192, supportedGenerationMethods: ["generateContent"] } };
+ovrAnswers.modelark["GET video_retrieve"] = { body: { id: "cgt-ovr-video", model: "doubao-seedance-1-0-pro-250528", status: "succeeded", content: { video_url: "https://fixture.invalid/ovr/moved.mp4" }, usage: { completion_tokens: 108900, total_tokens: 108900 }, resolution: "720p", ratio: "16:9", duration: 5, created_at: 1762700000, updated_at: 1762700090 } };
+// A download queries the task at its own moved path (video_download, then video_retrieve), then fetches the
+// task's content.video_url through the media tunnel (TXE-7493: Ark serves no content endpoint).
+ovrAnswers.modelark["GET video_download"] = { body: { ...ovrAnswers.modelark["GET video_retrieve"].body, content: { video_url: `http://${MEDIA_PUBLIC_HOST}${OVR_ROOT}/volcengine/files/moved.mp4?X-Fixture-Signature=signed` } } };
+ovrAnswers.modelark["DELETE video_delete"] = { raw: "" };
 ovrAnswers.volcengine = ovrAnswers.modelark;
+// ovrResourceID is the one id each moved request type answers for.
+const ovrResourceID = (requestType) => {
+	if (requestType.startsWith("batch_")) return OVR_BATCH_ID;
+	if (requestType.startsWith("model_")) return OVR_MODEL_ID;
+	if (requestType.startsWith("video_")) return "cgt-ovr-video";
+	return OVR_FILE_ID;
+};
 // Video on the same custom providers (folder 485 rows 21-28, TXE-7085). A custom provider on these bases names
 // itself in the video ids it returns, so a retrieve, download or delete with that id is routed back to it, with its
 // own key; before, it returned the base's suffix and those calls went to the built-in provider. The calls take the
@@ -2337,6 +2357,8 @@ const ovrVideoAnswer = (base, method, rest) => {
 	// Ark's task list, one page holding that task (folder 413, TXE-7045).
 	if (method === "GET" && rest === tasks) return json({ items: [task()], total: 1 });
 	if (method === "GET" && rest === "/files/video.mp4") return { status: 200, contentType: "video/mp4", body: "ovr video bytes" };
+	// The file the moved download's task names (folder 592.4).
+	if (method === "GET" && rest === "/files/moved.mp4") return { status: 200, contentType: "video/mp4", body: "ovr moved video bytes" };
 	if (method === "DELETE" && rest === `${tasks}/${OVR_VIDEO_TASK}`) return { status: 200, body: "" };
 	return undefined;
 };
@@ -2347,7 +2369,7 @@ const ovrAnswer = (method, path) => {
 	if (video) return video;
 	const [base, moved, requestType, id, ...more] = path.slice(OVR_ROOT.length + 1).split("/");
 	const answer = moved === "moved" && more.length === 0 && ovrAnswers[base] ? ovrAnswers[base][`${method} ${requestType}`] : undefined;
-	if (!answer || id !== (requestType.startsWith("batch_") ? OVR_BATCH_ID : OVR_FILE_ID)) return notFound;
+	if (!answer || id !== ovrResourceID(requestType)) return notFound;
 	return { status: answer.status || 200, contentType: answer.contentType, body: answer.raw !== undefined ? answer.raw : JSON.stringify(answer.body) };
 };
 

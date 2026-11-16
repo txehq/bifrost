@@ -214,16 +214,22 @@ func (provider *BytePlusProvider) doBytePlusRequest(ctx *schemas.BifrostContext,
 // request_path_overrides, the key as a bearer token, and Ark's error envelope parsed on a non-2xx.
 // It returns the decoded body of a 2xx answer.
 func doArkRequest(ctx *schemas.BifrostContext, client *fasthttp.Client, networkConfig schemas.NetworkConfig, key schemas.Key, method, path, rawQuery string, jsonData []byte, sendBackRawRequest, sendBackRawResponse bool) ([]byte, time.Duration, *schemas.BifrostError) {
+	requestURL := networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, path)
+	if rawQuery != "" {
+		requestURL += "?" + rawQuery
+	}
+	return doArkRequestURL(ctx, client, networkConfig, key, method, requestURL, jsonData, sendBackRawRequest, sendBackRawResponse)
+}
+
+// doArkRequestURL is doArkRequest to a URL already resolved, such as a task call placed by its
+// request_path_overrides template (ArkVideoAPI.taskURL).
+func doArkRequestURL(ctx *schemas.BifrostContext, client *fasthttp.Client, networkConfig schemas.NetworkConfig, key schemas.Key, method, requestURL string, jsonData []byte, sendBackRawRequest, sendBackRawResponse bool) ([]byte, time.Duration, *schemas.BifrostError) {
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
 	providerUtils.SetExtraHeaders(ctx, req, networkConfig.ExtraHeaders, nil)
-	requestURL := networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, path)
-	if rawQuery != "" {
-		requestURL += "?" + rawQuery
-	}
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(method)
 	if value := key.Value.GetValue(); value != "" {
