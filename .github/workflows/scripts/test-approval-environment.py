@@ -42,6 +42,18 @@ GATED_JOBS = {
     ("go-unit-tests.yml", "api-integrations"),
     ("go-unit-tests.yml", "live-tests-off"),
     ("workflow-lint.yml", "check-egress-allowlist"),
+    ("docs-validation.yml", "check-broken-links"),
+}
+
+# pull_request jobs that check out the pull request's own code and run it without the
+# approval expression, recorded when the rule below was added (TXE-7592). Each is gated or
+# removed from this list by TXE-7597; a new job may not be added here.
+KNOWN_UNGATED = {
+    ("action-runtime-guardrails.yml", "check-action-runtimes"),
+    ("codex-review.yml", "check-test"),
+    ("workflow-lint.yml", "release-no-main-push"),
+    ("workflow-lint.yml", "dockerfile-health"),
+    ("workflow-lint.yml", "helm-publish-index"),
 }
 
 REPO = "txehq/bifrost"
@@ -234,8 +246,59 @@ def environment_jobs():
     return found
 
 
+def runs_pr_code(job):
+    """True when a job checks out the triggering ref, which on pull_request is the PR's code
+    (an actions/checkout step with no ref:, or a ref other than the base branch)."""
+    for step in job.get("steps") or []:
+        if isinstance(step, dict) and str(step.get("uses", "")).startswith("actions/checkout@"):
+            ref = str((step.get("with") or {}).get("ref", ""))
+            if "pull_request.base" not in ref:
+                return True
+    return False
+
+
+def ungated_pr_jobs():
+    """(workflow, job) for every job of a pull_request workflow that runs the PR's code
+    without the approval expression and without needing a job that has it."""
+    found = set()
+    for path in sorted(glob.glob(os.path.join(ROOT, "*.yml"))):
+        with open(path) as fh:
+            doc = yaml.safe_load(fh) or {}
+        on = doc.get("on", doc.get(True)) or {}
+        if isinstance(on, str):
+            on = {on: None}
+        if isinstance(on, list):
+            on = {k: None for k in on}
+        if "pull_request" not in on and "pull_request_target" not in on:
+            continue
+        jobs = doc.get("jobs") or {}
+
+        def gated(job_id, seen=()):
+            job = jobs.get(job_id) or {}
+            env = job.get("environment")
+            env = env.get("name") if isinstance(env, dict) else env
+            if isinstance(env, str) and "pr-testing" in env:
+                return True
+            needs = job.get("needs") or []
+            needs = [needs] if isinstance(needs, str) else needs
+            return any(n not in seen and gated(n, seen + (job_id,)) for n in needs)
+
+        for job_id, job in jobs.items():
+            if isinstance(job, dict) and runs_pr_code(job) and not gated(job_id):
+                if "push" in str(job.get("if", "")) and "pull_request" not in str(job.get("if", "")):
+                    continue  # runs only on push
+                found.add((os.path.basename(path), job_id))
+    return found
+
+
 def main():
     failures = []
+    ungated = ungated_pr_jobs()
+    for key in sorted(ungated - KNOWN_UNGATED):
+        failures.append(f"{key[0]} job {key[1]}: runs the pull request's code with no approval environment "
+                        f"(add the expression and list it in GATED_JOBS)")
+    for key in sorted(KNOWN_UNGATED - ungated):
+        failures.append(f"{key[0]} job {key[1]}: is gated or gone now; remove it from KNOWN_UNGATED")
     jobs = environment_jobs()
     for key in sorted(GATED_JOBS - jobs.keys()):
         failures.append(f"{key[0]} job {key[1]}: no approval environment expression")

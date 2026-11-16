@@ -27,6 +27,11 @@ env:
 jobs:
   check-broken-links:
     name: Check Broken Links
+    # The job runs npx in the PR's own docs/, which honours a docs/.npmrc the PR can add, so a
+    # pull request whose head branch is in another repository waits in pr-testing for a
+    # reviewer; everyone else lands on ci-trusted-branch. The same expression as the other
+    # pull_request jobs, checked by scripts/test-approval-environment.py (connector P2, #360).
+    environment: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'pr-testing' || 'ci-trusted-branch' }}
     runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     steps:
       - name: Harden Runner
