@@ -325,6 +325,12 @@ func (s *Store) CalculateCostForEstimatedImageUsage(estimate *schemas.EstimatedI
 	for _, size := range sizes {
 		for _, quality := range qualities {
 			c := price(size, quality)
+			// An unset or auto size or quality stands for the tiers enumerated after it; the
+			// fallback prices those, never the placeholder, which per-pixel and per-tier prices
+			// cannot resolve.
+			if c == 0 && (unresolvedImageTier(size, sizes) || unresolvedImageTier(quality, qualities)) {
+				continue
+			}
 			if c == 0 && !fallbackResolved {
 				tokenFallback = s.imageTokenFallback(estimate, routingInfo, normalizeStreamRequestType(requestType), lookupScopes)
 				fallbackResolved = true
@@ -336,6 +342,12 @@ func (s *Store) CalculateCostForEstimatedImageUsage(estimate *schemas.EstimatedI
 		}
 	}
 	return cost
+}
+
+// unresolvedImageTier reports whether value is an unset or auto size or quality that the estimate
+// enumerated the tiers for.
+func unresolvedImageTier(value string, candidates []string) bool {
+	return (value == "" || value == "auto") && len(candidates) > 1
 }
 
 // estimatedImageQualityTiers are the quality values image pricing distinguishes, and

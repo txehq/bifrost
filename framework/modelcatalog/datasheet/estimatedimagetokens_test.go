@@ -74,6 +74,13 @@ func TestCalculateCostForEstimatedImageUsage_TokenPricedRows(t *testing.T) {
 	for _, quality := range []string{"", "auto"} {
 		assert.InDelta(t, 4500*8e-06, estimate(partial, schemas.OpenAI, "gpt-image-1-mini", schemas.EstimatedImageUsage{OutputImages: 1, Size: "1024x1024", Quality: quality}), 1e-12, "quality %q", quality)
 	}
+	// An unset or auto size is priced over the enumerated sizes: a per-pixel row does not charge
+	// the tokens for the placeholder, which has no pixels to price.
+	perPixel := batchStore(t, "openai", "gpt-image-2", "image_generation",
+		`{"provider": "openai", "mode": "image_generation", "output_cost_per_image_token": 3e-05, "output_cost_per_pixel": 1e-08}`)
+	for _, size := range []string{"", "auto"} {
+		assert.InDelta(t, 1792*1024*1e-08, estimate(perPixel, schemas.OpenAI, "gpt-image-2", schemas.EstimatedImageUsage{OutputImages: 1, Size: size, Quality: "high"}), 1e-12, "size %q", size)
+	}
 	// The same row with its low price set to 0: a free low-quality image stays free.
 	partialFree := batchStore(t, "openai", "gpt-image-1-mini", "image_generation",
 		`{"provider": "openai", "mode": "image_generation", "output_cost_per_image_token": 8e-06, "output_cost_per_image_above_1024_and_1024_pixels_low_quality": 0, "output_cost_per_image_above_1024_and_1024_pixels_medium_quality": 0.011}`)
