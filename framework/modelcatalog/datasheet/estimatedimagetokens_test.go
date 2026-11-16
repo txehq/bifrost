@@ -62,6 +62,17 @@ func TestCalculateCostForEstimatedImageUsage_TokenPricedRows(t *testing.T) {
 	freeImage := batchStore(t, "openai", "gpt-image-1.5", "image_generation",
 		`{"provider": "openai", "mode": "image_generation", "output_cost_per_image_token": 3.2e-05, "output_cost_per_image_high_quality": 0}`)
 	assert.Zero(t, estimate(freeImage, schemas.OpenAI, "gpt-image-1.5", schemas.EstimatedImageUsage{OutputImages: 1, Size: "1024x1024", Quality: "high"}))
+
+	// A row that prices some tiers per image, as gpt-image-1-mini prices low and medium only, still
+	// takes the tokens for a tier none of its per-image prices applies to.
+	partial := batchStore(t, "openai", "gpt-image-1-mini", "image_generation",
+		`{"provider": "openai", "mode": "image_generation", "output_cost_per_image_token": 8e-06, "output_cost_per_image_above_1024_and_1024_pixels_low_quality": 0.005, "output_cost_per_image_above_1024_and_1024_pixels_medium_quality": 0.011}`)
+	assert.InDelta(t, 4500*8e-06, estimate(partial, schemas.OpenAI, "gpt-image-1-mini", schemas.EstimatedImageUsage{OutputImages: 1, Size: "1024x1024", Quality: "high"}), 1e-12)
+	assert.InDelta(t, 0.005, estimate(partial, schemas.OpenAI, "gpt-image-1-mini", schemas.EstimatedImageUsage{OutputImages: 1, Size: "1024x1024", Quality: "low"}), 1e-12)
+	// The same row with its low price set to 0: a free low-quality image stays free.
+	partialFree := batchStore(t, "openai", "gpt-image-1-mini", "image_generation",
+		`{"provider": "openai", "mode": "image_generation", "output_cost_per_image_token": 8e-06, "output_cost_per_image_above_1024_and_1024_pixels_low_quality": 0, "output_cost_per_image_above_1024_and_1024_pixels_medium_quality": 0.011}`)
+	assert.Zero(t, estimate(partialFree, schemas.OpenAI, "gpt-image-1-mini", schemas.EstimatedImageUsage{OutputImages: 1, Size: "1024x1024", Quality: "low"}))
 }
 
 // The fallback's per-image field list is read from the struct; it must find the known fields and
