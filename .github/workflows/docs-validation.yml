@@ -1,17 +1,37 @@
 name: Docs Validation
 
+# Mintlify's broken-links check over docs/: it reports internal page links and assets. Egress
+# is blocked to everything but the hosts below (npm, Node, Mintlify), and every failure it has
+# reported on main (23 on 2026-11-16) was an internal path, not an external site.
+#
+# It runs on every pull request, not only after a merge (TXE-7592). Until then it ran only on
+# push to main and nobody saw it: main was red from 2026-05-05 (0fda493b8d, an upstream merge
+# that linked a placeholder image) to 2026-11-16, and 23 broken links had piled up from later
+# upstream syncs. No paths filter on pull_request, so the check reports on every PR head and
+# can be made required.
 on:
+  pull_request:
   push:
     branches: ["main"]
     paths:
       - "docs/**"
+      - ".github/workflows/docs-validation.yml"
 
 permissions:
   contents: read
 
+env:
+  # Pinned: `@latest` let the checker change under a commit (check-pinned-tools.py).
+  MINTLIFY_VERSION: "4.3.38"
+
 jobs:
   check-broken-links:
     name: Check Broken Links
+    # The job runs npx in the PR's own docs/, which honours a docs/.npmrc the PR can add, so a
+    # pull request whose head branch is in another repository waits in pr-testing for a
+    # reviewer; everyone else lands on ci-trusted-branch. The same expression as the other
+    # pull_request jobs, checked by scripts/test-approval-environment.py (connector P2, #360).
+    environment: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'pr-testing' || 'ci-trusted-branch' }}
     runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     steps:
       - name: Harden Runner
@@ -38,6 +58,6 @@ jobs:
       - name: Check for broken links
         working-directory: ./docs
         run: |
-          echo "Checking for broken links in documentation..."
-          npx --yes mintlify@latest broken-links
+          echo "Checking for broken links in documentation with mintlify ${MINTLIFY_VERSION}..."
+          npx --yes "mintlify@${MINTLIFY_VERSION}" broken-links
           echo "✅ No broken links found"
