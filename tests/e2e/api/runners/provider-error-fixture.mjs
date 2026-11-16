@@ -2104,25 +2104,43 @@ const RESULTS_BOUND_LINES = 1500;
 const RESULTS_BOUND_LINE_BYTES = 1000;
 let resultsBoundBytes;
 let resultsBoundUploaded = false;
+// resultsLine is one OpenAI batch output line, custom_id id, exactly bytes long with its newline.
+function resultsLine(id, bytes) {
+	const line = {
+		id: `batch_req_${id}`, custom_id: id,
+		response: { status_code: 200, request_id: `req_${id}`, body: {
+			id: `chatcmpl-${id}`, object: "chat.completion", created: 1, model: "results-bound-model",
+			choices: [{ index: 0, message: { role: "assistant", content: "" }, finish_reason: "stop" }],
+			usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
+		} },
+		error: null,
+	};
+	const bare = JSON.stringify(line).length + 1;
+	line.response.body.choices[0].message.content = "x".repeat(bytes - bare);
+	return JSON.stringify(line) + "\n";
+}
 function resultsBoundFile() {
 	if (resultsBoundBytes) return resultsBoundBytes;
 	const lines = [];
-	for (let n = 0; n < RESULTS_BOUND_LINES; n++) {
-		const line = {
-			id: `batch_req_rb_${n}`, custom_id: `rb-${n}`,
-			response: { status_code: 200, request_id: `req_rb_${n}`, body: {
-				id: `chatcmpl-rb-${n}`, object: "chat.completion", created: 1, model: "results-bound-model",
-				choices: [{ index: 0, message: { role: "assistant", content: "" }, finish_reason: "stop" }],
-				usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
-			} },
-			error: null,
-		};
-		const bare = JSON.stringify(line).length + 1;
-		line.response.body.choices[0].message.content = "x".repeat(RESULTS_BOUND_LINE_BYTES - bare);
-		lines.push(JSON.stringify(line) + "\n");
-	}
+	for (let n = 0; n < RESULTS_BOUND_LINES; n++) lines.push(resultsLine(`rb-${n}`, RESULTS_BOUND_LINE_BYTES));
 	resultsBoundBytes = Buffer.from(lines.join(""));
 	return resultsBoundBytes;
+}
+
+// Folder 613 (TXE-7526): 20 ordinary lines around one line of 1.2 MB, past a 1 MB limit on its own.
+const RESULTS_OVERSIZED_BATCH_ID = "batch_results_oversized";
+const RESULTS_OVERSIZED_FILE_ID = "file-results-oversized-output";
+const RESULTS_OVERSIZED_LINE_BYTES = 1200 * 1024;
+let resultsOversizedBytes;
+function resultsOversizedFile() {
+	if (resultsOversizedBytes) return resultsOversizedBytes;
+	const lines = [];
+	for (let n = 0; n < 20; n++) {
+		if (n === 10) lines.push(resultsLine("rb-big-huge", RESULTS_OVERSIZED_LINE_BYTES));
+		lines.push(resultsLine(`rb-big-${n}`, RESULTS_BOUND_LINE_BYTES));
+	}
+	resultsOversizedBytes = Buffer.from(lines.join(""));
+	return resultsOversizedBytes;
 }
 
 // Zhipu bigmodel batch (folder 407, TXE-6665). bigmodel is the z.ai domestic site: OpenAI-shaped files and
@@ -3099,9 +3117,16 @@ const handleRequest = (req, res) => {
 		countHit("results_bound.retrieve");
 		return send(200, {}, JSON.stringify({ ...fixtureBatch("completed"), id: RESULTS_BOUND_BATCH_ID, output_file_id: RESULTS_BOUND_FILE_ID, request_counts: { total: RESULTS_BOUND_LINES, completed: RESULTS_BOUND_LINES, failed: 0 } }));
 	}
-	if (req.method === "GET" && path === `/v1/files/${RESULTS_BOUND_FILE_ID}/content`) {
-		countHit("results_bound.content");
-		const file = resultsBoundFile();
+	// Folder 613 (TXE-7526): a finished batch of 20 ordinary lines (rb-big-0 to rb-big-19) with one 1.2 MB line
+	// between rb-big-9 and rb-big-10, past the 1 MB limit on its own, so no page can hold it.
+	if (req.method === "GET" && path === `/v1/batches/${RESULTS_OVERSIZED_BATCH_ID}`) {
+		countHit("results_oversized.retrieve");
+		return send(200, {}, JSON.stringify({ ...fixtureBatch("completed"), id: RESULTS_OVERSIZED_BATCH_ID, output_file_id: RESULTS_OVERSIZED_FILE_ID, request_counts: { total: 21, completed: 21, failed: 0 } }));
+	}
+	const resultsFile = { [`/v1/files/${RESULTS_BOUND_FILE_ID}/content`]: ["results_bound.content", resultsBoundFile], [`/v1/files/${RESULTS_OVERSIZED_FILE_ID}/content`]: ["results_oversized.content", resultsOversizedFile] }[path];
+	if (req.method === "GET" && resultsFile) {
+		countHit(resultsFile[0]);
+		const file = resultsFile[1]();
 		const range = /^bytes=(\d+)-$/.exec(req.headers.range || "");
 		if (range) {
 			const from = Number(range[1]);

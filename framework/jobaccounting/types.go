@@ -310,6 +310,9 @@ type Settlement struct {
 	UnpricedCount int
 	FailedCount   int
 	UnpricedModel string
+	// UnbilledLines counts result lines too large to read whole, read from a slim copy, that
+	// carried no usage (TXE-7526): their usage is not in Cost or Usage.
+	UnbilledLines int
 }
 
 // JobRequest is one settlement attempt.

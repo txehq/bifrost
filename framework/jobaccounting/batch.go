@@ -163,7 +163,9 @@ func NewBatchSweeper(store SweepStore, logStore AggregateLogStore, pricing Prici
 		// and operators grep for it.
 		config.ClaimedBy = "batch-sweeper:" + newInstanceID()
 	}
-	return NewSweeper(store, logStore, pricing, NewBatchSettler(fetcher), emitter, usageReporter, config)
+	settler := NewBatchSettler(fetcher)
+	settler.logger = config.Logger
+	return NewSweeper(store, logStore, pricing, settler, emitter, usageReporter, config)
 }
 
 // BatchSettler prices provider batch jobs. It is the Settler for
@@ -171,10 +173,17 @@ func NewBatchSweeper(store SweepStore, logStore AggregateLogStore, pricing Prici
 // everything about claiming, writing and reporting lives in the engine.
 //
 // fetcher may be nil on the inline settlement path, where the caller already holds
-// the results and never polls.
+// the results and never polls. logger, when set (the sweeper's), receives the warning for
+// a batch with unbilled lines.
 type BatchSettler struct {
 	fetcher BatchResultFetcher
+	logger  schemas.Logger
 }
+
+// UnbilledLinesLogMessage starts the warning logged for a settled batch with result lines too
+// large to read whole that carried no readable usage (TXE-7526). Alert on it: that usage is
+// not billed. The row's batch_debug.accounting.unbilled_lines holds the count too.
+const UnbilledLinesLogMessage = "batch settlement: result lines past client.max_response_body_size_mb carried no readable usage and are not billed"
 
 func NewBatchSettler(fetcher BatchResultFetcher) *BatchSettler {
 	return &BatchSettler{fetcher: fetcher}
@@ -341,7 +350,7 @@ func combinePageEndpoints(current, page schemas.BatchEndpoint) schemas.BatchEndp
 // for the whole batch. A field settlement starts to read must be kept here too; the settlement
 // tests run every batch through this cut and compare it with the whole line.
 func settlementLine(item schemas.BatchResultItem) schemas.BatchResultItem {
-	line := schemas.BatchResultItem{ID: item.ID, CustomID: item.CustomID, Status: item.Status, Error: item.Error}
+	line := schemas.BatchResultItem{ID: item.ID, CustomID: item.CustomID, Status: item.Status, Error: item.Error, Truncated: item.Truncated}
 	if item.Response != nil {
 		line.Response = &schemas.BatchResultResponse{StatusCode: item.Response.StatusCode, Body: settlementBody(item.Response.Body)}
 	}
@@ -388,6 +397,9 @@ func (s *BatchSettler) Settle(ctx context.Context, pricing PricingManager, jobRe
 		return nil, err
 	}
 	settlement.Object = schemas.BatchResultsRequest
+	if settlement.UnbilledLines > 0 && s.logger != nil {
+		s.logger.Warn("%s provider=%s batch=%s unbilled_lines=%d", UnbilledLinesLogMessage, in.Provider, in.BatchID, settlement.UnbilledLines)
+	}
 
 	providerStatus := ""
 	if jobReq.Job != nil {
@@ -409,7 +421,7 @@ func (s *BatchSettler) Settle(ctx context.Context, pricing PricingManager, jobRe
 		settlement.UnpriceableReason = reason
 		settlement.RecordUnpriced = settlement.Usage.TotalTokens > 0
 		settlement.Model = unpricedRowModel(in.FallbackModel, settlement)
-		settlement.ApplyDebug = batchDebugFor(in, settlement.ModelBreakdowns, providerStatus, false)
+		settlement.ApplyDebug = batchDebugFor(in, settlement.ModelBreakdowns, providerStatus, false, settlement.UnbilledLines)
 		return settlement, nil
 	}
 
@@ -418,7 +430,7 @@ func (s *BatchSettler) Settle(ctx context.Context, pricing PricingManager, jobRe
 		settlement.UnpriceableReason = UnpriceableReasonMissingBatchPricing
 	}
 	settlement.Model = aggregateRowModel(in.FallbackModel, settlement.ModelBreakdowns)
-	settlement.ApplyDebug = batchDebugFor(in, settlement.ModelBreakdowns, providerStatus, settlement.Complete)
+	settlement.ApplyDebug = batchDebugFor(in, settlement.ModelBreakdowns, providerStatus, settlement.Complete, settlement.UnbilledLines)
 	return settlement, nil
 }
 
@@ -457,7 +469,7 @@ func unpricedRowModel(fallbackModel string, computed *Settlement) string {
 }
 
 // batchDebugFor builds the closure that attaches batch detail to the aggregate row.
-func batchDebugFor(in batchInput, breakdowns map[string]ModelBreakdown, providerStatus string, complete bool) func(*logstore.Log) {
+func batchDebugFor(in batchInput, breakdowns map[string]ModelBreakdown, providerStatus string, complete bool, unbilledLines int) func(*logstore.Log) {
 	return func(entry *logstore.Log) {
 		// The provider is already a column on the row, and the attribution step sets
 		// ParentRequestID for the source request, so neither is repeated here.
@@ -468,11 +480,13 @@ func batchDebugFor(in batchInput, breakdowns map[string]ModelBreakdown, provider
 			Accounting: &schemas.BatchAccountingDebug{
 				ModelBreakdowns: breakdowns,
 				ParseErrorCount: len(in.ParseErrors),
-				// Two different ways to under-state, one marker: usage that failed to price,
-				// and rows that never parsed. Parse errors are unrecoverable (the raw results
-				// are not kept), so unlike unpriced usage they do not hold the settlement back
-				// — the batch still settles, it just settles on record as short.
-				Incomplete: !complete || len(in.ParseErrors) > 0,
+				UnbilledLines:   unbilledLines,
+				// Three ways to under-state, one marker: usage that failed to price, rows that
+				// never parsed, and lines too large to read whole whose usage could not be read
+				// (TXE-7526). The last two are unrecoverable (the raw results are not kept), so
+				// unlike unpriced usage they do not hold the settlement back — the batch still
+				// settles, it just settles on record as short.
+				Incomplete: !complete || len(in.ParseErrors) > 0 || unbilledLines > 0,
 			},
 		}
 		if requestCounts := requestCountsForAggregateLog(in); !requestCounts.IsZero() {
@@ -587,6 +601,7 @@ func summarizeResults(pricing PricingManager, in batchInput) (*Settlement, error
 	pricedCount := 0
 	unpricedCount := 0
 	failedCount := 0
+	unbilledLines := 0
 
 	for _, item := range in.Results {
 		if item.Failed() {
@@ -599,6 +614,11 @@ func summarizeResults(pricing PricingManager, in batchInput) (*Settlement, error
 		}
 		if !extracted.hasUsage {
 			unpricedCount++
+			if item.Truncated != nil {
+				// A line too large to read whole whose slim copy shows no usage: whatever it
+				// cost is not billed, and that must not pass silently (TXE-7526).
+				unbilledLines++
+			}
 			continue
 		}
 		usageSeen = true
@@ -684,6 +704,7 @@ func summarizeResults(pricing PricingManager, in batchInput) (*Settlement, error
 			UnpricedModel:     unpricedModel,
 			UnpricedCount:     unpricedCount,
 			FailedCount:       failedCount,
+			UnbilledLines:     unbilledLines,
 			UnpriceableReason: reason,
 		}, nil
 	}
@@ -699,6 +720,7 @@ func summarizeResults(pricing PricingManager, in batchInput) (*Settlement, error
 		PricedCount:     pricedCount,
 		UnpricedCount:   unpricedCount,
 		FailedCount:     failedCount,
+		UnbilledLines:   unbilledLines,
 		Complete:        !missingModelSeen && !missingPricingSeen,
 	}
 	if !settlement.Complete {

@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/bytedance/sonic"
+	"github.com/capsohq/bifrost/core/network"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1011,6 +1012,55 @@ func TestGeminiBatchResultsPageTheResponsesFile(t *testing.T) {
 		after = resp.NextCursor
 	}
 	assert.Equal(t, []string{"k-0:succeeded", "k-1:succeeded", "k-2:succeeded", "k-3:succeeded", "k-4:failed"}, got)
+}
+
+// TXE-7526: a responses-file line larger than client.max_response_body_size_mb on its own fits
+// no page. It is read from a slim copy: an image line keeps its key and usageMetadata, so it is
+// billed, and is marked truncated. A line with no slim copy (not JSON) is a line_too_large
+// parse error and keeps its place, so the next line keyed by position keeps its fallback id.
+func TestGeminiBatchResultsReadALineTooLargeForAnyPage(t *testing.T) {
+	network.SetMaxResponseBodySizeMB(1)
+	t.Cleanup(func() { network.SetMaxResponseBodySizeMB(0) })
+	vendor := newGeminiBatchVendor(t)
+	vendor.batch = `{"name":"batches/big","done":true,"metadata":{"name":"batches/big","state":"BATCH_STATE_SUCCEEDED","createTime":"2026-11-10T08:00:00Z"},"response":{"responsesFile":"files/batch-out-big"}}`
+	small := func(key string) string {
+		return `{"key":"` + key + `","response":{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":2,"totalTokenCount":7},"modelVersion":"gemini-2.5-flash"}}` + "\n"
+	}
+	image := `{"key":"k-img","response":{"candidates":[{"content":{"role":"model","parts":[{"inlineData":{"mimeType":"image/png","data":"` + strings.Repeat("A", 1200<<10) + `"}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":9,"candidatesTokenCount":1290,"totalTokenCount":1299},"modelVersion":"gemini-2.5-flash-image"}}` + "\n"
+	notJSON := "garbage " + strings.Repeat("B", 1200<<10) + "\n"
+	unkeyed := `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":2,"totalTokenCount":7},"modelVersion":"gemini-2.5-flash"}}` + "\n"
+	vendor.file = small("k-0") + image + small("k-2") + notJSON + unkeyed
+	provider, keys := vendor.provider(false)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	var got []string
+	var parseErrors []schemas.BatchError
+	var after *string
+	for page := 0; ; page++ {
+		require.Less(t, page, 10, "paging did not terminate")
+		resp, bifrostErr := provider.BatchResults(ctx, keys, &schemas.BifrostBatchResultsRequest{Provider: schemas.Gemini, BatchID: "batches/big", Limit: 100, After: after})
+		require.Nil(t, bifrostErr)
+		for _, item := range resp.Results {
+			got = append(got, item.CustomID)
+			if item.CustomID == "k-img" {
+				require.NotNil(t, item.Truncated)
+				assert.Equal(t, "line_too_large", item.Truncated.Reason)
+				assert.EqualValues(t, len(image), item.Truncated.Bytes)
+				assert.EqualValues(t, 1299, item.Response.Body["usage"].(map[string]interface{})["total_tokens"])
+			} else {
+				assert.Nil(t, item.Truncated, item.CustomID)
+			}
+		}
+		parseErrors = append(parseErrors, resp.ExtraFields.ParseErrors...)
+		if !resp.HasMore {
+			break
+		}
+		after = resp.NextCursor
+	}
+	// The unkeyed line is the file's fifth (index 4), whatever happened to the two before it.
+	assert.Equal(t, []string{"k-0", "k-img", "k-2", "request-4"}, got)
+	require.Len(t, parseErrors, 1)
+	assert.Equal(t, "line_too_large", parseErrors[0].Code)
 }
 
 // The list returns each batch's display name, which is what a caller finds a batch by after a

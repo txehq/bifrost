@@ -171,7 +171,11 @@ batches-results:
       One response holds at most `client.max_response_body_size_mb` of result lines. A page
       that reaches it ends early, at its last whole line, with `has_more` and `next_cursor`.
       A read without `limit` that reaches it is refused with a 400 whose `param` is `limit`:
-      read the batch in pages instead.
+      read the batch in pages instead. A single result line larger than the limit fits no
+      page. It comes back from a slim copy, marked `truncated` with its size: its ids, status,
+      model and usage are the vendor's, but long strings in it are `""` and long arrays keep
+      only their first elements. A line that cannot be read even so is listed in
+      `extra_fields.parse_errors` with code `line_too_large`.
 
       Send `x-bf-api-key` (key name) or `x-bf-api-key-id` to use only the key the batch was
       created with: retrieve, cancel and results then make their upstream calls with that

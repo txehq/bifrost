@@ -95,13 +95,21 @@ func PageBatchResultItems(total int, after *string, limit int) (start, end int, 
 
 // readJSONLPage reads up to limit non-empty lines from r, calling onLine for each. It
 // returns the bytes consumed, which is the offset of the next unread line relative to
-// where r started, and whether any line remains after the page. limit <= 0 reads to the
-// end. A line is passed without its line ending; the slice is only valid during the call.
-// It is unexported so a provider reads result lines only through ReadBatchResultsPage,
-// which bounds an unpaged read (TXE-7494).
-func readJSONLPage(r io.Reader, limit int, onLine func(line []byte)) (consumed int64, more bool, err error) {
+// where r started, the bytes of the lines it handed on, and whether any line remains after
+// the page. limit <= 0 reads to the end. A line is passed without its line ending; the slice
+// is only valid during the call. It is unexported so a provider reads result lines only
+// through ReadBatchResultsPage, which bounds every read (TXE-7494).
+//
+// The lines handed on total at most room bytes, line endings included, and no more than room
+// is held. A line that does not fit what is left is read on without being held, streamed
+// through a lineSlimmer: if it is larger than most (the whole budget), no page can hold it,
+// so it is reported to onOversized with its size and its slim form, or nil when it has none
+// (TXE-7526); otherwise it ends the call with errResultsByteBudget and is not consumed, so a
+// later page starts at it.
+func readJSONLPage(r io.Reader, limit int, room, most int64, onLine func(line []byte), onOversized func(size int64, slim []byte)) (consumed, returned int64, more bool, err error) {
 	br := bufio.NewReaderSize(r, 64*1024)
 	count := 0
+	var line []byte
 	for {
 		if limit > 0 && count >= limit {
 			// The page is full: more is true only if a non-blank byte follows.
@@ -109,33 +117,67 @@ func readJSONLPage(r io.Reader, limit int, onLine func(line []byte)) (consumed i
 				b, readErr := br.ReadByte()
 				if readErr != nil {
 					if errors.Is(readErr, io.EOF) {
-						return consumed, false, nil
+						return consumed, returned, false, nil
 					}
-					return consumed, false, readErr
+					return consumed, returned, false, readErr
 				}
 				if b == '\n' || b == '\r' || b == ' ' || b == '\t' {
 					consumed++
 					continue
 				}
-				return consumed, true, nil
+				return consumed, returned, true, nil
 			}
 		}
-		line, readErr := br.ReadBytes('\n')
+		line = line[:0]
+		size := int64(0)
+		held := true
+		var slimmer *lineSlimmer
+		var readErr error
+		for {
+			chunk, chunkErr := br.ReadSlice('\n')
+			size += int64(len(chunk))
+			if held && returned+size > room {
+				// It does not fit what is left: stop holding it, and read on to learn whether
+				// any page could, keeping only its slim form in case none can.
+				held = false
+				slimmer = newLineSlimmer()
+				slimmer.Write(line)
+				line = nil
+			}
+			if held {
+				line = append(line, chunk...)
+			} else {
+				slimmer.Write(chunk)
+			}
+			if errors.Is(chunkErr, bufio.ErrBufferFull) {
+				continue
+			}
+			readErr = chunkErr
+			break
+		}
 		if readErr != nil && !errors.Is(readErr, io.EOF) {
 			// A line a failed read cut short is not handed on as if it were whole, and is
 			// not counted, so the next page starts at it.
-			return consumed, false, readErr
+			return consumed, returned, false, readErr
 		}
-		consumed += int64(len(line))
-		if trimmed := bytes.TrimSpace(line); len(trimmed) > 0 {
-			onLine(trimmed)
+		switch {
+		case size > most:
+			consumed += size
+			onOversized(size, slimmer.Result())
 			count++
+		case !held:
+			// A later page, with the whole budget, holds it.
+			return consumed, returned, true, errResultsByteBudget
+		default:
+			consumed += size
+			if trimmed := bytes.TrimSpace(line); len(trimmed) > 0 {
+				onLine(trimmed)
+				returned += size
+				count++
+			}
 		}
 		if readErr != nil {
-			if errors.Is(readErr, io.EOF) {
-				return consumed, false, nil
-			}
-			return consumed, false, readErr
+			return consumed, returned, false, nil
 		}
 	}
 }
@@ -344,41 +386,42 @@ type resultsByteBudget struct {
 	used  int64 // bytes of whole lines already returned
 }
 
-// wrap returns r limited to the bytes the budget has left. Reading the first byte past them
-// fails with errResultsByteBudget, so a source that ends exactly at the budget still ends
-// with io.EOF.
-func (b *resultsByteBudget) wrap(r io.Reader) io.Reader {
-	return &budgetReader{r: r, left: b.limit - b.used}
+// BatchLineTooLargeCode is the parse error a provider reports for a result line larger than
+// client.max_response_body_size_mb on its own: no page can hold it, so it is skipped
+// (TXE-7526). Settlement counts it like any line it could not read, bills every other line,
+// and marks the batch incomplete.
+const BatchLineTooLargeCode = "line_too_large"
+
+// NewBatchLineTooLargeError is the parse error for one skipped result line of size bytes.
+func NewBatchLineTooLargeError(size int64) schemas.BatchError {
+	return schemas.BatchError{
+		Code:    BatchLineTooLargeCode,
+		Message: fmt.Sprintf("a result line of %d bytes is past the gateway's response %s (client.max_response_body_size_mb) and was not read", size, formatByteLimit(network.MaxResponseBodyBytes())),
+	}
 }
 
-type budgetReader struct {
-	r    io.Reader
-	left int64
+// BatchOversizedLine is a result line larger than client.max_response_body_size_mb on its
+// own, which no page can hold (TXE-7526).
+type BatchOversizedLine struct {
+	Size int64
+	// Slim is the line rewritten small by lineSlimmer, for the provider's own line parser:
+	// its keys and short values, with long strings "" and long arrays cut. Nil when the line
+	// was not JSON that fits slimLineBytes once rewritten.
+	Slim []byte
 }
 
-func (r *budgetReader) Read(p []byte) (int, error) {
-	if r.left < 0 {
-		return 0, errResultsByteBudget
-	}
-	// Read at most one byte past the budget: that byte proves the source goes on.
-	if room := r.left + 1; room > 0 && int64(len(p)) > room {
-		p = p[:room]
-	}
-	n, err := r.r.Read(p)
-	r.left -= int64(n)
-	if r.left < 0 {
-		return n + int(r.left), errResultsByteBudget
-	}
-	return n, err
+// Truncation marks the item a provider reads from Slim.
+func (l BatchOversizedLine) Truncation() *schemas.BatchResultTruncation {
+	return &schemas.BatchResultTruncation{Reason: BatchLineTooLargeCode, Bytes: l.Size}
 }
 
-// newBatchResultsTooLargeError is the 400 for a results read that reached the byte budget
-// with nothing it could return as a page.
-func newBatchResultsTooLargeError(limit int64, paged bool) *schemas.BifrostError {
+// Error is the parse error a provider reports when it cannot read the line, even slim.
+func (l BatchOversizedLine) Error() schemas.BatchError { return NewBatchLineTooLargeError(l.Size) }
+
+// newBatchResultsTooLargeError is the 400 for an unpaged results read that reached the byte
+// budget: a caller that sent no limit expects the whole set.
+func newBatchResultsTooLargeError(limit int64) *schemas.BifrostError {
 	message := fmt.Sprintf("batch results exceed the gateway's response %s (client.max_response_body_size_mb): read them in pages with `limit` and `after`", formatByteLimit(limit))
-	if paged {
-		message = fmt.Sprintf("a batch result line exceeds the gateway's response %s (client.max_response_body_size_mb)", formatByteLimit(limit))
-	}
 	return &schemas.BifrostError{
 		IsBifrostError: true,
 		StatusCode:     schemas.Ptr(fasthttp.StatusBadRequest),
@@ -408,7 +451,15 @@ func newBatchResultsTooLargeError(limit int64, paged bool) *schemas.BifrostError
 // caller to page, since a caller that sent no limit expects the whole set. Every read is held
 // to it, the provider job accounting sweeper's included: settlement walks the pages
 // (TXE-7513).
-func ReadBatchResultsPage(sources []BatchResultsSource, request *schemas.BifrostBatchResultsRequest, onLine func(source int, line []byte)) (*BatchResultsPage, *schemas.BifrostError) {
+//
+// A line larger than the limit on its own fits no page (TXE-7526). It is read through without
+// being held, counts toward the limit like any line, and is handed to onOversized with its
+// size and slim form. The provider reads the slim form with its own line parser and marks the
+// item Truncated, so settlement still bills the line from its usage; a line with no slim form,
+// or one its parser rejects, goes in the provider's parse errors as line.Error(). Before, such
+// a line was a 400 on every page that reached it, so neither a caller nor the accounting
+// sweeper could get past it, and the batch was never billed.
+func ReadBatchResultsPage(sources []BatchResultsSource, request *schemas.BifrostBatchResultsRequest, onLine func(source int, line []byte), onOversized func(source int, line BatchOversizedLine)) (*BatchResultsPage, *schemas.BifrostError) {
 	var after *string
 	limit := 0
 	if request != nil {
@@ -426,7 +477,6 @@ func ReadBatchResultsPage(sources []BatchResultsSource, request *schemas.Bifrost
 
 	remaining := limit
 	offset := cursor.Offset
-	pageLines := 0
 	for source := cursor.Source; source < len(sources); source++ {
 		stream, bifrostErr := sources[source](offset)
 		if bifrostErr != nil {
@@ -438,20 +488,24 @@ func ReadBatchResultsPage(sources []BatchResultsSource, request *schemas.Bifrost
 		}
 		page.Latency += stream.Latency
 		read := 0
-		consumed, more, readErr := readJSONLPage(budget.wrap(stream.reader), remaining, func(line []byte) {
+		consumed, returned, more, readErr := readJSONLPage(stream.reader, remaining, budget.limit-budget.used, budget.limit, func(line []byte) {
 			read++
-			pageLines++
 			onLine(source, line)
+		}, func(size int64, slim []byte) {
+			read++
+			onOversized(source, BatchOversizedLine{Size: size, Slim: slim})
 		})
 		stream.Close()
-		budget.used += consumed
+		budget.used += returned
 		if errors.Is(readErr, errResultsByteBudget) {
-			if limit > 0 && pageLines > 0 {
+			// Only a page that already holds lines stops here: a line too large for any page
+			// is skipped instead.
+			if limit > 0 {
 				page.HasMore = true
 				page.NextCursor = schemas.Ptr(BatchResultsCursor{Source: source, Offset: offset + consumed}.Encode())
 				return page, nil
 			}
-			return nil, newBatchResultsTooLargeError(budget.limit, limit > 0)
+			return nil, newBatchResultsTooLargeError(budget.limit)
 		}
 		if readErr != nil {
 			return nil, NewBifrostUpstreamConnectionError("failed to read batch results", readErr)
