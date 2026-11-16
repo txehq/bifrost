@@ -2313,7 +2313,9 @@ const OVR_MODEL_ID = "om-7096";
 ovrAnswers.anthropic["GET model_retrieve"] = { body: { type: "model", id: OVR_MODEL_ID, display_name: "Moved model", created_at: "2026-11-11T00:00:00Z" } };
 ovrAnswers.gemini["GET model_retrieve"] = { body: { name: `models/${OVR_MODEL_ID}`, displayName: "Moved model", inputTokenLimit: 1048576, outputTokenLimit: 8192, supportedGenerationMethods: ["generateContent"] } };
 ovrAnswers.modelark["GET video_retrieve"] = { body: { id: "cgt-ovr-video", model: "doubao-seedance-1-0-pro-250528", status: "succeeded", content: { video_url: "https://fixture.invalid/ovr/moved.mp4" }, usage: { completion_tokens: 108900, total_tokens: 108900 }, resolution: "720p", ratio: "16:9", duration: 5, created_at: 1762700000, updated_at: 1762700090 } };
-ovrAnswers.modelark["GET video_download"] = { contentType: "video/mp4", raw: "ovr moved video bytes" };
+// A download queries the task at its own moved path (video_download, then video_retrieve), then fetches the
+// task's content.video_url through the media tunnel (TXE-7493: Ark serves no content endpoint).
+ovrAnswers.modelark["GET video_download"] = { body: { ...ovrAnswers.modelark["GET video_retrieve"].body, content: { video_url: `http://${MEDIA_PUBLIC_HOST}${OVR_ROOT}/volcengine/files/moved.mp4?X-Fixture-Signature=signed` } } };
 ovrAnswers.modelark["DELETE video_delete"] = { raw: "" };
 ovrAnswers.volcengine = ovrAnswers.modelark;
 // ovrResourceID is the one id each moved request type answers for.
@@ -2355,6 +2357,8 @@ const ovrVideoAnswer = (base, method, rest) => {
 	// Ark's task list, one page holding that task (folder 413, TXE-7045).
 	if (method === "GET" && rest === tasks) return json({ items: [task()], total: 1 });
 	if (method === "GET" && rest === "/files/video.mp4") return { status: 200, contentType: "video/mp4", body: "ovr video bytes" };
+	// The file the moved download's task names (folder 592.4).
+	if (method === "GET" && rest === "/files/moved.mp4") return { status: 200, contentType: "video/mp4", body: "ovr moved video bytes" };
 	if (method === "DELETE" && rest === `${tasks}/${OVR_VIDEO_TASK}`) return { status: 200, body: "" };
 	return undefined;
 };

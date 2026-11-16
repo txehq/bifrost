@@ -144,7 +144,7 @@
       }
     },
     {
-      "name": "592.4 [NO-CONTENT] tkp_ovr_moved_volcengine video_download: GET /v1/videos/{id}/content reaches /moved/video_download/{video_id} on the volcengine base (resource path overrides)",
+      "name": "592.4 [NO-CONTENT] tkp_ovr_moved_volcengine video_download: GET /v1/videos/{id}/content queries the task at /moved/video_download/{video_id} on the volcengine base, then fetches its video_url (resource path overrides)",
       "event": [
         {
           "listen": "prerequest",
@@ -168,15 +168,18 @@
           "script": {
             "type": "text/javascript",
             "exec": [
-              "pm.test('the video bytes came from the moved path', function () {",
+              "pm.test('the video bytes are the file the moved task names', function () {",
               "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
               "  pm.expect(pm.response.text()).to.equal('ovr moved video bytes');",
               "});",
               "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
               "  pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
               "  var calls = res.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/ovr/') === 0; });",
-              "  pm.test('one call reached GET /pp/ovr/volcengine/moved/video_download/cgt-ovr-video with tk-key-ovr-moved-volcengine', function () {",
-              "    pm.expect(calls.map(function (c) { return c.method + ' ' + c.path + ' ' + c.key; }), JSON.stringify(calls)).to.eql(['GET /pp/ovr/volcengine/moved/video_download/cgt-ovr-video tk-key-ovr-moved-volcengine']);",
+              "  pm.test('the task was queried at GET /pp/ovr/volcengine/moved/video_download/cgt-ovr-video, then its content.video_url was fetched (TXE-7493: Ark serves no content endpoint)', function () {",
+              "    pm.expect(calls.map(function (c) { return c.method + ' ' + c.path; }), JSON.stringify(calls)).to.eql(['GET /pp/ovr/volcengine/moved/video_download/cgt-ovr-video', 'GET /pp/ovr/volcengine/files/moved.mp4']);",
+              "  });",
+              "  pm.test('the task query carried tk-key-ovr-moved-volcengine and the file fetch carried none', function () {",
+              "    pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(calls)).to.eql(['tk-key-ovr-moved-volcengine', 'unknown']);",
               "  });",
               "});"
             ]
