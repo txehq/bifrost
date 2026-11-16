@@ -43,18 +43,17 @@ GATED_JOBS = {
     ("go-unit-tests.yml", "live-tests-off"),
     ("workflow-lint.yml", "check-egress-allowlist"),
     ("docs-validation.yml", "check-broken-links"),
-}
-
-# pull_request jobs that check out the pull request's own code and run it without the
-# approval expression, recorded when the rule below was added (TXE-7592). Each is gated or
-# removed from this list by TXE-7597; a new job may not be added here.
-KNOWN_UNGATED = {
     ("action-runtime-guardrails.yml", "check-action-runtimes"),
     ("codex-review.yml", "check-test"),
     ("workflow-lint.yml", "release-no-main-push"),
     ("workflow-lint.yml", "dockerfile-health"),
     ("workflow-lint.yml", "helm-publish-index"),
 }
+
+# pull_request jobs allowed to check out the pull request's own code without the approval
+# expression. Empty since TXE-7597 gated the five recorded by TXE-7592; a job added here needs
+# a written reason why it does not run the pull request's code.
+KNOWN_UNGATED = set()
 
 REPO = "txehq/bifrost"
 

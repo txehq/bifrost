@@ -213,6 +213,10 @@ jobs:
 
   release-no-main-push:
     name: Release scripts leave main to reviewed PRs
+    # Runs scripts from the pull request's own checkout, so a pull request whose head branch
+    # is in another repository waits in pr-testing for a reviewer; everyone else lands on
+    # ci-trusted-branch. Checked by scripts/test-approval-environment.py (TXE-7597).
+    environment: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'pr-testing' || 'ci-trusted-branch' }}
     runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     timeout-minutes: 10
     steps:
@@ -251,6 +255,10 @@ jobs:
 
   dockerfile-health:
     name: Image health commands exist in their base images
+    # Runs scripts from the pull request's own checkout, so a pull request whose head branch
+    # is in another repository waits in pr-testing for a reviewer; everyone else lands on
+    # ci-trusted-branch. Checked by scripts/test-approval-environment.py (TXE-7597).
+    environment: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'pr-testing' || 'ci-trusted-branch' }}
     runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     timeout-minutes: 10
     steps:
@@ -279,6 +287,10 @@ jobs:
 
   helm-publish-index:
     name: Helm index publication keeps fork history
+    # Runs scripts from the pull request's own checkout, so a pull request whose head branch
+    # is in another repository waits in pr-testing for a reviewer; everyone else lands on
+    # ci-trusted-branch. Checked by scripts/test-approval-environment.py (TXE-7597).
+    environment: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'pr-testing' || 'ci-trusted-branch' }}
     runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     timeout-minutes: 10
     steps:
