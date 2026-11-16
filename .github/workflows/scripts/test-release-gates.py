@@ -16,7 +16,6 @@ workflow turns its shared built-in cache off.
 Usage: python3 test-release-gates.py
 """
 import ast
-import json
 import os
 import re
 import subprocess
@@ -593,95 +592,23 @@ class ReleaseOnlyFromAChosenCommit(unittest.TestCase):
 
 
 WORKFLOW_DOC = yaml.safe_load(WORKFLOW.read_text())
-SHARED_GROUP = "release-pipeline"
 
 
-def concurrency_group(event_name, commits, run_id):
-    """Evaluates release-pipeline.yml's workflow-level concurrency group for one run, with
-    GitHub's semantics for what the expression uses: `*` object filters, toJSON (indented,
-    each path quoted), case-insensitive contains, format, and &&/|| returning an operand."""
-    expr = str(WORKFLOW_DOC["concurrency"]["group"]).strip()
-    assert expr.startswith("${{") and expr.endswith("}}"), expr
-    expr = expr[3:-2]
-    expr = re.sub(r"\bgithub\.event\.commits\.\*\.(added|modified|removed)\b", r"_files('\1')", expr)
-    expr = re.sub(r"\bgithub\.event\.commits\b", "_commits", expr)
-    expr = expr.replace("github.event_name", "_event").replace("github.run_id", "_run_id")
-    expr = expr.replace("&&", " and ").replace("||", " or ").replace("toJSON(", "_tojson(")
-    tree = ast.parse(" ".join(expr.split()), mode="eval")
-    names = {"_files", "_commits", "_event", "_run_id", "_tojson", "contains", "format"}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Name):
-            assert node.id in names, f"unsupported name {node.id} in the concurrency group"
-        elif not isinstance(node, (ast.Expression, ast.Call, ast.Constant, ast.BoolOp, ast.And, ast.Or,
-                                   ast.Compare, ast.Eq, ast.NotEq, ast.Load, ast.UnaryOp, ast.Not)):
-            raise AssertionError(f"unsupported element {ast.dump(node)} in the concurrency group")
-    scope = {
-        "_files": lambda key: [c.get(key, []) for c in commits],
-        "_commits": commits,
-        "_event": event_name,
-        "_run_id": str(run_id),
-        "_tojson": lambda value: json.dumps(value, indent=2),
-        "contains": lambda haystack, needle: needle.lower() in str(haystack).lower(),
-        "format": lambda template, *args: template.format(*args),
-    }
-    return eval(compile(tree, "concurrency.group", "eval"), {"__builtins__": {}}, scope)
+class ReleasesShareOneGroup(unittest.TestCase):
+    """Two runs that may release must never publish at once: both could see the same tag
+    missing and race to create it in release-bifrost-http-finalize.sh. So every run joins
+    one static workflow-level group. It may not be chosen from the push payload's file
+    lists, which Actions leaves out (TXE-7511, connector P1 on #358), and no job may
+    declare a group, because jobs of one run sharing a group serialize and cancel each
+    other. Keeping non-release pushes out of the group is TXE-7566."""
 
+    def test_every_run_joins_one_static_group(self):
+        self.assertEqual(WORKFLOW_DOC["concurrency"], {"group": "release-pipeline", "cancel-in-progress": False})
 
-def push(*paths, message="merge"):
-    return [{"message": message, "added": [], "modified": list(paths), "removed": []}]
-
-
-class ANonReleasePushCannotReplaceARelease(unittest.TestCase):
-    """GitHub keeps one pending run per concurrency group and cancels the older one when a
-    newer run joins it, and cancel-in-progress is off, so the release run waiting there (or
-    for its approval) is safe only from runs that are not in its group. A push that may not
-    release must therefore get a group of its own (TXE-7511: on 2026-11-15 the attempt-2
-    re-run of sync.11's release was replaced by a later merge's run before it started)."""
-
-    VERSION_RE = re.compile(re.search(r"grep -E '([^']+)'", TRIGGER_SCRIPT.read_text()).group(1))
-    PATHS = [
-        "transports/version", "core/version", "framework/version", "plugins/logging/version",
-        "plugins/logging/sub/version", "transports/changelog.md", "core/schemas/version.go",
-        "docs/version", ".github/workflows/release-pipeline.yml", "helm-charts/bifrost/Chart.yaml",
-    ]
-
-    def test_group_only_by_the_workflow(self):
-        self.assertIs(WORKFLOW_DOC["concurrency"]["cancel-in-progress"], False)
+    def test_no_job_declares_its_own_group(self):
         for job, spec in JOBS.items():
             with self.subTest(job=job):
-                self.assertNotIn("concurrency", spec, "a job-level group in a run serializes or cancels its own jobs")
-
-    def test_every_push_the_trigger_releases_joins_the_shared_group(self):
-        for path in self.PATHS:
-            for key in ("added", "modified", "removed"):
-                commits = [{"message": "m", "added": [], "modified": [], "removed": [], key: [path]}]
-                with self.subTest(path=path, key=key):
-                    if self.VERSION_RE.search(path):
-                        self.assertEqual(concurrency_group("push", commits, 1), SHARED_GROUP)
-
-    def test_a_push_that_changes_no_version_file_has_its_own_group(self):
-        for path in self.PATHS:
-            if path.endswith("/version"):
-                continue
-            with self.subTest(path=path):
-                group = concurrency_group("push", push(path), 101)
-                self.assertNotEqual(group, SHARED_GROUP)
-                self.assertNotEqual(group, concurrency_group("push", push(path), 102))
-
-    def test_a_commit_message_does_not_decide_the_group(self):
-        # A message ending in a version path serializes as '...transports/version"'.
-        group = concurrency_group("push", push("core/x.go", message="raise transports/version"), 7)
-        self.assertNotEqual(group, SHARED_GROUP)
-
-    def test_the_sync11_sequence(self):
-        # The bump's run holds the shared group, waiting on its approval; five merges follow.
-        bump = concurrency_group("push", push("transports/version", "transports/changelog.md"), 1)
-        later = [concurrency_group("push", push(f"core/f{i}.go"), 2 + i) for i in range(5)]
-        retry = concurrency_group("workflow_dispatch", [], 9)
-        self.assertEqual(bump, SHARED_GROUP)
-        self.assertEqual(retry, SHARED_GROUP)
-        for group in later:
-            self.assertNotEqual(group, SHARED_GROUP, "a later merge would replace the pending release")
+                self.assertNotIn("concurrency", spec)
 
 
 if __name__ == "__main__":

@@ -12,15 +12,14 @@ on:
         type: boolean
         default: false
 
-# One release at a time. Only a run that may release joins the shared group: a dispatch, or a
-# push whose commits change a file named `version` (a superset of what release-trigger.sh
-# accepts). Any other push gets a group of its own, so it never waits behind a release and
-# can never replace a release run pending in the shared group, which keeps one pending run
-# and cancels the older (TXE-7511: sync.11's attempt 2 was lost that way). Only the commits'
-# file lists are read; toJSON quotes each path, so '/version"' matches a path ending in
-# /version. test-release-gates.py holds this to release-trigger.sh.
+# One release at a time: every run joins this group. GitHub keeps one pending run per group
+# and cancels the older one when another joins, so a later push's run can still replace a
+# pending release run; such a run releases nothing (release-trigger.sh), and the release is
+# re-run (docs/release.md). Keeping a push that may not release out of this group needs the
+# decision from the git range before the group is chosen (TXE-7566): the Actions push payload
+# has no file lists to choose it from.
 concurrency:
-  group: ${{ (github.event_name != 'push' || contains(toJSON(github.event.commits.*.added), '/version"') || contains(toJSON(github.event.commits.*.modified), '/version"') || contains(toJSON(github.event.commits.*.removed), '/version"')) && 'release-pipeline' || format('release-pipeline-no-release-{0}', github.run_id) }}
+  group: release-pipeline
   cancel-in-progress: false
 
 permissions:
