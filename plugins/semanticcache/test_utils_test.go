@@ -2,6 +2,7 @@ package semanticcache
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strconv"
 	"sync"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	bifrost "github.com/capsohq/bifrost/core"
+	"github.com/capsohq/bifrost/core/livetest"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/vectorstore"
 	mocker "github.com/capsohq/bifrost/plugins/mocker"
@@ -222,6 +224,10 @@ func (baseAccount *BaseAccount) GetConfiguredProviders() ([]schemas.ModelProvide
 }
 
 func (baseAccount *BaseAccount) GetKeysForProvider(ctx context.Context, providerKey schemas.ModelProvider) ([]schemas.Key, error) {
+	// The key reaches the live OpenAI API, so it is handed out only on the opt-in (TXE-7530).
+	if !livetest.Enabled() {
+		return nil, fmt.Errorf("live tests are off: set %s=1", livetest.OptIn)
+	}
 	return []schemas.Key{
 		{
 			Value:  *schemas.NewSecretVar("env.OPENAI_API_KEY"),
@@ -518,6 +524,8 @@ func ensureSharedTestNamespace(ctx context.Context, store vectorstore.VectorStor
 // NewTestSetupWithVectorStore creates a new test setup with custom configuration and vector store type.
 // extraPlugins are forwarded to getMockedBifrostClient — see its doc comment.
 func NewTestSetupWithVectorStore(t *testing.T, config *Config, storeType vectorstore.VectorStoreType, extraPlugins ...schemas.LLMPlugin) *TestSetup {
+	// Every client this builds sends its requests to the live OpenAI API (TXE-7530).
+	livetest.Require(t, "OPENAI_API_KEY")
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
 

@@ -112,7 +112,7 @@ def main():
                 ev = json.loads(line)
             except ValueError:
                 continue
-            if ev.get("Test") and "/" not in ev["Test"] and ev.get("Action") in ("pass", "fail", "skip"):
+            if ev.get("Test") and ev.get("Action") in ("pass", "fail", "skip"):
                 outcome[(ev["Package"], ev["Test"])] = ev["Action"]
         if proc.returncode not in (0, 1):
             failures.append(f"go test in {os.path.relpath(root, REPO)} exited {proc.returncode}: {proc.stderr[-800:]}")
@@ -120,14 +120,21 @@ def main():
             pkg = mod if rel == "." else mod + "/" + rel.replace(os.sep, "/")
             for name in sorted(tests):
                 got = outcome.get((pkg, name))
+                # A test that gates inside t.Run reports pass when every subtest skipped: that is a
+                # skip too, as long as no subtest under it passed or failed.
+                subs = [v for (p, n), v in outcome.items() if p == pkg and n.startswith(name + "/")]
+                if got == "pass" and subs and all(v == "skip" for v in subs):
+                    got = "skip"
                 if got != "skip":
-                    failures.append(f"{pkg} {name}: {got or 'did not run'}, want skip with every key set and no {OPT_IN}")
+                    ran = [n for (p, n), v in outcome.items() if p == pkg and n.startswith(name + "/") and v != "skip"]
+                    detail = f" (subtests that ran: {', '.join(sorted(ran)[:5])})" if ran else ""
+                    failures.append(f"{pkg} {name}: {got or 'did not run'}{detail}, want skip with every key set and no {OPT_IN}")
         if proc.returncode == 1 and not failures:
             failures.append(f"go test in {os.path.relpath(root, REPO)} failed: {proc.stdout[-1500:]}")
 
     for f in failures:
         print(f"FAIL {f}")
-    print(f"{len(live)} live tests, {sum(1 for v in outcome.values() if v == 'skip')} skipped, {len(failures)} failures")
+    print(f"{len(live)} live tests, {len(live) - sum(1 for f in failures if ': ' in f and 'want skip' in f)} skipped, {len(failures)} failures")
     return 1 if failures else 0
 
 

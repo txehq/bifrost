@@ -2,6 +2,7 @@ package jsonparser
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -24,6 +25,10 @@ func (baseAccount *BaseAccount) GetConfiguredProviders() ([]schemas.ModelProvide
 // GetKeysForProvider returns a mock API key configuration for testing.
 // Uses the OPENAI_API_KEY environment variable for authentication.
 func (baseAccount *BaseAccount) GetKeysForProvider(ctx context.Context, providerKey schemas.ModelProvider) ([]schemas.Key, error) {
+	// The key reaches the live OpenAI API, so it is handed out only on the opt-in (TXE-7530).
+	if !livetest.Enabled() {
+		return nil, fmt.Errorf("live tests are off: set %s=1", livetest.OptIn)
+	}
 	return []schemas.Key{
 		{
 			Value:  *schemas.NewSecretVar("env.OPENAI_API_KEY"),
