@@ -1857,6 +1857,37 @@ func BenchmarkMergeExtraParamsIntoJSON(b *testing.B) {
 			}
 		}
 	})
+	// TXE-7525: a Go caller's typed object is read through schemas.ExtraParamObject.
+	b.Run("a typed nested addition", func(b *testing.B) {
+		extra := map[string]interface{}{"stream_options": struct {
+			IncludeObfuscation bool `json:"include_obfuscation"`
+		}{}}
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if _, err := MergeExtraParamsIntoJSON(body, extra); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+// BenchmarkMergeExtraParams measures the map merge for a decoded and a typed extra object
+// under a key the body already sets (TXE-7525).
+func BenchmarkMergeExtraParams(b *testing.B) {
+	for name, extra := range map[string]interface{}{
+		"a decoded object": map[string]interface{}{"y": 2},
+		"a typed object":   typedExtraObject{Y: 2},
+	} {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				body := map[string]interface{}{"obj": map[string]interface{}{"x": 1}}
+				if err := MergeExtraParams(body, map[string]interface{}{"obj": extra}); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
 }
 
 func BenchmarkSameJSONField(b *testing.B) {

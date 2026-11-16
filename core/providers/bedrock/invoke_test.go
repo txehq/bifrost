@@ -2979,11 +2979,30 @@ func TestGuardrailConfigTypedObject(t *testing.T) {
 		})
 	}
 
-	// A typed config with a malformed tagSuffix is refused, as a decoded one is.
+	// A typed config with a malformed tagSuffix is refused, as a decoded one is (TXE-7525).
 	bad := map[string]any{"guardrailConfig": map[string]string{"guardrailIdentifier": "gr-1", "guardrailVersion": "3", "tagSuffix": "not valid!"}}
 	_, err := invokeGuardrailBodyConfig(bad)
 	require.Error(t, err)
 	require.Error(t, applyBedrockExtraParams(map[string]interface{}{"guardrailConfig": bad["guardrailConfig"]}, &BedrockConverseRequest{}))
+}
+
+// BenchmarkInvokeGuardrailHeaders measures the per-request guardrail header read for a decoded
+// and a typed guardrailConfig (TXE-7525).
+func BenchmarkInvokeGuardrailHeaders(b *testing.B) {
+	for name, config := range map[string]interface{}{
+		"a decoded config": map[string]interface{}{"guardrailIdentifier": "gr-1", "guardrailVersion": "3", "trace": "enabled"},
+		"a typed config":   typedGuardrailConfig{GuardrailIdentifier: "gr-1", GuardrailVersion: "3", Trace: "enabled"},
+	} {
+		extra := map[string]any{"guardrailConfig": config}
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				if headers := invokeGuardrailHeaders(nil, extra); len(headers) == 0 {
+					b.Fatal("no guardrail headers")
+				}
+			}
+		})
+	}
 }
 
 // TestInvokeNativeGuardrailOutcomeRoundTrip: a native InvokeModel upstream reports its guardrail
