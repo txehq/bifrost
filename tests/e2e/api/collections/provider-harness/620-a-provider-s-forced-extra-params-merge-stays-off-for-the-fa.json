@@ -1,8 +1,8 @@
 {
-  "name": "598. A provider's forced extra-params merge stays off for the fallback unless the caller enabled passthrough (TXE-7222) [SERIAL]",
+  "name": "620. A provider's forced extra-params merge stays off for the fallback unless the caller enabled passthrough (TXE-7222) [SERIAL]",
   "item": [
     {
-      "name": "598.1 [EXPECT-200] /v1/chat/completions - MiniMax fails, the moonshot fallback is not sent the extra field MiniMax was forced to take (forced-merge-fallback)",
+      "name": "620.1 [EXPECT-200] /v1/chat/completions - MiniMax fails, the moonshot fallback is not sent the extra field MiniMax was forced to take (forced-merge-fallback)",
       "request": {
         "method": "POST",
         "header": [
@@ -73,7 +73,7 @@
       ]
     },
     {
-      "name": "598.2 [EXPECT-200] /v1/chat/completions - with x-bf-passthrough-extra-params the moonshot fallback is sent the extra field (forced-merge-fallback)",
+      "name": "620.2 [EXPECT-200] /v1/chat/completions - with x-bf-passthrough-extra-params the moonshot fallback is sent the extra field (forced-merge-fallback)",
       "request": {
         "method": "POST",
         "header": [
