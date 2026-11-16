@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"path"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -504,29 +505,58 @@ func (provider *BFLProvider) ReadRawImageBody(requestType schemas.RequestType, m
 	if params.NumInferenceSteps, bifrostErr = positive("steps"); bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	return &schemas.RawImageBilling{InputImages: bflRawInputImages(members), Parameters: params}, nil
+	inputImages, bifrostErr := bflRawInputImages(members)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	return &schemas.RawImageBilling{InputImages: inputImages, Parameters: params}, nil
 }
 
-// bflRawInputImages counts the input images a raw body carries: the images array (FLUX 3), the
-// numbered input_image fields, and the fill endpoint's image. A null field carries none.
-func bflRawInputImages(members []providerUtils.JSONMember) int {
+// bflRawInputImageField matches the names BFL takes an input image under: images (FLUX 3),
+// image (fill), input_image and input_image_N.
+var bflRawInputImageField = regexp.MustCompile(`^(images|image|input_image|input_image_[0-9]+)$`)
+
+// bflRawInputImages counts the input images a raw body carries: each string of the images array
+// (FLUX 3), each numbered input_image field, and the fill endpoint's image. A null field carries
+// none. It fails closed: a name that folds (case and underscores ignored) to one of those but is
+// not spelled as BFL reads it, a name given twice, an images that is not an array of strings and
+// an image field that is not a string are refused, so BFL cannot take in an image Bifrost did not
+// count.
+func bflRawInputImages(members []providerUtils.JSONMember) (int, *schemas.BifrostError) {
 	count := 0
+	seen := map[string]bool{}
 	for _, member := range members {
+		folded := strings.ToLower(strings.ReplaceAll(member.Name, "_", ""))
+		if folded != "images" && folded != "image" && !strings.HasPrefix(folded, "inputimage") {
+			continue
+		}
+		if !bflRawInputImageField.MatchString(member.Name) {
+			return 0, schemas.NewUnsupportedParameterError(member.Name, fmt.Sprintf(
+				"bfl: the raw request body names an input image as %q, which BFL does not read under that spelling", schemas.BoundEchoedName(member.Name)))
+		}
+		if seen[member.Name] {
+			return 0, schemas.NewUnsupportedParameterError(member.Name, fmt.Sprintf(
+				"bfl: %s is named more than once in the raw request body; name it once", member.Name))
+		}
+		seen[member.Name] = true
 		if isJSONNull(member.Value) {
 			continue
 		}
-		name := strings.ToLower(member.Name)
-		switch {
-		case name == "images":
-			var images []json.RawMessage
-			if json.Unmarshal(member.Value, &images) == nil {
-				count += len(images)
+		if member.Name == "images" {
+			var images []string
+			if json.Unmarshal(member.Value, &images) != nil {
+				return 0, schemas.NewUnsupportedParameterError("images", "bfl: images must be an array of image strings")
 			}
-		case name == "image", name == "input_image", strings.HasPrefix(name, "input_image_"):
-			count++
+			count += len(images)
+			continue
 		}
+		var image string
+		if json.Unmarshal(member.Value, &image) != nil {
+			return 0, schemas.NewUnsupportedParameterError(member.Name, fmt.Sprintf("bfl: %s must be an image string", member.Name))
+		}
+		count++
 	}
-	return count
+	return count, nil
 }
 
 // isJSONNull reports whether a member's value is absent or the JSON null.

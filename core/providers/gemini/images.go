@@ -417,36 +417,59 @@ func ReadRawImageBody(body []byte) (*schemas.RawImageBilling, *schemas.BifrostEr
 }
 
 // rawInputImages counts the input images a raw Gemini-format body carries, which an edit may be
-// priced by: the parts of contents[] carrying inlineData or fileData (generateContent), and the
-// REFERENCE_TYPE_RAW entries of instances[].referenceImages (an Imagen edit; a mask is not an
-// input image), as the typed path counts them. contents and instances must be named once.
+// priced by: the parts of contents[] carrying inlineData or fileData (generateContent), and every
+// entry of instances[].referenceImages that is not a mask (an Imagen edit: raw, subject, style and
+// control references are all images the model takes in). It fails closed like the size reading:
+// contents, parts, instances, referenceImages, inlineData, fileData and referenceType named more
+// than once, a list that is not an array of objects, and a reference whose referenceType is
+// missing or not a string (Google also reads an enum as its number, which Bifrost does not
+// guess at) are refused, so the vendor cannot take in images Bifrost did not count.
 func rawInputImages(top []utils.JSONMember) (int, *schemas.BifrostError) {
 	count := 0
-	contents, bifrostErr := onlyRawMember(top, "contents", "contents")
+	contents, bifrostErr := rawArrayObjects(top, "contents", "contents")
 	if bifrostErr != nil {
 		return 0, bifrostErr
 	}
-	for _, content := range rawArrayObjects(contents) {
-		parts, _ := utils.OnlyJSONMember(content, "parts", schemas.SameJSONFieldName)
-		for _, part := range rawArrayObjects(parts) {
+	for i, content := range contents {
+		parts, bifrostErr := rawArrayObjects(content, "parts", fmt.Sprintf("contents[%d].parts", i))
+		if bifrostErr != nil {
+			return 0, bifrostErr
+		}
+		for j, part := range parts {
+			carriesImage := false
 			for _, field := range []string{"inlineData", "fileData"} {
-				if value, seen := utils.OnlyJSONMember(part, field, schemas.SameJSONFieldName); seen > 0 && strings.TrimSpace(string(value)) != "null" {
-					count++
-					break
+				value, bifrostErr := onlyRawMember(part, field, fmt.Sprintf("contents[%d].parts[%d].%s", i, j, field))
+				if bifrostErr != nil {
+					return 0, bifrostErr
 				}
+				carriesImage = carriesImage || value != nil
+			}
+			if carriesImage {
+				count++
 			}
 		}
 	}
-	instances, bifrostErr := onlyRawMember(top, "instances", "instances")
+	instances, bifrostErr := rawArrayObjects(top, "instances", "instances")
 	if bifrostErr != nil {
 		return 0, bifrostErr
 	}
-	for _, instance := range rawArrayObjects(instances) {
-		references, _ := utils.OnlyJSONMember(instance, "referenceImages", schemas.SameJSONFieldName)
-		for _, reference := range rawArrayObjects(references) {
-			kind, _ := utils.OnlyJSONMember(reference, "referenceType", schemas.SameJSONFieldName)
+	for i, instance := range instances {
+		references, bifrostErr := rawArrayObjects(instance, "referenceImages", fmt.Sprintf("instances[%d].referenceImages", i))
+		if bifrostErr != nil {
+			return 0, bifrostErr
+		}
+		for j, reference := range references {
+			param := fmt.Sprintf("instances[%d].referenceImages[%d].referenceType", i, j)
+			kind, bifrostErr := onlyRawMember(reference, "referenceType", param)
+			if bifrostErr != nil {
+				return 0, bifrostErr
+			}
 			var referenceType string
-			if json.Unmarshal(kind, &referenceType) == nil && referenceType == "REFERENCE_TYPE_RAW" {
+			if kind == nil || json.Unmarshal(kind, &referenceType) != nil {
+				return 0, schemas.NewUnsupportedParameterError(param, fmt.Sprintf(
+					"gemini: %s must be named, as a string such as REFERENCE_TYPE_RAW, in a raw request body", param))
+			}
+			if referenceType != "REFERENCE_TYPE_MASK" {
 				count++
 			}
 		}
@@ -454,23 +477,27 @@ func rawInputImages(top []utils.JSONMember) (int, *schemas.BifrostError) {
 	return count, nil
 }
 
-// rawArrayObjects reads value as a JSON array and returns the members of each element that is a
-// JSON object; anything else reads as empty.
-func rawArrayObjects(value json.RawMessage) [][]utils.JSONMember {
-	if value == nil {
-		return nil
+// rawArrayObjects reads the one member named field as a JSON array of objects and returns each
+// element's members; none when it is absent or null. Named more than once, or anything but an
+// array of objects, is refused, naming param.
+func rawArrayObjects(members []utils.JSONMember, field, param string) ([][]utils.JSONMember, *schemas.BifrostError) {
+	value, bifrostErr := onlyRawMember(members, field, param)
+	if bifrostErr != nil || value == nil {
+		return nil, bifrostErr
 	}
 	var elements []json.RawMessage
 	if json.Unmarshal(value, &elements) != nil {
-		return nil
+		return nil, schemas.NewUnsupportedParameterError(param, fmt.Sprintf("gemini: %s must be a JSON array in a raw request body", param))
 	}
 	objects := make([][]utils.JSONMember, 0, len(elements))
-	for _, element := range elements {
-		if members, err := utils.JSONObjectMembers(element); err == nil {
-			objects = append(objects, members)
+	for i, element := range elements {
+		object, err := utils.JSONObjectMembers(element)
+		if err != nil {
+			return nil, schemas.NewUnsupportedParameterError(param, fmt.Sprintf("gemini: %s[%d] must be a JSON object in a raw request body", param, i))
 		}
+		objects = append(objects, object)
 	}
-	return objects
+	return objects, nil
 }
 
 // onlyRawMember returns the one member same-named field (case and underscores ignored, Google's

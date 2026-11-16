@@ -287,6 +287,17 @@ func TestReadRawImageBodyReadsTheSizeTheTypedPathReads(t *testing.T) {
 		`{"parameters":[]}`,
 		`[{"parameters":{}}]`,
 		`{"contents":[],"Contents":[]}`,
+		// Input images are read as strictly as the size: a list Bifrost cannot read, a name given
+		// twice, or a reference type it would have to guess is refused, never counted as none.
+		`{"contents":{"parts":[]}}`,
+		`{"contents":[{"parts":{"inlineData":{"data":"aW1n"}}}]}`,
+		`{"contents":[{"parts":[],"Parts":[{"inlineData":{"data":"aW1n"}}]}]}`,
+		`{"contents":[{"parts":["aW1n"]}]}`,
+		`{"contents":[{"parts":[{"inlineData":{"data":"a"},"inline_data":{"data":"b"}}]}]}`,
+		`{"instances":[{"referenceImages":{"referenceType":"REFERENCE_TYPE_RAW"}}]}`,
+		`{"instances":[{"referenceImages":[{"referenceType":1}]}]}`,
+		`{"instances":[{"referenceImages":[{"referenceImage":{"bytesBase64Encoded":"aW1n"}}]}]}`,
+		`{"instances":[{"referenceImages":[{"referenceType":"REFERENCE_TYPE_MASK","reference_type":"REFERENCE_TYPE_RAW"}]}]}`,
 	} {
 		_, bifrostErr := ReadRawImageBody([]byte(body))
 		assert.NotNil(t, bifrostErr, "%s was read, want it refused", body)
@@ -297,6 +308,8 @@ func TestReadRawImageBodyReadsTheSizeTheTypedPathReads(t *testing.T) {
 		`{"contents":[{"parts":[{"text":"x"},{"inlineData":{"mimeType":"image/png","data":"aW1n"}},{"inlineData":{"mimeType":"image/png","data":"aW1n"}}]}]}`:                                                                             2,
 		`{"instances":[{"prompt":"x","referenceImages":[{"referenceType":"REFERENCE_TYPE_RAW","referenceImage":{"bytesBase64Encoded":"aW1n"}},{"referenceType":"REFERENCE_TYPE_MASK","referenceImage":{"bytesBase64Encoded":"aW1n"}}]}]}`: 1,
 		`{"contents":[{"parts":[{"text":"x"}]}]}`: 0,
+		`{"contents":[{"parts":[{"file_data":{"file_uri":"gs://b/a.png"}}]},{"parts":[{"inline_data":{"data":"aW1n"}}]}]}`:                                                                   2,
+		`{"instances":[{"prompt":"x","referenceImages":[{"referenceType":"REFERENCE_TYPE_SUBJECT"},{"referenceType":"REFERENCE_TYPE_STYLE"},{"reference_type":"REFERENCE_TYPE_CONTROL"}]}]}`: 3,
 	} {
 		billing, bifrostErr := ReadRawImageBody([]byte(body))
 		require.Nil(t, bifrostErr, body)

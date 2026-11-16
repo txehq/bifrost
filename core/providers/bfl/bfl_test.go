@@ -629,6 +629,13 @@ func TestBFLReadsARawTaskBodysSize(t *testing.T) {
 		`{"prompt":"x","aspect_ratio":"1:1","aspectRatio":"21:9"}`,
 		`{"prompt":"x","steps":10,"steps":50}`,
 		`{"prompt":"x"} {}`,
+		// Input images are read as strictly: BFL must not take in an image Bifrost did not count.
+		`{"prompt":"x","images":"https://example.com/a.png"}`,
+		`{"prompt":"x","images":[{"url":"https://example.com/a.png"}]}`,
+		`{"prompt":"x","Input_Image":"https://example.com/a.png"}`,
+		`{"prompt":"x","inputImage2":"https://example.com/a.png"}`,
+		`{"prompt":"x","input_image":"a","input_image":"b"}`,
+		`{"prompt":"x","input_image":{"url":"a"}}`,
 	} {
 		if _, bifrostErr := provider.ReadRawImageBody(schemas.ImageEditTaskRequest, "flux-2-pro", []byte(body)); bifrostErr == nil {
 			t.Errorf("%s was read, want it refused", body)
