@@ -2178,6 +2178,9 @@ func (provider *AnthropicProvider) BatchRetrieve(ctx *schemas.BifrostContext, ke
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		// Create request
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
@@ -2268,6 +2271,9 @@ func (provider *AnthropicProvider) BatchCancel(ctx *schemas.BifrostContext, keys
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		// Create request
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
@@ -2389,6 +2395,9 @@ func (provider *AnthropicProvider) BatchResults(ctx *schemas.BifrostContext, key
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		// Create request
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
@@ -2803,6 +2812,9 @@ func (provider *AnthropicProvider) FileRetrieve(ctx *schemas.BifrostContext, key
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		// Create request
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
@@ -2893,6 +2905,9 @@ func (provider *AnthropicProvider) FileDelete(ctx *schemas.BifrostContext, keys 
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		// Create request
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
@@ -3013,6 +3028,9 @@ func (provider *AnthropicProvider) FileContent(ctx *schemas.BifrostContext, keys
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		// Create request
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()

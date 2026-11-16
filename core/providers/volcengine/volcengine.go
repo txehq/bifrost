@@ -1241,6 +1241,9 @@ func (provider *VolcengineProvider) FileRetrieve(ctx *schemas.BifrostContext, ke
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
 
@@ -1317,6 +1320,9 @@ func (provider *VolcengineProvider) FileDelete(ctx *schemas.BifrostContext, keys
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
 
@@ -1406,6 +1412,9 @@ func (provider *VolcengineProvider) FileContent(ctx *schemas.BifrostContext, key
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
 

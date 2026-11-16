@@ -2586,6 +2586,14 @@ const handleRequest = (req, res) => {
 		});
 		return undefined;
 	}
+	// Folder 615 (TXE-7301): openai_keywalk has two keys at /pp/keywalk, and each answers this file with 2 MiB, past the
+	// 1 MB response limit the folder sets. The gateway must stop at the first key's refusal: each download is
+	// counted under keywalk.<key name>, so a walk that went on to the second key shows two.
+	if (req.method === "GET" && path === "/pp/keywalk/v1/files/keywalk-oversize/content") {
+		const auth = req.headers.authorization || "";
+		countHit(auth.endsWith("keywalk-secret-a") ? "keywalk.keywalk-key-a" : auth.endsWith("keywalk-secret-b") ? "keywalk.keywalk-key-b" : "keywalk.unknown");
+		return send(200, { "Content-Type": "application/octet-stream" }, "x".repeat(OVERSIZE_BYTES));
+	}
 	if (req.method === "GET" && path === "/__wire") {
 		return send(200, {}, JSON.stringify({ data: [{ calls: wireCalls }] }));
 	}

@@ -15155,3 +15155,97 @@ func TestProviderQueueErrorType(t *testing.T) {
 		t.Errorf("other error: %q", got)
 	}
 }
+
+// TXE-7301: no provider walks on to another key after an answer past the response limit
+// (client.max_response_body_size_mb). The next key would download the same object again, up to
+// the limit, and a later key's error would replace the bifrost_internal refusal the caller is
+// owed. Every loop over keys that records a per-key error in lastErr must open with
+//
+//	if providerUtils.StopKeyWalk(lastErr) {
+//		break
+//	}
+//
+// so a loop added later without it fails here, by file and line.
+func TestEveryKeyWalkStopsAtAResponseLimitRefusal(t *testing.T) {
+	fset := token.NewFileSet()
+	checked := 0
+	err := filepath.WalkDir("providers", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if d.Name() == "utils" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			return err
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			loop, ok := n.(*ast.RangeStmt)
+			if !ok || !rangesOverKeys(loop.X) || !assignsLastErr(loop.Body) {
+				return true
+			}
+			checked++
+			if !opensWithStopKeyWalk(loop.Body) {
+				t.Errorf("%s: a loop over keys records lastErr but does not open with `if providerUtils.StopKeyWalk(lastErr) { break }`", fset.Position(loop.Pos()))
+			}
+			return true
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("scan providers: %v", err)
+	}
+	if checked < 50 {
+		t.Fatalf("found %d key-walk loops; the scan no longer sees them", checked)
+	}
+}
+
+func rangesOverKeys(x ast.Expr) bool {
+	ident, ok := x.(*ast.Ident)
+	return ok && strings.HasSuffix(strings.ToLower(ident.Name), "keys")
+}
+
+func assignsLastErr(body *ast.BlockStmt) bool {
+	found := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		if assign, ok := n.(*ast.AssignStmt); ok {
+			for _, lhs := range assign.Lhs {
+				if ident, ok := lhs.(*ast.Ident); ok && ident.Name == "lastErr" {
+					found = true
+				}
+			}
+		}
+		return !found
+	})
+	return found
+}
+
+func opensWithStopKeyWalk(body *ast.BlockStmt) bool {
+	if len(body.List) == 0 {
+		return false
+	}
+	guard, ok := body.List[0].(*ast.IfStmt)
+	if !ok || guard.Init != nil || guard.Else != nil || len(guard.Body.List) != 1 {
+		return false
+	}
+	call, ok := guard.Cond.(*ast.CallExpr)
+	if !ok || len(call.Args) != 1 {
+		return false
+	}
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "StopKeyWalk" {
+		return false
+	}
+	if arg, ok := call.Args[0].(*ast.Ident); !ok || arg.Name != "lastErr" {
+		return false
+	}
+	branch, ok := guard.Body.List[0].(*ast.BranchStmt)
+	return ok && branch.Tok == token.BREAK && branch.Label == nil
+}

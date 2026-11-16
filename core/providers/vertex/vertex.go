@@ -3450,6 +3450,9 @@ func (provider *VertexProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys 
 	// until one resolves the job; return the last error only if all keys fail.
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		startTime := time.Now()
 		job, rawResponse, bifrostErr := provider.vertexGetBatchJob(ctx, key, request.BatchID)
 		if bifrostErr != nil {
@@ -3525,6 +3528,9 @@ func (provider *VertexProvider) BatchCancel(ctx *schemas.BifrostContext, keys []
 	// until the cancel succeeds; return the last error only if all keys fail.
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		resp, bifrostErr := provider.batchCancelByKey(ctx, key, request)
 		if bifrostErr == nil {
 			return resp, nil
@@ -3593,6 +3599,9 @@ func (provider *VertexProvider) BatchDelete(ctx *schemas.BifrostContext, keys []
 	// until the delete succeeds; return the last error only if all keys fail.
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		resp, bifrostErr := provider.batchDeleteByKey(ctx, key, request)
 		if bifrostErr == nil {
 			return resp, nil
@@ -3661,6 +3670,9 @@ func (provider *VertexProvider) BatchResults(ctx *schemas.BifrostContext, keys [
 	// until one resolves the job and reads its results; return the last error if all fail.
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		resp, bifrostErr := provider.batchResultsByKey(ctx, key, request)
 		if bifrostErr == nil {
 			return resp, nil
@@ -4325,6 +4337,9 @@ func (provider *VertexProvider) FileRetrieve(ctx *schemas.BifrostContext, keys [
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		resp, err := provider.fileRetrieveByKey(ctx, key, request)
 		if err == nil {
 			return resp, nil
@@ -4412,6 +4427,9 @@ func (provider *VertexProvider) FileDelete(ctx *schemas.BifrostContext, keys []s
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		resp, err := provider.fileDeleteByKey(ctx, key, request)
 		if err == nil {
 			return resp, nil
@@ -4478,6 +4496,9 @@ func (provider *VertexProvider) FileContent(ctx *schemas.BifrostContext, keys []
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		resp, err := provider.fileContentByKey(ctx, key, request)
 		if err == nil {
 			return resp, nil

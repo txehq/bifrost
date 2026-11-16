@@ -337,6 +337,9 @@ func (provider *GeminiProvider) CachedContentList(ctx *schemas.BifrostContext, k
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		resp, latency, bifrostErr := provider.cachedContentListByKey(ctx, key, request)
 		if bifrostErr == nil {
 			resp.ExtraFields = schemas.BifrostResponseExtraFields{Latency: latency.Milliseconds()}
@@ -414,6 +417,9 @@ func (provider *GeminiProvider) CachedContentRetrieve(ctx *schemas.BifrostContex
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		resp, latency, bifrostErr := provider.cachedContentRetrieveByKey(ctx, key, request)
 		if bifrostErr == nil {
 			resp.ExtraFields = schemas.BifrostResponseExtraFields{Latency: latency.Milliseconds()}
@@ -521,6 +527,9 @@ func (provider *GeminiProvider) CachedContentUpdate(ctx *schemas.BifrostContext,
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		resp, latency, bifrostErr := provider.cachedContentUpdateByKey(ctx, key, request)
 		if bifrostErr == nil {
 			resp.ExtraFields = schemas.BifrostResponseExtraFields{Latency: latency.Milliseconds()}
@@ -578,6 +587,9 @@ func (provider *GeminiProvider) CachedContentDelete(ctx *schemas.BifrostContext,
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		resp, latency, bifrostErr := provider.cachedContentDeleteByKey(ctx, key, request)
 		if bifrostErr == nil {
 			resp.ExtraFields = schemas.BifrostResponseExtraFields{Latency: latency.Milliseconds()}

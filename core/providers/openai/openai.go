@@ -6568,6 +6568,9 @@ func (provider *OpenAIProvider) FileRetrieve(ctx *schemas.BifrostContext, keys [
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		// Minted only when the loop reaches it, so a working earlier key never waits on this
 		// key's token endpoint; a mint failure is this key's error and the next key is tried.
 		key, keyErr := provider.resolveKey(ctx, key)
@@ -6659,6 +6662,9 @@ func (provider *OpenAIProvider) FileDelete(ctx *schemas.BifrostContext, keys []s
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		// Minted only when the loop reaches it, so a working earlier key never waits on this
 		// key's token endpoint; a mint failure is this key's error and the next key is tried.
 		key, keyErr := provider.resolveKey(ctx, key)
@@ -6764,6 +6770,9 @@ func (provider *OpenAIProvider) FileContent(ctx *schemas.BifrostContext, keys []
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		// Minted only when the loop reaches it, so a working earlier key never waits on this
 		// key's token endpoint; a mint failure is this key's error and the next key is tried.
 		key, keyErr := provider.resolveKey(ctx, key)
@@ -7218,6 +7227,9 @@ func (provider *OpenAIProvider) retrieveBatch(ctx *schemas.BifrostContext, keys 
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		// Minted only when the loop reaches it, so a working earlier key never waits on this
 		// key's token endpoint; a mint failure is this key's error and the next key is tried.
 		key, keyErr := provider.resolveKey(ctx, key)
@@ -7307,6 +7319,9 @@ func (provider *OpenAIProvider) BatchCancel(ctx *schemas.BifrostContext, keys []
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		// Minted only when the loop reaches it, so a working earlier key never waits on this
 		// key's token endpoint; a mint failure is this key's error and the next key is tried.
 		key, keyErr := provider.resolveKey(ctx, key)
@@ -7487,6 +7502,9 @@ func (provider *OpenAIProvider) batchResultFileSource(ctx *schemas.BifrostContex
 	return func(offset int64) (*providerUtils.ResultStream, *schemas.BifrostError) {
 		var lastErr *schemas.BifrostError
 		for _, key := range keys {
+			if providerUtils.StopKeyWalk(lastErr) {
+				break
+			}
 			// Minted only when the loop reaches it, so a working earlier key never waits on
 			// this key's token endpoint; a mint failure is this key's error and the next key
 			// is tried.
@@ -7812,6 +7830,9 @@ func (provider *OpenAIProvider) ContainerRetrieve(ctx *schemas.BifrostContext, k
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		// Minted only when the loop reaches it, so a working earlier key never waits on this
 		// key's token endpoint; a mint failure is this key's error and the next key is tried.
 		key, keyErr := provider.resolveKey(ctx, key)
@@ -7934,6 +7955,9 @@ func (provider *OpenAIProvider) ContainerDelete(ctx *schemas.BifrostContext, key
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		// Minted only when the loop reaches it, so a working earlier key never waits on this
 		// key's token endpoint; a mint failure is this key's error and the next key is tried.
 		key, keyErr := provider.resolveKey(ctx, key)
@@ -8335,6 +8359,9 @@ func (provider *OpenAIProvider) ContainerFileRetrieve(ctx *schemas.BifrostContex
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		// Minted only when the loop reaches it, so a working earlier key never waits on this
 		// key's token endpoint; a mint failure is this key's error and the next key is tried.
 		key, keyErr := provider.resolveKey(ctx, key)
@@ -8467,6 +8494,9 @@ func (provider *OpenAIProvider) ContainerFileContent(ctx *schemas.BifrostContext
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		// Minted only when the loop reaches it, so a working earlier key never waits on this
 		// key's token endpoint; a mint failure is this key's error and the next key is tried.
 		key, keyErr := provider.resolveKey(ctx, key)
@@ -8584,6 +8614,9 @@ func (provider *OpenAIProvider) ContainerFileDelete(ctx *schemas.BifrostContext,
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		// Minted only when the loop reaches it, so a working earlier key never waits on this
 		// key's token endpoint; a mint failure is this key's error and the next key is tried.
 		key, keyErr := provider.resolveKey(ctx, key)

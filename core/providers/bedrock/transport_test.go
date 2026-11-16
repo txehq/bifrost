@@ -1,6 +1,7 @@
 package bedrock
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -18,6 +19,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1072,4 +1074,48 @@ func TestMakeStreamingRequest_ErrorBodyOverTheLimitIsBifrostsRefusal(t *testing.
 	assert.Equal(t, schemas.ErrorTypeBifrostInternal, bifrostErr.ExtraFields.ErrorType)
 	require.NotNil(t, bifrostErr.AllowFallbacks)
 	assert.False(t, *bifrostErr.AllowFallbacks, "an over-limit answer must not go to a fallback")
+}
+
+// TXE-7301: an S3 object past the response limit ends the walk over keys. Before, FileContent
+// recorded the refusal and tried the next key: the object was downloaded again, up to the limit,
+// for every further key, and a later key's authorization error replaced the bifrost_internal
+// refusal. With two keys, the object is now requested once and the refusal is returned.
+func TestFileContent_OverLimitObjectIsDownloadedOnceAcrossKeys(t *testing.T) {
+	network.SetMaxResponseBodySizeMB(1)
+	t.Cleanup(func() { network.SetMaxResponseBodySizeMB(0) })
+	var mu sync.Mutex
+	gets := map[string]int{}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		credential := "other"
+		if strings.Contains(r.Header.Get("Authorization"), "Credential=AKIDFIRST/") {
+			credential = "first"
+		}
+		mu.Lock()
+		gets[credential]++
+		mu.Unlock()
+		if credential == "first" {
+			w.Header().Set("Content-Type", "application/octet-stream")
+			_, _ = w.Write(bytes.Repeat([]byte("x"), 2<<20))
+			return
+		}
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`<Error><Code>AccessDenied</Code><Message>Access Denied</Message></Error>`))
+	}))
+	defer ts.Close()
+
+	provider := newTestProviderWithServer(t, ts)
+	key := func(accessKey string) schemas.Key {
+		return schemas.Key{BedrockKeyConfig: &schemas.BedrockKeyConfig{
+			AccessKey: *schemas.NewSecretVar(accessKey),
+			SecretKey: *schemas.NewSecretVar("secret"),
+			Region:    schemas.NewSecretVar("us-east-1"),
+		}}
+	}
+	_, bifrostErr := provider.FileContent(testBedrockCtx(), []schemas.Key{key("AKIDFIRST"), key("AKIDSECOND")}, &schemas.BifrostFileContentRequest{FileID: "s3://bucket-a/out/results.jsonl"})
+	require.NotNil(t, bifrostErr)
+	assert.Equal(t, schemas.ErrorTypeBifrostInternal, bifrostErr.ExtraFields.ErrorType, "the refusal, not the second key's 403: %+v", bifrostErr)
+	assert.Contains(t, bifrostErr.Error.Message, "limit 1 MiB")
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, map[string]int{"first": 1}, gets, "the over-limit object is requested once, and no further key is tried")
 }

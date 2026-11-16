@@ -348,6 +348,36 @@
         "default_request_timeout_in_seconds": 10
       }
     },
+    "openai_keywalk": {
+      "keys": [
+        {
+          "name": "keywalk-key-a",
+          "value": "keywalk-secret-a",
+          "models": [
+            "*"
+          ],
+          "weight": 1,
+          "use_for_batch_api": true
+        },
+        {
+          "name": "keywalk-key-b",
+          "value": "keywalk-secret-b",
+          "models": [
+            "*"
+          ],
+          "weight": 1,
+          "use_for_batch_api": true
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai"
+      },
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/keywalk",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
     "openai_video_keys": {
       "keys": [
         {
