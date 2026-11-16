@@ -11,9 +11,12 @@
 # it builds the request. Measured on 16 Nov 2026 with go1.27.3 against a proxy that fails each
 # path's first request: `base|base` fails, `base|base/` succeeds after one failure per path.
 #
-# The trailing ',direct' keeps the go command's default: fetch from the origin only when the
-# proxy answers 404 or 410 (a module it does not serve), not on an error.
+# ⚠️ NO 'direct'. The go command's default ends in ',direct': on a 404 or 410 it fetches the
+# module from its origin (git over github.com, go.googlesource.com, ...). harden-runner allows
+# proxy.golang.org and github.com in the Go jobs, not every VCS host, so a direct fetch would trade
+# a clear "not on the proxy" error for a blocked-host one. Every module the workspace needs is on
+# proxy.golang.org, and GOSUMDB verifies what it serves.
 set -euo pipefail
 base="${1:-https://proxy.golang.org}"
 base="${base%/}"
-printf '%s|%s/|%s//,direct\n' "$base" "$base" "$base"
+printf '%s|%s/|%s//\n' "$base" "$base" "$base"

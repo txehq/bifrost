@@ -79,6 +79,15 @@ injected() { grep -c 'INJECTED' "$WORK/proxy.log" || true; }
 fails=0
 fail() { echo "FAIL: $*"; fails=$((fails + 1)); }
 
+# 0. The real list names proxy.golang.org only: no 'direct' entry, whose VCS fetch would hit a host
+#    harden-runner blocks.
+real="$("$LIST")"
+if [[ "$real" == "https://proxy.golang.org|https://proxy.golang.org/|https://proxy.golang.org//" ]]; then
+  echo "ok: GOPROXY=$real (three attempts at proxy.golang.org, no direct)"
+else
+  fail "the list is '$real'; want three spellings of https://proxy.golang.org and no direct"
+fi
+
 # 1. Control.
 start_proxy 1
 if out="$(build "http://127.0.0.1:$PORT")"; then
