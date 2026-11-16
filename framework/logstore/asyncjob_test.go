@@ -2,6 +2,7 @@ package logstore
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -477,4 +478,44 @@ func TestAsyncJobCleaner_ReapsExpiredWebhookDeliveries(t *testing.T) {
 	assert.ErrorIs(t, err, ErrNotFound)
 	_, err = store.FindWebhookDeliveryByID(ctx, "d-live")
 	assert.NoError(t, err)
+}
+
+// TXE-7047, contract C6: the error a failed job stores is what GET /v1/async/<route>/{job_id}
+// returns, and nothing sends it through the transport that resolves error_type on the sync routes.
+// The executor resolves it before storing, so a vendor error carries the sync route's
+// classification, and the executor's own failure (a panic) carries bifrost_internal.
+func TestExecuteJob_StoredErrorCarriesErrorType(t *testing.T) {
+	executor := newWebhookTestExecutor(t, nil)
+	submit := func(operation AsyncOperation) map[string]any {
+		t.Helper()
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		job, err := executor.SubmitJob(ctx, 3600, operation, schemas.TranscriptionRequest)
+		require.NoError(t, err)
+		stored := waitForJobStatus(t, executor.logstore, job.ID)
+		require.Equal(t, schemas.AsyncJobStatusFailed, stored.Status)
+		var body map[string]any
+		require.NoError(t, json.Unmarshal([]byte(stored.Error), &body), stored.Error)
+		return body
+	}
+	errorType := func(body map[string]any) any {
+		extra, _ := body["extra_fields"].(map[string]any)
+		return extra["error_type"]
+	}
+
+	status := fasthttp.StatusPaymentRequired
+	vendorErr := func() *schemas.BifrostError {
+		return &schemas.BifrostError{
+			StatusCode:  &status,
+			Error:       &schemas.ErrorField{Message: "Project does not have enough credits", Code: schemas.Ptr("ASR_PAYMENT_REQUIRED")},
+			ExtraFields: schemas.BifrostErrorExtraFields{Provider: "deepgram", RequestType: schemas.TranscriptionRequest},
+		}
+	}
+	sync := vendorErr()
+	want := sync.ResolveErrorType() // what the sync route sends for the same vendor error
+	require.Equal(t, schemas.ErrorTypeProviderBilling, want)
+	stored := submit(func(*schemas.BifrostContext) (interface{}, *schemas.BifrostError) { return nil, vendorErr() })
+	assert.Equal(t, string(want), errorType(stored), "a vendor 402 on an async job: %v", stored)
+
+	panicked := submit(func(*schemas.BifrostContext) (interface{}, *schemas.BifrostError) { panic("boom") })
+	assert.Equal(t, string(schemas.ErrorTypeBifrostInternal), errorType(panicked), "the executor's own failure: %v", panicked)
 }

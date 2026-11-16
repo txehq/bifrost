@@ -393,6 +393,75 @@
           }
         }
       ]
+    },
+    {
+      "name": "330.8 [EXPECT-202] openai upstream 503 on an async job: the stored error carries provider_overloaded, the error_type the sync route sends for the same vendor error (fork error types)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/upstream-503~async\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/async/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "async",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var base = pm.variables.get('baseUrl');",
+              "pm.test('the async job is accepted', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(202);",
+              "  pm.expect(pm.response.json().id, pm.response.text()).to.be.a('string').that.is.not.empty;",
+              "});",
+              "var id = pm.response.json().id;",
+              "function poll(attempt) {",
+              "  pm.sendRequest({ url: base + '/v1/async/chat/completions/' + id, method: 'GET' }, function (err, res) {",
+              "    var job = res && res.json();",
+              "    if (!err && job && (job.status === 'pending' || job.status === 'processing') && attempt < 30) { setTimeout(function () { poll(attempt + 1); }, 500); return; }",
+              "    pm.test('the failed job carries the error_type the sync route sends for the same vendor error (TXE-7047)', function () {",
+              "      pm.expect(err, String(err)).to.equal(null);",
+              "      pm.expect(job.status, res.text()).to.eql('failed');",
+              "      pm.expect(job.status_code, res.text()).to.eql(503);",
+              "      pm.expect(job.error && job.error.extra_fields && job.error.extra_fields.error_type, 'error_type: ' + res.text()).to.eql('provider_overloaded');",
+              "      pm.expect(job.error && job.error.error && job.error.error.code, 'vendor code: ' + res.text()).to.eql('service_unavailable');",
+              "    });",
+              "  });",
+              "}",
+              "poll(0);"
+            ]
+          }
+        }
+      ]
     }
   ]
 }

@@ -71,7 +71,8 @@ type asyncTranscriptionJob struct {
 		} `json:"error"`
 		StatusCode  int `json:"status_code"`
 		ExtraFields struct {
-			Provider string `json:"provider"`
+			Provider  string `json:"provider"`
+			ErrorType string `json:"error_type"`
 		} `json:"extra_fields"`
 	} `json:"error"`
 }
@@ -170,6 +171,10 @@ func TestAsyncTranscriptionRouteKeepsDeepgramErrorOnTheJob(t *testing.T) {
 	}
 	if job.StatusCode != http.StatusPaymentRequired || job.Error.StatusCode != http.StatusPaymentRequired || job.Error.Error.Code != "ASR_PAYMENT_REQUIRED" || job.Error.ExtraFields.Provider != "deepgram" {
 		t.Fatalf("job = %+v / %+v, want Deepgram's 402 and code kept on the job", job, job.Error)
+	}
+	// TXE-7047, contract C6: the job's error is classified as the sync route classifies it.
+	if job.Error.ExtraFields.ErrorType != string(schemas.ErrorTypeProviderBilling) {
+		t.Fatalf("job error_type = %q, want provider_billing as on /v1/audio/transcriptions", job.Error.ExtraFields.ErrorType)
 	}
 	got := upstream.only(t)
 	if got.contentType != "audio/mpeg" || string(got.body) != "ID3fake-mp3" {
