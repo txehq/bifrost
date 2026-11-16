@@ -740,3 +740,39 @@ func TestCache_FillDoesNotCacheErrorsAcrossLeaders(t *testing.T) {
 	assert.Equal(t, int32(2), calls.Load())
 	assert.Equal(t, "v2", v)
 }
+
+// BenchmarkCache_FillMiss measures a Fill leader for a key that is not cached,
+// the request-path case on every cache miss (OAuth user tokens, MCP header
+// credentials): the leader now also reads the cache before it loads
+// (TXE-4982). Each iteration evicts the key first, the same cost before and
+// after the change.
+func BenchmarkCache_FillMiss(b *testing.B) {
+	c := New[string](64)
+	load := fillWith("v1", "id1")
+	ctx := context.Background()
+	b.ReportAllocs()
+	for b.Loop() {
+		c.Evict("k1")
+		if _, err := c.Fill(ctx, "k1", load); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkCache_FillCachedKey measures Fill for a key that is already cached:
+// the late caller that missed on Get just before another leader stored. It now
+// returns the stored value instead of running the loader and storing again.
+func BenchmarkCache_FillCachedKey(b *testing.B) {
+	c := New[string](64)
+	load := fillWith("v1", "id1")
+	ctx := context.Background()
+	if _, err := c.Fill(ctx, "k1", load); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := c.Fill(ctx, "k1", load); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
