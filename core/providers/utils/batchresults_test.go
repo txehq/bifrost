@@ -657,6 +657,63 @@ func TestReadBatchResultsPageEndsAPageWithAHugeLimitAtTheLimit(t *testing.T) {
 	}
 }
 
+// TXE-7526 review: the slim copies a page hands on count against its byte budget like any line.
+// 24 oversized lines whose slim copies are about 50 KB each (1.2 MB together) cannot come back
+// in one page under a 1 MiB limit: pages end before a slim copy that would pass it, every line
+// still comes back exactly once, and an unpaged read is the 400.
+func TestReadBatchResultsPageCountsSlimCopiesAgainstTheLimit(t *testing.T) {
+	limit := setResultsLimitMB(t, 1)
+	var file strings.Builder
+	for i := range 24 {
+		// 1,000 short fields make a ~50 KB slim copy; the padding makes the line past the limit.
+		fmt.Fprintf(&file, `{"custom_id":"big-%02d"`, i)
+		for f := range 1000 {
+			fmt.Fprintf(&file, `,"f%03d":"%036d"`, f, f)
+		}
+		fmt.Fprintf(&file, `,"pad":"%s"}`+"\n", strings.Repeat("x", int(limit)))
+	}
+	data := file.String()
+
+	seen := map[string]int{}
+	var after *string
+	pages := 0
+	for {
+		pages++
+		if pages > 50 {
+			t.Fatal("paging did not terminate")
+		}
+		var pageSlim int64
+		page, bifrostErr := ReadBatchResultsPage([]BatchResultsSource{countingSource(data, new(int64))}, &schemas.BifrostBatchResultsRequest{Limit: 1 << 30, After: after},
+			func(int, []byte) { t.Fatal("no line here fits a page whole") },
+			func(_ int, big BatchOversizedLine) {
+				pageSlim += int64(len(big.Slim))
+				seen[string(big.Slim[:len(`{"custom_id":"big-00"`)])]++
+			})
+		if bifrostErr != nil {
+			t.Fatalf("page %d: %s", pages, bifrostErr.Error.Message)
+		}
+		if pageSlim > limit {
+			t.Fatalf("page %d handed on %d bytes of slim copies under a %d-byte limit", pages, pageSlim, limit)
+		}
+		if !page.HasMore {
+			break
+		}
+		after = page.NextCursor
+	}
+	if len(seen) != 24 || pages < 2 {
+		t.Fatalf("%d distinct lines in %d pages; want all 24 in more than one page", len(seen), pages)
+	}
+	for id, n := range seen {
+		if n != 1 {
+			t.Fatalf("%s came back %d times", id, n)
+		}
+	}
+	_, bifrostErr := ReadBatchResultsPage([]BatchResultsSource{countingSource(data, new(int64))}, nil, func(int, []byte) {}, func(int, BatchOversizedLine) {})
+	if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400 {
+		t.Fatalf("unpaged read of 1.2 MB of slim copies: error %+v, want the 400", bifrostErr)
+	}
+}
+
 // TXE-7526: a line larger than the limit on its own fits no page. It is skipped without being
 // held, reported once as line_too_large, and the pages walk past it: every other line comes
 // back exactly once, in both sources, paged or not. Before, every page that reached it was a

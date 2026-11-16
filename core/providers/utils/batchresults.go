@@ -162,8 +162,17 @@ func readJSONLPage(r io.Reader, limit int, room, most int64, onLine func(line []
 		}
 		switch {
 		case size > most:
+			// Its slim copy is handed on and kept like any line, so it counts against the
+			// page's bytes. One that does not fit what is left ends the page, and the next page
+			// reads the line again; on an empty page it always fits (slimLineBytes is far
+			// under any limit).
+			slim := slimmer.Result()
+			if returned+int64(len(slim)) > room && returned > 0 {
+				return consumed, returned, true, errResultsByteBudget
+			}
 			consumed += size
-			onOversized(size, slimmer.Result())
+			returned += int64(len(slim))
+			onOversized(size, slim)
 			count++
 		case !held:
 			// A later page, with the whole budget, holds it.
