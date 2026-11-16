@@ -23,6 +23,12 @@ A push to `main` may release only when the push itself changes a version file
 nothing, tags nothing and asks nobody for a `live-providers` approval, even while a version's
 tag is still missing. `test-release-gates.py` fails if a release job can run on such a push.
 
+Such a push also stays out of the `release-pipeline` concurrency group: it gets a group of its
+own. GitHub keeps one pending run per group and cancels the older one when another joins, so a
+release run waiting there could otherwise be replaced by an unrelated merge's run before it
+started; that is how the first retry of sync.11 was lost. Only a dispatch, or a push whose
+commits change a file named `version`, joins the shared group.
+
 Before TXE-7511, every merge after a version bump re-attempted that release from its own
 commit, and each attempt waited for an approval. On sync.11 five such runs queued behind the
 release, and two had to be cancelled by hand.
@@ -37,8 +43,8 @@ gh run rerun <run-id> --failed -R txehq/bifrost
 
 A re-run uses the workflow file as it was at the run's commit, and keeps the outputs of the
 jobs that passed, so it releases the commit that was chosen. If the run was cancelled before
-it started, for example replaced in the `release-pipeline` concurrency group by a later push's
-run, re-run all of it: `gh run rerun <run-id> -R txehq/bifrost`.
+it started (another release run or a dispatch replaced it in the shared group), re-run all of
+it: `gh run rerun <run-id> -R txehq/bifrost`.
 
 When the fix for the failure is in a workflow file, a re-run cannot pick it up. Dispatch the
 pipeline on `main` instead:
