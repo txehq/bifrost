@@ -62,6 +62,10 @@ jobs:
   check-test:
     name: codex-review check fixtures
     if: github.event_name == 'pull_request'
+    # Runs scripts from the pull request's own checkout, so a pull request whose head branch
+    # is in another repository waits in pr-testing for a reviewer; everyone else lands on
+    # ci-trusted-branch. Checked by scripts/test-approval-environment.py (TXE-7597).
+    environment: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'pr-testing' || 'ci-trusted-branch' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
