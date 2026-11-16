@@ -1,4 +1,4 @@
-import { test as base, expect } from "@playwright/test";
+import { test as base, expect, type Request } from "@playwright/test";
 import { existsSync } from "fs";
 import { readFile } from "fs/promises";
 import { extname, relative, resolve } from "path";
@@ -30,7 +30,9 @@ import { AgentGatewayPage } from "../../features/agent-gateway/pages/agent-gatew
  */
 type BifrostFixtures = {
 	offlineQuarantine: void;
+	offlineExternalRequests: void;
 	serveMonacoLocally: void;
+	settleWritesBeforeClose: void;
 	closeDevProfiler: void;
 	handleLoginRedirect: void;
 	skipAutoLogin: boolean;
@@ -64,6 +66,8 @@ type BifrostFixtures = {
 // tests that depend on editor features rather than the rendered text.
 const MONACO_VS_DIR = resolve(__dirname, "../../../../ui/node_modules/monaco-editor/min/vs");
 const MONACO_CDN = /^https:\/\/cdn\.jsdelivr\.net\/npm\/monaco-editor@[^/]+\/min\/vs\/(.+)$/;
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+const WRITE_SETTLE_TIMEOUT_MS = 5000;
 const MONACO_CONTENT_TYPES: Record<string, string> = {
 	".js": "application/javascript",
 	".css": "text/css",
@@ -85,8 +89,28 @@ export const test = base.extend<BifrostFixtures>({
 		{ auto: true },
 	],
 
-	serveMonacoLocally: [
+	// An offline run's browser reaches only the gateway on loopback. CI blocks egress with
+	// harden-runner, whose block address drops packets rather than refusing them, so a request
+	// to any other host hung until the test's timeout. A news item's target=_blank link is one:
+	// Playwright reports a popup only once its first navigation commits, and that navigation
+	// never did, so rss-feeds.spec.ts waited 10s for a page that never came (TXE-7508). Answer
+	// every non-loopback request at once with an empty page instead. Routes on the page, and
+	// context routes added after this one (serveMonacoLocally), still take precedence.
+	offlineExternalRequests: [
 		async ({ context }, use) => {
+			if (isOfflineRun()) {
+				await context.route(
+					(url) => (url.protocol === "http:" || url.protocol === "https:") && !LOOPBACK_HOSTS.has(url.hostname),
+					(route) => route.fulfill({ status: 200, contentType: "text/html", body: "" }),
+				);
+			}
+			await use();
+		},
+		{ auto: true },
+	],
+
+	serveMonacoLocally: [
+		async ({ context, offlineExternalRequests: _registeredFirst }, use) => {
 			if (existsSync(MONACO_VS_DIR)) {
 				await context.route(MONACO_CDN, async (route) => {
 					const rel = MONACO_CDN.exec(route.request().url().split("?")[0])?.[1] ?? "";
@@ -136,6 +160,33 @@ export const test = base.extend<BifrostFixtures>({
 				{ noWaitAfter: true },
 			);
 			await use();
+		},
+		{ auto: true },
+	],
+
+	// A write the page sent is finished before the page closes. When a test ends while a write
+	// is still waiting on a page.route mock, closing the page makes Playwright continue that
+	// request to the real gateway: config-security's mocked PUT /api/config reached it that way,
+	// set the admin password to the test's StrongPassword1!, and every later test on the worker
+	// failed at the login form (TXE-7508). Bounded, because a streaming request may never end.
+	settleWritesBeforeClose: [
+		async ({ page }, use) => {
+			const writes = new Set<Request>();
+			page.on("request", (r) => {
+				if (r.method() !== "GET" && r.method() !== "HEAD" && r.method() !== "OPTIONS") writes.add(r);
+			});
+			const done = (r: Request) => writes.delete(r);
+			page.on("requestfinished", done);
+			page.on("requestfailed", done);
+			await use();
+			const deadline = Date.now() + WRITE_SETTLE_TIMEOUT_MS;
+			while (writes.size > 0 && !page.isClosed() && Date.now() < deadline) {
+				const timeout = Math.max(1, deadline - Date.now());
+				await Promise.race([
+					page.waitForEvent("requestfinished", { timeout }).catch(() => {}),
+					page.waitForEvent("requestfailed", { timeout }).catch(() => {}),
+				]);
+			}
 		},
 		{ auto: true },
 	],

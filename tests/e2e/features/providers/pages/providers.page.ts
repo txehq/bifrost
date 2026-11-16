@@ -600,7 +600,7 @@ export class ProvidersPage extends BasePage {
 
     const tab = this.page.getByTestId(`provider-tab-${tabName}`)
     await tab.click()
-    await this.page.waitForTimeout(300)
+    await expect(tab).toHaveAttribute('data-state', 'active')
   }
 
   /**

@@ -88,12 +88,20 @@ export class LogsPage extends BasePage {
   async gotoWithSmallPageSize(limit = 5): Promise<void> {
     await this.page.goto(`/workspace/logs?limit=${limit}&offset=0`)
     await waitForNetworkIdle(this.page)
-    await this.logsTable.or(this.page.locator('text=/No logs found|No results found/i')).waitFor({ state: 'visible', timeout: 10000 })
-    // The useTablePageSize hook may override the limit from URL, causing a re-render.
-    // Wait for pagination to become visible, retrying if the dynamic page size effect causes a brief re-render.
-    await this.page.waitForTimeout(1500) // Allow useTablePageSize effect to settle
-    await waitForNetworkIdle(this.page)
+    await this.waitForLogsListed()
     await this.paginationControls.waitFor({ state: 'visible', timeout: 10000 })
+  }
+
+  /**
+   * Wait until the table shows rows or its empty state, and any page-size refetch the table's
+   * own measurement triggered (useTablePageSize may override the limit from the URL) is done.
+   */
+  async waitForLogsListed(): Promise<void> {
+    await this.logsTable
+      .or(this.page.locator('text=/No logs found|No results found/i'))
+      .first()
+      .waitFor({ state: 'visible', timeout: 10000 })
+    await waitForNetworkIdle(this.page)
   }
 
   /**

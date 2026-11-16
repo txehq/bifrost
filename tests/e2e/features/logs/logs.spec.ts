@@ -1,5 +1,6 @@
 import type { Locator } from "@playwright/test";
 import { expect, test } from "../../core/fixtures/base.fixture";
+import { nextFrames } from "../../core/utils/test-helpers";
 import {
   createLogSearchQuery,
   SAMPLE_MODELS,
@@ -281,22 +282,13 @@ test.describe("LLM Logs", () => {
 
   test.describe("Log Details", () => {
     test("should open log details sheet", async ({ logsPage }) => {
-      // Wait a bit for logs to potentially load
-      await logsPage.page.waitForTimeout(1000);
+      await logsPage.waitForLogsListed();
 
       const logCount = await logsPage.getLogCount();
 
       if (logCount > 0) {
         await logsPage.viewLogDetails(0);
-
-        // Wait for sheet animation
-        await logsPage.page.waitForTimeout(500);
-
-        // Detail sheet should be visible
-        const sheetVisible = await logsPage.logDetailSheet
-          .isVisible()
-          .catch(() => false);
-        expect(sheetVisible).toBe(true);
+        await expect(logsPage.logDetailSheet.first()).toBeVisible();
 
         // Close the sheet
         await logsPage.closeLogDetails();
@@ -324,8 +316,8 @@ test.describe("LLM Logs", () => {
 
   test.describe("Pagination", () => {
     test("should navigate to next page", async ({ logsPage }) => {
-      // Wait for pagination to settle (useTablePageSize may adjust limit dynamically)
-      await logsPage.page.waitForTimeout(2000);
+      // useTablePageSize may adjust the limit once the table has measured itself.
+      await logsPage.waitForLogsListed();
       const paginationVisible = await logsPage.paginationControls
         .isVisible()
         .catch(() => false);
@@ -351,8 +343,8 @@ test.describe("LLM Logs", () => {
     });
 
     test("should navigate to previous page", async ({ logsPage }) => {
-      // Wait for pagination to settle (useTablePageSize may adjust limit dynamically)
-      await logsPage.page.waitForTimeout(2000);
+      // useTablePageSize may adjust the limit once the table has measured itself.
+      await logsPage.waitForLogsListed();
       const paginationVisible = await logsPage.paginationControls
         .isVisible()
         .catch(() => false);
@@ -1331,8 +1323,18 @@ test.describe("sessions longer than one page", () => {
     // Leaving the grouped view resets every expansion.
     await page.getByTestId("logs-group-chains-btn").click();
     await expect(page.getByTestId("log-session-expand-btn")).toHaveCount(0);
+    const firstPage = page.waitForResponse((r) => {
+      const url = new URL(r.url());
+      return (
+        url.pathname === "/api/logs" &&
+        url.searchParams.get("session_id") === "long-session"
+      );
+    });
     release();
-    await page.waitForTimeout(500);
+    // The held page has answered and the page has rendered what it does with it; a read that
+    // was not stopped would have asked for the next page by then.
+    await (await firstPage).finished();
+    await nextFrames(page);
     expect(offsets).toEqual([0]);
   });
 

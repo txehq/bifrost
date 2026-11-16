@@ -425,8 +425,6 @@ test.describe("Provider Settings", () => {
 
         // Form should now be dirty - save button should be enabled
         const saveBtn = providerSettingsPage.getConfigSaveBtn("governance");
-        // Give React time to update the form state
-        await providerSettingsPage.page.waitForTimeout(500);
         await expect(saveBtn).toBeEnabled({ timeout: 5000 });
       }
     });

@@ -346,9 +346,6 @@ test.describe('Plugins', () => {
       // Try to save - this might succeed (path not validated until load) or fail
       await pluginsPage.saveBtn.click()
 
-      // Wait for response
-      await pluginsPage.page.waitForTimeout(1000)
-
       // Invalid path: sheet may close with error toast or stay open with error
       const inlineError = pluginsPage.sheet.locator('[role="alert"], .text-destructive').first()
       const errorToast = pluginsPage.page.locator('[data-sonner-toast][data-type="error"]').first()

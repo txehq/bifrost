@@ -170,6 +170,53 @@ test.describe('Warp backfill status after the embedding space is saved over', ()
   })
 })
 
+// A running job found by the id-less read on page load gets pinned, and the pin
+// is released when the job finishes. Releasing switches back to the id-less read,
+// whose cached answer from page load still says "running". Acting on it pinned
+// the finished job again, the pinned cache said "completed" again, and the two
+// answers looped the page into React's "Maximum update depth exceeded" and the
+// error screen (TXE-7508). Nothing about the configuration changes here.
+test.describe('Warp backfill that finishes after it was found running', () => {
+  test('shows the finished run and stays usable', async ({ page }) => {
+    const runningJob = {
+      id: 'warp-backfill-3',
+      status: 'running',
+      start_time: '2026-09-17T00:00:00Z',
+      end_time: '2026-09-24T00:00:00Z',
+      total: 120,
+      scanned: 60,
+      indexed: 60,
+      skipped: 0,
+      failed: 0,
+    }
+    let finished = false
+    await mockWarpBackfill(page, runningJob)
+    // Registered after mockWarpBackfill, so it answers the status reads instead.
+    await page.route('**/api/warp/log-index/backfill/status**', (route) => {
+      const pinned = new URL(route.request().url()).searchParams.get('id') === runningJob.id
+      let job: object
+      if (pinned) {
+        finished = true
+        job = { ...runningJob, status: 'completed', scanned: 120, indexed: 120 }
+      } else {
+        // The server's id-less read answers idle once the job is over.
+        job = finished ? { status: 'idle' } : runningJob
+      }
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(job) })
+    })
+    await page.goto('/workspace/config/warp')
+
+    const status = page.getByTestId('warp-backfill-status')
+    await expect(status).toContainText('120 indexed')
+    await expect(page.getByTestId('warp-backfill-start-btn')).toBeVisible()
+    await expect(page.getByText('Something went wrong')).toHaveCount(0)
+    // Still the settings page, and still responsive to an edit.
+    const dimension = page.getByTestId('warp-embedding-dimension-input')
+    await dimension.fill('3072')
+    await expect(dimension).toHaveValue('3072')
+  })
+})
+
 // The threshold is a 0-1 similarity on every vector store, and real topic
 // matches score 0.575 to 0.735 on it, so a deployment that never set one
 // starts at 0.5. A saved value is the operator's and is shown as saved.

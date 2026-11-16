@@ -162,14 +162,23 @@ export class VirtualKeysPage extends BasePage {
         .then(() => true)
         .catch(() => false);
       if (matched) break;
-
-      await this.page.waitForTimeout(500);
     }
 
     await expect(searchInput)
       .toHaveValue(name, { timeout: 10000 })
       .catch(() => {});
-    await this.page.waitForTimeout(350);
+    await this.waitForListedSearch(name);
+  }
+
+  /**
+   * Wait until the table's rows answer `search`. The search box debounces, so for a moment after
+   * typing the table still lists the previous answer; the table marks the search its rows answer.
+   * With no search and no keys at all, the page shows its empty state instead of the table.
+   */
+  async waitForListedSearch(search: string): Promise<void> {
+    const answered = this.page.locator(`[data-testid="vk-table"][data-listed-search="${search.replace(/"/g, '\\"')}"]`);
+    const settled = search === "" ? answered.or(this.page.getByTestId("virtual-keys-empty-state")) : answered;
+    await expect(settled.first()).toBeVisible({ timeout: 10000 });
   }
 
   /**
@@ -179,8 +188,8 @@ export class VirtualKeysPage extends BasePage {
     const searchInput = this.page.getByTestId("vk-search-input");
     if (await searchInput.isVisible().catch(() => false)) {
       await searchInput.fill("");
+      await this.waitForListedSearch("");
     }
-    await this.page.waitForTimeout(350);
   }
 
   /**
@@ -604,12 +613,10 @@ export class VirtualKeysPage extends BasePage {
     name: string,
     timeoutMs: number,
   ): Promise<boolean> {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      if ((await this.getVirtualKeyRow(name).count()) === 0) return true;
-      await this.page.waitForTimeout(500);
-    }
-    return false;
+    return expect(this.getVirtualKeyRow(name))
+      .toHaveCount(0, { timeout: timeoutMs })
+      .then(() => true)
+      .catch(() => false);
   }
 
   async deleteVirtualKey(
@@ -629,7 +636,6 @@ export class VirtualKeysPage extends BasePage {
     // Find the delete button using data-testid (scroll row into view in case table just loaded)
     const row = this.getVirtualKeyRow(name);
     await row.scrollIntoViewIfNeeded().catch(() => {});
-    await this.page.waitForTimeout(300);
 
     await this.searchVirtualKeys(name).catch(() => {});
     await expect(row).toBeVisible({ timeout: 10000 });
@@ -641,12 +647,9 @@ export class VirtualKeysPage extends BasePage {
 
     const deleteBtn = this.page.getByTestId(`vk-delete-btn-${name}`);
 
-    // Check if button exists; if not, give table a moment and re-check once
-    let btnCount = await deleteBtn.count();
-    if (btnCount === 0) {
-      await this.page.waitForTimeout(800);
-      btnCount = await deleteBtn.count();
-    }
+    // The menu renders its items after it opens; wait for the item rather than a fixed delay.
+    await deleteBtn.waitFor({ state: "attached", timeout: 5000 }).catch(() => {});
+    const btnCount = await deleteBtn.count();
     if (btnCount === 0) {
       const stillExists = await this.virtualKeyExists(name);
       if (!stillExists) return;
@@ -919,10 +922,8 @@ export class VirtualKeysPage extends BasePage {
 
           // Make sure sheet is closed before each delete
           await this.closeSheet();
+          // Returns once the row has left the table.
           await this.deleteVirtualKey(name);
-
-          // Wait a bit for table to refresh
-          await this.page.waitForTimeout(500);
         } catch (error) {
           // If delete fails, try to close sheet and continue
           await this.closeSheet();
@@ -934,9 +935,6 @@ export class VirtualKeysPage extends BasePage {
       }
 
       attempts++;
-
-      // Wait a bit before next iteration to allow table to refresh
-      await this.page.waitForTimeout(1000);
     }
 
     if (attempts >= maxAttempts) {
@@ -979,7 +977,6 @@ export class VirtualKeysPage extends BasePage {
           `[CLEANUP ERROR] Failed to delete virtual key: ${name} - ${errorMsg}`,
         );
         await this.closeSheet();
-        await this.page.waitForTimeout(1000);
         try {
           await tryDelete();
         } catch (retryError) {

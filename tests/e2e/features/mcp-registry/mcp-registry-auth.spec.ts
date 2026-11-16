@@ -23,22 +23,17 @@ async function completeOAuthFlow(
 
   const statusUrl =
     flow.status_url ?? `/api/oauth/config/${flow.oauth_config_id}/status`;
-  let authorized = false;
-  for (let i = 0; i < 30; i++) {
-    const statusResponse = await page.request.get(statusUrl);
-    if (!statusResponse.ok()) {
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      continue;
-    }
-    const statusBody = await statusResponse.json().catch(() => null);
-    if (statusBody?.status === "authorized") {
-      authorized = true;
-      break;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 500));
-  }
-
-  expect(authorized).toBe(true);
+  await expect
+    .poll(
+      async () => {
+        const statusResponse = await page.request.get(statusUrl);
+        if (!statusResponse.ok()) return undefined;
+        const statusBody = await statusResponse.json().catch(() => null);
+        return statusBody?.status;
+      },
+      { message: "OAuth config never reported authorized", timeout: 15000 },
+    )
+    .toBe("authorized");
 
   const completeUrl =
     flow.complete_url ??

@@ -44,12 +44,14 @@ import {
 	type WarpModelRow,
 } from "./warpConfig.utils";
 import {
+	currentWarpBackfillStatus,
 	isFiniteNumber,
 	retainedWarpBackfillForSpace,
 	retainFinishedWarpBackfill,
 	validateWarpMaxIterations,
 	validateWarpRetentionDays,
 	warpSavedSpaceKey,
+	type ReleasedWarpBackfill,
 	type RetainedWarpBackfill,
 } from "./warpView.utils";
 
@@ -152,6 +154,9 @@ export default function WarpView() {
 	// embedding space it ran under, so a space change cannot leave it on screen
 	// as a completed run of a space nothing has indexed - see lastBackfill.
 	const [finishedBackfill, setFinishedBackfill] = useState<RetainedWarpBackfill | null>(null);
+	// The pinned id released at the job's terminal status, so a cached id-less
+	// answer from before the pin cannot adopt it again (currentWarpBackfillStatus).
+	const [releasedBackfill, setReleasedBackfill] = useState<ReleasedWarpBackfill | null>(null);
 	// The saved space observed while the pinned job was running. The server
 	// refuses a space change while a job is in flight, so this is the job's own
 	// space, captured before a save that lands after the job finishes could
@@ -195,7 +200,8 @@ export default function WarpView() {
 	} = useGetProviderKeysQuery(form.embeddingProvider, { skip: !form.embeddingProvider });
 	const embeddingProviderKeys = embeddingProviderKeysData ?? [];
 	const {
-		data: backfillStatus,
+		data: backfillStatusData,
+		fulfilledTimeStamp: backfillStatusFulfilledAt,
 		// A status request that has not landed yet is not "no job running": the
 		// Start button was enabled during discovery, so a reload mid-backfill
 		// offered a start that the server then rejected as a conflict.
@@ -214,7 +220,11 @@ export default function WarpView() {
 		// currently-configured Warp.
 		skip: !hasWarpUpdateAccess,
 		pollingInterval: activeBackfillID ? 2000 : 10000,
+		// Pinning and releasing switch the argument, and each side's cached answer
+		// is from before the switch; ask again rather than wait out the poll.
+		refetchOnMountOrArgChange: true,
 	});
+	const backfillStatus = currentWarpBackfillStatus(backfillStatusData, backfillStatusFulfilledAt, activeBackfillID, releasedBackfill);
 	const isBackfillActive =
 		backfillStatus?.status === "pending" || backfillStatus?.status === "running" || backfillStatus?.status === "cancelling";
 	// The saved embedding space, as one comparable value. A finished run is only
@@ -274,6 +284,7 @@ export default function WarpView() {
 			// search.
 			setFinishedBackfill(retainFinishedWarpBackfill(backfillStatus, activeBackfillSpaceKey.current, savedSpaceKey));
 			activeBackfillSpaceKey.current = null;
+			if (backfillStatus?.id) setReleasedBackfill({ id: backfillStatus.id, releasedAt: Date.now() });
 			setActiveBackfillID(null);
 		}
 		// Keyed on the status transition only, on purpose. With savedSpaceKey in
@@ -511,6 +522,7 @@ export default function WarpView() {
 			// above would also record it, but not before a job that finishes
 			// between this response and the first poll has already gone terminal.
 			activeBackfillSpaceKey.current = savedSpaceKey;
+			setReleasedBackfill(null);
 			setActiveBackfillID(status.id ?? null);
 			toast.success(restart ? "Warp embedding backfill restarted from the beginning." : "Warp embedding backfill started.");
 		} catch (error) {

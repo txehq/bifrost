@@ -170,12 +170,11 @@ export class MCPRegistryPage extends BasePage {
    * Used as a fallback success signal when the create form doesn't close (e.g. SSE/stdio).
    */
   async waitForClientInTable(name: string, timeoutMs: number): Promise<boolean> {
-    const deadline = Date.now() + timeoutMs
-    while (Date.now() < deadline) {
-      if ((await this.getClientRow(name).count()) > 0) return true
-      await this.page.waitForTimeout(500)
-    }
-    return false
+    return this.getClientRow(name)
+      .first()
+      .waitFor({ state: 'attached', timeout: timeoutMs })
+      .then(() => true)
+      .catch(() => false)
   }
 
   async getClientCount(): Promise<number> {
@@ -269,14 +268,14 @@ export class MCPRegistryPage extends BasePage {
     const continueBtn = this.page.locator('[data-testid="per-user-oauth-confirm"]')
     const openWindowBtn = this.page.locator('[data-testid="oauth-open-window-btn"]')
 
-    const deadline = Date.now() + timeout
-    while (Date.now() < deadline) {
-      if (await continueBtn.isVisible().catch(() => false)) return continueBtn
-      if (await openWindowBtn.isVisible().catch(() => false)) return openWindowBtn
-      await this.page.waitForTimeout(200)
-    }
-
-    throw new Error('OAuth authorizer action was not shown')
+    await continueBtn
+      .or(openWindowBtn)
+      .first()
+      .waitFor({ state: 'visible', timeout })
+      .catch(() => {
+        throw new Error('OAuth authorizer action was not shown')
+      })
+    return (await continueBtn.isVisible()) ? continueBtn : openWindowBtn
   }
 
   /**
@@ -768,7 +767,6 @@ export class MCPRegistryPage extends BasePage {
         const errorMsg = error instanceof Error ? error.message : String(error)
         console.error(`[CLEANUP ERROR] Failed to delete MCP client: ${name} - ${errorMsg}`)
         await this.closeSheet()
-        await this.page.waitForTimeout(1000)
         try {
           await tryDelete()
         } catch (retryErr) {
@@ -985,12 +983,10 @@ export class MCPRegistryPage extends BasePage {
    * Polls so we don't rely on a stale locator.
    */
   async waitForClientGone(name: string, timeoutMs: number): Promise<boolean> {
-    const deadline = Date.now() + timeoutMs
-    while (Date.now() < deadline) {
-      if ((await this.getClientRow(name).count()) === 0) return true
-      await this.page.waitForTimeout(500)
-    }
-    return false
+    return expect(this.getClientRow(name))
+      .toHaveCount(0, { timeout: timeoutMs })
+      .then(() => true)
+      .catch(() => false)
   }
 
   /**

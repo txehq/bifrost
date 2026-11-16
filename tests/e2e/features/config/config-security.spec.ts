@@ -78,13 +78,18 @@ test.describe("Inference auth setup defaults", () => {
       await page.locator("#admin-password").fill("StrongPassword1!");
       if (!existing)
         await page.locator("#setup-token").fill("test-setup-token");
-      const submitted = page.waitForRequest(
+      // Wait for the mocked answer, not the request: a test that ends while the PUT is still
+      // routed closes the page, and Playwright then continues the request to the real gateway,
+      // which took StrongPassword1! as the admin password and locked every later test on that
+      // worker out at the login form (TXE-7508).
+      const submitted = page.waitForResponse(
         (r) =>
-          new URL(r.url()).pathname === "/api/config" && r.method() === "PUT",
+          new URL(r.url()).pathname === "/api/config" &&
+          r.request().method() === "PUT",
       );
       await page.getByRole("button", { name: /Save/i }).click();
       expect(
-        (await submitted).postDataJSON().client_config
+        (await submitted).request().postDataJSON().client_config
           .enforce_auth_on_inference,
       ).toBe(false);
     });

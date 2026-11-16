@@ -1,4 +1,4 @@
-import type { WarpBackfillJob, WarpConfig } from "@/lib/types/warp";
+import type { WarpBackfillJob, WarpBackfillStatus, WarpConfig } from "@/lib/types/warp";
 /**
  * Validation helpers for the Warp settings form.
  *
@@ -117,4 +117,33 @@ export function retainFinishedWarpBackfill(
  */
 export function retainedWarpBackfillForSpace(retained: RetainedWarpBackfill | null, savedSpaceKey: string): WarpBackfillJob | null {
 	return retained && retained.spaceKey === savedSpaceKey ? retained.job : null;
+}
+/** The pinned job the view let go of when it reached a terminal status, and when. */
+export interface ReleasedWarpBackfill {
+	id: string;
+	releasedAt: number;
+}
+
+/**
+ * The status the view should act on, with a stale id-less answer dropped.
+ *
+ * The view discovers a running job through the id-less read, pins its id, and
+ * releases the pin once the pinned read reports a terminal status. Releasing
+ * switches the query back to the id-less read, and RTK Query serves that
+ * read's cached answer from before the pin - which still says the job is
+ * running. Acting on it re-pinned the job, the pinned cache said "completed"
+ * again, the pin was released again, and the two cached answers flipped the
+ * view until React gave up with "Maximum update depth exceeded" and the page
+ * fell to the error screen (TXE-7508). An answer fetched after the release is
+ * current, so a later resume of the same id is still picked up.
+ */
+export function currentWarpBackfillStatus(
+	status: WarpBackfillStatus | undefined,
+	fulfilledAt: number | undefined,
+	activeBackfillID: string | null,
+	released: ReleasedWarpBackfill | null,
+): WarpBackfillStatus | undefined {
+	if (activeBackfillID || !released || !status?.id || status.id !== released.id) return status;
+	if (status.status !== "pending" && status.status !== "running" && status.status !== "cancelling") return status;
+	return fulfilledAt !== undefined && fulfilledAt > released.releasedAt ? status : undefined;
 }
