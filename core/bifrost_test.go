@@ -10381,7 +10381,7 @@ type turnLogPlugin struct {
 func (p *turnLogPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	ctx.Log(schemas.LogLevelInfo, "pre")
 	if p.refuse {
-		return req, &schemas.LLMPluginShortCircuit{Error: newBifrostErrorFromMsg("refused")}, nil
+		return req, &schemas.LLMPluginShortCircuit{Error: newBifrostErrorFromMsg(schemas.ErrorTypePolicyAccessDenied, "refused")}, nil
 	}
 	return req, nil, nil
 }
@@ -10399,7 +10399,7 @@ type incurredCapturePlugin struct {
 }
 
 func (p *incurredCapturePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
-	return req, &schemas.LLMPluginShortCircuit{Error: newBifrostErrorFromMsg("budget exhausted")}, nil
+	return req, &schemas.LLMPluginShortCircuit{Error: newBifrostErrorFromMsg(schemas.ErrorTypePolicyBudgetExceeded, "budget exhausted")}, nil
 }
 
 func (p *incurredCapturePlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
@@ -14914,5 +14914,160 @@ func TestEverySpeechStreamBillsItsInputWhenCancelled(t *testing.T) {
 	slices.Sort(served)
 	if !slices.Equal(served, speechStreamProviders) {
 		t.Errorf("speech stream is served by %v; speechStreamProviders records %v: update the list", served, speechStreamProviders)
+	}
+}
+
+// TestCoreRaisedErrorsDeclareTheirType fails on any error core raises itself that would reach
+// a client as error_type "_OTHER" (TXE-7634). ClassifyErrorType answers "_OTHER" only for an
+// error with no declared type, no marker, no status and IsBifrostError false, so every
+// BifrostError composite literal in this package must set one of ExtraFields.ErrorType,
+// Type, StatusCode or IsBifrostError: true (or be a StreamControl sentinel, which is never
+// sent), and every call to newBifrostError or newBifrostErrorFromMsg must declare a named
+// type other than ErrorTypeOther, or derive one with providerQueueErrorType.
+//
+// Production answered a request for a provider the gateway lacks with 400 "_OTHER"; 190 of
+// the package's 206 literals and all 22 constructor calls could do the same before this.
+func TestCoreRaisedErrorsDeclareTheirType(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fset := token.NewFileSet()
+	literals, calls := 0, 0
+	for _, path := range files {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+		// A literal handed straight to declareErrorType gets its type there: the constructors'
+		// errorType, which the call check below holds every caller to.
+		declared := map[ast.Node]bool{}
+		ast.Inspect(file, func(n ast.Node) bool {
+			if call, ok := n.(*ast.CallExpr); ok {
+				if id, ok := call.Fun.(*ast.Ident); ok && id.Name == "declareErrorType" && len(call.Args) > 0 {
+					if u, ok := call.Args[0].(*ast.UnaryExpr); ok {
+						declared[u.X] = true
+					}
+				}
+			}
+			return true
+		})
+		ast.Inspect(file, func(n ast.Node) bool {
+			switch node := n.(type) {
+			case *ast.CompositeLit:
+				if sel, ok := node.Type.(*ast.SelectorExpr); ok && sel.Sel.Name == "BifrostError" {
+					literals++
+					if !declared[node] && !literalDeclaresType(node) {
+						t.Errorf("%s: a BifrostError literal sets none of ExtraFields.ErrorType, Type, StatusCode or IsBifrostError: true, so it is sent as error_type _OTHER", fset.Position(node.Pos()))
+					}
+				}
+			case *ast.CallExpr:
+				id, ok := node.Fun.(*ast.Ident)
+				if !ok || (id.Name != "newBifrostError" && id.Name != "newBifrostErrorFromMsg") {
+					return true
+				}
+				calls++
+				if len(node.Args) == 0 || !declaresNamedType(node.Args[0]) {
+					t.Errorf("%s: %s must declare a named schemas.ErrorType (not ErrorTypeOther) or providerQueueErrorType(err)", fset.Position(node.Pos()), id.Name)
+				}
+			}
+			return true
+		})
+	}
+	// The scan must have seen the package's errors, or it proves nothing.
+	if literals < 150 || calls < 20 {
+		t.Fatalf("scanned %d BifrostError literals and %d constructor calls; expected the package's (>=150, >=20)", literals, calls)
+	}
+}
+
+func literalDeclaresType(lit *ast.CompositeLit) bool {
+	for _, elt := range lit.Elts {
+		kv, ok := elt.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		key, _ := kv.Key.(*ast.Ident)
+		if key == nil {
+			continue
+		}
+		switch key.Name {
+		case "Type", "StatusCode", "StreamControl":
+			return true
+		case "IsBifrostError":
+			if v, ok := kv.Value.(*ast.Ident); ok && v.Name == "true" {
+				return true
+			}
+		case "ExtraFields":
+			extra, ok := kv.Value.(*ast.CompositeLit)
+			if !ok {
+				continue
+			}
+			for _, e := range extra.Elts {
+				if ekv, ok := e.(*ast.KeyValueExpr); ok {
+					if k, ok := ekv.Key.(*ast.Ident); ok && k.Name == "ErrorType" && declaresNamedType(ekv.Value) {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+func declaresNamedType(arg ast.Expr) bool {
+	switch a := arg.(type) {
+	case *ast.SelectorExpr:
+		return strings.HasPrefix(a.Sel.Name, "ErrorType") && a.Sel.Name != "ErrorTypeOther"
+	case *ast.CallExpr:
+		id, ok := a.Fun.(*ast.Ident)
+		return ok && id.Name == "providerQueueErrorType"
+	}
+	return false
+}
+
+// TestRequestForAProviderTheGatewayLacks is the request production answered "_OTHER" on
+// 2026-11-16: a provider with no config is refused before any vendor call as
+// caller_model_not_available, 400, the type a model no key serves gets.
+func TestRequestForAProviderTheGatewayLacks(t *testing.T) {
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 10)
+	client, err := Init(context.Background(), schemas.BifrostConfig{
+		Account: account,
+		Logger:  NewDefaultLogger(schemas.LogLevelError),
+	})
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	defer client.Shutdown()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	text := "ping"
+	_, bifrostErr := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.Mistral,
+		Model:    "mistral-small-latest",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &text}}},
+	})
+	if bifrostErr == nil {
+		t.Fatal("a provider the account has no config for must be refused")
+	}
+	if got := bifrostErr.ResolveErrorType(); got != schemas.ErrorTypeCallerModelNotAvailable {
+		t.Errorf("error_type %q, want %q (message %q)", got, schemas.ErrorTypeCallerModelNotAvailable, bifrostErr.Error.Message)
+	}
+	if got := bifrostErr.EffectiveHTTPStatus(); got != http.StatusBadRequest {
+		t.Errorf("status %d, want 400", got)
+	}
+}
+
+// TestProviderQueueErrorType: only getProviderQueue's no-config error is the caller's; a
+// provider that fails to start is Bifrost's own fault.
+func TestProviderQueueErrorType(t *testing.T) {
+	if got := providerQueueErrorType(&providerNotConfiguredError{msg: "no config"}); got != schemas.ErrorTypeCallerModelNotAvailable {
+		t.Errorf("not configured: %q", got)
+	}
+	if got := providerQueueErrorType(context.DeadlineExceeded); got != schemas.ErrorTypeBifrostInternal {
+		t.Errorf("other error: %q", got)
 	}
 }

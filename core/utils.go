@@ -129,14 +129,14 @@ func waitRetryBackoff(ctx context.Context, backoff time.Duration) (cancelled boo
 // validateRequestAfterPreRequestHooks validates the provider and model fields of the given request.
 func validateRequestAfterPreRequestHooks(req *schemas.BifrostRequest) *schemas.BifrostError {
 	if req == nil {
-		return newBifrostErrorFromMsg("bifrost request cannot be nil")
+		return newBifrostErrorFromMsg(schemas.ErrorTypeCallerInvalidRequest, "bifrost request cannot be nil")
 	}
 	provider, model, _ := req.GetRequestFields()
 	if provider == "" {
-		return newBifrostErrorFromMsg(ProviderAutoResolveErrorMessage)
+		return newBifrostErrorFromMsg(schemas.ErrorTypeCallerInvalidRequest, ProviderAutoResolveErrorMessage)
 	}
 	if isModelRequired(req.RequestType) && model == "" {
-		return newBifrostErrorFromMsg(ModelAutoResolveErrorMessage)
+		return newBifrostErrorFromMsg(schemas.ErrorTypeCallerInvalidRequest, ModelAutoResolveErrorMessage)
 	}
 	return nil
 }
@@ -296,27 +296,41 @@ func routingErrorSummary(e *schemas.BifrostError) string {
 	return strings.Join(parts, " ")
 }
 
-// newBifrostError wraps a standard error into a BifrostError with IsBifrostError set to false.
-// This helper function reduces code duplication when handling non-Bifrost errors.
-func newBifrostError(err error) *schemas.BifrostError {
-	return &schemas.BifrostError{
-		IsBifrostError: false,
+// newBifrostError wraps err into a BifrostError that Bifrost raises itself, declaring its
+// contract C6 type. Without a declaration such an error carries no status, no marker and
+// no vendor code, so it classified as "_OTHER" (TXE-7634); the type parameter makes every
+// caller choose one. See declareErrorType for the status each type is sent with.
+func newBifrostError(errorType schemas.ErrorType, err error) *schemas.BifrostError {
+	return declareErrorType(&schemas.BifrostError{
 		Error: &schemas.ErrorField{
 			Message: err.Error(),
 			Error:   err,
 		},
-	}
+	}, errorType)
 }
 
-// newBifrostErrorFromMsg creates a BifrostError with a custom message.
-// This helper function is used for static error messages.
-func newBifrostErrorFromMsg(message string) *schemas.BifrostError {
-	return &schemas.BifrostError{
-		IsBifrostError: false,
+// newBifrostErrorFromMsg is newBifrostError for a static message.
+func newBifrostErrorFromMsg(errorType schemas.ErrorType, message string) *schemas.BifrostError {
+	return declareErrorType(&schemas.BifrostError{
 		Error: &schemas.ErrorField{
 			Message: message,
 		},
+	}, errorType)
+}
+
+// declareErrorType stamps errorType on e and sets the status that type is sent with:
+// bifrost_internal is Bifrost's own fault (IsBifrostError, sent 500); bifrost_dropped is a
+// request shed while a provider is replaced or its queue is full, which the caller may
+// retry (503); every other type keeps the default, 400 for a non-Bifrost error.
+func declareErrorType(e *schemas.BifrostError, errorType schemas.ErrorType) *schemas.BifrostError {
+	e.ExtraFields.ErrorType = errorType
+	switch errorType {
+	case schemas.ErrorTypeBifrostInternal:
+		e.IsBifrostError = true
+	case schemas.ErrorTypeBifrostDropped:
+		e.StatusCode = schemas.Ptr(503)
 	}
+	return e
 }
 
 // newBifrostCtxDoneError creates a BifrostError from a cancelled/expired context.
