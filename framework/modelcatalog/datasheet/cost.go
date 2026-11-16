@@ -2678,18 +2678,20 @@ type VideoAudioDefault struct {
 // TestEveryVideoProviderHasAnAudioDefault (framework/jobaccounting) fails when a provider in
 // videoProviders has no entry. Sources were read on 14 Nov 2026.
 var VideoAudioDefaults = map[schemas.ModelProvider]VideoAudioDefault{
-	schemas.Runway:    {On: true, Source: "docs.dev.runwayml.com/guides/pricing: \"audio defaults to true\"; veo3.1 is $0.20/s silent and $0.40/s with audio"},
-	schemas.Replicate: {On: true, Source: "the converter sends no audio flag, so the model's default applies; replicate.com/google/veo-3.1 generate_audio defaults to true"},
-	schemas.OpenAI:    {On: true, Source: "developers.openai.com/api/docs/models/sora-2: every Sora video has synced audio, and there is no silent price"},
-	schemas.Gemini:    {On: true, Source: "aistudio.google.com/docs/pricing: Gemini Omni video has native audio at one price; Veo on the Gemini API is shut down (aistudio.google.com/docs/deprecations)"},
-	schemas.Vertex:    {On: true, Source: "no default documented on the Vertex Veo pages; Veo 3 renders sound, so an unstated flag is priced with audio"},
-	schemas.Kling:     {On: true, Source: "no default documented (kling.ai/llms.txt prices kling-v3 std at $0.084/s silent and $0.126/s with audio); priced with audio so an unstated job is not under-charged"},
-	schemas.DashScope: {On: true, Source: "no default documented (alibabacloud.com/help/en/model-studio/model-pricing: wan2.6-i2v-flash 720P $0.025/s silent, $0.05/s with audio); priced with audio"},
-	schemas.MiniMax:   {On: true, Source: "platform.minimax.io/docs/guides/pricing: one price whatever the audio setting"},
-	schemas.BytePlus:  {On: true, Source: "ai.byteplus.com/ark/region:ap-southeast-1/docs/model-pricing: Seedance 2.x is priced per video token with no audio split"},
-	schemas.XAI:       {On: true, Source: "the retrieve reports the bill itself (usage.cost_in_usd_ticks), which covers audio"},
-	schemas.BFL:       {On: true, Source: "the query reports BFL's settled cost (usage.cost, TXE-7297), which covers generate_audio"},
-	schemas.Runware:   {On: true, Source: "the task reports its own cost, which covers audio"},
+	schemas.Runway:     {On: true, Source: "docs.dev.runwayml.com/guides/pricing: \"audio defaults to true\"; veo3.1 is $0.20/s silent and $0.40/s with audio"},
+	schemas.Replicate:  {On: true, Source: "the converter sends no audio flag, so the model's default applies; replicate.com/google/veo-3.1 generate_audio defaults to true"},
+	schemas.OpenAI:     {On: true, Source: "developers.openai.com/api/docs/models/sora-2: every Sora video has synced audio, and there is no silent price"},
+	schemas.Gemini:     {On: true, Source: "aistudio.google.com/docs/pricing: Gemini Omni video has native audio at one price; Veo on the Gemini API is shut down (aistudio.google.com/docs/deprecations)"},
+	schemas.Vertex:     {On: true, Source: "no default documented on the Vertex Veo pages; Veo 3 renders sound, so an unstated flag is priced with audio"},
+	schemas.Kling:      {On: true, Source: "no default documented (kling.ai/llms.txt prices kling-v3 std at $0.084/s silent and $0.126/s with audio); priced with audio so an unstated job is not under-charged"},
+	schemas.DashScope:  {On: true, Source: "no default documented (alibabacloud.com/help/en/model-studio/model-pricing: wan2.6-i2v-flash 720P $0.025/s silent, $0.05/s with audio); priced with audio"},
+	schemas.MiniMax:    {On: true, Source: "platform.minimax.io/docs/guides/pricing: one price whatever the audio setting"},
+	schemas.BytePlus:   {On: true, Source: "ai.byteplus.com/ark/region:ap-southeast-1/docs/model-pricing: Seedance 2.x is priced per video token with no audio split"},
+	schemas.Volcengine: {On: true, Source: "ai.byteplus.com/ark/region:ap-southeast-1/docs/model-pricing: VolcEngine Ark serves the same Seedance models, read through byteplus's converter (TXE-7493); VolcEngine's own pricing page not yet checked"},
+	schemas.ModelArk:   {On: true, Source: "ai.byteplus.com/ark/region:ap-southeast-1/docs/model-pricing: ModelArk serves BytePlus's Seedance, priced per video token with no audio split"},
+	schemas.XAI:        {On: true, Source: "the retrieve reports the bill itself (usage.cost_in_usd_ticks), which covers audio"},
+	schemas.BFL:        {On: true, Source: "the query reports BFL's settled cost (usage.cost, TXE-7297), which covers generate_audio"},
+	schemas.Runware:    {On: true, Source: "the task reports its own cost, which covers audio"},
 }
 
 // VideoPricedWithAudio reports whether a video job is priced at a with-audio rate: the create's

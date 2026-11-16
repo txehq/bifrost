@@ -77,6 +77,11 @@ var videoProviders = map[schemas.ModelProvider]struct{}{
 	// never usage.cost, so a job is priced from the datasheet rate and the seconds the create
 	// recorded; with no rate it is kept as an unpriced row and repriced when the rate lands.
 	schemas.BFL: {},
+	// Seedance on Ark's other hosts (fork, TXE-7131). VolcEngine and ModelArk read Ark's task
+	// through byteplus's converter since TXE-7493, so a finished task reports the tokens Ark billed
+	// (usage.output_tokens) and the seconds, priced as on byteplus.
+	schemas.Volcengine: {},
+	schemas.ModelArk:   {},
 }
 
 // videoSettlementExemptions are the providers that implement video and are deliberately not
@@ -84,9 +89,7 @@ var videoProviders = map[schemas.ModelProvider]struct{}{
 // for a provider that implements video and is in neither this map nor videoProviders
 // (fork, TXE-7118).
 var videoSettlementExemptions = map[schemas.ModelProvider]string{
-	schemas.ModelArk:   "TXE-7131 adds modelark with a settle-and-read-cost regression: it serves Seedance tasks through the Ark API and has never been settled",
-	schemas.Volcengine: "TXE-7131 adds volcengine with a settle-and-read-cost regression: it serves Seedance tasks through the Ark API and has never been settled",
-	schemas.Azure:      "TXE-7054 adds azure: its two video APIs (Sora 2 and the first-generation jobs API) use different ids and dimensions, and settlement must also be reached from /content",
+	schemas.Azure: "TXE-7054 adds azure: its two video APIs (Sora 2 and the first-generation jobs API) use different ids and dimensions, and settlement must also be reached from /content",
 }
 
 // renderedVideoHostPolicy is where a settled provider's rendered video may be fetched from to
@@ -113,18 +116,20 @@ var renderedVideoHosts = map[schemas.ModelProvider]renderedVideoHostPolicy{
 	// A Replicate model is code anyone can publish, and its output can be any string: a model a
 	// caller runs can answer with a URL on a host it controls. Files Replicate itself stores are
 	// served from replicate.delivery.
-	schemas.Replicate: {hosts: []string{"replicate.delivery"}},
-	schemas.OpenAI:    {vendorGenerated: "the video is downloaded from OpenAI's own API (/v1/videos/{id}/content), never from a URL in the response"},
-	schemas.Gemini:    {vendorGenerated: "Gemini names a file it stores (a Files API URI) or returns the video inline"},
-	schemas.Vertex:    {vendorGenerated: "Vertex returns the video inline or names a Cloud Storage object, read through the Cloud Storage API with the key's credentials"},
-	schemas.Runway:    {vendorGenerated: "Runway runs only its own models, and the output URL is one it stores"},
-	schemas.Runware:   {vendorGenerated: "Runware runs only its own hosted models, and the output URL is one it stores"},
-	schemas.MiniMax:   {vendorGenerated: "MiniMax answers with a download URL for a file it stores"},
-	schemas.BytePlus:  {vendorGenerated: "BytePlus Seedance answers with a URL for a video it stores"},
-	schemas.Kling:     {vendorGenerated: "Kling answers with a URL for a video it stores"},
-	schemas.DashScope: {vendorGenerated: "DashScope answers with a URL for a video it stores"},
-	schemas.XAI:       {vendorGenerated: "xAI answers with a URL for a video it stores, and reports the cost itself"},
-	schemas.BFL:       {vendorGenerated: "BFL answers with a delivery URL for a video it stores"},
+	schemas.Replicate:  {hosts: []string{"replicate.delivery"}},
+	schemas.OpenAI:     {vendorGenerated: "the video is downloaded from OpenAI's own API (/v1/videos/{id}/content), never from a URL in the response"},
+	schemas.Gemini:     {vendorGenerated: "Gemini names a file it stores (a Files API URI) or returns the video inline"},
+	schemas.Vertex:     {vendorGenerated: "Vertex returns the video inline or names a Cloud Storage object, read through the Cloud Storage API with the key's credentials"},
+	schemas.Runway:     {vendorGenerated: "Runway runs only its own models, and the output URL is one it stores"},
+	schemas.Runware:    {vendorGenerated: "Runware runs only its own hosted models, and the output URL is one it stores"},
+	schemas.MiniMax:    {vendorGenerated: "MiniMax answers with a download URL for a file it stores"},
+	schemas.BytePlus:   {vendorGenerated: "BytePlus Seedance answers with a URL for a video it stores"},
+	schemas.Volcengine: {vendorGenerated: "VolcEngine Ark answers with a URL for a video it stores"},
+	schemas.ModelArk:   {vendorGenerated: "ModelArk answers with a URL for a video it stores"},
+	schemas.Kling:      {vendorGenerated: "Kling answers with a URL for a video it stores"},
+	schemas.DashScope:  {vendorGenerated: "DashScope answers with a URL for a video it stores"},
+	schemas.XAI:        {vendorGenerated: "xAI answers with a URL for a video it stores, and reports the cost itself"},
+	schemas.BFL:        {vendorGenerated: "BFL answers with a delivery URL for a video it stores"},
 }
 
 // ProviderOriginResolver is implemented by a VideoRetriever that can say which origin
@@ -206,18 +211,20 @@ func sameOrigin(origin string, u *url.URL) bool {
 // vendor's single clip today. TestEverySettledVideoProviderDeclaresAnUnmeasuredBound fails for a
 // provider in videoProviders with no entry here, or with one that is not positive.
 var unmeasuredVideoBoundSeconds = map[schemas.ModelProvider]int{
-	schemas.OpenAI:    30,
-	schemas.Gemini:    30,
-	schemas.Vertex:    30,
-	schemas.Replicate: 30,
-	schemas.Runway:    30,
-	schemas.Runware:   30,
-	schemas.MiniMax:   30,
-	schemas.BytePlus:  30,
-	schemas.Kling:     30,
-	schemas.DashScope: 30,
-	schemas.XAI:       30,
-	schemas.BFL:       30,
+	schemas.OpenAI:     30,
+	schemas.Gemini:     30,
+	schemas.Vertex:     30,
+	schemas.Replicate:  30,
+	schemas.Runway:     30,
+	schemas.Runware:    30,
+	schemas.MiniMax:    30,
+	schemas.BytePlus:   30,
+	schemas.Kling:      30,
+	schemas.DashScope:  30,
+	schemas.XAI:        30,
+	schemas.BFL:        30,
+	schemas.Volcengine: 30,
+	schemas.ModelArk:   30,
 }
 
 // unmeasuredBound is the provider's default bound for an unmeasurable rendered video, a custom

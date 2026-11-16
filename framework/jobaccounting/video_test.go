@@ -1398,6 +1398,15 @@ func BenchmarkRenderedDurationRequired(b *testing.B) {
 // TestEveryVideoProviderSettlesAJobCreatedWithoutSeconds: the model a create names, and the
 // vendor's answers to that create and to the query of the finished task, in the vendor's own
 // shape, as the vendor answers a create that names no duration.
+// arkVideoTaskAnswer is Ark's task API as BytePlus, VolcEngine and ModelArk serve it: a create
+// answers the task id, and the query a succeeded task with the seconds and tokens Ark billed.
+func arkVideoTaskAnswer(method, _ string) (int, string) {
+	if method == http.MethodPost {
+		return 200, `{"id":"cgt-1"}`
+	}
+	return 200, `{"id":"cgt-1","model":"seedance-1-0-pro-250528","status":"succeeded","content":{"video_url":"https://example.invalid/v.mp4"},"resolution":"720p","ratio":"16:9","duration":5,"usage":{"completion_tokens":108900,"total_tokens":108900}}`
+}
+
 type videoDurationFixture struct {
 	model string
 	// answer returns the vendor's answer to one request below the provider's base URL.
@@ -1456,6 +1465,9 @@ var videoDurationFixtures = map[schemas.ModelProvider]videoDurationFixture{
 		}
 		return 200, `{"id":"cgt-1","model":"seedance-1-0-pro-250528","status":"succeeded","content":{"video_url":"https://example.invalid/v.mp4"},"resolution":"720p","ratio":"16:9","duration":5,"usage":{"completion_tokens":108900,"total_tokens":108900}}`
 	}},
+	// VolcEngine and ModelArk serve the same Ark task as BytePlus (TXE-7131, TXE-7493).
+	schemas.Volcengine: {model: "doubao-seedance-1-0-pro-250528", answer: arkVideoTaskAnswer},
+	schemas.ModelArk:   {model: "seedance-1-0-pro-250528", answer: arkVideoTaskAnswer},
 	schemas.Kling: {model: "kling-3.0", answer: func(method, _ string) (int, string) {
 		if method == http.MethodPost {
 			return 200, `{"code":0,"message":"SUCCEED","request_id":"r1","data":{"id":"k1","status":"submitted"}}`
