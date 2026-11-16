@@ -45,7 +45,10 @@ func (f *bifrostBatchResultFetcher) RetrieveBatch(ctx context.Context, job *csta
 	return resp, nil
 }
 
-func (f *bifrostBatchResultFetcher) FetchBatchResults(ctx context.Context, job *cstables.TableProviderJob) (*schemas.BifrostBatchResultsResponse, error) {
+// FetchBatchResultsPage reads one page of a batch's result lines for settlement. It is held to
+// client.max_response_body_size_mb like any other results read; the settler walks the pages
+// and keeps only what it prices from each line (TXE-7513).
+func (f *bifrostBatchResultFetcher) FetchBatchResultsPage(ctx context.Context, job *cstables.TableProviderJob, after *string) (*schemas.BifrostBatchResultsResponse, error) {
 	if f == nil || f.client == nil {
 		return nil, fmt.Errorf("bifrost client is nil")
 	}
@@ -56,9 +59,8 @@ func (f *bifrostBatchResultFetcher) FetchBatchResults(ctx context.Context, job *
 		Provider: schemas.ModelProvider(job.Provider),
 		Model:    modelPtr(job.Model),
 		BatchID:  job.JobID,
-		// Settlement prices the whole result set, so this read alone is not held to the
-		// byte bound on an unpaged read (TXE-7494).
-		Settlement: true,
+		Limit:    jobaccounting.SettlementPageLines,
+		After:    after,
 	}
 	resp, bifrostErr := f.client.BatchResultsRequest(internalJobContext(ctx, job.SelectedKeyID), req)
 	if bifrostErr != nil {

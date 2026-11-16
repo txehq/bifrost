@@ -508,6 +508,9 @@ const openRouterDecisionAnswer = () => ({ model: "typesafe/jev-1.13.0", answers:
 const turnRates = { mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002, input_cost_per_token_above_272k_tokens: 0.00001, output_cost_per_token_above_272k_tokens: 0.00002, input_cost_per_token_priority: 0.000002, output_cost_per_token_priority: 0.000004 };
 const fixturePricing = {
 	"turns-priced": { provider: "openai_turns", ...turnRates },
+	// Folder 617 (TXE-7513): every line of batch_results_bound uses 3 prompt and 2 completion tokens, so at these batch
+	// rates a line costs $0.000007 and the whole 1,500-line batch $0.0105.
+	"openai/results-bound-model": { provider: "openai", mode: "chat", input_cost_per_token: 0.000002, output_cost_per_token: 0.000004, input_cost_per_token_batches: 0.000001, output_cost_per_token_batches: 0.000002 },
 	// Folder 581 (TXE-7365): a Bedrock chat model's token rates, and bedrock/guardrails exactly as the upstream
 	// datasheet publishes it, one map of Bedrock guardrail unit to price, which the gateway's sync spreads into
 	// per-unit rates.
@@ -2087,6 +2090,7 @@ const RESULTS_BOUND_FILE_ID = "file-results-bound-output";
 const RESULTS_BOUND_LINES = 1500;
 const RESULTS_BOUND_LINE_BYTES = 1000;
 let resultsBoundBytes;
+let resultsBoundUploaded = false;
 function resultsBoundFile() {
 	if (resultsBoundBytes) return resultsBoundBytes;
 	const lines = [];
@@ -2094,7 +2098,7 @@ function resultsBoundFile() {
 		const line = {
 			id: `batch_req_rb_${n}`, custom_id: `rb-${n}`,
 			response: { status_code: 200, request_id: `req_rb_${n}`, body: {
-				id: `chatcmpl-rb-${n}`, object: "chat.completion", created: 1, model: "upstream-ok",
+				id: `chatcmpl-rb-${n}`, object: "chat.completion", created: 1, model: "results-bound-model",
 				choices: [{ index: 0, message: { role: "assistant", content: "" }, finish_reason: "stop" }],
 				usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
 			} },
@@ -2484,6 +2488,7 @@ const handleRequest = (req, res) => {
 		for (const k of Object.keys(sentBodies)) delete sentBodies[k];
 		assemblyAICalls.length = 0;
 		klingCalls.length = 0;
+		resultsBoundUploaded = false;
 		return send(200, {}, JSON.stringify({ data: [{ reset: true }] }));
 	}
 	if (req.method === "POST" && path === "/pp/assemblyai/v1/transcribe") {
@@ -3048,6 +3053,24 @@ const handleRequest = (req, res) => {
 	if (req.method === "DELETE" && videoMatch) {
 		countHit("video.delete");
 		return send(200, {}, JSON.stringify({ id: videoMatch[1], object: "video.deleted", deleted: true }));
+	}
+	// Folder 617 (TXE-7513): a batch whose input names results-bound-model is created as batch_results_bound, so the
+	// batch sweeper settles the 1.5 MB result set above on its own. The gateway uploads the input file, then creates.
+	if (req.method === "POST" && path === "/v1/files") {
+		const upload = [];
+		req.on("data", (c) => upload.push(c));
+		return req.on("end", () => {
+			countHit("file.upload");
+			if (Buffer.concat(upload).includes("results-bound-model")) resultsBoundUploaded = true;
+			send(200, {}, JSON.stringify({ id: FIXTURE_FILE_ID, object: "file", bytes: 64, created_at: 1, filename: "batch_requests.jsonl", purpose: "batch", status: "processed" }));
+		});
+	}
+	if (req.method === "POST" && path === "/v1/batches" && resultsBoundUploaded) {
+		return drain(req, () => {
+			countHit("results_bound.create");
+			resultsBoundUploaded = false;
+			send(200, {}, JSON.stringify({ ...fixtureBatch("validating"), id: RESULTS_BOUND_BATCH_ID }));
+		});
 	}
 	if (req.method === "POST" && path === "/v1/files") {
 		return drain(req, () => {

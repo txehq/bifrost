@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -417,10 +418,10 @@ func (a *openAIBatchAccount) GetConfigForProvider(_ schemas.ModelProvider) (*sch
 	}}, nil
 }
 
-// TXE-7494: an unpaged results read is held to client.max_response_body_size_mb, but the
-// sweeper's fetcher prices the whole result set, so it alone reads past it. Without that, a
-// finished batch larger than the limit could never be settled, and its usage never billed.
-func TestBatchResultFetcherReadsAResultSetPastTheUnpagedLimit(t *testing.T) {
+// TXE-7494 and TXE-7513: every results read is held to client.max_response_body_size_mb, the
+// sweeper's included, and a finished batch past it is still billed in full: the settler walks
+// the pages through core against a loopback OpenAI and prices every line.
+func TestBatchSettlerBillsAResultSetPastTheResponseLimitInFull(t *testing.T) {
 	const lines = 1500
 	var output []byte
 	for i := range lines {
@@ -461,11 +462,43 @@ func TestBatchResultFetcherReadsAResultSetPastTheUnpagedLimit(t *testing.T) {
 		t.Fatalf("unpaged caller read: error = %+v, want a 400 naming limit", bifrostErr)
 	}
 
-	resp, err := (&bifrostBatchResultFetcher{client: client}).FetchBatchResults(context.Background(), job)
+	// One page of the sweeper's read is held to the limit like any other read (TXE-7513).
+	first, err := (&bifrostBatchResultFetcher{client: client}).FetchBatchResultsPage(context.Background(), job, nil)
 	if err != nil {
-		t.Fatalf("FetchBatchResults: %v", err)
+		t.Fatalf("FetchBatchResultsPage: %v", err)
 	}
-	if len(resp.Results) != lines || resp.HasMore || resp.Partial {
-		t.Fatalf("fetcher returned %d results (has_more %v, partial %v); want all %d as the whole batch", len(resp.Results), resp.HasMore, resp.Partial, lines)
+	if len(first.Results) == 0 || len(first.Results) >= lines || !first.HasMore || first.NextCursor == nil {
+		t.Fatalf("the first settlement page held %d of %d lines (has_more %v); want a page within the limit", len(first.Results), lines, first.HasMore)
 	}
+
+	// The settler walks the pages and bills every line: the reason the exemption existed.
+	settler := jobaccounting.NewBatchSettler(&bifrostBatchResultFetcher{client: client})
+	poll, err := settler.Poll(context.Background(), job)
+	if err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+	if !poll.Settleable {
+		t.Fatalf("poll = %+v, want settleable", poll)
+	}
+	settlement, err := settler.Settle(context.Background(), perTokenBatchPricing{}, jobaccounting.JobRequest{Provider: schemas.OpenAI, ProviderJobID: "batch_big", Job: poll.Job, Payload: poll.Payload})
+	if err != nil {
+		t.Fatalf("Settle: %v", err)
+	}
+	if settlement.PricedCount != lines || settlement.Usage.PromptTokens != 3*lines || settlement.Usage.CompletionTokens != 2*lines {
+		t.Fatalf("settled %d lines, %d prompt and %d completion tokens; want all %d lines, %d and %d", settlement.PricedCount, settlement.Usage.PromptTokens, settlement.Usage.CompletionTokens, lines, 3*lines, 2*lines)
+	}
+	if want := float64(5*lines) * 1e-06; math.Abs(settlement.Cost-want) > 1e-9 {
+		t.Fatalf("cost = %v, want %v for the whole batch", settlement.Cost, want)
+	}
+}
+
+// perTokenBatchPricing prices every batch token at 1e-06.
+type perTokenBatchPricing struct{}
+
+func (perTokenBatchPricing) CalculateBatchCostDetailsForUsage(usage *schemas.BifrostLLMUsage, _ schemas.ModelProvider, _ string, _ schemas.RequestType, _ *modelcatalog.PricingLookupScopes) modelcatalog.BatchCostDetails {
+	return modelcatalog.BatchCostDetails{Cost: float64(usage.TotalTokens) * 1e-06, Priced: true}
+}
+
+func (perTokenBatchPricing) CalculateVideoCostDetails(modelcatalog.VideoPricingDimensions, schemas.ModelProvider, *modelcatalog.PricingLookupScopes) modelcatalog.VideoCostDetails {
+	return modelcatalog.VideoCostDetails{}
 }

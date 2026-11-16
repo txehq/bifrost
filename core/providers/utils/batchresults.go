@@ -405,19 +405,16 @@ func newBatchResultsTooLargeError(limit int64, paged bool) *schemas.BifrostError
 // A read returns at most client.max_response_body_size_mb of result lines. A page that
 // reaches it ends at its last whole line, with HasMore and the cursor of the next line, as if
 // its limit were smaller. An unpaged read that reaches it is refused with a 400 telling the
-// caller to page, since a caller that sent no limit expects the whole set. Only the provider
-// job accounting sweeper's read (request.Settlement) is not bounded: it must see the whole
-// set to price it.
+// caller to page, since a caller that sent no limit expects the whole set. Every read is held
+// to it, the provider job accounting sweeper's included: settlement walks the pages
+// (TXE-7513).
 func ReadBatchResultsPage(sources []BatchResultsSource, request *schemas.BifrostBatchResultsRequest, onLine func(source int, line []byte)) (*BatchResultsPage, *schemas.BifrostError) {
 	var after *string
 	limit := 0
-	var budget *resultsByteBudget
 	if request != nil {
 		after, limit = request.After, request.Limit
 	}
-	if request == nil || !request.Settlement {
-		budget = &resultsByteBudget{limit: network.MaxResponseBodyBytes()}
-	}
+	budget := &resultsByteBudget{limit: network.MaxResponseBodyBytes()}
 	cursor, err := DecodeBatchResultsCursor(after)
 	if err != nil {
 		return nil, NewInvalidResultsCursorError(err)
@@ -440,20 +437,14 @@ func ReadBatchResultsPage(sources []BatchResultsSource, request *schemas.Bifrost
 			continue
 		}
 		page.Latency += stream.Latency
-		reader := stream.reader
-		if budget != nil {
-			reader = budget.wrap(reader)
-		}
 		read := 0
-		consumed, more, readErr := readJSONLPage(reader, remaining, func(line []byte) {
+		consumed, more, readErr := readJSONLPage(budget.wrap(stream.reader), remaining, func(line []byte) {
 			read++
 			pageLines++
 			onLine(source, line)
 		})
 		stream.Close()
-		if budget != nil {
-			budget.used += consumed
-		}
+		budget.used += consumed
 		if errors.Is(readErr, errResultsByteBudget) {
 			if limit > 0 && pageLines > 0 {
 				page.HasMore = true

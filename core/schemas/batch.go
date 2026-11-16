@@ -394,13 +394,6 @@ type BifrostBatchResultsRequest struct {
 	Limit int     `json:"limit,omitempty"`
 	After *string `json:"after,omitempty"`
 
-	// Settlement marks the provider job accounting sweeper's read, which must see the whole
-	// result set to price it. Only that read may return an unpaged result set larger than
-	// client.max_response_body_size_mb; every other unpaged read past that size is refused
-	// with a 400 that says to page (TXE-7494). It is never read from a request body, so a
-	// caller cannot set it.
-	Settlement bool `json:"-"`
-
 	RawRequestBody []byte `json:"-"` // Raw request body (not serialized)
 
 	// For OpenAI, results are retrieved via output_file_id (file download)

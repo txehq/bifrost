@@ -44,8 +44,19 @@ const (
 
 type BatchResultFetcher interface {
 	RetrieveBatch(ctx context.Context, job *cstables.TableProviderJob) (*schemas.BifrostBatchRetrieveResponse, error)
-	FetchBatchResults(ctx context.Context, job *cstables.TableProviderJob) (*schemas.BifrostBatchResultsResponse, error)
+	// FetchBatchResultsPage reads one page of the batch's result lines, starting at after
+	// (nil for the first page). A page is held to client.max_response_body_size_mb like any
+	// other results read (TXE-7494), so the settler walks the pages rather than reading the
+	// whole set in one response (TXE-7513).
+	FetchBatchResultsPage(ctx context.Context, job *cstables.TableProviderJob, after *string) (*schemas.BifrostBatchResultsResponse, error)
 }
+
+// SettlementPageLines is the most result lines the settler asks for in one page. A page also
+// ends at client.max_response_body_size_mb of lines, so this caps the line count only.
+const SettlementPageLines = 10000
+
+// maxSettlementPages stops a page walk whose provider never stops answering has_more.
+const maxSettlementPages = 100000
 
 // BatchPayload is the batch kind's settlement input, carried opaquely by the
 // engine on JobRequest.Payload from Poll (or an inline caller) into Settle.
@@ -267,24 +278,101 @@ func (s *BatchSettler) retrieveBatch(ctx context.Context, job *cstables.TablePro
 	return s.fetcher.RetrieveBatch(callCtx, job)
 }
 
-func (s *BatchSettler) fetchBatchResults(ctx context.Context, job *cstables.TableProviderJob) (*schemas.BifrostBatchResultsResponse, error) {
+func (s *BatchSettler) fetchBatchResultsPage(ctx context.Context, job *cstables.TableProviderJob, after *string) (*schemas.BifrostBatchResultsResponse, error) {
 	callCtx, cancel := context.WithTimeout(ctx, defaultProviderPollTimeout)
 	defer cancel()
-	return s.fetcher.FetchBatchResults(callCtx, job)
+	return s.fetcher.FetchBatchResultsPage(callCtx, job, after)
 }
 
-// fetchResultsForSettlement returns the batch's results, or ok=false when they
-// could not be obtained. What that means is the caller's to decide: a live batch
-// retries later, a terminal one gives up.
+// fetchResultsForSettlement returns every result line of the batch, read page by page, or
+// ok=false when any page could not be obtained. What that means is the caller's to decide:
+// a live batch retries later, a terminal one gives up. Nothing is settled from a partial walk,
+// so a failure on a later page leaves the job unaccounted for the next poll.
+//
+// Each line is kept only as what pricing reads from it (settlementLine), so a batch is never
+// held whole in memory: a page of bodies at a time, then per line its status, usage and model
+// (TXE-7513). Before, the sweeper read the whole result set, bodies included, in one response.
 func (s *BatchSettler) fetchResultsForSettlement(ctx context.Context, job *cstables.TableProviderJob) (*schemas.BifrostBatchResultsResponse, bool) {
-	results, err := s.fetchBatchResults(ctx, job)
-	if err != nil || results == nil {
-		return nil, false
+	combined := &schemas.BifrostBatchResultsResponse{BatchID: job.JobID}
+	var after *string
+	for range maxSettlementPages {
+		page, err := s.fetchBatchResultsPage(ctx, job, after)
+		if err != nil || page == nil {
+			return nil, false
+		}
+		if page.BatchID != "" && page.BatchID != job.JobID {
+			return nil, false
+		}
+		for _, item := range page.Results {
+			combined.Results = append(combined.Results, settlementLine(item))
+		}
+		combined.Endpoint = combinePageEndpoints(combined.Endpoint, page.Endpoint)
+		combined.ExtraFields.ParseErrors = append(combined.ExtraFields.ParseErrors, page.ExtraFields.ParseErrors...)
+		if !page.HasMore {
+			return combined, true
+		}
+		// A cursor that does not move would walk the same page forever.
+		if page.NextCursor == nil || *page.NextCursor == "" || (after != nil && *page.NextCursor == *after) {
+			return nil, false
+		}
+		after = page.NextCursor
 	}
-	if results.BatchID != "" && results.BatchID != job.JobID {
-		return nil, false
+	return nil, false
+}
+
+// combinePageEndpoints folds one page's endpoint into the batch's: pages of one operation keep
+// it, and pages of different operations are a mixed batch, priced line by line (TXE-7354).
+func combinePageEndpoints(current, page schemas.BatchEndpoint) schemas.BatchEndpoint {
+	switch {
+	case page == "" || page == current:
+		return current
+	case current == "":
+		return page
+	default:
+		return schemas.BatchEndpointMixed
 	}
-	return results, true
+}
+
+// settlementLine is a result line cut down to what settlement reads from it: its status and
+// error, the response's status code, and from the body (or an Anthropic result's message) its
+// usage, model and object, with the first data item's object. That last pair is how
+// lineRequestType tells an embeddings line from an image line in a mixed batch. The rest of
+// the body (the completion, the embedding vectors, the images) is dropped, so it is not held
+// for the whole batch. A field settlement starts to read must be kept here too; the settlement
+// tests run every batch through this cut and compare it with the whole line.
+func settlementLine(item schemas.BatchResultItem) schemas.BatchResultItem {
+	line := schemas.BatchResultItem{ID: item.ID, CustomID: item.CustomID, Status: item.Status, Error: item.Error}
+	if item.Response != nil {
+		line.Response = &schemas.BatchResultResponse{StatusCode: item.Response.StatusCode, Body: settlementBody(item.Response.Body)}
+	}
+	if item.Result != nil {
+		line.Result = &schemas.BatchResultData{Type: item.Result.Type, Message: settlementBody(item.Result.Message)}
+	}
+	return line
+}
+
+func settlementBody(body map[string]any) map[string]any {
+	if body == nil {
+		return nil
+	}
+	kept := make(map[string]any, 4)
+	for _, key := range []string{"usage", "model", "object"} {
+		if value, ok := body[key]; ok {
+			kept[key] = value
+		}
+	}
+	if data, ok := body["data"]; ok {
+		marker := []any{}
+		if items, isList := data.([]any); isList && len(items) > 0 {
+			if first, isObject := items[0].(map[string]any); isObject {
+				marker = []any{map[string]any{"object": first["object"]}}
+			} else {
+				marker = []any{nil}
+			}
+		}
+		kept["data"] = marker
+	}
+	return kept
 }
 
 // Settle prices the batch's result rows. Malformed rows are not a reason to
