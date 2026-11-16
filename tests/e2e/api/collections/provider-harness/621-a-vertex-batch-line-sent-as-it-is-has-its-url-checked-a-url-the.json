@@ -1,0 +1,140 @@
+{
+  "name": "621. A Vertex batch line sent as it is has its url checked: a url the batch cannot run is a 400 before anything is uploaded (vertex batch native url)",
+  "description": "TXE-7058: a Vertex Gemini batch line whose body has neither messages nor prompt is sent to Vertex as it is. Its url was never checked, so an input-only /v1/embeddings line was uploaded as a generateContent line and the batch created; the caller got no 400. The gateway now refuses such a line with 400, error.param requests[i].url, error_type caller_unsupported_parameter, before anything is uploaded. A native body runs as generateContent and returns a chat completion, so it passes with no url or /v1/chat/completions (unit tests). Both rows run on the Vertex endpoint fixture (vertex-endpoint-fixture.mjs, vertexEndpointFixture=1), which keeps what the gateway uploads to Cloud Storage, so each row also checks that nothing was uploaded. They are skipped without the fixture.",
+  "item": [
+    {
+      "name": "[EXPECT-400] 621.1 vertex vertex batch native url: an input-only /v1/embeddings line is refused naming the line, before anything is uploaded",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "var text = pm.response.text();",
+              "pm.test('the line is refused with a 400 caller_unsupported_parameter naming requests[1].url', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + text).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect((j.error || {}).param, text).to.eql('requests[1].url');",
+              "  pm.expect((j.extra_fields || {}).error_type, text).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(text).to.include(\"/v1/embeddings\");",
+              "});",
+              "pm.sendRequest({ url: pm.variables.get('vertexEndpointFixtureUrl') + '/__gcs', method: 'GET' }, function (err, res) {",
+              "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+              "  var uploaded = res.json().data.filter(function (o) { return /harness-vertex-batch-native-url\\//.test(o.name); });",
+              "  pm.test('nothing was uploaded', function () { pm.expect(uploaded.map(function (o) { return o.name; })).to.eql([]); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "vertex-us-central1"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"output_folder\": {\n    \"url\": \"gs://fixture-bucket/harness-vertex-batch-native-url/output/\"\n  },\n  \"requests\": [\n    {\n      \"custom_id\": \"ok\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/chat/completions\",\n      \"body\": {\n        \"model\": \"gemini-2.5-flash\",\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"Reply with the single word: ok\"\n          }\n        ],\n        \"max_tokens\": 8\n      }\n    },\n    {\n      \"custom_id\": \"embed-1\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/embeddings\",\n      \"body\": {\n        \"model\": \"gemini-2.5-flash\",\n        \"input\": \"hello\"\n      }\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] 621.2 vertex vertex batch native url: a native contents body with an image url is refused naming the line, before anything is uploaded",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "var text = pm.response.text();",
+              "pm.test('the line is refused with a 400 caller_unsupported_parameter naming requests[1].url', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + text).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect((j.error || {}).param, text).to.eql('requests[1].url');",
+              "  pm.expect((j.extra_fields || {}).error_type, text).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(text).to.include(\"cannot run a native Gemini body\");",
+              "});",
+              "pm.sendRequest({ url: pm.variables.get('vertexEndpointFixtureUrl') + '/__gcs', method: 'GET' }, function (err, res) {",
+              "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+              "  var uploaded = res.json().data.filter(function (o) { return /harness-vertex-batch-native-url\\//.test(o.name); });",
+              "  pm.test('nothing was uploaded', function () { pm.expect(uploaded.map(function (o) { return o.name; })).to.eql([]); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "vertex-us-central1"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"output_folder\": {\n    \"url\": \"gs://fixture-bucket/harness-vertex-batch-native-url/output/\"\n  },\n  \"requests\": [\n    {\n      \"custom_id\": \"ok\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/chat/completions\",\n      \"body\": {\n        \"model\": \"gemini-2.5-flash\",\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"Reply with the single word: ok\"\n          }\n        ],\n        \"max_tokens\": 8\n      }\n    },\n    {\n      \"custom_id\": \"native-1\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/images/generations\",\n      \"body\": {\n        \"contents\": [\n          {\n            \"role\": \"user\",\n            \"parts\": [\n              {\n                \"text\": \"hi\"\n              }\n            ]\n          }\n        ]\n      }\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches"
+          ]
+        }
+      }
+    }
+  ]
+}

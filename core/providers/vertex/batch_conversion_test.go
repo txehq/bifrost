@@ -690,6 +690,9 @@ func TestVertexBatchLinesAreTheSyncRequest(t *testing.T) {
 			"another model":  {`{"custom_id":"l-1","url":"/v1/chat/completions","body":{"model":"gemini-2.5-pro","messages":[{"role":"user","content":"hi"}]}}`, "body.model", "gemini-2.5-pro", schemas.ErrorTypeCallerUnsupportedParameter},
 			"no body":        {`{"custom_id":"l-1","url":"/v1/chat/completions"}`, "body", "body is required", schemas.ErrorTypeCallerInvalidRequest},
 			"another url":    {`{"custom_id":"i-1","url":"/v1/images/generations","body":{"model":"gemini-2.5-flash","prompt":"a cat"}}`, "url", "a batch runs one url", schemas.ErrorTypeCallerUnsupportedParameter},
+			// TXE-7058: a body sent as it is (no messages or prompt) has its url checked too.
+			"embeddings url, input-only body": {`{"custom_id":"e-2","url":"/v1/embeddings","body":{"model":"gemini-2.5-flash","input":"hello"}}`, "url", "/v1/embeddings", schemas.ErrorTypeCallerUnsupportedParameter},
+			"image url, native body":          {`{"custom_id":"n-1","url":"/v1/images/generations","body":{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}}`, "url", "cannot run a native Gemini body", schemas.ErrorTypeCallerUnsupportedParameter},
 		} {
 			ok := parse(`{"custom_id":"ok","url":"/v1/chat/completions","body":{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"hi"}]}}`)
 			_, err := vertexConvertRequestsToJSONL(ctx, schemas.Key{}, []schemas.BatchRequestItem{ok, parse(tc.line)}, "gemini-2.5-flash", schemas.BatchEndpointChatCompletions)
@@ -706,6 +709,21 @@ func TestVertexBatchLinesAreTheSyncRequest(t *testing.T) {
 			assert.Equal(t, tc.errorType, bifrostErr.ExtraFields.ErrorType, name)
 		}
 	})
+}
+
+// TXE-7058: a native body with no url, or with the chat completions url the batch runs, still
+// passes through unchanged; only its url is checked.
+func TestVertexBatchNativeLineWithARunnableURLPassesThrough(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	contents := []interface{}{map[string]interface{}{"role": "user", "parts": []interface{}{map[string]interface{}{"text": "hi"}}}}
+	for name, url := range map[string]string{"no url": "", "chat completions url": "/v1/chat/completions", "padded url": " /v1/chat/completions "} {
+		body := map[string]interface{}{"contents": contents, "generationConfig": map[string]interface{}{"temperature": 0.3}}
+		data, err := vertexConvertRequestsToJSONL(ctx, schemas.Key{}, []schemas.BatchRequestItem{{URL: url, Body: body}}, "gemini-2.5-flash", schemas.BatchEndpointChatCompletions)
+		require.NoError(t, err, name)
+		lines := parseVertexJSONLLines(t, data)
+		require.Len(t, lines, 1, name)
+		assert.Equal(t, map[string]interface{}{"contents": contents, "generationConfig": map[string]interface{}{"temperature": 0.3}}, lines[0]["request"], name)
+	}
 }
 
 // The batch's metadata reaches the job as labels, a field of the job body in its own right:

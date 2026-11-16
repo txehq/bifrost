@@ -1,0 +1,122 @@
+{
+  "name": "614. A Gemini batch line sent as it is has its url checked: a url the batch cannot run is a 400 before the batch is sent (gemini batch native url)",
+  "description": "TXE-7058: a Gemini API batch line whose body is in Gemini shape (contents, no messages or prompt) is sent as it is. Its url was never checked, so a native line with /v1/embeddings or /v1/images/generations was sent in the batch and created. The gateway now refuses it with 400, error.param requests[i].url, error_type caller_unsupported_parameter, before the batch is sent. Folder 613 covers the Vertex route. Both rows run on the provider error fixture (gemini base_url -> the fixture) with providerErrorFixture=1 and are skipped otherwise. The fixture serves no Gemini batch create, so before this change each row got the fixture's error for that call, not this 400.",
+  "item": [
+    {
+      "name": "[EXPECT-400] 614.1 gemini gemini batch native url: a native contents line with an embeddings url is refused naming the line, before the batch is sent",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "var text = pm.response.text();",
+              "pm.test('the line is refused with a 400 caller_unsupported_parameter naming requests[1].url', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + text).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect((j.error || {}).param, text).to.eql('requests[1].url');",
+              "  pm.expect((j.extra_fields || {}).error_type, text).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(text).to.include(\"/v1/embeddings\");",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"requests\": [\n    {\n      \"custom_id\": \"ok-native-url-harness\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/chat/completions\",\n      \"body\": {\n        \"model\": \"gemini-2.5-flash\",\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"Reply with the single word: ok\"\n          }\n        ],\n        \"max_tokens\": 8\n      }\n    },\n    {\n      \"custom_id\": \"embed-native-url-harness\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/embeddings\",\n      \"body\": {\n        \"contents\": [\n          {\n            \"role\": \"user\",\n            \"parts\": [\n              {\n                \"text\": \"hello\"\n              }\n            ]\n          }\n        ]\n      }\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches"
+          ]
+        }
+      }
+    },
+    {
+      "name": "[EXPECT-400] 614.2 gemini gemini batch native url: a native contents line with an image url is refused naming the line, before the batch is sent",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "var text = pm.response.text();",
+              "pm.test('the line is refused with a 400 caller_unsupported_parameter naming requests[1].url', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + text).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect((j.error || {}).param, text).to.eql('requests[1].url');",
+              "  pm.expect((j.extra_fields || {}).error_type, text).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(text).to.include(\"cannot run a native Gemini body\");",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"requests\": [\n    {\n      \"custom_id\": \"ok-native-url-harness\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/chat/completions\",\n      \"body\": {\n        \"model\": \"gemini-2.5-flash\",\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"Reply with the single word: ok\"\n          }\n        ],\n        \"max_tokens\": 8\n      }\n    },\n    {\n      \"custom_id\": \"image-native-url-harness\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/images/generations\",\n      \"body\": {\n        \"contents\": [\n          {\n            \"role\": \"user\",\n            \"parts\": [\n              {\n                \"text\": \"a cat\"\n              }\n            ]\n          }\n        ]\n      }\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches"
+          ]
+        }
+      }
+    }
+  ]
+}
