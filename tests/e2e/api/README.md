@@ -36,6 +36,13 @@ request (`.github/workflows/api-collections-offline.yml`) and first in the relea
 API integration job, so a provider added to `StandardProviders` without its row fails
 the PR, not the release run (TXE-6055).
 
+A script test that starts a fixture, a gateway or a listener of its own takes its ports from
+`runners/lib/loopback-port.mjs` (`randomLoopbackPort`, `freeLoopbackPort`; below the ephemeral ranges,
+TXE-7326) or listens on 0, and sets every port the fixture reads. Several sessions run these tests on
+one machine, so a port left on its default fails with `EADDRINUSE` beside another session's fixture
+(TXE-7106). `runners/lib/port-check.test.mjs` (offline suites) fails on a test that listens on a literal
+port, or that names a runner script and leaves one of its port variables unset.
+
 Each case creates a uniquely named disabled key, checks create/get/list/update/delete
 responses, and verifies cleanup. Existing keys and providers are preserved; providers
 created by a case are deleted afterward. Missing fields, missing references, unset or
