@@ -124,35 +124,32 @@ func estimatedImageTokensFor(model string) (estimatedImageTokens, bool) {
 	return figures, ok
 }
 
-// estimateImageTokenCost prices an estimate that image pricing priced at 0 on a row with an image
-// token rate: for each size and quality asked for, the estimated images at the table's tokens per
-// image at the row's output_cost_per_image_token, and the dearest of those. A size and quality that
-// one of the row's per-image or per-pixel output prices applies to keeps that price, which came
-// out 0: an explicit 0 is a free image, not a missing price. A size and quality that none applies
-// to (a row pricing low and medium quality per image, asked for high) takes the tokens. It returns
-// 0 for a row with no image token rate or a model with no figures.
-func (s *Store) estimateImageTokenCost(estimate *schemas.EstimatedImageUsage, routingInfo schemas.RoutingInfo, requestType schemas.RequestType, scopes LookupScopes, sizes, qualities []string) float64 {
+// imageTokenFallback returns the token estimate for one size and quality of an estimate, for the
+// tiers image pricing priced at 0 on a row with an image token rate: the estimated images at the
+// table's tokens per image at the row's output_cost_per_image_token. A size and quality that one
+// of the row's per-image or per-pixel output prices applies to keeps that price, which came out
+// 0: an explicit 0 is a free image, not a missing price. A size and quality that none applies to
+// (a row pricing low and medium quality per image, asked for high) takes the tokens. It returns
+// nil for a row with no image token rate or a model with no figures.
+func (s *Store) imageTokenFallback(estimate *schemas.EstimatedImageUsage, routingInfo schemas.RoutingInfo, requestType schemas.RequestType, scopes LookupScopes) func(size, quality string) float64 {
 	pricing := s.resolvePricing(routingInfo, requestType, scopes)
 	if pricing == nil || pricing.OutputCostPerImageToken == nil || *pricing.OutputCostPerImageToken <= 0 {
-		return 0
+		return nil
 	}
 	figures, ok := estimatedImageTokensFor(pricing.Model)
 	if !ok {
-		return 0
+		return nil
 	}
+	rate := *pricing.OutputCostPerImageToken
 	probe, hasPerImagePrices := perImagePriceProbe(pricing)
-	tokens := 0
-	for _, size := range sizes {
-		for _, quality := range qualities {
-			if hasPerImagePrices && perImagePriceApplies(probe, estimate, size, quality) {
-				continue
-			}
-			tokens = max(tokens, figures.perImage(size, quality))
+	return func(size, quality string) float64 {
+		if hasPerImagePrices && perImagePriceApplies(probe, estimate, size, quality) {
+			return 0
 		}
+		// The product is taken in float64: n comes from the client, and an int product can wrap
+		// to a negative or tiny charge.
+		return float64(estimate.OutputImages) * float64(figures.perImage(size, quality)) * rate
 	}
-	// The product is taken in float64: n comes from the client, and an int product can wrap to a
-	// negative or tiny charge.
-	return float64(estimate.OutputImages) * float64(tokens) * *pricing.OutputCostPerImageToken
 }
 
 // perImagePriceProbe returns a copy of the row with every per-image and per-pixel output price it
