@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -4113,6 +4114,149 @@ func TestRecordVideoJobLifecycle_CapturesRequestPricingDimensions(t *testing.T) 
 	}
 }
 
+// videoCaptureExemptFields are the price-affecting unified fields of a video create that
+// the pricing dimensions deliberately do not capture, each with the reason. Contract C4
+// lists the task control fields beside the price fields because they decide whether
+// the caller can recover the task, not what the vendor bills.
+var videoCaptureExemptFields = map[string]string{
+	schemas.TaskControlFieldCallbackURL:         "task recovery, not price: where the vendor reports state changes",
+	schemas.TaskControlFieldClientReferenceID:   "task recovery, not price: the caller's own id for the task",
+	schemas.TaskControlFieldExpiresAfterSeconds: "task recovery, not price: an upper bound on the task's lifetime",
+	schemas.TaskControlFieldOutputStorageURI:    "task recovery, not price: where the vendor writes the artifact",
+}
+
+// videoCaptureSamples is one JSON value per captured field, as a client sends it.
+var videoCaptureSamples = map[string]string{
+	"seconds":          `"8"`,
+	"size":             `"1280x720"`,
+	"audio":            `true`,
+	"input_reference":  `"https://example.com/first.png"`,
+	"output_format":    `"mp4"`,
+	"aspect_ratio":     `"16:9"`,
+	"resolution":       `"1080P"`,
+	"last_frame":       `"https://example.com/last.png"`,
+	"reference_images": `["https://example.com/ref.png"]`,
+}
+
+// videoDimensionsWithoutExtra is the persisted form of dims with Extra left out, so a
+// field counts as captured only when a typed dimension holds it.
+func videoDimensionsWithoutExtra(t *testing.T, dims modelcatalog.VideoPricingDimensions) string {
+	t.Helper()
+	dims.Extra = nil
+	encoded, err := jobaccounting.MarshalVideoDimensions(dims)
+	if err != nil {
+		t.Fatalf("encode video dimensions: %v", err)
+	}
+	if encoded == nil {
+		return ""
+	}
+	return *encoded
+}
+
+// TXE-7122: every unified video create field contract C4 counts as price-affecting
+// (schemas.PriceAffectingUnifiedFields) reaches the persisted pricing dimensions, from
+// the typed params and from a rehydrated entry's decoded map, or is exempt above with a
+// reason. A field added to the contract's table fails here until the capture reads it.
+func TestVideoDimensionsFromEntryParams_CapturesEveryPriceAffectingField(t *testing.T) {
+	fields := schemas.PriceAffectingUnifiedFields(schemas.VideoGenerationRequest)
+	if len(fields) == 0 {
+		t.Fatal("no price-affecting fields for a video create")
+	}
+	for name := range videoCaptureExemptFields {
+		if !slices.Contains(fields, name) {
+			t.Errorf("videoCaptureExemptFields lists %q, which is not a price-affecting video field any more; remove it", name)
+		}
+	}
+
+	bareDims, _ := videoDimensionsFromEntryParams(&logstore.Log{
+		ParamsParsed:               &schemas.VideoGenerationParameters{},
+		VideoGenerationInputParsed: &schemas.VideoGenerationInput{},
+	}, schemas.VideoGenerationRequest)
+	bare := videoDimensionsWithoutExtra(t, bareDims)
+
+	for _, field := range fields {
+		if _, exempt := videoCaptureExemptFields[field]; exempt {
+			continue
+		}
+		t.Run(field, func(t *testing.T) {
+			sample, ok := videoCaptureSamples[field]
+			if !ok {
+				t.Fatalf("%q is a price-affecting video field with no sample here: add one to videoCaptureSamples, and capture it in videoDimensionsFromEntryParams (or exempt it with a reason)", field)
+			}
+			body := []byte(`{"` + field + `":` + sample + `}`)
+
+			// The typed shape, as the request carried it. input_reference travels in the
+			// input, every other field in the params.
+			params := &schemas.VideoGenerationParameters{}
+			input := &schemas.VideoGenerationInput{}
+			if err := json.Unmarshal(body, params); err != nil {
+				t.Fatalf("decode params: %v", err)
+			}
+			if err := json.Unmarshal(body, input); err != nil {
+				t.Fatalf("decode input: %v", err)
+			}
+			typed, _ := videoDimensionsFromEntryParams(&logstore.Log{
+				ParamsParsed:               params,
+				VideoGenerationInputParsed: input,
+			}, schemas.VideoGenerationRequest)
+			if got := videoDimensionsWithoutExtra(t, typed); got == bare {
+				t.Errorf("%q set on the request is not captured into the video pricing dimensions (got %s)", field, got)
+			}
+
+			if field == "input_reference" {
+				return // not a param, so never in the params map
+			}
+			// The rehydrated shape: params decoded as a map.
+			var decoded map[string]any
+			if err := json.Unmarshal(body, &decoded); err != nil {
+				t.Fatalf("decode map: %v", err)
+			}
+			fromMap, _ := videoDimensionsFromEntryParams(&logstore.Log{ParamsParsed: decoded}, schemas.VideoGenerationRequest)
+			if got, want := videoDimensionsWithoutExtra(t, fromMap), videoDimensionsWithoutExtra(t, typed); got != want {
+				t.Errorf("%q from a rehydrated entry's params map captures %s, the typed params capture %s", field, got, want)
+			}
+		})
+	}
+}
+
+// TXE-7122: the handlers keep a copy of the frames among the extra params, and a frame can be a
+// whole data URL. The pricing row keeps their count (InputImages), never the media, and the
+// request's own extra params are left as they were. The extra_params tier stays (TXE-7349).
+func TestVideoDimensionsFromEntryParams_PricingRowHoldsNoInputMedia(t *testing.T) {
+	dataURL := "data:image/png;base64,iVBORw0KGgo="
+	params := &schemas.VideoGenerationParameters{
+		AspectRatio:     "16:9",
+		LastFrame:       schemas.TolerantString(dataURL),
+		ReferenceImages: schemas.VideoReferenceImages{dataURL},
+		ExtraParams: map[string]any{
+			"resolution":       "720p",
+			"aspect_ratio":     "16:9",
+			"last_frame":       dataURL,
+			"reference_images": []any{dataURL},
+			"watermark":        false,
+		},
+	}
+	entry := &logstore.Log{ParamsParsed: params, VideoGenerationInputParsed: &schemas.VideoGenerationInput{Prompt: "a cat"}}
+	dims, _ := videoDimensionsFromEntryParams(entry, schemas.VideoGenerationRequest)
+	if dims.AspectRatio != "16:9" || dims.InputImages == nil || *dims.InputImages != 2 {
+		t.Fatalf("typed dimensions not captured: %+v", dims)
+	}
+	want := map[string]any{"resolution": "720p", "aspect_ratio": "16:9", "watermark": false}
+	if !reflect.DeepEqual(dims.Extra, want) {
+		t.Fatalf("extra = %v, want %v", dims.Extra, want)
+	}
+	if len(params.ExtraParams) != 5 {
+		t.Fatalf("the request's own extra params were changed: %v", params.ExtraParams)
+	}
+	encoded, err := jobaccounting.MarshalVideoDimensions(dims)
+	if err != nil || encoded == nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if strings.Contains(*encoded, "data:") {
+		t.Fatalf("the pricing row holds a data URL: %s", *encoded)
+	}
+}
+
 // TXE-7357: the job row keeps what a Seedance or Kling job is priced by beyond size and length:
 // its video input (video_uri, or the reference_videos extra param), Kling's mode (an extra param),
 // and the output video tokens the response reports.
@@ -5237,6 +5381,47 @@ func BenchmarkRecordVideoJobLifecycleGate(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		plugin.recordVideoJobLifecycle(entry, result, schemas.VideoGenerationRequest, nil, modelcatalog.VideoInputs{}, "")
+	}
+}
+
+// BenchmarkVideoDimensionsFromEntryParams measures the request-dimension capture a video
+// create pays once, when its job row is written, with the JSON encoding of the result
+// (TXE-7122). "sized" is a size-only create with no extra params (OpenAI's shape). "vendor
+// extras" carries only vendor knobs, whose map is kept as it is. "frames in extras" carries
+// the handlers' copies of a last frame and a reference image: only this case copies the map,
+// to drop them.
+func BenchmarkVideoDimensionsFromEntryParams(b *testing.B) {
+	seconds := "5"
+	cases := []struct {
+		name   string
+		params *schemas.VideoGenerationParameters
+	}{
+		{"sized", &schemas.VideoGenerationParameters{Seconds: &seconds, Size: "1280x720"}},
+		{"vendor extras", &schemas.VideoGenerationParameters{
+			Seconds: &seconds, Size: "1280x720", AspectRatio: "16:9",
+			ExtraParams: map[string]any{"watermark": false, "camera_fixed": true, "aspect_ratio": "16:9"},
+		}},
+		{"frames in extras", &schemas.VideoGenerationParameters{
+			Seconds: &seconds, Resolution: "1080p", LastFrame: "https://example.com/last.png",
+			ReferenceImages: schemas.VideoReferenceImages{"https://example.com/ref.png"},
+			ExtraParams: map[string]any{
+				"resolution": "1080p", "last_frame": "https://example.com/last.png",
+				"reference_images": []any{"https://example.com/ref.png"}, "watermark": false,
+			},
+		}},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			entry := &logstore.Log{ParamsParsed: tc.params, VideoGenerationInputParsed: &schemas.VideoGenerationInput{Prompt: "a cat"}}
+			b.ReportAllocs()
+			for b.Loop() {
+				// Capture and the encoding written to the row's params column.
+				dims, _ := videoDimensionsFromEntryParams(entry, schemas.VideoGenerationRequest)
+				if _, err := jobaccounting.MarshalVideoDimensions(dims); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }
 

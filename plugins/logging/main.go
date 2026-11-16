@@ -949,6 +949,7 @@ func videoPricingFromRequest(provider string, req *schemas.BifrostRequest) (*mod
 	dims.Audio = copyPtr(dims.Audio)
 	dims.UpscaleFactor = copyPtr(dims.UpscaleFactor)
 	dims.TargetMegapixels = copyPtr(dims.TargetMegapixels)
+	dims.OutputFormat = copyPtr(dims.OutputFormat)
 	// dims.InputImages is a count computed here, never a pointer into the request: no copy needed.
 	return &dims, inputs
 }
@@ -983,6 +984,8 @@ func videoDimensionsFromEntryParams(entry *logstore.Log, requestType schemas.Req
 		// The typed tier only. A tier in extra_params stays in Extra (captured below), so pricing
 		// can tell which one the provider reads (TXE-7349).
 		dims.Resolution = string(params.Resolution)
+		dims.AspectRatio = string(params.AspectRatio)
+		dims.OutputFormat = params.OutputFormat
 		dims.Type = params.Type
 		dims.Audio = params.Audio
 		dims.UpscaleFactor = params.UpscaleFactor
@@ -993,10 +996,10 @@ func videoDimensionsFromEntryParams(entry *logstore.Log, requestType schemas.Req
 			}
 		}
 		// Anything not modeled yet still gets captured: a knob that turns out to be
-		// price-relevant is then already on the row, with no backfill needed.
-		if len(params.ExtraParams) > 0 {
-			dims.Extra = params.ExtraParams
-		}
+		// price-relevant is then already on the row, with no backfill needed. The input
+		// media is not: it is counted below (InputImages, VideoInput), and a frame can be a
+		// whole data URL (TXE-7122).
+		dims.Extra = modelcatalog.VideoPricingExtra(params.ExtraParams)
 	case *schemas.VideoEditParameters:
 		if params == nil {
 			return dims, modelcatalog.VideoInputs{}
@@ -1004,9 +1007,7 @@ func videoDimensionsFromEntryParams(entry *logstore.Log, requestType schemas.Req
 		dims.Type = params.Type
 		dims.UpscaleFactor = params.UpscaleFactor
 		dims.TargetMegapixels = params.TargetMegapixels
-		if len(params.ExtraParams) > 0 {
-			dims.Extra = params.ExtraParams
-		}
+		dims.Extra = modelcatalog.VideoPricingExtra(params.ExtraParams)
 	case map[string]any:
 		applyVideoDimensionsFromMap(&dims, params)
 	}
@@ -1055,6 +1056,12 @@ func applyVideoDimensionsFromMap(dims *modelcatalog.VideoPricingDimensions, para
 	}
 	if resolution, ok := params["resolution"].(string); ok {
 		dims.Resolution = resolution
+	}
+	if aspectRatio, ok := params["aspect_ratio"].(string); ok {
+		dims.AspectRatio = aspectRatio
+	}
+	if outputFormat, ok := params["output_format"].(string); ok {
+		dims.OutputFormat = &outputFormat
 	}
 	if operation, ok := params["type"].(string); ok {
 		dims.Type = &operation

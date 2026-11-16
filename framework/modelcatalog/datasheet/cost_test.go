@@ -6,6 +6,7 @@ import (
 	"go/parser"
 	"go/token"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -10343,6 +10344,101 @@ func TestVideoBillingExtraKeysCoverEveryExtraRead(t *testing.T) {
 	assert.Nil(t, VideoBillingSelectors(map[string]any{"seed": 3}))
 }
 
+// TXE-7122: every extra param ReadVideoInputs reads as input media is one VideoPricingExtra keeps
+// out of a pricing row. A new media key read there fails here until it is listed in
+// videoInputExtraKeys.
+func TestVideoInputExtraKeysCoverEveryReadVideoInputsKey(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "videopricing.go", nil, 0)
+	require.NoError(t, err)
+	var fn *ast.FuncDecl
+	for _, decl := range file.Decls {
+		if d, ok := decl.(*ast.FuncDecl); ok && d.Name.Name == "ReadVideoInputs" {
+			fn = d
+		}
+	}
+	require.NotNil(t, fn, "ReadVideoInputs not found in videopricing.go")
+	read := 0
+	ast.Inspect(fn, func(n ast.Node) bool {
+		idx, ok := n.(*ast.IndexExpr)
+		if !ok {
+			return true
+		}
+		if ident, isIdent := idx.X.(*ast.Ident); !isIdent || ident.Name != "extra" {
+			return true
+		}
+		read++
+		switch index := idx.Index.(type) {
+		case *ast.BasicLit:
+			key, _ := strconv.Unquote(index.Value)
+			if !slices.Contains(videoInputExtraKeys, key) {
+				t.Errorf("%s: ReadVideoInputs reads extra[%q], which videoInputExtraKeys does not list", fset.Position(idx.Pos()), key)
+			}
+		case *ast.SelectorExpr:
+			// extra[native.name]: videoInputExtraKeys is built from videoNativeFirstFrameNames.
+			if index.Sel.Name != "name" {
+				t.Errorf("%s: ReadVideoInputs reads extra by %s, which this check does not know", fset.Position(idx.Pos()), index.Sel.Name)
+			}
+		default:
+			t.Errorf("%s: ReadVideoInputs reads extra by a key this check does not know", fset.Position(idx.Pos()))
+		}
+		return true
+	})
+	if read == 0 {
+		t.Fatal("found no extra reads in ReadVideoInputs; the check no longer sees how inputs are read")
+	}
+	for _, native := range videoNativeFirstFrameNames {
+		assert.Contains(t, videoInputExtraKeys, native.name)
+	}
+}
+
+// TXE-7122: a pricing row keeps the extra params' knobs and billing selectors, never the input
+// media or a data URL, and the request's own map is never changed.
+func TestVideoPricingExtra(t *testing.T) {
+	dataURL := "data:image/png;base64,iVBORw0KGgo="
+	extra := map[string]any{
+		"resolution":       "720p", // a billing selector (TXE-7349): always kept
+		"mode":             "pro",
+		"aspect_ratio":     "16:9",
+		"watermark":        false,
+		"last_frame":       "https://example.com/last.png",
+		"reference_images": []any{dataURL},
+		"reference_videos": []any{"https://example.com/ref.mp4"},
+		"image":            map[string]any{"url": "https://example.com/first.png"}, // xAI's first frame
+		"mask":             dataURL,
+	}
+	got := VideoPricingExtra(extra)
+	assert.Equal(t, map[string]any{"resolution": "720p", "mode": "pro", "aspect_ratio": "16:9", "watermark": false}, got)
+	assert.Len(t, extra, 9, "the request's extra params were changed")
+
+	// Nothing to drop: the same map, with no copy.
+	knobs := map[string]any{"watermark": false, "seed": 3}
+	same := VideoPricingExtra(knobs)
+	assert.Equal(t, knobs, same)
+	same["probe"] = true
+	assert.Contains(t, knobs, "probe", "with nothing to drop the map itself is returned")
+
+	assert.Nil(t, VideoPricingExtra(nil))
+	assert.Nil(t, VideoPricingExtra(map[string]any{"last_frame": dataURL}))
+}
+
+// TXE-7122: merging never writes into the receiver's Extra, which can be the request's own
+// ExtraParams.
+func TestVideoPricingDimensions_MergedWithDoesNotWriteReceiverExtra(t *testing.T) {
+	requestExtra := map[string]any{"watermark": false}
+	captured := VideoPricingDimensions{Extra: requestExtra, AspectRatio: "16:9"}
+	merged := captured.MergedWith(VideoPricingDimensions{Extra: map[string]any{"seed": 7}})
+	assert.Equal(t, map[string]any{"watermark": false, "seed": 7}, merged.Extra)
+	assert.Equal(t, map[string]any{"watermark": false}, requestExtra)
+	assert.Equal(t, "16:9", merged.AspectRatio)
+
+	format := "webm"
+	merged = captured.MergedWith(VideoPricingDimensions{AspectRatio: "9:16", OutputFormat: &format})
+	assert.Equal(t, "9:16", merged.AspectRatio)
+	require.NotNil(t, merged.OutputFormat)
+	assert.Equal(t, "webm", *merged.OutputFormat)
+}
+
 // realtimeRowStore holds one decoded datasheet row under the given provider, model and mode.
 func realtimeRowStore(tb testing.TB, provider, model, mode, row string) *Store {
 	tb.Helper()
@@ -11099,5 +11195,28 @@ func TestScaleUsageCostScalesEveryUsageCategory(t *testing.T) {
 				t.Errorf("%s: TotalCost %v, want %v", name, cost.TotalCost, want)
 			}
 		}
+	}
+}
+
+// BenchmarkVideoPricingExtra is the cost VideoPricingExtra adds to a video create's capture
+// (TXE-7122): a scan of the extra params, and a copy only when they carry input media.
+func BenchmarkVideoPricingExtra(b *testing.B) {
+	for _, tc := range []struct {
+		name  string
+		extra map[string]any
+	}{
+		{"none", nil},
+		{"vendor knobs", map[string]any{"watermark": false, "camera_fixed": true, "aspect_ratio": "16:9"}},
+		{"frames", map[string]any{
+			"resolution": "1080p", "last_frame": "https://example.com/last.png",
+			"reference_images": []any{"https://example.com/ref.png"}, "watermark": false,
+		}},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = VideoPricingExtra(tc.extra)
+			}
+		})
 	}
 }
