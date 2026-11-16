@@ -162,8 +162,20 @@ jobs:
           go-version: "1.27.3"
           cache: false
 
+      # A push releases only when it changes a version file; a dispatch always may
+      # (TXE-7511). When this says no, the detect step below is skipped, every
+      # *-needs-release output is empty, and no release or live-providers job runs.
+      - name: Decide whether this run may release
+        id: trigger
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.sha }}
+        run: ./.github/workflows/scripts/release-trigger.sh "$EVENT_NAME" "$BEFORE_SHA" "$AFTER_SHA"
+
       - name: Detect what needs release
         id: detect
+        if: steps.trigger.outputs.may-release == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./.github/workflows/scripts/detect-all-changes.sh "auto"
