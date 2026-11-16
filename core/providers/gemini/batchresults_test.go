@@ -770,7 +770,10 @@ func TestGeminiBatchCreateRefusesWhatItCannotRun(t *testing.T) {
 		{"line with neither a url nor messages", schemas.Ptr("gemini-2.5-flash"), `{"custom_id":"line-1","body":{"model":"gemini-2.5-flash","prompt":"hi"}}`, "requests[0].url", "url is required", schemas.ErrorTypeCallerInvalidRequest},
 		{"line without a body", schemas.Ptr("gemini-2.5-flash"), `{"custom_id":"line-1","url":"/v1/chat/completions"}`, "requests[0].body", "body is required", schemas.ErrorTypeCallerInvalidRequest},
 		// TXE-7058: a native body (contents, no messages or prompt) is sent as it is, but its url is checked.
-		{"native body with an embeddings url", schemas.Ptr("gemini-2.5-flash"), `{"custom_id":"n-1","url":"/v1/embeddings","body":{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}}`, "requests[0].url", "/v1/embeddings", schemas.ErrorTypeCallerUnsupportedParameter},
+		// A first line naming /v1/embeddings makes an embedding batch (TXE-6637), whose lines need
+		// an input: a contents body there is refused for its body, still before the batch is sent.
+		// Harness folder 614 covers a native line naming /v1/embeddings after a chat line.
+		{"native body with an embeddings url", schemas.Ptr("gemini-2.5-flash"), `{"custom_id":"n-1","url":"/v1/embeddings","body":{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}}`, "requests[0].body", "input is required for embeddings", schemas.ErrorTypeCallerInvalidRequest},
 		{"native body with an image url", schemas.Ptr("gemini-2.5-flash"), `{"custom_id":"n-1","url":"/v1/images/generations","body":{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}}`, "requests[0].url", "cannot run a native Gemini body", schemas.ErrorTypeCallerUnsupportedParameter},
 	}
 	t.Run("lines of two urls", func(t *testing.T) {

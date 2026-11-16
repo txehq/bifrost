@@ -1,9 +1,9 @@
 {
-  "name": "613. A Vertex batch line sent as it is has its url checked: a url the batch cannot run is a 400 before anything is uploaded (vertex batch native url)",
+  "name": "620. A Vertex batch line sent as it is has its url checked: a url the batch cannot run is a 400 before anything is uploaded (vertex batch native url)",
   "description": "TXE-7058: a Vertex Gemini batch line whose body has neither messages nor prompt is sent to Vertex as it is. Its url was never checked, so an input-only /v1/embeddings line was uploaded as a generateContent line and the batch created; the caller got no 400. The gateway now refuses such a line with 400, error.param requests[i].url, error_type caller_unsupported_parameter, before anything is uploaded. A native body runs as generateContent and returns a chat completion, so it passes with no url or /v1/chat/completions (unit tests). Both rows run on the Vertex endpoint fixture (vertex-endpoint-fixture.mjs, vertexEndpointFixture=1), which keeps what the gateway uploads to Cloud Storage, so each row also checks that nothing was uploaded. They are skipped without the fixture.",
   "item": [
     {
-      "name": "[EXPECT-400] 613.1 vertex vertex batch native url: an input-only /v1/embeddings line is refused naming the line, before anything is uploaded",
+      "name": "[EXPECT-400] 620.1 vertex vertex batch native url: an input-only /v1/embeddings line is refused naming the line, before anything is uploaded",
       "event": [
         {
           "listen": "prerequest",
@@ -70,7 +70,7 @@
       }
     },
     {
-      "name": "[EXPECT-400] 613.2 vertex vertex batch native url: a native contents body with an image url is refused naming the line, before anything is uploaded",
+      "name": "[EXPECT-400] 620.2 vertex vertex batch native url: a native contents body with an image url is refused naming the line, before anything is uploaded",
       "event": [
         {
           "listen": "prerequest",
