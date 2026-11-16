@@ -55,6 +55,27 @@ func TestModelHubFollowsTheConfiguredBaseURL(t *testing.T) {
 	assert.Equal(t, []string{"/pp/huggingface/api/models/org/model"}, paths, "the lookup must go to the configured base URL")
 }
 
+// TestModelLookupCarriesTheConfiguredExtraHeaders (fork, TXE-7117): the model lookup goes to the
+// configured base URL, so it carries network_config.extra_headers as inference and the model list
+// do. A gateway that requires one of them refused the lookup, and every uncached request with it.
+func TestModelLookupCarriesTheConfiguredExtraHeaders(t *testing.T) {
+	var got []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.Header.Get("X-Gateway-Auth"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"_id":"1","id":"org/model","pipeline_tag":"text-to-speech","inferenceProviderMapping":{"fal-ai":{"status":"live","providerId":"fal-ai/org-model","task":"text-to-speech"}}}`))
+	}))
+	defer server.Close()
+	provider := NewHuggingFaceProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{
+		BaseURL:                        server.URL,
+		DefaultRequestTimeoutInSeconds: 5,
+		ExtraHeaders:                   map[string]schemas.SecretVar{"X-Gateway-Auth": *schemas.NewSecretVar("gw-1")},
+	}}, nil)
+	_, bifrostErr := provider.getValidatedProviderModelID(context.Background(), falAI, "org/model", "text-to-speech", schemas.SpeechRequest)
+	require.Nil(t, bifrostErr)
+	assert.Equal(t, []string{"gw-1"}, got)
+}
+
 // BenchmarkModelHubURL is the cost of building the two hub URLs (TXE-7117): the model lookup
 // before an uncached inference request and the model list. "constant" is the expression the
 // builder used before, with the hub host as a constant; "provider" is the builder now, which

@@ -254,6 +254,9 @@ func (provider *HuggingFaceProvider) getModelInferenceProviderMapping(ctx contex
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
+	// The lookup goes to the configured base URL (TXE-7117), so it carries the configured extra
+	// headers, as inference and the model list do: a gateway that requires one refuses it otherwise.
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(provider.buildModelInferenceProviderURL(huggingfaceModelName))
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
