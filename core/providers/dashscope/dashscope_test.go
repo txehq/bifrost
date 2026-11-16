@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"strings"
 	"sync"
@@ -27,8 +28,8 @@ func newTestProvider(t *testing.T, network schemas.NetworkConfig) *DashScopeProv
 }
 
 // TestDashScopeBases pins which base each operation family uses: the Singapore site by
-// default, the configured regional base when set, and the workspace base for video and
-// Qwen3-ASR transcription.
+// default, the configured regional base when set, and the workspace base for video, Wan image
+// tasks and Qwen3-ASR transcription.
 func TestDashScopeBases(t *testing.T) {
 	const workspace = "https://ws-1.ap-southeast-1.maas.aliyuncs.com"
 	cases := []struct {
@@ -42,7 +43,7 @@ func TestDashScopeBases(t *testing.T) {
 		{name: "workspace base for video and transcription", network: schemas.NetworkConfig{WorkspaceBaseURL: workspace + "/"}, wantRegional: DefaultBaseURL, wantWorkspace: workspace},
 	}
 	regional := []schemas.RequestType{schemas.ImageGenerationRequest, schemas.ImageEditRequest, schemas.SpeechRequest, schemas.SpeechStreamRequest}
-	video := []schemas.RequestType{schemas.TranscriptionRequest, schemas.VideoGenerationRequest, schemas.VideoRetrieveRequest, schemas.VideoCancelRequest, schemas.VideoDownloadRequest, schemas.VideoListRequest, schemas.VideoDeleteRequest}
+	video := []schemas.RequestType{schemas.ImageGenerationTaskRequest, schemas.ImageEditTaskRequest, schemas.ImageTaskRetrieveRequest, schemas.ImageTaskCancelRequest, schemas.TranscriptionRequest, schemas.VideoGenerationRequest, schemas.VideoRetrieveRequest, schemas.VideoCancelRequest, schemas.VideoDownloadRequest, schemas.VideoListRequest, schemas.VideoDeleteRequest}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			provider := newTestProvider(t, tc.network)
@@ -1222,4 +1223,576 @@ func BenchmarkDashScopeASRResponse(b *testing.B) {
 			b.Fatal(bifrostErr.Error.Message)
 		}
 	}
+}
+
+// newMockDashScopeImageTasks serves the routes on the workspace base, where Wan image tasks go
+// (TXE-7050; Alibaba's Wan reference names the workspace host for the async create and the task
+// query). The regional base points nowhere: an image task call that used it would fail.
+func newMockDashScopeImageTasks(t *testing.T, routes map[string]mockResponse) (*DashScopeProvider, *mockDashScope) {
+	t.Helper()
+	mock := &mockDashScope{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mock.mu.Lock()
+		mock.requests = append(mock.requests, recordedRequest{
+			Method: r.Method, Path: r.URL.Path, Query: r.URL.RawQuery,
+			Async: r.Header.Get("X-DashScope-Async"), Auth: r.Header.Get("Authorization"), Body: string(body),
+		})
+		mock.mu.Unlock()
+		route, ok := routes[r.Method+" "+r.URL.Path]
+		if !ok {
+			http.Error(w, `{"code":"NotFound","message":"no such route"}`, http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(route.status)
+		_, _ = io.WriteString(w, route.body)
+	}))
+	t.Cleanup(server.Close)
+	provider := newTestProvider(t, schemas.NetworkConfig{
+		BaseURL: "http://127.0.0.1:1", WorkspaceBaseURL: server.URL,
+		DefaultRequestTimeoutInSeconds: 10, AllowPrivateNetwork: true,
+	})
+	return provider, mock
+}
+
+const wanImageTaskCreated = `{"request_id":"r-1","output":{"task_id":"wan-img-1","task_status":"PENDING"}}`
+
+// TestDashScopeWanImageTaskCreate is TXE-7050 B6 and B9: a Wan text-to-image task and a Wan edit
+// task are each one async POST to image-generation/generation on the workspace base, in the body
+// the synchronous converter builds. resolution reaches parameters.size verbatim, a size as
+// width*height. An edit sends a link unchanged and bytes as a base64 data URI. The answer is a
+// queued image task with the provider's suffix.
+func TestDashScopeWanImageTaskCreate(t *testing.T) {
+	createPath := "/api/v1/services/aigc/image-generation/generation"
+	provider, mock := newMockDashScopeImageTasks(t, map[string]mockResponse{"POST " + createPath: {http.StatusOK, wanImageTaskCreated}})
+	before := time.Now().Unix()
+
+	task, bifrostErr := provider.ImageGenerationTask(imageTestContext(t), imageTestKey(), &schemas.BifrostImageGenerationRequest{
+		Provider: schemas.DashScope,
+		Model:    "wan2.6-t2i",
+		Input:    &schemas.ImageGenerationInput{Prompt: "a lighthouse at dusk"},
+		Params:   &schemas.ImageGenerationParameters{N: schemas.Ptr(2), Size: schemas.Ptr("1280x1280"), Seed: schemas.Ptr(7), ExtraParams: map[string]interface{}{"prompt_extend": false}},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("ImageGenerationTask: %+v", bifrostErr.Error)
+	}
+	if task.ID != "wan-img-1:dashscope" || task.Object != schemas.ImageTaskObject || task.Status != schemas.VideoStatusQueued || task.ProviderStatus != "PENDING" || task.Model != "wan2.6-t2i" {
+		t.Fatalf("task = %+v, want a queued wan2.6-t2i image task wan-img-1:dashscope", task)
+	}
+	if task.CreatedAt < before || task.Data == nil || len(task.Data) != 0 {
+		t.Errorf("created_at %d, data %v: want the submit time and an empty data array", task.CreatedAt, task.Data)
+	}
+	// The create is billed for the n images it asks for, not as one (TXE-7050), and usage stays
+	// what DashScope reported: nothing, on a create.
+	if task.BilledImages != 2 || task.Usage != nil {
+		t.Errorf("billed images %d, usage %+v: want 2 and no usage", task.BilledImages, task.Usage)
+	}
+	got := mock.requests[0]
+	if got.Method != http.MethodPost || got.Path != createPath || got.Async != "enable" || got.Auth != "Bearer sk-dash" {
+		t.Fatalf("request = %+v, want an async POST to %s with the key", got, createPath)
+	}
+	assertJSONEqual(t, got.Body, `{"model":"wan2.6-t2i",
+		"input":{"messages":[{"role":"user","content":[{"text":"a lighthouse at dusk"}]}]},
+		"parameters":{"n":2,"size":"1280*1280","seed":7,"prompt_extend":false}}`)
+
+	mock.requests = nil
+	_, bifrostErr = provider.ImageEditTask(imageTestContext(t), imageTestKey(), &schemas.BifrostImageEditRequest{
+		Provider: schemas.DashScope,
+		Model:    "wan2.6-image",
+		Input: &schemas.ImageEditInput{
+			Prompt: "make it night",
+			Images: []schemas.ImageInput{{URL: "https://example.com/a.png"}, {Image: []byte("\x89PNG\r\n\x1a\n")}},
+		},
+		Params: &schemas.ImageEditParameters{N: schemas.Ptr(1), Resolution: "2K"},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("ImageEditTask: %+v", bifrostErr.Error)
+	}
+	got = mock.requests[0]
+	if got.Path != createPath || got.Async != "enable" {
+		t.Fatalf("edit request = %+v, want the async create", got)
+	}
+	assertJSONEqual(t, got.Body, `{"model":"wan2.6-image",
+		"input":{"messages":[{"role":"user","content":[{"image":"https://example.com/a.png"},{"image":"data:image/png;base64,iVBORw0KGgo="},{"text":"make it night"}]}]},
+		"parameters":{"n":1,"size":"2K"}}`)
+}
+
+// TestDashScopeWanImageTaskBilledImages: a Wan task create is billed for the images it asks
+// DashScope for (TXE-7050). With no n, Wan makes its documented default of 4, each billed, so the
+// create counts 4; a body the caller wrote whole is counted from its own parameters.n.
+func TestDashScopeWanImageTaskBilledImages(t *testing.T) {
+	createPath := "/api/v1/services/aigc/image-generation/generation"
+	provider, _ := newMockDashScopeImageTasks(t, map[string]mockResponse{"POST " + createPath: {http.StatusOK, wanImageTaskCreated}})
+	cases := []struct {
+		name   string
+		params *schemas.ImageGenerationParameters
+		want   int
+	}{
+		{"n given", &schemas.ImageGenerationParameters{N: schemas.Ptr(3)}, 3},
+		{"no n: Wan's default", &schemas.ImageGenerationParameters{}, wanDefaultImageCount},
+		{"no params: Wan's default", nil, wanDefaultImageCount},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			task, bifrostErr := provider.ImageGenerationTask(imageTestContext(t), imageTestKey(), &schemas.BifrostImageGenerationRequest{
+				Provider: schemas.DashScope, Model: "wan2.6-t2i", Input: &schemas.ImageGenerationInput{Prompt: "x"}, Params: c.params,
+			})
+			if bifrostErr != nil {
+				t.Fatalf("ImageGenerationTask: %+v", bifrostErr.Error)
+			}
+			if task.BilledImages != c.want {
+				t.Fatalf("billed images = %d, want %d", task.BilledImages, c.want)
+			}
+		})
+	}
+	// A raw passthrough body: its own n and size are what is billed (TXE-7050).
+	read := []struct {
+		body       string
+		count      int
+		size, tier string
+	}{
+		{`{"model":"wan2.6-t2i","parameters":{"n":2,"size":"1280*1280"}}`, 2, "1280x1280", ""},
+		{`{"model":"wan2.6-image","parameters":{"n":1,"size":"2k"}}`, 1, "", "2K"},
+		{`{"model":"wan2.6-t2i","parameters":{}}`, wanDefaultImageCount, "", ""},
+		{`{"model":"wan2.6-t2i"}`, wanDefaultImageCount, "", ""},
+		{`{"model":"wan2.6-image","parameters":{"n":1,"enable_interleave":false,"max_images":null}}`, 1, "", ""},
+		// Wan 2.7 image models default to one image at 2K.
+		{`{"model":"wan2.7-image","parameters":{}}`, 1, "", "2K"},
+		{`{"model":"wan2.7-image-pro"}`, 1, "", "2K"},
+		{`{"model":"wan2.7-image-pro","parameters":{"n":3,"size":"4K"}}`, 3, "", "4K"},
+	}
+	for _, c := range read {
+		count, params, bifrostErr := wanRawImageTaskBilling([]byte(c.body), rawBodyModel(c.body))
+		if bifrostErr != nil || count != c.count {
+			t.Errorf("raw body %s: billed images = %d (%+v), want %d", c.body, count, bifrostErr, c.count)
+			continue
+		}
+		// Always set, so core never prices a raw body from the parsed request's params.
+		if params == nil {
+			t.Errorf("raw body %s: no billed parameters", c.body)
+			continue
+		}
+		if gotSize, gotTier := params.Size, params.Resolution; gotSize != c.size || gotTier != c.tier {
+			t.Errorf("raw body %s: billed size %q tier %q, want %q %q", c.body, gotSize, gotTier, c.size, c.tier)
+		}
+	}
+	// It fails closed: what Bifrost cannot read the way DashScope would is refused, not counted at
+	// a default. A repeated name in any spelling is one a parser that took the other copy would
+	// read differently.
+	for body, param := range map[string]string{
+		`{"model":"wan2.6-image","parameters":{"n":1,"enable_interleave":true}}`: "parameters.enable_interleave",
+		`{"model":"wan2.6-image","parameters":{"n":1,"max_images":5}}`:           "parameters.max_images",
+		`{"model":"wan2.6-image","parameters":{"n":1,"EnableInterleave":"yes"}}`: "parameters.EnableInterleave",
+		`{"model":"wan2.6-image","parameters":{"n":1,"enable-interleave":true}}`: "parameters.enable-interleave",
+		`{"model":"wan2.6-image","parameters":{"n":1,"-n":4}}`:                   "parameters.n",
+		`{"model":"wan2.6-image","parameters":{"size":"1K","s.ize":"4K"}}`:       "parameters.size",
+		`{"model":"wan2.6-image","parameters":{"n":1,"is_enable_interleave":1}}`: "parameters.is_enable_interleave",
+		"{\"model\":\"wan2.6-image\",\"parameters\":{\"n\":1,\"max_imageſ\":3}}": "parameters.max_imageſ",
+		`{"model":"wan2.6-t2i","parameters":{"n":1},"para-meters":{"n":4}}`:      "parameters",
+		`{"model":"wan2.6-t2i","parameters":{"n":1},"Parameters":{"n":4}}`:       "parameters",
+		`{"model":"wan2.6-t2i","parameters":{"n":1,"n":4}}`:                      "parameters.n",
+		`{"model":"wan2.6-t2i","parameters":{"n":1,"N":4}}`:                      "parameters.n",
+		`{"model":"wan2.6-t2i","parameters":{"size":"1K","Size":"4K"}}`:          "parameters.size",
+		`{"model":"wan2.6-t2i","parameters":{"n":"2"}}`:                          "parameters.n",
+		`{"model":"wan2.6-t2i","parameters":{"n":0}}`:                            "parameters.n",
+		`{"model":"wan2.6-t2i","parameters":{"size":"huge"}}`:                    "parameters.size",
+		`{"model":"wan2.6-t2i","parameters":"n=4"}`:                              "parameters",
+		`{"model":"wan2.6-t2i"} {"parameters":{"n":4}}`:                          "",
+		`["wan2.6-t2i"]`: "",
+		// Image set mode: n is only an upper bound (up to 12).
+		`{"model":"wan2.7-image-pro","parameters":{"enable_sequential":true}}`: "parameters.enable_sequential",
+	} {
+		if _, _, bifrostErr := wanRawImageTaskBilling([]byte(body), rawBodyModel(body)); bifrostErr == nil || bifrostErr.Error.Param != param {
+			t.Errorf("raw body %s: error %+v, want a refusal naming %q", body, bifrostErr, param)
+		}
+	}
+	// The body's model must be the request's: governance chose the key, budget and price by it.
+	for body, model := range map[string]string{
+		`{"model":"wan2.7-image-pro","parameters":{"n":1}}`: "wan2.6-t2i",
+		`{"parameters":{"n":1}}`:                            "wan2.6-t2i",
+		`{"model":"wan2.6-t2i","Model":"wan2.7-image-pro"}`: "wan2.6-t2i",
+		`{"model":["wan2.6-t2i"]}`:                          "wan2.6-t2i",
+	} {
+		if _, _, bifrostErr := wanRawImageTaskBilling([]byte(body), model); bifrostErr == nil || bifrostErr.Error.Param != "model" {
+			t.Errorf("raw body %s for model %s: error %+v, want a refusal naming model", body, model, bifrostErr)
+		}
+	}
+}
+
+// rawBodyModel is the model a raw test body names, read leniently; "" when it names none.
+func rawBodyModel(body string) string {
+	var named struct {
+		Model string `json:"model"`
+	}
+	_ = json.Unmarshal([]byte(body), &named)
+	return named.Model
+}
+
+// TestDashScopeWanImageTaskBilledDefaults: a converted Wan create is priced from what the converter
+// sends as parameters.size, never from core's own reading of the request: the tier in Wan's
+// spelling, the size as WIDTHxHEIGHT, or, when the request names neither, the model's default (one
+// image at 2K on Wan 2.7, four images and no tier earlier). A resolution Wan does not take as a
+// tier is refused, since it would be sent as given and priced at the base rate.
+func TestDashScopeWanImageTaskBilledDefaults(t *testing.T) {
+	provider, _ := newMockDashScopeImageTasks(t, map[string]mockResponse{"POST /api/v1/services/aigc/image-generation/generation": {http.StatusOK, wanImageTaskCreated}})
+	create := func(model string, params *schemas.ImageGenerationParameters) *schemas.BifrostImageTaskResponse {
+		t.Helper()
+		task, bifrostErr := provider.ImageGenerationTask(imageTestContext(t), imageTestKey(), &schemas.BifrostImageGenerationRequest{
+			Provider: schemas.DashScope, Model: model, Input: &schemas.ImageGenerationInput{Prompt: "x"}, Params: params,
+		})
+		if bifrostErr != nil {
+			t.Fatalf("%s: %+v", model, bifrostErr.Error)
+		}
+		return task
+	}
+	if task := create("wan2.7-image", nil); task.BilledImages != 1 || task.BilledParameters == nil || task.BilledParameters.Resolution != "2K" {
+		t.Errorf("wan2.7-image with no params: billed %d at %+v, want 1 at 2K", task.BilledImages, task.BilledParameters)
+	}
+	if task := create("wan2.7-image-pro", &schemas.ImageGenerationParameters{Resolution: "4k"}); task.BilledParameters == nil || task.BilledParameters.Resolution != "4K" {
+		t.Errorf("resolution 4k: billed at %+v, want the tier 4K", task.BilledParameters)
+	}
+	if task := create("wan2.6-t2i", &schemas.ImageGenerationParameters{Size: schemas.Ptr("+1280X1280")}); task.BilledParameters == nil || task.BilledParameters.Size != "1280x1280" {
+		t.Errorf("size +1280X1280: billed at %+v, want size 1280x1280", task.BilledParameters)
+	}
+	if task := create("wan2.6-t2i", &schemas.ImageGenerationParameters{}); task.BilledImages != wanDefaultImageCount || task.BilledParameters == nil || task.BilledParameters.Resolution != "" || task.BilledParameters.Size != "" {
+		t.Errorf("wan2.6-t2i with no n: billed %d at %+v, want %d at no tier", task.BilledImages, task.BilledParameters, wanDefaultImageCount)
+	}
+	for _, resolution := range []schemas.TolerantString{"2048*2048", "3K", "hd"} {
+		_, bifrostErr := provider.ImageGenerationTask(imageTestContext(t), imageTestKey(), &schemas.BifrostImageGenerationRequest{
+			Provider: schemas.DashScope, Model: "wan2.7-image-pro", Input: &schemas.ImageGenerationInput{Prompt: "x"},
+			Params: &schemas.ImageGenerationParameters{Resolution: resolution},
+		})
+		if bifrostErr == nil || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter || bifrostErr.Error.Param != "resolution" {
+			t.Errorf("resolution %q: error %+v, want caller_unsupported_parameter naming resolution", resolution, bifrostErr)
+		}
+	}
+}
+
+// TestDashScopeWanImageTaskReadsTypedExtraObjects: an in-process Go caller may put a typed value
+// (map[string]string, a struct, json.RawMessage) under parameters, and the shared merge sends it
+// as the JSON object it serializes to. Every check reads it as that object, so a billed field or
+// switch inside it is refused as it would be in a map[string]interface{}, before any upstream
+// call (Codex security review on #336: typed objects skipped the checks while DashScope still
+// received them).
+func TestDashScopeWanImageTaskReadsTypedExtraObjects(t *testing.T) {
+	provider, mock := newMockDashScopeImageTasks(t, map[string]mockResponse{"POST /api/v1/services/aigc/image-generation/generation": {http.StatusOK, wanImageTaskCreated}})
+	refused := []struct {
+		name  string
+		extra map[string]interface{}
+	}{
+		{"a map[string]string setting size", map[string]interface{}{"parameters": map[string]string{"size": "4K"}}},
+		{"a struct setting image set mode and n", map[string]interface{}{"parameters": struct {
+			EnableSequential bool `json:"enable_sequential"`
+			N                int  `json:"n"`
+		}{true, 12}}},
+		{"a struct setting image set mode alone", map[string]interface{}{"parameters": struct {
+			EnableSequential bool `json:"enable_sequential"`
+		}{true}}},
+		{"a json.RawMessage setting max_images", map[string]interface{}{"parameters": json.RawMessage(`{"max_images":4}`)}},
+		{"a map[string]int with a separator alias of n", map[string]interface{}{"parameters": map[string]int{"-n": 4}}},
+		{"a map[string]bool with a name outside ASCII", map[string]interface{}{"parameters": map[string]bool{"wätermark": true}}},
+	}
+	for _, c := range refused {
+		t.Run(c.name, func(t *testing.T) {
+			_, genErr := provider.ImageGenerationTask(imageTestContext(t), imageTestKey(), &schemas.BifrostImageGenerationRequest{
+				Provider: schemas.DashScope, Model: "wan2.6-image", Input: &schemas.ImageGenerationInput{Prompt: "x"},
+				Params: &schemas.ImageGenerationParameters{N: schemas.Ptr(1), ExtraParams: c.extra},
+			})
+			_, editErr := provider.ImageEditTask(imageTestContext(t), imageTestKey(), &schemas.BifrostImageEditRequest{
+				Provider: schemas.DashScope, Model: "wan2.6-image",
+				Input:  &schemas.ImageEditInput{Prompt: "x", Images: []schemas.ImageInput{{URL: "https://example.com/a.png"}}},
+				Params: &schemas.ImageEditParameters{N: schemas.Ptr(1), ExtraParams: c.extra},
+			})
+			for _, bifrostErr := range []*schemas.BifrostError{genErr, editErr} {
+				if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+					t.Fatalf("error = %+v, want a 400 refusal", bifrostErr)
+				}
+			}
+		})
+	}
+	if len(mock.requests) != 0 {
+		t.Fatalf("%d calls reached DashScope, want none", len(mock.requests))
+	}
+
+	// A typed parameters object's members are placed inside parameters, as a map's are.
+	placed := (&DashScopeImageRequest{ExtraParams: map[string]interface{}{"parameters": map[string]string{"watermark": "false"}}}).GetExtraParams()
+	nested, _ := placed["parameters"].(map[string]interface{})
+	if nested["watermark"] != "false" {
+		t.Fatalf("GetExtraParams() = %#v, want parameters.watermark placed inside parameters", placed)
+	}
+}
+
+// TestDashScopeReadsExtraObjectsOnlyThroughExtraParamObject is the class check for the test
+// above: a map[string]interface{} assertion in this package's code misses a Go caller's typed
+// object that the merge still sends, so every extra object is read through
+// schemas.ExtraParamObject. This fails when an assertion comes back.
+func TestDashScopeReadsExtraObjectsOnlyThroughExtraParamObject(t *testing.T) {
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		source, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, line := range strings.Split(string(source), "\n") {
+			if strings.Contains(line, ".(map[string]interface{})") || strings.Contains(line, ".(map[string]any)") {
+				t.Errorf("%s:%d asserts map[string]interface{}; read an extra object through schemas.ExtraParamObject: %s", name, i+1, strings.TrimSpace(line))
+			}
+		}
+	}
+}
+
+// TestDashScopeWanImageTaskRefusesInterleavedMode: Wan's interleaved mode makes up to max_images
+// images whatever n says, which a task create, billed at submission for the images it asks for,
+// cannot count. Its switches are refused on both task creates before any upstream call, at the
+// top level and inside an extra parameters object; enable_interleave false is not a switch.
+func TestDashScopeWanImageTaskRefusesBilledParameterAliases(t *testing.T) {
+	// A spelling of n or size that only separators keep apart from it ("s-ize", "-n") may be read
+	// as that parameter by DashScope, while billing sees no such field. Refused on both creates,
+	// at the top level and inside an extra parameters object, before any upstream call.
+	provider, mock := newMockDashScopeImageTasks(t, map[string]mockResponse{"POST /api/v1/services/aigc/image-generation/generation": {http.StatusOK, wanImageTaskCreated}})
+	for _, c := range []struct {
+		extra map[string]interface{}
+		param string
+	}{
+		{map[string]interface{}{"parameters": map[string]interface{}{"s-ize": "2K"}}, "parameters.s-ize"},
+		{map[string]interface{}{"parameters": map[string]interface{}{"-n": 4}}, "parameters.-n"},
+		{map[string]interface{}{"s.ize": "2K"}, "s.ize"},
+		{map[string]interface{}{"para-meters": map[string]interface{}{"n-": 4}}, "para-meters.n-"},
+		// The merge reads "parameterſ" as parameters: its non-ASCII name is refused outright.
+		{map[string]interface{}{"parameterſ": map[string]interface{}{"s-ize": "2K"}}, "parameterſ"},
+		{map[string]interface{}{"parameters": map[string]interface{}{"ſize": "2K"}}, "parameters.ſize"},
+	} {
+		_, genErr := provider.ImageGenerationTask(imageTestContext(t), imageTestKey(), &schemas.BifrostImageGenerationRequest{
+			Provider: schemas.DashScope, Model: "wan2.6-image", Input: &schemas.ImageGenerationInput{Prompt: "x"},
+			Params: &schemas.ImageGenerationParameters{N: schemas.Ptr(1), ExtraParams: c.extra},
+		})
+		_, editErr := provider.ImageEditTask(imageTestContext(t), imageTestKey(), &schemas.BifrostImageEditRequest{
+			Provider: schemas.DashScope, Model: "wan2.6-image",
+			Input:  &schemas.ImageEditInput{Prompt: "x", Images: []schemas.ImageInput{{URL: "https://example.com/a.png"}}},
+			Params: &schemas.ImageEditParameters{N: schemas.Ptr(1), ExtraParams: c.extra},
+		})
+		for _, bifrostErr := range []*schemas.BifrostError{genErr, editErr} {
+			if bifrostErr == nil || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter || bifrostErr.Error.Param != c.param {
+				t.Fatalf("%v: error = %+v, want caller_unsupported_parameter naming %s", c.extra, bifrostErr, c.param)
+			}
+		}
+	}
+	if len(mock.requests) != 0 {
+		t.Fatalf("%d calls reached DashScope, want none", len(mock.requests))
+	}
+}
+
+func TestDashScopeWanImageTaskRefusesInterleavedMode(t *testing.T) {
+	provider, mock := newMockDashScopeImageTasks(t, map[string]mockResponse{"POST /api/v1/services/aigc/image-generation/generation": {http.StatusOK, wanImageTaskCreated}})
+	refused := []struct {
+		name  string
+		extra map[string]interface{}
+		param string
+	}{
+		{"enable_interleave", map[string]interface{}{"enable_interleave": true}, "enable_interleave"},
+		{"max_images", map[string]interface{}{"max_images": 5}, "max_images"},
+		{"inside parameters", map[string]interface{}{"parameters": map[string]interface{}{"enableInterleave": true}}, "parameters.enableInterleave"},
+		{"hyphenated", map[string]interface{}{"enable-interleave": true}, "enable-interleave"},
+		{"an is prefix", map[string]interface{}{"isEnableInterleave": true}, "isEnableInterleave"},
+		{"dotted", map[string]interface{}{"max.images": 3}, "max.images"},
+		{"image set mode", map[string]interface{}{"enable_sequential": true}, "enable_sequential"},
+		{"a long s that folds to s", map[string]interface{}{"max_imageſ": 3}, "max_imageſ"},
+		{"a dotted capital I", map[string]interface{}{"enable_İnterleave": true}, "enable_İnterleave"},
+		{"any name outside ASCII", map[string]interface{}{"wätermark": true}, "wätermark"},
+		{"outside ASCII whatever its value", map[string]interface{}{"wätermark": false}, "wätermark"},
+	}
+	for _, c := range refused {
+		t.Run(c.name, func(t *testing.T) {
+			_, genErr := provider.ImageGenerationTask(imageTestContext(t), imageTestKey(), &schemas.BifrostImageGenerationRequest{
+				Provider: schemas.DashScope, Model: "wan2.6-image", Input: &schemas.ImageGenerationInput{Prompt: "x"},
+				Params: &schemas.ImageGenerationParameters{N: schemas.Ptr(1), ExtraParams: c.extra},
+			})
+			_, editErr := provider.ImageEditTask(imageTestContext(t), imageTestKey(), &schemas.BifrostImageEditRequest{
+				Provider: schemas.DashScope, Model: "wan2.6-image",
+				Input:  &schemas.ImageEditInput{Prompt: "x", Images: []schemas.ImageInput{{URL: "https://example.com/a.png"}}},
+				Params: &schemas.ImageEditParameters{N: schemas.Ptr(1), ExtraParams: c.extra},
+			})
+			for _, bifrostErr := range []*schemas.BifrostError{genErr, editErr} {
+				if bifrostErr == nil || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter || bifrostErr.Error.Param != c.param {
+					t.Fatalf("error = %+v, want caller_unsupported_parameter naming %s", bifrostErr, c.param)
+				}
+			}
+		})
+	}
+	if len(mock.requests) != 0 {
+		t.Fatalf("%d calls reached DashScope, want none", len(mock.requests))
+	}
+	_, bifrostErr := provider.ImageGenerationTask(imageTestContext(t), imageTestKey(), &schemas.BifrostImageGenerationRequest{
+		Provider: schemas.DashScope, Model: "wan2.6-image", Input: &schemas.ImageGenerationInput{Prompt: "x"},
+		Params: &schemas.ImageGenerationParameters{N: schemas.Ptr(1), ExtraParams: map[string]interface{}{"enable_interleave": false}},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("enable_interleave false: %+v, want the create sent", bifrostErr.Error)
+	}
+}
+
+// TestDashScopeWanImageTaskRetrieve is the query: GET /api/v1/tasks/{id}, DashScope's six states
+// mapped one to one as for video, the images of a SUCCEEDED task from output.choices, image_count
+// as usage.output_images, expires_at 24 hours after the task ended, and a moderation failure as a
+// content filter.
+func TestDashScopeWanImageTaskRetrieve(t *testing.T) {
+	queryPath := "/api/v1/tasks/wan-img-1"
+	task := func(status, extra string) string {
+		return `{"request_id":"r-2","output":{"task_id":"wan-img-1","task_status":"` + status + `","submit_time":"2026-11-15 10:00:00.000","end_time":"2026-11-15 10:00:30.000"` + extra + `}`
+	}
+	cases := []struct {
+		providerStatus string
+		body           string
+		want           schemas.TaskStatus
+	}{
+		{"PENDING", task("PENDING", "") + `}`, schemas.VideoStatusQueued},
+		{"RUNNING", task("RUNNING", "") + `}`, schemas.VideoStatusInProgress},
+		{"SUCCEEDED", task("SUCCEEDED", `,"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":[{"image":"https://dashscope-result.example.test/1.png?Expires=1"},{"image":"https://dashscope-result.example.test/2.jpeg?Expires=1"}]}}]`) + `,"usage":{"image_count":2}}`, schemas.VideoStatusCompleted},
+		{"FAILED", task("FAILED", `,"code":"DataInspectionFailed","message":"Input data may contain inappropriate content."`) + `}`, schemas.VideoStatusFailed},
+		{"CANCELED", task("CANCELED", "") + `}`, schemas.VideoStatusCancelled},
+		{"UNKNOWN", task("UNKNOWN", "") + `}`, schemas.VideoStatusExpired},
+	}
+	for _, c := range cases {
+		t.Run(c.providerStatus, func(t *testing.T) {
+			provider, mock := newMockDashScopeImageTasks(t, map[string]mockResponse{"GET " + queryPath: {http.StatusOK, c.body}})
+			got, bifrostErr := provider.ImageTaskRetrieve(imageTestContext(t), imageTestKey(), &schemas.BifrostImageTaskRetrieveRequest{Provider: schemas.DashScope, ID: "wan-img-1:dashscope"})
+			if bifrostErr != nil {
+				t.Fatalf("ImageTaskRetrieve: %+v", bifrostErr.Error)
+			}
+			if len(mock.requests) != 1 || mock.requests[0].Method != http.MethodGet || mock.requests[0].Path != queryPath || mock.requests[0].Async != "" {
+				t.Fatalf("requests = %+v, want one plain GET %s", mock.requests, queryPath)
+			}
+			if got.ID != "wan-img-1:dashscope" || got.Status != c.want || got.ProviderStatus != c.providerStatus || got.Object != schemas.ImageTaskObject {
+				t.Fatalf("task = %+v, want %s from %s", got, c.want, c.providerStatus)
+			}
+			submitted := time.Date(2026, 11, 15, 2, 0, 0, 0, time.UTC).Unix() // 10:00 UTC+8
+			if got.CreatedAt != submitted {
+				t.Errorf("created_at = %d, want %d (submit_time in UTC+8)", got.CreatedAt, submitted)
+			}
+			switch c.want {
+			case schemas.VideoStatusCompleted:
+				if len(got.Data) != 2 || *got.Data[0].URL != "https://dashscope-result.example.test/1.png?Expires=1" || got.Data[0].ContentType != "image/png" || got.Data[1].ContentType != "image/jpeg" {
+					t.Fatalf("data = %+v, want the two links in order with their types", got.Data)
+				}
+				if got.Usage == nil || got.Usage.OutputImages == nil || *got.Usage.OutputImages != 2 {
+					t.Errorf("usage = %+v, want output_images 2", got.Usage)
+				}
+				if got.CompletedAt == nil || got.ExpiresAt == nil || *got.ExpiresAt != *got.CompletedAt+24*3600 || *got.CompletedAt != submitted+30 {
+					t.Errorf("completed_at %v expires_at %v, want end_time and 24 hours after it", got.CompletedAt, got.ExpiresAt)
+				}
+			case schemas.VideoStatusFailed:
+				if got.Error == nil || got.Error.Code != "DataInspectionFailed" || got.ContentFilter == nil || got.ContentFilter.Reasons[0] != "DataInspectionFailed" {
+					t.Errorf("error %+v content_filter %+v, want the vendor's code as a content filter", got.Error, got.ContentFilter)
+				}
+			default:
+				if len(got.Data) != 0 || got.ExpiresAt != nil {
+					t.Errorf("data %v expires_at %v, want neither before completion", got.Data, got.ExpiresAt)
+				}
+			}
+		})
+	}
+}
+
+// TestDashScopeWanImageTaskCancel: POST /api/v1/tasks/{id}/cancel cancels a PENDING task; any other
+// state is DashScope's 400 UnsupportedOperation, answered as provider_cancel_unsupported.
+func TestDashScopeWanImageTaskCancel(t *testing.T) {
+	cancelPath := "/api/v1/tasks/wan-img-1/cancel"
+	t.Run("pending", func(t *testing.T) {
+		provider, mock := newMockDashScopeImageTasks(t, map[string]mockResponse{"POST " + cancelPath: {http.StatusOK, `{"request_id":"r-3"}`}})
+		got, bifrostErr := provider.ImageTaskCancel(imageTestContext(t), imageTestKey(), &schemas.BifrostImageTaskCancelRequest{Provider: schemas.DashScope, ID: "wan-img-1:dashscope"})
+		if bifrostErr != nil {
+			t.Fatalf("ImageTaskCancel: %+v", bifrostErr.Error)
+		}
+		if got.ID != "wan-img-1:dashscope" || got.Status != schemas.VideoStatusCancelled || got.Object != schemas.ImageTaskObject || len(mock.requests) != 1 {
+			t.Fatalf("task = %+v requests = %d, want one cancel and a cancelled task", got, len(mock.requests))
+		}
+	})
+	t.Run("not pending", func(t *testing.T) {
+		provider, _ := newMockDashScopeImageTasks(t, map[string]mockResponse{"POST " + cancelPath: {http.StatusBadRequest, `{"code":"UnsupportedOperation","message":"Failed to cancel the task, please confirm if the task is in PENDING status.","request_id":"r"}`}})
+		_, bifrostErr := provider.ImageTaskCancel(imageTestContext(t), imageTestKey(), &schemas.BifrostImageTaskCancelRequest{Provider: schemas.DashScope, ID: "wan-img-1:dashscope"})
+		if bifrostErr == nil || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeProviderCancelUnsupported || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+			t.Fatalf("error = %+v, want 400 provider_cancel_unsupported", bifrostErr)
+		}
+		if bifrostErr.ExtraFields.RequestType != schemas.ImageTaskCancelRequest {
+			t.Errorf("request_type = %q, want image_task_cancel", bifrostErr.ExtraFields.RequestType)
+		}
+	})
+}
+
+// TestDashScopeWanImageTaskRefusals: what the task routes cannot serve is refused before any
+// upstream call: a synchronous model, a Wan model on the earlier protocol, an unknown model,
+// resolution beside size, and an extra parameters object naming n or size.
+func TestDashScopeWanImageTaskRefusals(t *testing.T) {
+	provider, mock := newMockDashScopeImageTasks(t, map[string]mockResponse{"POST /api/v1/services/aigc/image-generation/generation": {http.StatusOK, wanImageTaskCreated}})
+	cases := []struct {
+		name   string
+		model  string
+		params *schemas.ImageGenerationParameters
+		param  string
+	}{
+		{"qwen-image is synchronous", "qwen-image-2.0-pro", nil, "model"},
+		{"wan2.5 is on the earlier protocol", "wan2.5-t2i-preview", nil, "model"},
+		{"unknown model", "flux-dev", nil, "model"},
+		{"resolution beside size", "wan2.6-t2i", &schemas.ImageGenerationParameters{Size: schemas.Ptr("1024x1024"), Resolution: "2K"}, "resolution"},
+		{"extra parameters.n", "wan2.6-t2i", &schemas.ImageGenerationParameters{ExtraParams: map[string]interface{}{"parameters": map[string]interface{}{"n": 4}}}, "parameters"},
+		{"extra parameters.size", "wan2.6-t2i", &schemas.ImageGenerationParameters{ExtraParams: map[string]interface{}{"parameters": map[string]interface{}{"size": "4K"}}}, "parameters"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, bifrostErr := provider.ImageGenerationTask(imageTestContext(t), imageTestKey(), &schemas.BifrostImageGenerationRequest{
+				Provider: schemas.DashScope, Model: c.model, Input: &schemas.ImageGenerationInput{Prompt: "x"}, Params: c.params,
+			})
+			if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest || bifrostErr.Error.Param != c.param {
+				t.Fatalf("error = %+v, want a 400 naming %s", bifrostErr, c.param)
+			}
+		})
+	}
+	if len(mock.requests) != 0 {
+		t.Fatalf("%d calls reached DashScope, want none", len(mock.requests))
+	}
+}
+
+// BenchmarkDashScopeWanImageTask measures the Wan image task path's own work (TXE-7050): the create's
+// validation and body conversion, and the conversion of a finished task with two images. Before
+// TXE-7050 the routes refused every DashScope request without converting anything.
+func BenchmarkDashScopeWanImageTask(b *testing.B) {
+	req := &schemas.BifrostImageGenerationRequest{
+		Provider: schemas.DashScope,
+		Model:    "wan2.6-t2i",
+		Input:    &schemas.ImageGenerationInput{Prompt: "a lighthouse at dusk"},
+		Params:   &schemas.ImageGenerationParameters{N: schemas.Ptr(2), Size: schemas.Ptr("1280x1280"), Seed: schemas.Ptr(7)},
+	}
+	b.Run("create", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			p := req.Params
+			tierSize, bifrostErr := validateDashScopeImageTask(req.Model, p.N, p.Size, p.ResponseFormat, p.Resolution, p.ExtraParams)
+			if bifrostErr != nil {
+				b.Fatal(bifrostErr.Error.Message)
+			}
+			body, err := ToDashScopeImageGenerationRequest(req)
+			if err != nil {
+				b.Fatal(err)
+			}
+			_ = withWanImageTaskSize(body, tierSize)
+		}
+	})
+	var task DashScopeImageTaskResponse
+	if err := schemas.Unmarshal([]byte(`{"request_id":"r","output":{"task_id":"t","task_status":"SUCCEEDED","submit_time":"2026-11-15 10:00:00.000","end_time":"2026-11-15 10:00:30.000","choices":[{"finish_reason":"stop","message":{"role":"assistant","content":[{"image":"https://dashscope-result.example.test/1.png?Expires=1"},{"image":"https://dashscope-result.example.test/2.png?Expires=1"}]}}]},"usage":{"image_count":2}}`), &task); err != nil {
+		b.Fatal(err)
+	}
+	b.Run("query", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = toBifrostImageTask(&task)
+		}
+	})
 }

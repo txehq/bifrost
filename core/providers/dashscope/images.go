@@ -107,7 +107,9 @@ func (r *DashScopeImageRequest) GetExtraParams() map[string]interface{} {
 	}
 	for name, value := range r.ExtraParams {
 		if providerUtils.ExtraParamNamesField(name, "parameters") {
-			object, ok := value.(map[string]interface{})
+			// Read as the merge sends it: a Go caller's typed object (map[string]string, a struct,
+			// json.RawMessage) is an object too, so its members are placed and checked like any.
+			object, ok := schemas.ExtraParamObject(value)
 			if !ok {
 				merged[name] = value
 				continue
@@ -233,7 +235,7 @@ func rejectDashScopeTaskControlExtras(extraParams map[string]interface{}) *schem
 		names = append(names, name)
 		// An extra parameters object is merged into parameters (GetExtraParams), so a task
 		// control field written inside it would reach DashScope the same way.
-		if object, ok := value.(map[string]interface{}); ok && providerUtils.ExtraParamNamesField(name, "parameters") {
+		if object, ok := schemas.ExtraParamObject(value); ok && providerUtils.ExtraParamNamesField(name, "parameters") {
 			for nested := range object {
 				names = append(names, nested)
 			}

@@ -15,6 +15,11 @@ package schemas
 // again. The fork's /v1/async/images/* routes, which store jobs in Bifrost's database, are a
 // different thing and are not used by these routes.
 
+import (
+	"strconv"
+	"strings"
+)
+
 // TaskStatus is the status of a task object. Image and video tasks share the six values.
 type TaskStatus = VideoStatus
 
@@ -42,7 +47,55 @@ type BifrostImageTaskResponse struct {
 	ContentFilter  *ContentFilterInfo `json:"content_filter,omitempty"`  // required when the vendor blocked the task (contract C6)
 	Usage          *ImageUsage        `json:"usage,omitempty"`           // what the vendor reported: vendor_cost, megapixels
 
+	// BilledImages is the number of images a create asked the vendor for, which the vendor bills
+	// (TXE-7050): Bifrost's own count, never serialised, since usage carries only what the vendor
+	// reported (contract C5). The cost path bills a create for this many images when it is more
+	// than the delivered ones. 0 when the provider makes one image per task (BFL refuses n != 1).
+	// A provider whose create takes n, or makes several images by default, must set it.
+	BilledImages int `json:"-"`
+
+	// BilledParameters are the pricing dimensions a create asked for (size, quality, aspect ratio,
+	// resolution tier, steps), never serialised. Core fills them from the request on every image
+	// task create (BackfillCreateParams), as BackfillParams does for a sync image response, so the
+	// create, the only image task response that is billed, is priced at the tier it asked for.
+	BilledParameters *ImageGenerationResponseParameters `json:"-"`
+
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+}
+
+// BackfillCreateParams fills BilledParameters from the create request req (an image generation or
+// edit task) with the same reading a sync image response gets (BifrostImageGenerationResponse
+// .BackfillParams). Nothing it writes is serialised: the task object's wire shape is unchanged.
+// A provider that set BilledParameters itself, from a raw body core never parsed, is left alone.
+func (r *BifrostImageTaskResponse) BackfillCreateParams(req *BifrostRequest) {
+	if r == nil || req == nil || r.BilledParameters != nil {
+		return
+	}
+	reading := &BifrostImageGenerationResponse{}
+	reading.BackfillParams(req)
+	r.BilledParameters = reading.ImageGenerationResponseParameters
+	if r.BilledParameters != nil {
+		r.BilledParameters.Size = normalizeBilledImageSize(r.BilledParameters.Size)
+	}
+}
+
+// normalizeBilledImageSize writes a width-and-height size the way the pricing path reads it,
+// "2048x2048": a provider may accept "2048*2048" or "2048X2048" and send it, and the tier and
+// pixel pricing parse only a lower-case x. Anything else is kept as it is.
+func normalizeBilledImageSize(size string) string {
+	trimmed := strings.TrimSpace(size)
+	sep := strings.IndexAny(trimmed, "xX*")
+	if sep <= 0 || sep == len(trimmed)-1 {
+		return size
+	}
+	// Parsed as the providers parse it (strconv.Atoi, positive), so "+2048" and "02048" are 2048
+	// here as they are on the wire, and written back in canonical form.
+	width, errW := strconv.Atoi(trimmed[:sep])
+	height, errH := strconv.Atoi(trimmed[sep+1:])
+	if errW != nil || errH != nil || width <= 0 || height <= 0 {
+		return size
+	}
+	return strconv.Itoa(width) + "x" + strconv.Itoa(height)
 }
 
 // ImageTaskObject is the value of BifrostImageTaskResponse.Object.

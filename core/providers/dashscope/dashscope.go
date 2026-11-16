@@ -26,7 +26,7 @@ type DashScopeProvider struct {
 	client              *fasthttp.Client      // HTTP client for unary API requests (ReadTimeout bounds overall response)
 	streamingClient     *fasthttp.Client      // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
 	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
-	workspaceBaseURL    string                // Base for workspace-scoped operations (video); base_url when unset
+	workspaceBaseURL    string                // Base for workspace-scoped operations (video, image tasks); base_url when unset
 	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
 	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
 }
@@ -35,8 +35,8 @@ type DashScopeProvider struct {
 //
 // network_config.base_url is the regional DashScope base and defaults to the Singapore
 // (international) site. network_config.workspace_base_url is the workspace address
-// (https://{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com) that the video operations use;
-// when it is unset they use base_url too.
+// (https://{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com) that the video and image task
+// operations use; when it is unset they use base_url too.
 func NewDashScopeProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*DashScopeProvider, error) {
 	config.CheckAndSetDefaults()
 
@@ -82,7 +82,7 @@ func (provider *DashScopeProvider) GetProviderKey() schemas.ModelProvider {
 }
 
 // baseURLFor returns the base an operation's request goes to: the workspace base for the
-// video family, the regional base for everything else.
+// video family, Wan image tasks and transcription, the regional base for everything else.
 func (provider *DashScopeProvider) baseURLFor(requestType schemas.RequestType) string {
 	if isWorkspaceOperation(requestType) {
 		return provider.workspaceBaseURL
@@ -110,7 +110,9 @@ func (provider *DashScopeProvider) doDashScopeRequest(ctx *schemas.BifrostContex
 	provider.setRequestHeaders(ctx, req, key)
 	req.SetRequestURI(provider.baseURLFor(requestType) + pathAndQuery)
 	req.Header.SetMethod(method)
-	if requestType == schemas.VideoGenerationRequest {
+	switch requestType {
+	case schemas.VideoGenerationRequest, schemas.ImageGenerationTaskRequest, schemas.ImageEditTaskRequest:
+		// Wan video and Wan image tasks (TXE-7050) are created only in async mode.
 		req.Header.Set("X-DashScope-Async", "enable")
 	}
 	if jsonData != nil {
@@ -153,6 +155,10 @@ func (provider *DashScopeProvider) SupportedUnifiedFields(requestType schemas.Re
 		return dashScopeImageGenerationFields, true
 	case schemas.ImageEditRequest:
 		return dashScopeImageEditFields, true
+	case schemas.ImageGenerationTaskRequest:
+		return dashScopeImageTaskGenerationFields, true
+	case schemas.ImageEditTaskRequest:
+		return dashScopeImageTaskEditFields, true
 	case schemas.SpeechRequest:
 		return speechFields, true
 	case schemas.TranscriptionRequest:

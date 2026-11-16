@@ -1,6 +1,6 @@
 ---
 title: "Alibaba DashScope"
-description: "Alibaba Cloud Model Studio's native DashScope API: Wan video tasks, Qwen-Image and Z-Image generation and edit, Qwen3-TTS speech, Qwen3-ASR transcription, Singapore and workspace base addresses, auth and error mapping"
+description: "Alibaba Cloud Model Studio's native DashScope API: Wan video tasks, Wan image tasks, Qwen-Image and Z-Image generation and edit, Qwen3-TTS speech, Qwen3-ASR transcription, Singapore and workspace base addresses, auth and error mapping"
 icon: "d"
 ---
 
@@ -9,7 +9,7 @@ icon: "d"
 The `dashscope` provider is Alibaba Cloud Model Studio's native DashScope API, which serves Wan video, Qwen-Image and Z-Image images, Qwen3-TTS speech and Qwen3-ASR transcription. Qwen chat stays on the [`qwen`](/providers/supported-providers/qwen) provider, which speaks DashScope's OpenAI-compatible mode.
 
 <Note>
-Wan video is implemented: create, query, list, cancel and download. Image generation and edit with Qwen-Image and Z-Image are served, and so are speech (Qwen3-TTS) and transcription (Qwen3-ASR), non-streamed. Every other operation returns `UnsupportedOperationError` (HTTP 400, `error.code` `unsupported_operation`) without calling DashScope. Wan images and streamed speech are added in later releases.
+Wan video is implemented: create, query, list, cancel and download. Image generation and edit with Qwen-Image and Z-Image are served, Wan images on the image task routes, and so are speech (Qwen3-TTS) and transcription (Qwen3-ASR), non-streamed. Every other operation returns `UnsupportedOperationError` (HTTP 400, `error.code` `unsupported_operation`) without calling DashScope. Streamed speech is added in a later release.
 </Note>
 
 ### Supported Operations
@@ -20,7 +20,7 @@ Wan video is implemented: create, query, list, cancel and download. Image genera
 | Video delete, remix, edit | ❌ | - | - |
 | Image generation (Qwen-Image, Z-Image) | ✅ | ❌ | `base_url` |
 | Image edit (Qwen-Image) | ✅ | ❌ | `base_url` |
-| Wan images (task-based) | ❌ (planned, on the image task routes) | - | `base_url` |
+| Wan images: create, query, cancel on the image task routes | ✅ | - | `base_url` |
 | Speech (Qwen3-TTS) | ✅ | ❌ | `base_url` |
 | Transcription (Qwen3-ASR) | ✅ | ❌ | `workspace_base_url` |
 | Chat, Responses, Text Completions | ❌ (use `qwen`) | ❌ | - |
@@ -31,7 +31,7 @@ Wan video is implemented: create, query, list, cancel and download. Image genera
 The provider has two bases:
 
 - `network_config.base_url` is the regional DashScope site. It defaults to the Singapore (international) site, `https://dashscope-intl.aliyuncs.com`.
-- `network_config.workspace_base_url` is your Model Studio workspace address, `https://{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com`. Video and transcription use it. When it is unset they use `base_url`.
+- `network_config.workspace_base_url` is your Model Studio workspace address, `https://{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com`. Video, Wan image tasks and transcription use it. When it is unset they use `base_url`.
 
 Both are checked the same way when written through the management API: no credentials, query or fragment in the URL, an authenticated admin session when dashboard auth is bypassed, and no private-network destination unless `allow_private_network` is set.
 
@@ -210,11 +210,55 @@ A field that cannot be delivered is refused with HTTP 400 and `extra_fields.erro
 - `quality`, `aspect_ratio`, `output_format`, `background`, `mask` and the other unified image fields DashScope has no parameter for.
 - `callback_url`, `client_reference_id`, `expires_after_seconds` and `output_storage_uri`. The synchronous endpoint has no task to control.
 
-A Wan image model (`wan*`) is task-based and is refused on these two routes with HTTP 400 `caller_invalid_request`. A model that is neither `qwen-image-*`, `z-image-*` nor `wan*` is refused with `caller_model_unknown`.
+A Wan image model (`wan*`) is task-based and is refused on these two routes with HTTP 400 `caller_invalid_request`: send it to the image task routes (below). A model that is neither `qwen-image-*`, `z-image-*` nor `wan*` is refused with `caller_model_unknown`.
 
 ### Response
 
 Each link in `output.choices[].message.content[].image` becomes one `data[]` item with `url`. DashScope keeps a result link for 24 hours, so the response carries `expires_at`: the time Bifrost read the answer plus 24 hours (DashScope's synchronous answer reports no creation time). `usage.output_images` is DashScope's `usage.image_count`, and `size` is its reported `width` and `height`. Z-Image also reports `input_tokens`, `output_tokens`, `total_tokens` and `output_tokens_details.reasoning_tokens` when `prompt_extend` rewrote the prompt, and the rewritten prompt is returned as `revised_prompt`. A 200 with no image is an error: `provider_empty_result` (HTTP 502), or DashScope's own code when the body carries one.
+
+
+## Wan images on the image task routes
+
+Wan's image API is task-based, so Wan text-to-image and Wan image edit are served on the image task routes, not the synchronous ones. Each route makes one call to DashScope, on `workspace_base_url` (Alibaba's Wan reference names the workspace host for the create and the task query; `base_url` when it is unset):
+
+| Route | DashScope call |
+|---|---|
+| `POST /v1/images/generations/tasks` | `POST /api/v1/services/aigc/image-generation/generation` with `X-DashScope-Async: enable` |
+| `POST /v1/images/edits/tasks` | the same create, with the input images in the message |
+| `GET /v1/images/tasks/{id}` | `GET /api/v1/tasks/{task_id}` |
+| `POST /v1/images/tasks/{id}/cancel` | `POST /api/v1/tasks/{task_id}/cancel` |
+
+```bash
+curl -X POST http://localhost:8080/v1/images/generations/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "dashscope/wan2.6-t2i",
+    "prompt": "a lighthouse at dusk",
+    "n": 2,
+    "size": "1280x1280"
+  }'
+```
+
+The body is Wan's image protocol, the one the synchronous routes send: one user message with the input images in order, then the prompt, and `parameters`. Fields map as follows:
+
+- **`resolution`** is sent verbatim as `parameters.size`, for the Wan image models that take a tier there (`1K`, `2K`, and `4K` on `wan2.7-image-pro`). `wan2.6-t2i` takes only width\*height, with total pixels from 1280\*1280 to 1440\*1440: send `size`.
+- **`size`** is sent as width\*height in `parameters.size`. Sending both `resolution` and `size` is a 400.
+- **`n`** is sent as `parameters.n`. Wan generates 4 images when `n` is left out, and each is billed, so send `n`.
+- **Edit images:** a link is sent unchanged, and bytes as a base64 data URI.
+- **Refused:** the four task control fields, since DashScope has none. Also refused is an extra `parameters` object naming `n` or `size`, and the modes where `n` does not set how many images are made: interleaved mode (`enable_interleave`, `max_images`) and image set mode (`enable_sequential`). So is an extra param whose name has a character outside ASCII.
+- **Billing:** a task is billed once, at its create, for the images it asks for at the size or resolution tier it asks for. When `n` is left out, that is 1 image at 2K on `wan2.7-image` and `wan2.7-image-pro`, and 4 images on earlier Wan models. The query and the cancel are not billed.
+- **Raw request body mode:** the body must name the request's model once, and is read strictly for `n` and `size`.
+
+Only the newer Wan image models are served (`wan2.6-t2i` and later). `wan2.5-t2i-preview` and earlier use Wan's earlier image protocol (`text2image/image-synthesis`) and are refused with HTTP 400 `caller_invalid_request`, as are `qwen-image-*` and `z-image-*`, which are synchronous.
+
+The query maps DashScope's states one to one, as for Wan video. When a task has `SUCCEEDED`:
+
+- each link in `output.choices[].message.content[].image` becomes one `data[]` item (`type: url`);
+- `usage.output_images` is DashScope's `image_count`;
+- `completed_at` is `end_time`;
+- `expires_at` is 24 hours after it, since DashScope keeps a task and its links for 24 hours.
+
+A task that failed moderation (`DataInspectionFailed`, `IPInfringementSuspect`) carries `content_filter`. DashScope cancels only a `PENDING` task. Cancelling a task in any other state is answered `400 provider_cancel_unsupported`, and a cancel never removes a finished task's images.
 
 ## Speech (Qwen3-TTS)
 

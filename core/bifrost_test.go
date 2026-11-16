@@ -11187,6 +11187,84 @@ func TestTranscriptionURLOnlyReachesOnlyProvidersThatTakeAURL(t *testing.T) {
 	}
 }
 
+// imageTaskStubProvider answers every image task call with a queued task and nothing else.
+type imageTaskStubProvider struct {
+	stubProvider
+}
+
+func (imageTaskStubProvider) ImageGenerationTask(*schemas.BifrostContext, schemas.Key, *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageTaskResponse, *schemas.BifrostError) {
+	return &schemas.BifrostImageTaskResponse{ID: "t1:dashscope", Status: schemas.VideoStatusQueued, Data: []schemas.TaskArtifact{}}, nil
+}
+
+func (imageTaskStubProvider) ImageEditTask(*schemas.BifrostContext, schemas.Key, *schemas.BifrostImageEditRequest) (*schemas.BifrostImageTaskResponse, *schemas.BifrostError) {
+	return &schemas.BifrostImageTaskResponse{ID: "t2:dashscope", Status: schemas.VideoStatusQueued, Data: []schemas.TaskArtifact{}}, nil
+}
+
+func (imageTaskStubProvider) ImageTaskRetrieve(*schemas.BifrostContext, schemas.Key, *schemas.BifrostImageTaskRetrieveRequest) (*schemas.BifrostImageTaskResponse, *schemas.BifrostError) {
+	return &schemas.BifrostImageTaskResponse{ID: "t1:dashscope", Status: schemas.VideoStatusCompleted, Data: []schemas.TaskArtifact{}}, nil
+}
+
+// TXE-7050: an image task create, the one billed image task response, carries the size and tier
+// it asked for (BilledParameters), filled by core for every image task provider, so the cost path
+// prices it at that tier. The query is not billed and is not filled. Nothing filled is serialised.
+func TestHandleProviderRequest_ImageTaskCreateCarriesItsPricingDimensions(t *testing.T) {
+	provider := imageTaskStubProvider{stubProvider{key: schemas.DashScope}}
+	dispatch := func(req schemas.BifrostRequest) *schemas.BifrostImageTaskResponse {
+		t.Helper()
+		msg := &ChannelMessage{Context: schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), BifrostRequest: req}
+		response, bifrostErr := (&Bifrost{}).handleProviderRequest(provider, &schemas.ProviderConfig{}, msg, schemas.Key{}, nil)
+		if bifrostErr != nil {
+			t.Fatalf("%s: %v", req.RequestType, bifrostErr.Error)
+		}
+		return response.ImageTaskResponse
+	}
+
+	generation := dispatch(schemas.BifrostRequest{RequestType: schemas.ImageGenerationTaskRequest, ImageGenerationRequest: &schemas.BifrostImageGenerationRequest{
+		Provider: schemas.DashScope, Model: "wan2.6-image", Input: &schemas.ImageGenerationInput{Prompt: "x"},
+		Params: &schemas.ImageGenerationParameters{Resolution: "2K", Quality: schemas.Ptr("high")},
+	}})
+	if p := generation.BilledParameters; p == nil || p.Resolution != "2K" || p.Quality != "high" {
+		t.Fatalf("generation task billed parameters = %+v, want resolution 2K and quality high", p)
+	}
+	edit := dispatch(schemas.BifrostRequest{RequestType: schemas.ImageEditTaskRequest, ImageEditRequest: &schemas.BifrostImageEditRequest{
+		Provider: schemas.DashScope, Model: "wan2.6-image",
+		Input:  &schemas.ImageEditInput{Prompt: "x", Images: []schemas.ImageInput{{URL: "https://example.test/a.png"}}},
+		Params: &schemas.ImageEditParameters{Size: schemas.Ptr("1280x1280")},
+	}})
+	if p := edit.BilledParameters; p == nil || p.Size != "1280x1280" {
+		t.Fatalf("edit task billed parameters = %+v, want size 1280x1280", p)
+	}
+	// A size the provider accepted as 2048*2048 or 2048X2048 is kept the way pricing reads it.
+	for _, spelled := range []string{"2048*2048", "2048X2048", "+2048*02048", " 2048x2048 "} {
+		normalized := &schemas.BifrostImageTaskResponse{}
+		normalized.BackfillCreateParams(&schemas.BifrostRequest{RequestType: schemas.ImageGenerationTaskRequest, ImageGenerationRequest: &schemas.BifrostImageGenerationRequest{
+			Params: &schemas.ImageGenerationParameters{Size: schemas.Ptr(spelled)},
+		}})
+		if p := normalized.BilledParameters; p == nil || p.Size != "2048x2048" {
+			t.Fatalf("size %s: billed parameters %+v, want size 2048x2048", spelled, p)
+		}
+	}
+	// A provider that read the dimensions from a raw body core never parsed keeps them.
+	preset := &schemas.BifrostImageTaskResponse{BilledParameters: &schemas.ImageGenerationResponseParameters{Resolution: "4K"}}
+	preset.BackfillCreateParams(&schemas.BifrostRequest{RequestType: schemas.ImageGenerationTaskRequest, ImageGenerationRequest: &schemas.BifrostImageGenerationRequest{
+		Params: &schemas.ImageGenerationParameters{Resolution: "1K"},
+	}})
+	if preset.BilledParameters.Resolution != "4K" {
+		t.Fatalf("a provider-set tier was replaced: %+v", preset.BilledParameters)
+	}
+	query := dispatch(schemas.BifrostRequest{RequestType: schemas.ImageTaskRetrieveRequest, ImageTaskRetrieveRequest: &schemas.BifrostImageTaskRetrieveRequest{Provider: schemas.DashScope, ID: "t1"}})
+	if query.BilledParameters != nil {
+		t.Fatalf("query billed parameters = %+v, want none", query.BilledParameters)
+	}
+	encoded, err := json.Marshal(generation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "2K") || strings.Contains(string(encoded), "usage") {
+		t.Fatalf("the task object serialises Bifrost's own pricing dimensions: %s", encoded)
+	}
+}
+
 // videoTaskProvider is a provider whose video create takes the unified fields it declares
 // (schemas.UnifiedFieldDeclarer). Everything else comes from the embedded real OpenAI provider.
 type videoTaskProvider struct {

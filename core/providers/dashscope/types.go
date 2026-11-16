@@ -66,17 +66,30 @@ type DashScopeTaskResponse struct {
 }
 
 // DashScopeTaskOutput is a task's output object. The three times are "2006-01-02 15:04:05.000"
-// in UTC+8. code and message are set on a FAILED task.
+// in UTC+8. code and message are set on a FAILED task. choices carries a Wan image task's image
+// links in choices[].message.content[].image, as the synchronous image endpoint returns them.
 type DashScopeTaskOutput struct {
-	TaskID        string `json:"task_id,omitempty"`
-	TaskStatus    string `json:"task_status,omitempty"`
-	SubmitTime    string `json:"submit_time,omitempty"`
-	ScheduledTime string `json:"scheduled_time,omitempty"`
-	EndTime       string `json:"end_time,omitempty"`
-	OrigPrompt    string `json:"orig_prompt,omitempty"`
-	VideoURL      string `json:"video_url,omitempty"`
-	Code          string `json:"code,omitempty"`
-	Message       string `json:"message,omitempty"`
+	TaskID        string                 `json:"task_id,omitempty"`
+	TaskStatus    string                 `json:"task_status,omitempty"`
+	SubmitTime    string                 `json:"submit_time,omitempty"`
+	ScheduledTime string                 `json:"scheduled_time,omitempty"`
+	EndTime       string                 `json:"end_time,omitempty"`
+	OrigPrompt    string                 `json:"orig_prompt,omitempty"`
+	VideoURL      string                 `json:"video_url,omitempty"`
+	Code          string                 `json:"code,omitempty"`
+	Message       string                 `json:"message,omitempty"`
+	Choices       []DashScopeImageChoice `json:"choices,omitempty"` // a Wan image task's results (TXE-7050)
+}
+
+// DashScopeImageTaskResponse is a Wan image task: the create answer or a query (TXE-7050). usage
+// carries image_count, the billing quantity, once the task has finished.
+type DashScopeImageTaskResponse struct {
+	RequestID string               `json:"request_id,omitempty"`
+	Output    *DashScopeTaskOutput `json:"output,omitempty"`
+	Usage     *DashScopeImageUsage `json:"usage,omitempty"`
+	// Code and Message are set when DashScope answers a 2xx with an error object and no output.
+	Code    string `json:"code,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
 // DashScopeVideoUsage is the usage object of a finished task. Wan 2.6 and later report

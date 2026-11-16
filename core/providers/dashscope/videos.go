@@ -366,23 +366,10 @@ func isReferenceMediaURL(raw, dataPrefix string) bool {
 
 // extraParamObject returns an extra param's value as a JSON object, or nil when it is not one.
 // The HTTP handlers give a map[string]any; a Go SDK caller may give any value that encodes to
-// an object (map[string]string, a struct, json.RawMessage), and the merger merges those too,
-// so they are read through their JSON form.
+// an object (map[string]string, a struct, json.RawMessage), and the merger merges those too.
+// It is schemas.ExtraParamObject, the one reading core's price-field check also uses.
 func extraParamObject(value any) map[string]any {
-	if object, ok := value.(map[string]any); ok {
-		return object
-	}
-	if value == nil {
-		return nil
-	}
-	encoded, err := schemas.Marshal(value)
-	if err != nil {
-		return nil
-	}
-	var object map[string]any
-	if err := schemas.Unmarshal(encoded, &object); err != nil {
-		return nil
-	}
+	object, _ := schemas.ExtraParamObject(value)
 	return object
 }
 
