@@ -167,7 +167,8 @@
             "upstream-ok~rbl-fallback",
             "upstream-ok~rbl-under",
             "fixture-image-oversize",
-            "gpt-image-2.5-flare"
+            "gpt-image-2.5-flare",
+            "upstream-500~upstream-sent"
           ],
           "use_for_batch_api": true,
           "weight": 1
@@ -175,6 +176,26 @@
       ],
       "network_config": {
         "base_url": "http://127.0.0.1:8791",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
+    "refused_dial": {
+      "keys": [
+        {
+          "name": "local-error-fixture",
+          "value": "test-key",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai"
+      },
+      "network_config": {
+        "base_url": "http://127.0.0.1:1",
         "max_retries": 0,
         "default_request_timeout_in_seconds": 10
       }
