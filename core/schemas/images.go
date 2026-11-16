@@ -99,6 +99,16 @@ type BifrostImageGenerationResponse struct {
 
 	LargeResponseUnread bool `json:"-"` // the answer was streamed to the caller unread; see MarkLargeResponseUnread (TXE-7017)
 
+	// BilledParameters are the pricing dimensions a raw request body asked for (TXE-7502), read by
+	// the provider because core never parsed that body (RawImageBodyReader), never serialised.
+	// When set, BackfillParams fills the response's parameters from them and reads no pricing
+	// dimension from the typed request, which the raw body does not follow. Vendor-reported values
+	// still win.
+	BilledParameters *ImageGenerationResponseParameters `json:"-"`
+	// BilledInputImages is the number of input images the raw body carries, used with
+	// BilledParameters in place of the typed request's count.
+	BilledInputImages int `json:"-"`
+
 	Usage       *ImageUsage                `json:"usage,omitempty"`
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }
@@ -196,6 +206,11 @@ func (r *BifrostImageGenerationResponse) BackfillParams(req *BifrostRequest) {
 	}
 	provider, _, _ := req.GetRequestFields()
 	r.fillExpiresAt(provider, time.Now)
+	if r.BilledParameters != nil {
+		// A raw body (TXE-7502): its own reading, not the typed request's, is what it is billed at.
+		r.backfillBilledParameters(req)
+		return
+	}
 	numInputImages, size, quality, aspectRatio := getNumInputImagesSizeQualityAndAspectRatioFromRequest(req)
 
 	// Backfill Model from whichever inner request carries it. Some provider APIs
@@ -256,6 +271,43 @@ func (r *BifrostImageGenerationResponse) BackfillParams(req *BifrostRequest) {
 			r.ImageGenerationResponseParameters = &ImageGenerationResponseParameters{}
 		}
 		r.ImageGenerationResponseParameters.NumInferenceSteps = steps
+	}
+}
+
+// backfillBilledParameters fills the response from BilledParameters, the pricing dimensions a raw
+// body asked for (TXE-7502), where the vendor reported none of its own. The typed request gives
+// only the model.
+func (r *BifrostImageGenerationResponse) backfillBilledParameters(req *BifrostRequest) {
+	if r.Model == "" {
+		_, model, _ := req.GetRequestFields()
+		r.Model = model
+	}
+	if r.BilledInputImages > 0 {
+		if r.Usage == nil {
+			r.Usage = &ImageUsage{}
+		}
+		r.Usage.NumInputImages = r.BilledInputImages
+	}
+	billed := r.BilledParameters
+	if r.ImageGenerationResponseParameters == nil {
+		r.ImageGenerationResponseParameters = &ImageGenerationResponseParameters{}
+	}
+	params := r.ImageGenerationResponseParameters
+	if params.Size == "" {
+		params.Size = billed.Size
+	}
+	if params.Quality == "" {
+		params.Quality = billed.Quality
+	}
+	if params.AspectRatio == "" {
+		params.AspectRatio = billed.AspectRatio
+	}
+	if params.Resolution == "" {
+		params.Resolution = billed.Resolution
+	}
+	if params.NumInferenceSteps == nil && billed.NumInferenceSteps != nil {
+		steps := *billed.NumInferenceSteps
+		params.NumInferenceSteps = &steps
 	}
 }
 

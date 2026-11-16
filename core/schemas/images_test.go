@@ -115,6 +115,43 @@ func TestImageEditBackfillsAspectRatio(t *testing.T) {
 
 // TXE-7356: the resolution tier, the inference steps and the dall-e-3 qualities a model is priced
 // by reach the response, where the cost path reads them. hd and standard used to be dropped here.
+// TXE-7502: a raw body's own reading (BilledParameters) is what a sync image response is billed at.
+// The typed request, which the raw body does not follow, gives no pricing dimension: not its size,
+// quality or tier, and not its input image count. A value the vendor reported still wins.
+func TestImageBackfillPrefersRawBodyBilledParameters(t *testing.T) {
+	req := &BifrostRequest{ImageEditRequest: &BifrostImageEditRequest{
+		Model:  "m",
+		Input:  &ImageEditInput{Images: []ImageInput{{URL: "https://example.com/a.png"}, {URL: "https://example.com/b.png"}}},
+		Params: &ImageEditParameters{Size: new("256x256"), Quality: new("low"), Resolution: "1K"},
+	}}
+	resp := &BifrostImageGenerationResponse{
+		ImageGenerationResponseParameters: &ImageGenerationResponseParameters{Quality: "high"},
+		BilledParameters:                  &ImageGenerationResponseParameters{Size: "4096x4096", Quality: "medium", Resolution: "4K", NumInferenceSteps: new(50)},
+	}
+	resp.BackfillParams(req)
+	p := resp.ImageGenerationResponseParameters
+	if p.Size != "4096x4096" || p.Resolution != "4K" || p.NumInferenceSteps == nil || *p.NumInferenceSteps != 50 {
+		t.Fatalf("response params = %+v, want the raw body's 4096x4096, 4K and 50 steps", p)
+	}
+	if p.Quality != "high" {
+		t.Fatalf("quality = %q, want the vendor's own high", p.Quality)
+	}
+	if resp.Usage != nil && resp.Usage.NumInputImages != 0 {
+		t.Fatalf("input images = %d, want none from the typed request", resp.Usage.NumInputImages)
+	}
+	if resp.Model != "m" {
+		t.Fatalf("model = %q, want the request's", resp.Model)
+	}
+	counted := &BifrostImageGenerationResponse{BilledParameters: &ImageGenerationResponseParameters{}, BilledInputImages: 3}
+	counted.BackfillParams(req)
+	if counted.Usage == nil || counted.Usage.NumInputImages != 3 {
+		t.Fatalf("usage = %+v, want the raw body's 3 input images", counted.Usage)
+	}
+	if counted.Size != "" {
+		t.Fatalf("a raw body that names no size was given the typed request's %q", counted.Size)
+	}
+}
+
 func TestImageBackfillsPricedRequestShape(t *testing.T) {
 	req := &BifrostRequest{ImageGenerationRequest: &BifrostImageGenerationRequest{
 		Params: &ImageGenerationParameters{Quality: new("hd"), Resolution: "2k", NumInferenceSteps: new(60)},

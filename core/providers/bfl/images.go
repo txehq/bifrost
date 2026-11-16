@@ -2,6 +2,7 @@ package bfl
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"path"
@@ -412,6 +413,125 @@ func (provider *BFLProvider) submitImageTask(ctx *schemas.BifrostContext, key sc
 		task.ExtraFields.RawResponse = rawResponse
 	}
 	return task, nil
+}
+
+// ReadsRawImageBody reports the operations whose raw body BFL reads the pricing dimensions of
+// (schemas.RawImageBodyReader, TXE-7502): both task creates, BFL's only priced operations.
+func (provider *BFLProvider) ReadsRawImageBody(requestType schemas.RequestType) bool {
+	return requestType == schemas.ImageGenerationTaskRequest || requestType == schemas.ImageEditTaskRequest
+}
+
+// ReadRawImageBody reads what a task create's raw body asks BFL to make, which the create is
+// billed for (BFL bills by megapixels, so the size is the price): width and height as the size,
+// aspect_ratio, resolution, steps, and the number of input images. One image per task, so no
+// count. It fails closed: a body that is not one JSON object, that names one of those fields more
+// than once in any spelling the extra-params merge treats as it (case and underscores ignored),
+// whose values are not of the type BFL's schema gives them, or that names width without height
+// (or the reverse, which BFL would complete with a default Bifrost does not know), is refused.
+func (provider *BFLProvider) ReadRawImageBody(requestType schemas.RequestType, model string, body []byte) (*schemas.RawImageBilling, *schemas.BifrostError) {
+	if !provider.ReadsRawImageBody(requestType) {
+		return nil, schemas.NewRawImageBodyUnpricedError(provider.GetProviderKey(), requestType)
+	}
+	members, err := providerUtils.JSONObjectMembers(body)
+	if err != nil {
+		return nil, providerUtils.NewBifrostBadRequestError("bfl: the raw request body of an image task must be one JSON object: " + err.Error())
+	}
+	only := func(field string) (json.RawMessage, *schemas.BifrostError) {
+		value, seen := providerUtils.OnlyJSONMember(members, field, schemas.SameJSONFieldName)
+		if seen > 1 {
+			return nil, schemas.NewUnsupportedParameterError(field, fmt.Sprintf(
+				"bfl: %s is named %d times in the raw request body; name it once", field, seen))
+		}
+		if seen == 1 {
+			// BFL reads the exact name: another spelling would be priced at a size BFL ignores.
+			if _, exact := providerUtils.OnlyJSONMember(members, field, func(a, b string) bool { return a == b }); exact != 1 {
+				return nil, schemas.NewUnsupportedParameterError(field, fmt.Sprintf(
+					"bfl: the raw request body spells %s another way; BFL reads only %q", field, field))
+			}
+		}
+		if isJSONNull(value) {
+			return nil, nil
+		}
+		return value, nil
+	}
+	positive := func(field string) (*int, *schemas.BifrostError) {
+		value, bifrostErr := only(field)
+		if bifrostErr != nil || value == nil {
+			return nil, bifrostErr
+		}
+		var n int
+		if json.Unmarshal(value, &n) != nil || n <= 0 {
+			return nil, schemas.NewUnsupportedParameterError(field, fmt.Sprintf("bfl: %s must be a positive whole number", field))
+		}
+		return &n, nil
+	}
+	text := func(field string) (string, *schemas.BifrostError) {
+		value, bifrostErr := only(field)
+		if bifrostErr != nil || value == nil {
+			return "", bifrostErr
+		}
+		var s string
+		if json.Unmarshal(value, &s) != nil {
+			return "", schemas.NewUnsupportedParameterError(field, fmt.Sprintf("bfl: %s must be a string", field))
+		}
+		return strings.TrimSpace(s), nil
+	}
+
+	params := &schemas.ImageGenerationResponseParameters{}
+	width, bifrostErr := positive("width")
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	height, bifrostErr := positive("height")
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	switch {
+	case width != nil && height != nil:
+		params.Size = strconv.Itoa(*width) + "x" + strconv.Itoa(*height)
+	case width != nil || height != nil:
+		return nil, schemas.NewUnsupportedParameterError("width", "bfl: a raw request body names width and height together, or neither; BFL completes a missing one with a default Bifrost cannot price")
+	}
+	if params.AspectRatio, bifrostErr = text("aspect_ratio"); bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	resolution, bifrostErr := text("resolution")
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	// BFL writes the tiers in lower case (1k); the cost path's tiers are 1K.
+	params.Resolution = strings.ToUpper(resolution)
+	if params.NumInferenceSteps, bifrostErr = positive("steps"); bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	return &schemas.RawImageBilling{InputImages: bflRawInputImages(members), Parameters: params}, nil
+}
+
+// bflRawInputImages counts the input images a raw body carries: the images array (FLUX 3), the
+// numbered input_image fields, and the fill endpoint's image. A null field carries none.
+func bflRawInputImages(members []providerUtils.JSONMember) int {
+	count := 0
+	for _, member := range members {
+		if isJSONNull(member.Value) {
+			continue
+		}
+		name := strings.ToLower(member.Name)
+		switch {
+		case name == "images":
+			var images []json.RawMessage
+			if json.Unmarshal(member.Value, &images) == nil {
+				count += len(images)
+			}
+		case name == "image", name == "input_image", strings.HasPrefix(name, "input_image_"):
+			count++
+		}
+	}
+	return count
+}
+
+// isJSONNull reports whether a member's value is absent or the JSON null.
+func isJSONNull(value json.RawMessage) bool {
+	return value == nil || strings.TrimSpace(string(value)) == "null"
 }
 
 // ImageTaskRetrieve queries a task once: GET its polling URL (contract C7, B3, B6 to B8).

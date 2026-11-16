@@ -2146,6 +2146,22 @@ func isVertexImagenRequest(ctx *schemas.BifrostContext, model string) bool {
 	return !schemas.IsGeminiModelFamily(ctx, model) && !schemas.IsAllDigitsASCII(model) && schemas.IsImagenModelFamily(ctx, model)
 }
 
+// ReadsRawImageBody reports the operations whose raw body Vertex reads the pricing dimensions of
+// (schemas.RawImageBodyReader, TXE-7502): image generation and edit, which serve only Gemini,
+// Imagen and tuned Gemini endpoints, all with Gemini-format bodies. The GenAI route keeps a
+// Gemini request's raw body on a Vertex attempt for those models.
+func (provider *VertexProvider) ReadsRawImageBody(requestType schemas.RequestType) bool {
+	return gemini.ReadsRawImageBody(requestType)
+}
+
+// ReadRawImageBody reads a raw image body's size with the Gemini reading (gemini.ReadRawImageBody).
+func (provider *VertexProvider) ReadRawImageBody(requestType schemas.RequestType, model string, body []byte) (*schemas.RawImageBilling, *schemas.BifrostError) {
+	if !gemini.ReadsRawImageBody(requestType) {
+		return nil, schemas.NewRawImageBodyUnpricedError(provider.GetProviderKey(), requestType)
+	}
+	return gemini.ReadRawImageBody(body)
+}
+
 func (provider *VertexProvider) ImageGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	// Validate model type before processing
 	if !schemas.IsGeminiModelFamily(ctx, request.Model) && !schemas.IsAllDigitsASCII(request.Model) && !schemas.IsImagenModelFamily(ctx, request.Model) {

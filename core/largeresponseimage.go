@@ -13,5 +13,13 @@ func backfillImageResponse(ctx *schemas.BifrostContext, response *schemas.Bifros
 			response.MarkLargeResponseUnread(req)
 		}
 	}
+	// A raw body is billed at what its provider read from it (TXE-7502), not at the typed request.
+	if ctx != nil && response != nil {
+		if billing := schemas.RawImageBillingFromContext(ctx); billing != nil {
+			params := *billing.Parameters
+			response.BilledParameters = &params
+			response.BilledInputImages = billing.InputImages
+		}
+	}
 	response.BackfillParams(req)
 }

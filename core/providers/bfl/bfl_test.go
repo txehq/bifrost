@@ -603,6 +603,42 @@ func BenchmarkBFLImageTaskConversion(b *testing.B) {
 	}
 }
 
+// TXE-7502: a raw task body is billed at the size it asks BFL for, which BFL bills by megapixels:
+// 2048x2048 is read as that, never as the typed request's size. BFL reads exact names, so another
+// spelling of width, a width without a height, a size BFL's schema does not type as a number, and
+// a name repeated in two spellings are refused rather than priced at a size BFL may not make.
+func TestBFLReadsARawTaskBodysSize(t *testing.T) {
+	provider := newTestProvider(t, schemas.NetworkConfig{})
+	billing, bifrostErr := provider.ReadRawImageBody(schemas.ImageGenerationTaskRequest, "flux-2-pro",
+		[]byte(`{"prompt":"a lighthouse","width":2048,"height":2048,"input_image":"https://example.com/a.png","input_image_2":"https://example.com/b.png","input_image_3":null}`))
+	if bifrostErr != nil {
+		t.Fatalf("read: %+v", bifrostErr.Error)
+	}
+	if billing.Parameters.Size != "2048x2048" || billing.InputImages != 2 || billing.Images != 0 {
+		t.Fatalf("billing = %+v %+v, want size 2048x2048 and 2 input images", billing, billing.Parameters)
+	}
+	none, bifrostErr := provider.ReadRawImageBody(schemas.ImageGenerationTaskRequest, "flux-2-pro", []byte(`{"prompt":"a lighthouse"}`))
+	if bifrostErr != nil || none.Parameters == nil || none.Parameters.Size != "" {
+		t.Fatalf("a body naming no size: %+v %+v, want empty (non-nil) parameters", none, bifrostErr)
+	}
+	for _, body := range []string{
+		`{"prompt":"x","Width":2048,"height":2048}`,
+		`{"prompt":"x","width":2048}`,
+		`{"prompt":"x","width":"2048","height":2048}`,
+		`{"prompt":"x","width":0,"height":2048}`,
+		`{"prompt":"x","aspect_ratio":"1:1","aspectRatio":"21:9"}`,
+		`{"prompt":"x","steps":10,"steps":50}`,
+		`{"prompt":"x"} {}`,
+	} {
+		if _, bifrostErr := provider.ReadRawImageBody(schemas.ImageEditTaskRequest, "flux-2-pro", []byte(body)); bifrostErr == nil {
+			t.Errorf("%s was read, want it refused", body)
+		}
+	}
+	if provider.ReadsRawImageBody(schemas.ImageGenerationRequest) || provider.ReadsRawImageBody(schemas.ImageTaskRetrieveRequest) {
+		t.Fatal("BFL reads raw bodies only on its two task creates")
+	}
+}
+
 // TXE-6431 review: the handlers keep resolution in the extras as well as in the typed field. The
 // converted value is the one sent; the raw copy is dropped, or the merge would refuse "2K" against
 // "2k" and a valid request would never reach BFL. The caller's extras are not modified.

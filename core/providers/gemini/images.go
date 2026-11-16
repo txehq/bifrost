@@ -3,6 +3,7 @@ package gemini
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"net/http"
@@ -317,6 +318,137 @@ func (request *GeminiGenerationRequest) ToBifrostImageEditRequest(ctx *schemas.B
 	}
 
 	return bifrostReq
+}
+
+// ReadsRawImageBody reports the operations whose raw body Gemini reads the pricing dimensions of
+// (schemas.RawImageBodyReader, TXE-7502): image generation and edit, which the GenAI route sends
+// raw for an explicitly Gemini request.
+func (provider *GeminiProvider) ReadsRawImageBody(requestType schemas.RequestType) bool {
+	return ReadsRawImageBody(requestType)
+}
+
+// ReadRawImageBody reads a raw image body's size (ReadRawImageBody).
+func (provider *GeminiProvider) ReadRawImageBody(requestType schemas.RequestType, model string, body []byte) (*schemas.RawImageBilling, *schemas.BifrostError) {
+	if !ReadsRawImageBody(requestType) {
+		return nil, schemas.NewRawImageBodyUnpricedError(provider.GetProviderKey(), requestType)
+	}
+	return ReadRawImageBody(body)
+}
+
+// ReadsRawImageBody reports the request types whose raw Gemini-format body ReadRawImageBody
+// reads: the sync image generation and edit, the operations Gemini and Vertex serve.
+func ReadsRawImageBody(requestType schemas.RequestType) bool {
+	return requestType == schemas.ImageGenerationRequest || requestType == schemas.ImageEditRequest
+}
+
+// ReadRawImageBody reads the pricing dimensions of a Gemini-format image body sent raw (Gemini and
+// Vertex, TXE-7502), as the typed path reads them (ToBifrostImageGenerationRequest): the size from
+// generationConfig.imageConfig.imageSize and aspectRatio on generateContent, or from
+// parameters.sampleImageSize and aspectRatio on an Imagen predict, written WIDTHxHEIGHT. The image
+// count is the delivered images', since a sync response is billed for those.
+//
+// It fails closed. Google's JSON reads a field in lowerCamelCase or snake_case, so a name is
+// matched with case and underscores ignored, and a body that is not one JSON object, that names
+// generationConfig, imageConfig, parameters, imageSize, sampleImageSize or aspectRatio more than
+// once in those spellings, whose values are not strings, or that names a size in both places, is
+// refused.
+func ReadRawImageBody(body []byte) (*schemas.RawImageBilling, *schemas.BifrostError) {
+	top, err := utils.JSONObjectMembers(body)
+	if err != nil {
+		return nil, utils.NewBifrostBadRequestError("gemini: the raw request body of an image request must be one JSON object: " + err.Error())
+	}
+	// generateContent: generationConfig.imageConfig.{imageSize, aspectRatio}.
+	var contentSize, contentAspect *string
+	generationConfig, bifrostErr := onlyRawObject(top, "generationConfig", "generationConfig")
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if generationConfig != nil {
+		imageConfig, bifrostErr := onlyRawObject(generationConfig, "imageConfig", "generationConfig.imageConfig")
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+		if imageConfig != nil {
+			if contentSize, bifrostErr = onlyRawString(imageConfig, "imageSize", "generationConfig.imageConfig.imageSize"); bifrostErr != nil {
+				return nil, bifrostErr
+			}
+			if contentAspect, bifrostErr = onlyRawString(imageConfig, "aspectRatio", "generationConfig.imageConfig.aspectRatio"); bifrostErr != nil {
+				return nil, bifrostErr
+			}
+		}
+	}
+	// Imagen predict: parameters.{sampleImageSize, aspectRatio}.
+	var imagenSize, imagenAspect *string
+	parameters, bifrostErr := onlyRawObject(top, "parameters", "parameters")
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if parameters != nil {
+		if imagenSize, bifrostErr = onlyRawString(parameters, "sampleImageSize", "parameters.sampleImageSize"); bifrostErr != nil {
+			return nil, bifrostErr
+		}
+		if imagenAspect, bifrostErr = onlyRawString(parameters, "aspectRatio", "parameters.aspectRatio"); bifrostErr != nil {
+			return nil, bifrostErr
+		}
+	}
+	params := &schemas.ImageGenerationResponseParameters{}
+	namesContent := contentSize != nil || contentAspect != nil
+	namesImagen := imagenSize != nil || imagenAspect != nil
+	switch {
+	case namesContent && namesImagen:
+		// Which one the vendor reads depends on the endpoint; Bifrost does not guess.
+		return nil, schemas.NewUnsupportedParameterError("parameters", "gemini: the raw request body names an image size in both generationConfig.imageConfig and parameters; name it in the one the model reads")
+	case namesContent:
+		params.Size = convertImagenFormatToSize(contentSize, contentAspect)
+		if contentAspect != nil {
+			params.AspectRatio = strings.TrimSpace(*contentAspect)
+		}
+	case namesImagen:
+		if size := convertImagenFormatToSize(imagenSize, imagenAspect); strings.ToLower(size) != "auto" {
+			params.Size = size
+		}
+	}
+	return &schemas.RawImageBilling{Parameters: params}, nil
+}
+
+// onlyRawMember returns the one member same-named field (case and underscores ignored, Google's
+// JSON reading both spellings), nil when there is none; more than one is refused, naming param.
+func onlyRawMember(members []utils.JSONMember, field, param string) (json.RawMessage, *schemas.BifrostError) {
+	value, seen := utils.OnlyJSONMember(members, field, schemas.SameJSONFieldName)
+	if seen > 1 {
+		return nil, schemas.NewUnsupportedParameterError(param, fmt.Sprintf(
+			"gemini: %s is named %d times in the raw request body; name it once", param, seen))
+	}
+	if value == nil || strings.TrimSpace(string(value)) == "null" {
+		return nil, nil
+	}
+	return value, nil
+}
+
+// onlyRawObject reads the one member named field as a JSON object's members.
+func onlyRawObject(members []utils.JSONMember, field, param string) ([]utils.JSONMember, *schemas.BifrostError) {
+	value, bifrostErr := onlyRawMember(members, field, param)
+	if bifrostErr != nil || value == nil {
+		return nil, bifrostErr
+	}
+	object, err := utils.JSONObjectMembers(value)
+	if err != nil {
+		return nil, schemas.NewUnsupportedParameterError(param, fmt.Sprintf("gemini: %s must be a JSON object", param))
+	}
+	return object, nil
+}
+
+// onlyRawString reads the one member named field as a string.
+func onlyRawString(members []utils.JSONMember, field, param string) (*string, *schemas.BifrostError) {
+	value, bifrostErr := onlyRawMember(members, field, param)
+	if bifrostErr != nil || value == nil {
+		return nil, bifrostErr
+	}
+	var s string
+	if json.Unmarshal(value, &s) != nil {
+		return nil, schemas.NewUnsupportedParameterError(param, fmt.Sprintf("gemini: %s must be a string", param))
+	}
+	return &s, nil
 }
 
 // convertImagenFormatToSize converts Imagen sampleImageSize and aspectRatio to standard WxH format

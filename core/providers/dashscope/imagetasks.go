@@ -1,11 +1,8 @@
 package dashscope
 
 import (
-	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"path"
@@ -417,7 +414,7 @@ var wanImageTiers = []string{"1K", "2K", "4K"}
 // model: governance chose the key, the budget and the price by the request's model, and DashScope
 // runs the body's.
 func wanRawImageTaskBilling(body []byte, model string) (int, *schemas.ImageGenerationResponseParameters, *schemas.BifrostError) {
-	top, err := jsonObjectMembers(body)
+	top, err := providerUtils.JSONObjectMembers(body)
 	if err != nil {
 		return 0, nil, newDashScopeBadRequest("", "dashscope: the raw request body of an image task must be one JSON object: "+err.Error())
 	}
@@ -436,15 +433,15 @@ func wanRawImageTaskBilling(body []byte, model string) (int, *schemas.ImageGener
 	if bifrostErr != nil || parameters == nil {
 		return defaultCount, defaults, bifrostErr
 	}
-	members, err := jsonObjectMembers(parameters)
+	members, err := providerUtils.JSONObjectMembers(parameters)
 	if err != nil {
 		return 0, nil, newDashScopeBadRequest("parameters", "dashscope: parameters must be a JSON object: "+err.Error())
 	}
 	for _, member := range members {
-		value := strings.TrimSpace(string(member.value))
-		if wanNamesInterleave(member.name) && value != "false" && value != "null" {
-			return 0, nil, schemas.NewUnsupportedParameterError("parameters."+member.name, fmt.Sprintf(
-				"dashscope: parameters.%s cannot be delivered on the image task routes: it may switch on Wan's interleaved mode, which makes up to max_images images whatever n says, while a task create is billed for the images it asks for (a name outside ASCII is refused for the same reason)", member.name))
+		value := strings.TrimSpace(string(member.Value))
+		if wanNamesInterleave(member.Name) && value != "false" && value != "null" {
+			return 0, nil, schemas.NewUnsupportedParameterError("parameters."+member.Name, fmt.Sprintf(
+				"dashscope: parameters.%s cannot be delivered on the image task routes: it may switch on Wan's interleaved mode, which makes up to max_images images whatever n says, while a task create is billed for the images it asks for (a name outside ASCII is refused for the same reason)", member.Name))
 		}
 	}
 	count := defaultCount
@@ -485,57 +482,33 @@ func wanRawImageTaskBilling(body []byte, model string) (int, *schemas.ImageGener
 		"dashscope: parameters.size %q is neither a tier (1K, 2K, 4K) nor width*height", schemas.BoundEchoedName(size)))
 }
 
-// jsonMember is one member of a JSON object, in document order.
-type jsonMember struct {
-	name  string
-	value json.RawMessage
+// ReadsRawImageBody reports the operations whose raw body DashScope reads the pricing dimensions
+// of (schemas.RawImageBodyReader, TXE-7502): the two Wan image task creates. Core refuses raw mode
+// on the sync image routes, whose bodies DashScope does not read.
+func (provider *DashScopeProvider) ReadsRawImageBody(requestType schemas.RequestType) bool {
+	return requestType == schemas.ImageGenerationTaskRequest || requestType == schemas.ImageEditTaskRequest
 }
 
-// jsonObjectMembers reads data as exactly one JSON object and returns every member in order,
-// duplicates included: encoding/json's own decoding keeps only the last copy of a repeated name,
-// silently.
-func jsonObjectMembers(data []byte) ([]jsonMember, error) {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	token, err := decoder.Token()
-	if err != nil {
-		return nil, err
+// ReadRawImageBody reads a Wan image task create's raw body: the images it asks for and its size
+// or tier (wanRawImageTaskBilling), which the create is billed for.
+func (provider *DashScopeProvider) ReadRawImageBody(requestType schemas.RequestType, model string, body []byte) (*schemas.RawImageBilling, *schemas.BifrostError) {
+	if !provider.ReadsRawImageBody(requestType) {
+		return nil, schemas.NewRawImageBodyUnpricedError(provider.GetProviderKey(), requestType)
 	}
-	if delim, ok := token.(json.Delim); !ok || delim != '{' {
-		return nil, errors.New("not a JSON object")
+	if bifrostErr := checkDashScopeImageTaskModel(model); bifrostErr != nil {
+		return nil, bifrostErr
 	}
-	var members []jsonMember
-	for decoder.More() {
-		token, err := decoder.Token()
-		if err != nil {
-			return nil, err
-		}
-		name, _ := token.(string)
-		var value json.RawMessage
-		if err := decoder.Decode(&value); err != nil {
-			return nil, err
-		}
-		members = append(members, jsonMember{name: name, value: value})
+	count, params, bifrostErr := wanRawImageTaskBilling(body, model)
+	if bifrostErr != nil {
+		return nil, bifrostErr
 	}
-	if _, err := decoder.Token(); err != nil {
-		return nil, err
-	}
-	if _, err := decoder.Token(); err != io.EOF {
-		return nil, errors.New("data after the JSON object")
-	}
-	return members, nil
+	return &schemas.RawImageBilling{Images: count, Parameters: params}, nil
 }
 
 // onlyMember returns the value of the one member named field, in any spelling wanSameName
 // treats as it, or nil when there is none. More than one is refused, naming param.
-func onlyMember(members []jsonMember, field, param string) (json.RawMessage, *schemas.BifrostError) {
-	var found json.RawMessage
-	seen := 0
-	for _, member := range members {
-		if wanSameName(member.name, field) {
-			seen++
-			found = member.value
-		}
-	}
+func onlyMember(members []providerUtils.JSONMember, field, param string) (json.RawMessage, *schemas.BifrostError) {
+	found, seen := providerUtils.OnlyJSONMember(members, field, wanSameName)
 	if seen > 1 {
 		return nil, newDashScopeBadRequest(param, fmt.Sprintf("dashscope: %s is named %d times in the raw request body; name it once", param, seen))
 	}
