@@ -133,10 +133,7 @@ jobs:
 
       # The Go the chart release and release pipeline run schemasync with.
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-        with:
-          go-version: "1.27.3"
-          cache: false
+        uses: ./.github/actions/setup-go
 
       # Go config types, transports/config.schema.json and the chart's values schema
       # agree, every Go enum const included (TXE-7064). The chart release runs it too.

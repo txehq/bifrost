@@ -120,10 +120,7 @@ jobs:
           echo $! > "$RUNNER_TEMP/compose.pid"
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-        with:
-          go-version: "1.27.3"
-          cache: false
+        uses: ./.github/actions/setup-go
 
       - name: Restore the Go build cache
         uses: ./.github/actions/go-cache
@@ -235,10 +232,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-        with:
-          go-version: "1.27.3"
-          cache: false
+        uses: ./.github/actions/setup-go
 
       - name: Restore the Go build cache
         uses: ./.github/actions/go-cache
@@ -322,10 +316,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-        with:
-          go-version: "1.27.3"
-          cache: false
+        uses: ./.github/actions/setup-go
 
       - name: Restore the Go build cache
         uses: ./.github/actions/go-cache
@@ -386,10 +377,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-        with:
-          go-version: "1.27.3"
-          cache: false
+        uses: ./.github/actions/setup-go
 
       - name: Restore the Go build cache
         uses: ./.github/actions/go-cache
@@ -476,10 +464,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-        with:
-          go-version: "1.27.3"
-          cache: false
+        uses: ./.github/actions/setup-go
 
       - name: Restore the Go build cache
         uses: ./.github/actions/go-cache
@@ -572,10 +557,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-        with:
-          go-version: "1.27.3"
-          cache: false
+        uses: ./.github/actions/setup-go
 
       - name: Restore the Go build cache
         uses: ./.github/actions/go-cache
@@ -662,10 +644,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-        with:
-          go-version: "1.27.3"
-          cache: false
+        uses: ./.github/actions/setup-go
 
       - name: Restore the Go build cache
         uses: ./.github/actions/go-cache
@@ -749,10 +728,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-        with:
-          go-version: "1.27.3"
-          cache: false
+        uses: ./.github/actions/setup-go
 
       - name: Restore the Go build cache
         uses: ./.github/actions/go-cache
@@ -836,10 +812,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-        with:
-          go-version: "1.27.3"
-          cache: false
+        uses: ./.github/actions/setup-go
 
       - name: Restore the Go build cache
         uses: ./.github/actions/go-cache

@@ -221,10 +221,7 @@ jobs:
           sudo apt-get install -y jq
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-        with:
-          go-version: "1.27.3"
-          cache: false
+        uses: ./.github/actions/setup-go
 
       # Reached only when release.yml's gate said this run may release (TXE-7511, TXE-7566).
       - name: Detect what needs release
@@ -313,10 +310,7 @@ jobs:
           fetch-tags: true
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-        with:
-          go-version: "1.27.3"
-          cache: false
+        uses: ./.github/actions/setup-go
 
       - name: Restore the Go build cache
         uses: ./.github/actions/go-cache
@@ -515,10 +509,7 @@ jobs:
           fetch-tags: true
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-        with:
-          go-version: "1.27.3"
-          cache: false
+        uses: ./.github/actions/setup-go
 
       - name: Set up Node.js
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
@@ -751,10 +742,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-        with:
-          go-version: "1.27.3"
-          cache: false
+        uses: ./.github/actions/setup-go
 
       - name: Set up Node.js
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
@@ -877,10 +865,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-        with:
-          go-version: "1.27.3"
-          cache: false
+        uses: ./.github/actions/setup-go
 
       - name: Restore the Go build cache
         uses: ./.github/actions/go-cache
@@ -1006,10 +991,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-        with:
-          go-version: "1.27.3"
-          cache: false
+        uses: ./.github/actions/setup-go
 
       - name: Run memory regression tests
         run: |
@@ -1259,10 +1241,7 @@ jobs:
           fetch-tags: true
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-        with:
-          go-version: "1.27.3"
-          cache: false
+        uses: ./.github/actions/setup-go
 
       - name: Set up Node.js
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
@@ -1415,10 +1394,7 @@ jobs:
           fetch-tags: true
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-        with:
-          go-version: "1.27.3"
-          cache: false
+        uses: ./.github/actions/setup-go
 
       - name: Check RunPod credentials
         id: runpod-credentials
@@ -1511,10 +1487,7 @@ jobs:
           fetch-tags: true
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-        with:
-          go-version: "1.27.3"
-          cache: false
+        uses: ./.github/actions/setup-go
 
       - name: Restore the Go build cache
         uses: ./.github/actions/go-cache
@@ -1678,10 +1651,7 @@ jobs:
           sudo apt-get install -y jq
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-        with:
-          go-version: "1.27.3"
-          cache: false
+        uses: ./.github/actions/setup-go
 
       - name: Restore the Go build cache
         uses: ./.github/actions/go-cache
@@ -1823,10 +1793,7 @@ jobs:
           fetch-tags: true
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-        with:
-          go-version: "1.27.3"
-          cache: false
+        uses: ./.github/actions/setup-go
 
       - name: Restore the Go build cache
         uses: ./.github/actions/go-cache
@@ -1886,10 +1853,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-        with:
-          go-version: "1.27.3"
-          cache: false
+        uses: ./.github/actions/setup-go
 
       # The suite's OpenAI Python SDK leg runs through uv; without it those cases skip.
       - name: Install uv
@@ -2002,10 +1966,7 @@ jobs:
           fetch-tags: true
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-        with:
-          go-version: "1.27.3"
-          cache: false
+        uses: ./.github/actions/setup-go
 
       - name: Set up Node.js
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
@@ -2094,10 +2055,7 @@ jobs:
           fetch-tags: true
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-        with:
-          go-version: "1.27.3"
-          cache: false
+        uses: ./.github/actions/setup-go
 
       - name: Download prebuilt bifrost-http binary
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
@@ -2213,10 +2171,7 @@ jobs:
           fetch-tags: true
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-        with:
-          go-version: "1.27.3"
-          cache: false
+        uses: ./.github/actions/setup-go
 
       - name: Set up Node.js
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
@@ -2406,10 +2361,7 @@ jobs:
       # cost-accuracy-test.sh fetches bifrost-benchmarking at its pinned commit
       # (bifrost-benchmarking.sh, TXE-7452) into BENCHMARK_DIR below.
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-        with:
-          go-version: "1.27.3"
-          cache: false
+        uses: ./.github/actions/setup-go
 
       # This job still builds the mocker/hitter binaries from
       # bifrost-benchmarking itself - only bifrost-http comes prebuilt.
@@ -2499,10 +2451,7 @@ jobs:
       # load-test.sh fetches bifrost-benchmarking at its pinned commit
       # (bifrost-benchmarking.sh, TXE-7452) into BENCHMARK_DIR below.
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-        with:
-          go-version: "1.27.3"
-          cache: false
+        uses: ./.github/actions/setup-go
 
       # load-test.sh's build_bifrost_http already no-ops when tmp/bifrost-http
       # is present, so this download is all that is needed here.
@@ -2622,10 +2571,7 @@ jobs:
           fetch-tags: true
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-        with:
-          go-version: "1.27.3"
-          cache: false
+        uses: ./.github/actions/setup-go
 
       - name: Set up Node.js
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
@@ -2793,10 +2739,7 @@ jobs:
           fetch-tags: true
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-        with:
-          go-version: "1.27.3"
-          cache: false
+        uses: ./.github/actions/setup-go
 
       - name: Set up Node.js
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
@@ -2939,10 +2882,7 @@ jobs:
           token: ${{ secrets.GH_TOKEN || github.token }}
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-        with:
-          go-version: "1.27.3"
-          cache: false
+        uses: ./.github/actions/setup-go
 
       - name: Set up Node.js
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
@@ -3074,10 +3014,7 @@ jobs:
           token: ${{ secrets.GH_TOKEN || github.token }}
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-        with:
-          go-version: "1.27.3"
-          cache: false
+        uses: ./.github/actions/setup-go
 
       - name: Configure Git
         run: |
@@ -3231,10 +3168,7 @@ jobs:
           sudo apt-get install -y jq
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-        with:
-          go-version: "1.27.3"
-          cache: false
+        uses: ./.github/actions/setup-go
 
       - name: Set up Node.js
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
@@ -3382,10 +3316,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-        with:
-          go-version: "1.27.3"
-          cache: false
+        uses: ./.github/actions/setup-go
 
       - name: Set up Node.js
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
@@ -3458,10 +3389,7 @@ jobs:
         run: '[ "$(git rev-parse HEAD)" = "$GITHUB_SHA" ] || { echo "::error::checkout $(git rev-parse HEAD) is not the tested commit $GITHUB_SHA"; exit 1; }'
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-        with:
-          go-version: "1.27.3"
-          cache: false
+        uses: ./.github/actions/setup-go
 
       - name: Set up Node.js
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
@@ -3532,10 +3460,7 @@ jobs:
         run: '[ "$(git rev-parse HEAD)" = "$GITHUB_SHA" ] || { echo "::error::checkout $(git rev-parse HEAD) is not the tested commit $GITHUB_SHA"; exit 1; }'
 
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-        with:
-          go-version: "1.27.3"
-          cache: false
+        uses: ./.github/actions/setup-go
 
       - name: Set up Node.js
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
@@ -3604,10 +3529,7 @@ jobs:
       # needs Go 1.27.3. Without it the runner's older Go fetches a toolchain, and egress
       # blocks that, so the release dies before it tags (TXE-4977).
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-        with:
-          go-version: "1.27.3"
-          cache: false
+        uses: ./.github/actions/setup-go
 
       - name: Configure R2
         env:

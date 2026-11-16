@@ -1,0 +1,39 @@
+# The ONE way a job gets Go in this repository (TXE-7621). It runs actions/setup-go at the version
+# every job uses, and points GOPROXY at a list that retries each module fetch, so a transient
+# proxy.golang.org failure no longer fails the job.
+#
+# ⚠️ WHY. On 16 Nov 2026 an HTTP/2 stream INTERNAL_ERROR from proxy.golang.org failed required Go
+# jobs on #362 and #300; none of the PRs changed a dependency, and each needed a manual rerun. The
+# go command fetches modules lazily, inside `go test` or `go build`, so a retry wrapper around one
+# `go mod download` step would miss most of them. GOPROXY applies to every go command in the job.
+#
+# ⚠️ ENFORCED. check-go-setup.py (workflow-lint) fails on a workflow that uses actions/setup-go
+# directly, a job that runs go without this action, and a workflow that sets GOPROXY itself.
+# go-proxy-retry.test.sh proves the list rides out an injected failure on every request kind.
+#
+# Usage, after actions/checkout (a local action is read from the checked-out tree):
+#
+#   - name: Set up Go
+#     uses: ./.github/actions/setup-go
+#
+# Same egress as before: the list names proxy.golang.org only.
+name: Set up Go
+description: Install the repository's Go version and make module fetches retry a transient proxy failure.
+runs:
+  using: composite
+  steps:
+    # setup-go's own cache stays off on every step (TXE-6242); ./.github/actions/go-cache is the
+    # one Go build cache.
+    - name: Install Go
+      uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+      with:
+        go-version: "1.27.3"
+        cache: false
+
+    - name: Make module fetches retry
+      shell: bash
+      run: |
+        set -euo pipefail
+        list="$("$GITHUB_ACTION_PATH/goproxy-list.sh")"
+        echo "GOPROXY=$list" >> "$GITHUB_ENV"
+        echo "setup-go: GOPROXY=$list"

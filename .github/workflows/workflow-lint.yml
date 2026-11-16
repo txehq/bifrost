@@ -79,6 +79,17 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 .github/workflows/scripts/check-runner-labels.py
 
+      # Go comes from ./.github/actions/setup-go only, which sets the GOPROXY list that retries a
+      # transient proxy.golang.org failure (TXE-7621). No direct actions/setup-go, no Go job
+      # without it, no GOPROXY of a workflow's own.
+      - name: Check every Go job sets up Go through the shared action
+        if: ${{ !cancelled() }}
+        run: python3 .github/workflows/scripts/check-go-setup.py
+
+      - name: Check the Go setup rule on fixture workflows
+        if: ${{ !cancelled() }}
+        run: ./.github/workflows/scripts/check-go-setup.test.sh
+
       # Evaluates each pull_request job's approval-environment expression: only a
       # pull request whose head branch is in another repository may pick pr-testing.
       - name: Check the pull request approval environment
@@ -237,10 +248,7 @@ jobs:
 
       # The fixture's shims hand `go mod edit` to a real go: the one the release jobs use.
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
-        with:
-          go-version: "1.27.3"
-          cache: false
+        uses: ./.github/actions/setup-go
 
       # Local fixtures only: a bare origin whose hook rejects main, and shims for the
       # network and build commands. Nothing is pushed, pulled or published.
@@ -252,6 +260,14 @@ jobs:
       - name: Check the bifrost-http release finalizes
         if: ${{ !cancelled() }}
         run: ./.github/workflows/scripts/release-bifrost-http-finalize.test.sh
+
+      # A local proxy serves a synthetic module and fails each path's first requests (a 500, or
+      # half a .zip and a closed connection): the GOPROXY list ./.github/actions/setup-go sets
+      # builds through two failures per path, where a plain GOPROXY fails on one (TXE-7621).
+      # Offline: nothing is fetched from proxy.golang.org.
+      - name: Check module fetches retry a transient proxy failure
+        if: ${{ !cancelled() }}
+        run: ./.github/workflows/scripts/go-proxy-retry.test.sh
 
   dockerfile-health:
     name: Image health commands exist in their base images
