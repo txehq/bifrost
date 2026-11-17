@@ -2736,6 +2736,7 @@ var VideoAudioDefaults = map[schemas.ModelProvider]VideoAudioDefault{
 	schemas.XAI:        {On: true, Source: "the retrieve reports the bill itself (usage.cost_in_usd_ticks), which covers audio"},
 	schemas.BFL:        {On: true, Source: "the query reports BFL's settled cost (usage.cost, TXE-7297), which covers generate_audio"},
 	schemas.Runware:    {On: true, Source: "the task reports its own cost, which covers audio"},
+	schemas.Azure:      {On: true, Source: "Azure serves OpenAI's Sora 2 (developers.openai.com/api/docs/models/sora-2: every Sora 2 video has synced audio, with no silent price); first-generation sora renders no audio and has no with-audio rate, so the flag never selects one for it (TXE-7054)"},
 }
 
 // VideoPricedWithAudio reports whether a video job is priced at a with-audio rate: the create's
