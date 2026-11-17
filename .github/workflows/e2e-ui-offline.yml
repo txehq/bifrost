@@ -77,6 +77,8 @@ jobs:
 
       - name: Use the GHCR image mirror
         uses: ./.github/actions/ci-images
+        with:
+          pull: tests/e2e/env/docker-compose.yml
 
       - name: Set up Go
         uses: ./.github/actions/setup-go

@@ -308,6 +308,8 @@ jobs:
 
       - name: Use the GHCR image mirror
         uses: ./.github/actions/ci-images
+        with:
+          pull: library/alpine:3.23.5
 
       # Neither production Dockerfile is built in a pull request, and the release's image
       # test builds Dockerfile.local, so a health command that does not exist reaches users.

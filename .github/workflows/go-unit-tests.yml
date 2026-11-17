@@ -112,6 +112,8 @@ jobs:
 
       - name: Use the GHCR image mirror
         uses: ./.github/actions/ci-images
+        with:
+          pull: tests/docker-compose.yml
 
       # Pulled and started now, so the images download while Go compiles; waited on below.
       - name: Start the test services in the background
@@ -232,6 +234,8 @@ jobs:
 
       - name: Use the GHCR image mirror
         uses: ./.github/actions/ci-images
+        with:
+          pull: .github/workflows/scripts/start-fixture-weaviate.sh
 
       - name: Set up Go
         uses: ./.github/actions/setup-go
@@ -461,6 +465,8 @@ jobs:
 
       - name: Use the GHCR image mirror
         uses: ./.github/actions/ci-images
+        with:
+          pull: library/postgres:16-alpine
 
       - name: Set up Go
         uses: ./.github/actions/setup-go
@@ -557,6 +563,8 @@ jobs:
 
       - name: Use the GHCR image mirror
         uses: ./.github/actions/ci-images
+        with:
+          pull: library/postgres:16-alpine
 
       - name: Set up Go
         uses: ./.github/actions/setup-go
@@ -643,6 +651,8 @@ jobs:
 
       - name: Use the GHCR image mirror
         uses: ./.github/actions/ci-images
+        with:
+          pull: .github/workflows/configs/docker-compose.yml
 
       - name: Set up Go
         uses: ./.github/actions/setup-go
