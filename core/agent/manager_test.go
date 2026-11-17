@@ -3212,10 +3212,10 @@ func TestAgentOAuthInspectionCacheRetention(t *testing.T) {
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write([]byte(`{"access_token":"inspection-token","expires_in":3600}`))
 			})
-			// The token endpoint is served in memory. Each token fetch builds its own
-			// transport and closes it, so over TCP this test opened one socket per
-			// inspection, about 10,000 per run, and a parallel -race run exhausted the
-			// ephemeral ports (TXE-7743). What it checks is the cache bound, not the network.
+			// The token endpoint is served in memory. Over TCP each inspection dialed a
+			// new connection, about 10,000 per run left in TIME_WAIT, and a parallel
+			// -race run exhausted the ephemeral ports (TXE-7743). What this checks is the
+			// cache bound; TestSingleUseFetchesCloseTheirConnections covers the sockets.
 			m := &Manager{
 				privateAllowlistFn: func() []string { return []string{"127.0.0.1"} },
 				httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -3250,6 +3250,74 @@ func TestAgentOAuthInspectionCacheRetention(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestSingleUseFetchesCloseTheirConnections checks that agent-card, OAuth discovery
+// and OAuth token fetches leave no connection open once they return, whether they
+// succeed or fail. Each builds a transport for one request. Before TXE-7743 a refused
+// token request (credentialTransport turns a non-200 POST into an error) returned
+// before the pool was closed, so each one held a connection until the idle timeout;
+// TestAgentOAuthInspectionCacheRetention's failure case held about 7,700 at once.
+func TestSingleUseFetchesCloseTheirConnections(t *testing.T) {
+	var server *httptest.Server
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"token_endpoint":%q}`, server.URL+"/token")
+	})
+	mux.HandleFunc("/token", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"fetch-token","expires_in":3600}`))
+	})
+	mux.HandleFunc("/denied", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "invalid credentials", http.StatusUnauthorized)
+	})
+	mux.HandleFunc("/card", func(w http.ResponseWriter, r *http.Request) {
+		card := &a2a.AgentCard{
+			Name:                "fixture",
+			Version:             "1",
+			SupportedInterfaces: []*a2a.AgentInterface{a2a.NewAgentInterface(server.URL+"/rpc", a2a.TransportProtocolJSONRPC)},
+			DefaultInputModes:   []string{"text/plain"},
+			DefaultOutputModes:  []string{"text/plain"},
+		}
+		a2asrv.NewStaticAgentCardHandler(card).ServeHTTP(w, r)
+	})
+	var opened, closed atomic.Int64
+	server = httptest.NewUnstartedServer(mux)
+	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		switch state {
+		case http.StateNew:
+			opened.Add(1)
+		case http.StateClosed, http.StateHijacked:
+			closed.Add(1)
+		}
+	}
+	server.Start()
+	defer server.Close()
+
+	m, err := NewManager(context.Background(), &memoryStore{regs: map[string]schemas.AgentRegistration{}}, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
+	require.NoError(t, err)
+	defer m.Close()
+	auth := &schemas.UpstreamAuth{Type: schemas.MCPAuthTypeOauth, OAuth: &schemas.UpstreamOAuthConfig{
+		ProviderURL: server.URL, ClientID: schemas.NewSecretVar("client"), ClientSecret: schemas.NewSecretVar("secret"),
+	}}
+	const fetches = 10
+	for i := range fetches {
+		// A new credential id misses the token cache, so each round runs discovery,
+		// token and card fetches.
+		_, _, err := m.resolveCardForInspection(context.Background(), server.URL+"/card", auth, fmt.Sprintf("leak-check-%d", i))
+		require.NoError(t, err)
+	}
+	denied := &schemas.UpstreamAuth{Type: schemas.MCPAuthTypeOauth, OAuth: &schemas.UpstreamOAuthConfig{
+		TokenURL: server.URL + "/denied", ClientID: schemas.NewSecretVar("client"), ClientSecret: schemas.NewSecretVar("secret"),
+	}}
+	for i := range fetches {
+		_, err := m.oauthAccessToken(context.Background(), fmt.Sprintf("denied-%d", i), denied)
+		require.Error(t, err)
+	}
+	require.GreaterOrEqual(t, opened.Load(), int64(2*fetches), "each fetch should have dialed")
+	require.Eventually(t, func() bool { return opened.Load() == closed.Load() }, testtime.Scale(5*time.Second), testtime.Scale(10*time.Millisecond),
+		"single-use fetches left connections open")
 }
 
 // TestAgentOAuthCachePrefersExpiredEntries checks that cache pressure preserves

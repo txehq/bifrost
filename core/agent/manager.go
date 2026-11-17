@@ -1579,6 +1579,7 @@ func (m *Manager) resolveCardForInspection(ctx context.Context, agentCardURL str
 	if err != nil {
 		return nil, nil, fmt.Errorf("configure upstream agent card client: %w", err)
 	}
+	defer client.CloseIdleConnections() // before Do: see TestSingleUseClientsCloseBeforeDo
 	resp, err := client.Do(req)
 	if err != nil {
 		var blocked *network.PrivateTargetNotAllowedError
@@ -1589,7 +1590,6 @@ func (m *Manager) resolveCardForInspection(ctx context.Context, agentCardURL str
 		return nil, nil, &UpstreamError{cause: fmt.Errorf("fetch upstream agent card: %w", err)}
 	}
 	defer resp.Body.Close()
-	defer client.CloseIdleConnections()
 	if resp.StatusCode != http.StatusOK {
 		return nil, nil, &UpstreamError{cause: fmt.Errorf("fetch upstream agent card: unexpected HTTP status %s", resp.Status)}
 	}
@@ -2044,6 +2044,7 @@ func (m *Manager) fetchOAuthAccessToken(ctx context.Context, auth *schemas.Upstr
 		if err != nil {
 			return "", time.Time{}, err
 		}
+		defer discoveryClient.CloseIdleConnections() // before Do: see TestSingleUseClientsCloseBeforeDo
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, discoveryURL, nil)
 		if err != nil {
 			return "", time.Time{}, fmt.Errorf("create OAuth discovery request: %w", err)
@@ -2053,7 +2054,6 @@ func (m *Manager) fetchOAuthAccessToken(ctx context.Context, auth *schemas.Upstr
 			return "", time.Time{}, fmt.Errorf("discover OAuth token endpoint: %w", err)
 		}
 		defer resp.Body.Close()
-		defer discoveryClient.CloseIdleConnections()
 		if resp.StatusCode != http.StatusOK {
 			return "", time.Time{}, fmt.Errorf("discover OAuth token endpoint: unexpected HTTP status %s", resp.Status)
 		}
@@ -2087,6 +2087,7 @@ func (m *Manager) fetchOAuthAccessToken(ctx context.Context, auth *schemas.Upstr
 	if err != nil {
 		return "", time.Time{}, err
 	}
+	defer tokenClient.CloseIdleConnections() // before Do: see TestSingleUseClientsCloseBeforeDo
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("create OAuth token request: %w", err)
@@ -2097,7 +2098,6 @@ func (m *Manager) fetchOAuthAccessToken(ctx context.Context, auth *schemas.Upstr
 		return "", time.Time{}, fmt.Errorf("acquire OAuth access token: %w", err)
 	}
 	defer resp.Body.Close()
-	defer tokenClient.CloseIdleConnections()
 	if resp.StatusCode != http.StatusOK {
 		return "", time.Time{}, fmt.Errorf("acquire OAuth access token: unexpected HTTP status %s", resp.Status)
 	}
