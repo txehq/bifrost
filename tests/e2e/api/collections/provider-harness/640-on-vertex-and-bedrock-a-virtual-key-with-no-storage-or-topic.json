@@ -1,0 +1,780 @@
+{
+  "name": "640. On Vertex and Bedrock a virtual key with no storage or topic list names none (cloud names default-deny) [SERIAL]",
+  "description": "TXE-7705. Local fixture regression, no live provider call: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, whose bedrock key sends Converse to tests/e2e/api/runners/provider-error-fixture.mjs. Vertex and Bedrock read, write and publish to the storage and topics a request names with the operator's own cloud identity. A virtual key with no allowed_storage_prefixes may name no storage there, and one with no allowed_pubsub_topics no topic: the gateway refuses with 400 caller_unsupported_parameter, error.param storage_location or pubsub_topic, naming the list, before any provider call. A key with a list keeps working as TXE-7088 made it (folder 496). Vertex has no fixture host; its rows are unit tests (plugins/governance/cloudresources_test.go), the same check. 640.1 and 640.2 create a key with no lists and a key limited to s3://bifrost-fixture-bucket/tenant-a and one topic, both on Bedrock. 640.3 to 640.6 are the key with no list naming storage: an s3:// image, its https URL, an s3Location in an extra param and a batch input file, each a 400. 640.7 is the same key naming a topic, a 400. 640.8 serves that key when it names nothing. 640.9 serves the listed key inside its list, and 640.10 refuses it outside with 403, as before. 640.11 reads what reached Bedrock: the two served chats, the second with its object as an s3Location. 640.12 and 640.13 delete the keys.",
+  "item": [
+    {
+      "name": "640.1 [setup] virtual key A (no storage or topic list) on Bedrock",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "pm.collectionVariables.unset('denyVkOpen'); pm.collectionVariables.unset('denyVkOpenId');",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('the fixture was reset', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the virtual key was created', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "var created = (pm.response.json() || {}).virtual_key || {};",
+              "pm.test('it has an id and a value', function () { pm.expect(created.id, pm.response.text()).to.be.a('string').and.not.equal(''); pm.expect(created.value, pm.response.text()).to.be.a('string').and.not.equal(''); });",
+              "pm.collectionVariables.set('denyVkOpen', created.value || ''); pm.collectionVariables.set('denyVkOpenId', created.id || '');"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"name\":\"harness-640-a-{{$guid}}\",\"provider_configs\":[{\"provider\":\"bedrock\",\"weight\":1,\"allowed_models\":[\"*\"],\"key_ids\":[\"*\"]}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/virtual-keys",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys"
+          ]
+        }
+      }
+    },
+    {
+      "name": "640.2 [setup] virtual key B (a storage list and a topic list) on Bedrock",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "pm.collectionVariables.unset('denyVkListed'); pm.collectionVariables.unset('denyVkListedId');"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the virtual key was created', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "var created = (pm.response.json() || {}).virtual_key || {};",
+              "pm.test('it has an id and a value', function () { pm.expect(created.id, pm.response.text()).to.be.a('string').and.not.equal(''); pm.expect(created.value, pm.response.text()).to.be.a('string').and.not.equal(''); });",
+              "pm.collectionVariables.set('denyVkListed', created.value || ''); pm.collectionVariables.set('denyVkListedId', created.id || '');"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"name\":\"harness-640-b-{{$guid}}\",\"provider_configs\":[{\"provider\":\"bedrock\",\"weight\":1,\"allowed_models\":[\"*\"],\"key_ids\":[\"*\"]}],\"allowed_storage_prefixes\":[\"s3://bifrost-fixture-bucket/tenant-a\"],\"allowed_pubsub_topics\":[\"projects/fixture/topics/tenant-a\"]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/virtual-keys",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys"
+          ]
+        }
+      }
+    },
+    {
+      "name": "640.3 [EXPECT-400] the key with no list cannot name an s3:// object as an image input",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('denyVkOpen') || !pm.collectionVariables.get('denyVkListed')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "pm.test('an s3:// input from a key with no storage list is a 400 caller_unsupported_parameter naming storage_location', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(400);",
+              "  var j = {}; try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+              "  pm.expect((j.extra_fields || {}).error_type, txt.slice(0, 400)).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(pm.response.headers.get('x-bifrost-error-type'), 'the header carries the same value').to.eql('caller_unsupported_parameter');",
+              "  pm.expect((j.error || {}).param, txt.slice(0, 400)).to.eql('storage_location');",
+              "  pm.expect(txt, 'the refusal names the list that would allow it').to.include('allowed_storage_prefixes');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{denyVkOpen}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"bedrock/amazon.nova-lite-v1:0\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Describe this.\"},{\"type\":\"image_url\",\"image_url\":{\"url\":\"s3://bifrost-fixture-bucket/tenant-a/in.png\"}}]}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "640.4 [EXPECT-400] nor by its https URL",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('denyVkOpen') || !pm.collectionVariables.get('denyVkListed')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "pm.test('the https URL of an S3 object from a key with no storage list is a 400 caller_unsupported_parameter naming storage_location', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(400);",
+              "  var j = {}; try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+              "  pm.expect((j.extra_fields || {}).error_type, txt.slice(0, 400)).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(pm.response.headers.get('x-bifrost-error-type'), 'the header carries the same value').to.eql('caller_unsupported_parameter');",
+              "  pm.expect((j.error || {}).param, txt.slice(0, 400)).to.eql('storage_location');",
+              "  pm.expect(txt, 'the refusal names the list that would allow it').to.include('allowed_storage_prefixes');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{denyVkOpen}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"bedrock/amazon.nova-lite-v1:0\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Describe this.\"},{\"type\":\"image_url\",\"image_url\":{\"url\":\"https://bifrost-fixture-bucket.s3.us-east-1.amazonaws.com/tenant-a/in.png\"}}]}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "640.5 [EXPECT-400] nor in an extra param",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('denyVkOpen') || !pm.collectionVariables.get('denyVkListed')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "pm.test('an s3:// name in an extra param from a key with no storage list is a 400 caller_unsupported_parameter naming storage_location', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(400);",
+              "  var j = {}; try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+              "  pm.expect((j.extra_fields || {}).error_type, txt.slice(0, 400)).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(pm.response.headers.get('x-bifrost-error-type'), 'the header carries the same value').to.eql('caller_unsupported_parameter');",
+              "  pm.expect((j.error || {}).param, txt.slice(0, 400)).to.eql('storage_location');",
+              "  pm.expect(txt, 'the refusal names the list that would allow it').to.include('allowed_storage_prefixes');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{denyVkOpen}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"bedrock/amazon.nova-lite-v1:0\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"document\":{\"s3Location\":{\"uri\":\"s3://bifrost-fixture-bucket/tenant-a/in.png\"}}}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "640.6 [EXPECT-400] nor as a batch's input file",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('denyVkOpen') || !pm.collectionVariables.get('denyVkListed')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "pm.test('a batch input file from a key with no storage list is a 400 caller_unsupported_parameter naming storage_location', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(400);",
+              "  var j = {}; try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+              "  pm.expect((j.extra_fields || {}).error_type, txt.slice(0, 400)).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(pm.response.headers.get('x-bifrost-error-type'), 'the header carries the same value').to.eql('caller_unsupported_parameter');",
+              "  pm.expect((j.error || {}).param, txt.slice(0, 400)).to.eql('storage_location');",
+              "  pm.expect(txt, 'the refusal names the list that would allow it').to.include('allowed_storage_prefixes');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{denyVkOpen}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"bedrock/amazon.nova-lite-v1:0\",\"input_file_id\":\"s3://bifrost-fixture-bucket/tenant-a/in.jsonl\",\"endpoint\":\"/v1/chat/completions\",\"completion_window\":\"24h\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches"
+          ]
+        }
+      }
+    },
+    {
+      "name": "640.7 [EXPECT-400] the key with no topic list cannot name a Pub/Sub topic",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('denyVkOpen') || !pm.collectionVariables.get('denyVkListed')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "pm.test('a topic from a key with no topic list is a 400 caller_unsupported_parameter naming pubsub_topic', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(400);",
+              "  var j = {}; try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+              "  pm.expect((j.extra_fields || {}).error_type, txt.slice(0, 400)).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(pm.response.headers.get('x-bifrost-error-type'), 'the header carries the same value').to.eql('caller_unsupported_parameter');",
+              "  pm.expect((j.error || {}).param, txt.slice(0, 400)).to.eql('pubsub_topic');",
+              "  pm.expect(txt, 'the refusal names the list that would allow it').to.include('allowed_pubsub_topics');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{denyVkOpen}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"bedrock/amazon.nova-lite-v1:0\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"pubsubTopic\":\"projects/fixture/topics/tenant-a\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "640.8 the key with no list is served when it names no storage and no topic",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('denyVkOpen') || !pm.collectionVariables.get('denyVkListed')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('a request that names nothing is served', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{denyVkOpen}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"bedrock/amazon.nova-lite-v1:0\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "640.9 the key with a storage list names an object inside it and is served",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('denyVkOpen') || !pm.collectionVariables.get('denyVkListed')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('a key whose list covers the object keeps working', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{denyVkListed}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"bedrock/amazon.nova-lite-v1:0\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Describe this.\"},{\"type\":\"image_url\",\"image_url\":{\"url\":\"s3://bifrost-fixture-bucket/tenant-a/in.png\"}}]}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "640.10 [EXPECT-403] the key with a storage list is still refused outside it",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('denyVkOpen') || !pm.collectionVariables.get('denyVkListed')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var txt = pm.response.text() || '';",
+              "pm.test('an object outside the list is 403, as before', function () { pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(403); pm.expect(txt).to.include('outside the storage this virtual key may use'); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{denyVkListed}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"bedrock/amazon.nova-lite-v1:0\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Describe this.\"},{\"type\":\"image_url\",\"image_url\":{\"url\":\"s3://bifrost-fixture-bucket/tenant-b/in.png\"}}]}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "640.11 only the two served chats reached Bedrock, the listed key's with its object as an s3Location",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('denyVkOpen') || !pm.collectionVariables.get('denyVkListed')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var calls = pm.response.json().data[0].calls.filter(function (c) { return /^\\/model\\/[^/]+\\/converse$/.test(String(c.path)); });",
+              "pm.test('two Converse calls, nothing else', function () { pm.expect(calls.length, JSON.stringify(calls.map(function (c) { return c.path; }))).to.eql(2); });",
+              "pm.test('the second carries the listed object', function () { pm.expect(JSON.stringify(calls[1] || {})).to.include('s3://bifrost-fixture-bucket/tenant-a/in.png'); });",
+              "pm.test('the first names no storage', function () { pm.expect(JSON.stringify(calls[0] || {})).to.not.include('s3://'); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{providerErrorFixtureUrl}}/__wire"
+      }
+    },
+    {
+      "name": "640.12 [cleanup] virtual key A is deleted",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('denyVkOpenId')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the virtual key was deleted', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "pm.collectionVariables.unset('denyVkOpen'); pm.collectionVariables.unset('denyVkOpenId');"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/virtual-keys/{{denyVkOpenId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "{{denyVkOpenId}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "640.13 [cleanup] virtual key B is deleted",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "  return;",
+              "}",
+              "if (!pm.collectionVariables.get('denyVkListedId')) { pm.execution.skipRequest(); return; }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the virtual key was deleted', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "pm.collectionVariables.unset('denyVkListed'); pm.collectionVariables.unset('denyVkListedId');"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/virtual-keys/{{denyVkListedId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "{{denyVkListedId}}"
+          ]
+        }
+      }
+    }
+  ]
+}

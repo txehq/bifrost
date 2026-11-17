@@ -136926,14 +136926,14 @@
           },
           "allowed_storage_prefixes": {
             "type": "array",
-            "description": "The object storage a request made with this key may name, as buckets or folders (gs://<bucket>[/<folder>] or s3://<bucket>[/<folder>]). Omitted when the key is not restricted.",
+            "description": "The object storage a request made with this key may name, as buckets or folders (gs://<bucket>[/<folder>] or s3://<bucket>[/<folder>]). Omitted when the key has no list: such a key may name no storage on Vertex or Bedrock (400 caller_unsupported_parameter) and is not restricted on other providers.",
             "items": {
               "type": "string"
             }
           },
           "allowed_pubsub_topics": {
             "type": "array",
-            "description": "The Pub/Sub topics a request made with this key may name, as full topic names (projects/<project>/topics/<topic>). Omitted when the key is not restricted.",
+            "description": "The Pub/Sub topics a request made with this key may name, as full topic names (projects/<project>/topics/<topic>). Omitted when the key has no list: such a key may name no topic on Vertex or Bedrock (400 caller_unsupported_parameter) and is not restricted on other providers.",
             "items": {
               "type": "string"
             }
@@ -137629,7 +137629,7 @@
               "array",
               "null"
             ],
-            "description": "Replaces the key's allowed storage as a whole. Omit (or send null) to leave it unchanged; send [] to clear it, after which the key is not restricted. Each entry is a bucket or a folder, gs://<bucket>[/<folder>] or s3://<bucket>[/<folder>]; at most 64 entries.",
+            "description": "Replaces the key's allowed storage as a whole. Omit (or send null) to leave it unchanged; send [] to clear it, after which the key may name no storage on Vertex or Bedrock and is not restricted on other providers. Each entry is a bucket or a folder, gs://<bucket>[/<folder>] or s3://<bucket>[/<folder>]; at most 64 entries.",
             "maxItems": 64,
             "items": {
               "type": "string",
@@ -137641,7 +137641,7 @@
               "array",
               "null"
             ],
-            "description": "Replaces the key's allowed Pub/Sub topics as a whole. Omit (or send null) to leave it unchanged; send [] to clear it. Each entry is a full topic name, projects/<project>/topics/<topic>; at most 64 entries.",
+            "description": "Replaces the key's allowed Pub/Sub topics as a whole. Omit (or send null) to leave it unchanged; send [] to clear it, after which the key may name no topic on Vertex or Bedrock and is not restricted on other providers. Each entry is a full topic name, projects/<project>/topics/<topic>; at most 64 entries.",
             "maxItems": 64,
             "items": {
               "type": "string",

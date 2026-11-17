@@ -960,6 +960,9 @@ func TestPreLLMHookBindsObjectsReferencedInsideRequests(t *testing.T) {
 	store := newProviderObjectConfigStore(t)
 	vk := buildVKForMCPStamping(nil)
 	vk.ProviderConfigs = append(vk.ProviderConfigs, buildProviderConfig("gemini", []string{"*"}), buildProviderConfig("vertex", []string{"*"}), buildProviderConfig("bedrock", []string{"*"}), buildProviderConfig("runware", []string{"*"}))
+	// On Vertex and Bedrock a key with no storage list names no storage (TXE-7705). This test is
+	// about ownership, so its key lists the buckets it names and ownership decides.
+	vk.AllowedStoragePrefixes = []string{"gs://shared-bucket", "s3://shared-bucket", "gs://location-bucket-gs", "s3://location-bucket-s3"}
 	plugin := newAccessTestPlugin(t, vk, nil)
 	plugin.configStore = store
 	own := "vk-mcp-stamp"

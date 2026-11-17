@@ -283,11 +283,13 @@ type TableVirtualKey struct {
 	// AllowedStoragePrefixes limits the object storage a request made with this key may name
 	// (fork, TXE-7088): buckets or folders such as "gs://bucket/tenant-a". With a list set, every
 	// storage location a request names, read or written, must lie under one of them; with none,
-	// storage is not restricted. Entries are kept normalized (NormalizeVirtualKeyStoragePrefix);
+	// the key may name no storage on Vertex or Bedrock (TXE-7705) and is not restricted on other
+	// providers. Entries are kept normalized (NormalizeVirtualKeyStoragePrefix);
 	// an empty list is stored as NULL, and a nil list on UpdateVirtualKey keeps the stored value.
 	AllowedStoragePrefixes []string `gorm:"type:text;serializer:json" json:"allowed_storage_prefixes,omitempty"`
 	// AllowedPubSubTopics limits the Pub/Sub topics a request made with this key may name
-	// (Veo's pubsubTopic), as full topic names. With none, topics are not restricted.
+	// (Veo's pubsubTopic), as full topic names. With none, the key may name no topic on Vertex
+	// or Bedrock (TXE-7705) and is not restricted on other providers.
 	AllowedPubSubTopics []string `gorm:"column:allowed_pubsub_topics;type:text;serializer:json" json:"allowed_pubsub_topics,omitempty"`
 
 	// Relationships
