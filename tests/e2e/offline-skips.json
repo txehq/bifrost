@@ -5,13 +5,5 @@
     "tests": [
       "Observability › Datadog Connector › should toggle Datadog connector if available"
     ]
-  },
-  "TXE-7744": {
-    "reason": "observabilityView.tsx renders OtelView and PrometheusView without onDelete, so neither delete button can render whatever is configured",
-    "file": "features/observability/observability.spec.ts",
-    "tests": [
-      "Observability › OTel Connector › should display OTel delete button when connector is configured",
-      "Observability › Prometheus Connector › should display Prometheus delete button when connector is configured"
-    ]
   }
 }

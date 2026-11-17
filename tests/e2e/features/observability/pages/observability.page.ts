@@ -34,12 +34,6 @@ export class ObservabilityPage extends BasePage {
     prometheus: 'prometheus-metrics-enable-toggle',
   }
 
-  /** Map of connector -> data-testid for delete button (otel/prometheus have specific testids) */
-  private static readonly CONNECTOR_DELETE_TESTIDS: Partial<Record<ObservabilityConnector, string>> = {
-    otel: 'otel-connector-delete-btn',
-    prometheus: 'prometheus-connector-delete-btn',
-  }
-
   /**
    * Get connector tab locator by data-testid
    */
@@ -53,14 +47,6 @@ export class ObservabilityPage extends BasePage {
   getConnectorToggle(connector: ObservabilityConnector): Locator {
     const testId = ObservabilityPage.CONNECTOR_TOGGLE_TESTIDS[connector]
     return testId ? this.page.getByTestId(testId) : this.page.locator('button[role="switch"]').first()
-  }
-
-  /**
-   * Get connector delete button locator. Returns locator for otel/prometheus; for others returns a no-match locator.
-   */
-  getConnectorDeleteBtn(connector: ObservabilityConnector): Locator {
-    const testId = ObservabilityPage.CONNECTOR_DELETE_TESTIDS[connector]
-    return testId ? this.page.getByTestId(testId) : this.page.locator('[data-testid="connector-delete-unused"]')
   }
 
   async goto(): Promise<void> {
