@@ -4056,22 +4056,29 @@ func newVideoLifecyclePlugin(t *testing.T) (*LoggerPlugin, *fakeBatchStore) {
 // task object no longer carries a duration copied from the request. Settlement still needs one,
 // so the accounting row gets the default: without it the job cannot be priced and is never
 // charged to the caller's budget. A provider whose default Bifrost does not know gets none, and
-// so does an Omni model, which picks its own duration (TXE-6538).
+// so does an Omni model, which picks its own duration (TXE-6538). A custom provider gets the
+// default of its base provider: keyed on its own name, a Veo job on a custom provider over Vertex
+// had no duration and settled unpriced.
 func TestRecordVideoJobLifecycle_DefaultDurationPricesAVeoJobWithoutSeconds(t *testing.T) {
 	cases := []struct {
 		provider schemas.ModelProvider
 		seconds  *string
 		reported *string
 		want     *int
-		model    string // "veo-3.1-generate-001" when empty
+		model    string                // "veo-3.1-generate-001" when empty
+		base     schemas.ModelProvider // the custom provider's base; "" for a standard provider
 	}{
-		{schemas.Vertex, nil, nil, schemas.Ptr(8), ""},
-		{schemas.Gemini, nil, nil, schemas.Ptr(8), ""},
-		{schemas.Vertex, schemas.Ptr("4"), nil, schemas.Ptr(4), ""},
-		{schemas.Vertex, nil, schemas.Ptr("6"), schemas.Ptr(6), ""},
-		{schemas.OpenAI, nil, nil, nil, ""},
-		{schemas.Vertex, nil, nil, nil, "gemini-omni-1.1-flash-preview"},
-		{schemas.Gemini, nil, nil, nil, "gemini-omni-1.1-flash"},
+		{schemas.Vertex, nil, nil, schemas.Ptr(8), "", ""},
+		{schemas.Gemini, nil, nil, schemas.Ptr(8), "", ""},
+		{schemas.Vertex, schemas.Ptr("4"), nil, schemas.Ptr(4), "", ""},
+		{schemas.Vertex, nil, schemas.Ptr("6"), schemas.Ptr(6), "", ""},
+		{schemas.OpenAI, nil, nil, nil, "", ""},
+		{schemas.Vertex, nil, nil, nil, "gemini-omni-1.1-flash-preview", ""},
+		{schemas.Gemini, nil, nil, nil, "gemini-omni-1.1-flash", ""},
+		{"my-vertex", nil, nil, schemas.Ptr(8), "", schemas.Vertex},
+		{"my-gemini", nil, nil, schemas.Ptr(8), "", schemas.Gemini},
+		{"my-vertex", nil, nil, nil, "gemini-omni-1.1-flash-preview", schemas.Vertex},
+		{"my-openai", nil, nil, nil, "", schemas.OpenAI},
 	}
 	for _, tc := range cases {
 		plugin, bs := newVideoLifecyclePlugin(t)
@@ -4085,7 +4092,7 @@ func TestRecordVideoJobLifecycle_DefaultDurationPricesAVeoJobWithoutSeconds(t *t
 		}
 		plugin.recordVideoJobLifecycle(entry, &schemas.BifrostResponse{
 			VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{ID: "op-1", Status: schemas.VideoStatusInProgress, Seconds: tc.reported},
-		}, schemas.VideoGenerationRequest, nil, modelcatalog.VideoInputs{}, "")
+		}, schemas.VideoGenerationRequest, nil, modelcatalog.VideoInputs{}, tc.base)
 		job, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindVideo, string(tc.provider), "op-1"))
 		if err != nil {
 			t.Fatalf("%s: expected a video job row: %v", tc.provider, err)
