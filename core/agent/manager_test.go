@@ -1841,16 +1841,31 @@ func TestCanceledInitializationWaiterDoesNotCancelSharedAttempt(t *testing.T) {
 	require.Equal(t, int64(1), state.calls.Load())
 }
 
-func TestLazyInitializationTimeoutAllowsRetry(t *testing.T) {
-	var calls atomic.Int64
-	var server *httptest.Server
+// withExpiringBuilds runs expire with a build timeout short enough to fire against an
+// upstream that never answers, then restores the production timeout. expire must not
+// return while a build it started is still running. Keeping the short deadline inside expire
+// means the success path a test runs next has the full budget, however loaded the run
+// is (TXE-7743). It is the only place a test may assign buildTimeout.
+func withExpiringBuilds(m *Manager, expire func()) {
+	m.buildTimeout = testtime.Scale(20 * time.Millisecond)
+	defer func() { m.buildTimeout = runtimeBuildTimeout }()
+	expire()
+}
+
+// hangingCardServer serves an agent card named name, except that while hang is set each
+// request blocks until its client gives up. It counts the cards it served.
+func hangingCardServer(t *testing.T, name string) (server *httptest.Server, hang *atomic.Bool, served *atomic.Int64) {
+	t.Helper()
+	hang, served = new(atomic.Bool), new(atomic.Int64)
+	hang.Store(true)
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if calls.Add(1) == 1 {
+		if hang.Load() {
 			<-r.Context().Done()
 			return
 		}
+		served.Add(1)
 		card := &a2a.AgentCard{
-			Name:                "fixture",
+			Name:                name,
 			Version:             "1",
 			SupportedInterfaces: []*a2a.AgentInterface{a2a.NewAgentInterface(server.URL+"/rpc", a2a.TransportProtocolJSONRPC)},
 			DefaultInputModes:   []string{"text/plain"},
@@ -1858,66 +1873,61 @@ func TestLazyInitializationTimeoutAllowsRetry(t *testing.T) {
 		}
 		a2asrv.NewStaticAgentCardHandler(card).ServeHTTP(w, r)
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close)
+	return server, hang, served
+}
+
+func TestLazyInitializationTimeoutAllowsRetry(t *testing.T) {
+	server, hang, served := hangingCardServer(t, "fixture")
 
 	store := &memoryStore{regs: map[string]schemas.AgentRegistration{"fixture": {Name: "fixture", AgentCardURL: server.URL, Enabled: true}}}
 	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 	require.NoError(t, err)
 	defer m.Close()
-	m.buildTimeout = testtime.Scale(20 * time.Millisecond)
 	runtime, _ := m.runtimes.load("fixture")
 
-	_, err = runtime.acquire(context.Background(), m)
+	withExpiringBuilds(m, func() {
+		_, err = runtime.acquire(context.Background(), m)
+	})
 	require.ErrorIs(t, err, context.DeadlineExceeded)
+	hang.Store(false)
 	lease, err := runtime.acquire(context.Background(), m)
 	require.NoError(t, err)
 	lease.release()
-	require.Equal(t, int64(2), calls.Load())
+	require.Equal(t, int64(1), served.Load())
 }
 
 func TestRefreshTimeoutAllowsRetry(t *testing.T) {
-	var calls atomic.Int64
-	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if calls.Add(1) == 1 {
-			<-r.Context().Done()
-			return
-		}
-		card := &a2a.AgentCard{
-			Name:                "refreshed",
-			Version:             "1",
-			SupportedInterfaces: []*a2a.AgentInterface{a2a.NewAgentInterface(server.URL+"/rpc", a2a.TransportProtocolJSONRPC)},
-			DefaultInputModes:   []string{"text/plain"},
-			DefaultOutputModes:  []string{"text/plain"},
-		}
-		a2asrv.NewStaticAgentCardHandler(card).ServeHTTP(w, r)
-	}))
-	defer server.Close()
+	server, hang, served := hangingCardServer(t, "refreshed")
 
 	m, err := NewManager(context.Background(), &memoryStore{regs: map[string]schemas.AgentRegistration{}}, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 	require.NoError(t, err)
 	defer m.Close()
-	m.buildTimeout = testtime.Scale(20 * time.Millisecond)
 	runtime := m.buildRuntime(schemas.AgentRegistration{Name: "fixture", AgentCardURL: server.URL, Enabled: true})
 	source := newClientGeneration(&a2a.AgentCard{Name: "stale"}, &fakeSDKClient{}, string(a2a.TransportProtocolJSONRPC))
 	require.NoError(t, runtime.replaceGeneration(source))
 
-	runtime.requestRefresh(m, source)
-	require.Eventually(t, func() bool {
-		runtime.mu.Lock()
-		defer runtime.mu.Unlock()
-		return calls.Load() == 1 && !runtime.refreshing
-	}, testtime.Scale(time.Second), testtime.Scale(time.Millisecond))
-
+	withExpiringBuilds(m, func() {
+		runtime.requestRefresh(m, source)
+		require.Eventually(t, func() bool {
+			runtime.mu.Lock()
+			defer runtime.mu.Unlock()
+			return !runtime.refreshing
+		}, testtime.Scale(time.Second), testtime.Scale(time.Millisecond))
+	})
 	runtime.mu.Lock()
+	require.Same(t, source, runtime.generation, "the timed-out refresh must keep the current generation")
 	runtime.lastRefresh = time.Time{}
 	runtime.mu.Unlock()
+
+	hang.Store(false)
 	runtime.requestRefresh(m, source)
 	require.Eventually(t, func() bool {
 		runtime.mu.Lock()
 		defer runtime.mu.Unlock()
-		return calls.Load() == 2 && runtime.generation != source && !runtime.refreshing
-	}, testtime.Scale(time.Second), testtime.Scale(time.Millisecond))
+		return runtime.generation != source && !runtime.refreshing
+	}, testtime.Scale(10*time.Second), testtime.Scale(time.Millisecond))
+	require.Equal(t, int64(1), served.Load())
 }
 
 func TestCloseDuringInitializationPreventsLatePublish(t *testing.T) {
@@ -2500,16 +2510,19 @@ func TestRegistrationDiscoveryUsesBuildTimeout(t *testing.T) {
 			m, err := NewManager(context.Background(), store, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 			require.NoError(t, err)
 			defer m.Close()
-			m.buildTimeout = testtime.Scale(20 * time.Millisecond)
 			cardURL := upstream.URL + agentCardPath
 
 			switch operation {
 			case "create":
-				_, err = m.Create(context.Background(), CreateRequest{Name: "fixture", AgentCardURL: cardURL})
+				withExpiringBuilds(m, func() {
+					_, err = m.Create(context.Background(), CreateRequest{Name: "fixture", AgentCardURL: cardURL})
+				})
 			case "update":
 				_, err = m.Create(context.Background(), CreateRequest{Name: "fixture", AgentCardURL: cardURL, Enabled: boolPtr(false)})
 				require.NoError(t, err)
-				_, err = m.Update(context.Background(), "fixture", UpdateRequest{AgentCardURL: &cardURL, Enabled: boolPtr(true)})
+				withExpiringBuilds(m, func() {
+					_, err = m.Update(context.Background(), "fixture", UpdateRequest{AgentCardURL: &cardURL, Enabled: boolPtr(true)})
+				})
 			}
 			require.ErrorIs(t, err, context.DeadlineExceeded)
 		})
@@ -3191,21 +3204,28 @@ func TestAgentOAuthInspectionCacheRetention(t *testing.T) {
 	const inspections = maxOAuthCacheEntries + 32
 	for _, success := range []bool{true, false} {
 		t.Run(fmt.Sprintf("success=%t", success), func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				if !success {
 					http.Error(w, "invalid credentials", http.StatusUnauthorized)
 					return
 				}
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write([]byte(`{"access_token":"inspection-token","expires_in":3600}`))
-			}))
-			defer server.Close()
+			})
+			// The token endpoint is served in memory. Each token fetch builds its own
+			// transport and closes it, so over TCP this test opened one socket per
+			// inspection, about 10,000 per run, and a parallel -race run exhausted the
+			// ephemeral ports (TXE-7743). What it checks is the cache bound, not the network.
 			m := &Manager{
 				privateAllowlistFn: func() []string { return []string{"127.0.0.1"} },
-				httpClient:         server.Client(),
+				httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+					recorder := httptest.NewRecorder()
+					handler.ServeHTTP(recorder, req)
+					return recorder.Result(), nil
+				})},
 			}
 			auth := &schemas.UpstreamAuth{Type: schemas.MCPAuthTypeOauth, OAuth: &schemas.UpstreamOAuthConfig{
-				TokenURL: server.URL, ClientID: schemas.NewSecretVar("client"), ClientSecret: schemas.NewSecretVar("secret"),
+				TokenURL: "http://127.0.0.1/token", ClientID: schemas.NewSecretVar("client"), ClientSecret: schemas.NewSecretVar("secret"),
 			}}
 			for i := range inspections {
 				// Inspect derives this key from the submitted card URL, not a registration.
