@@ -20,6 +20,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"io"
 	"io/fs"
 	"math/big"
@@ -15077,6 +15078,99 @@ func enclosedAsBifrostInternal(stack []ast.Node) bool {
 	return false
 }
 
+// TestRefusalsBeforeDispatchDeclareUpstreamSentFalse: an error core raises itself as caller_
+// (but caller_cancelled) or bifrost_dropped, or with only a 4xx status (but 499), is refused
+// before any request is written to a vendor, so it declares upstream_sent false and a client
+// never charges it as a vendor rejection (TXE-7651). Literals handed to declareErrorType get it
+// there (TestDeclaredErrorTypeIsSentAsDeclared).
+func TestRefusalsBeforeDispatchDeclareUpstreamSentFalse(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fset := token.NewFileSet()
+	refusals := 0
+	for _, path := range files {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+		wrapped := map[ast.Node]bool{}
+		ast.Inspect(file, func(n ast.Node) bool {
+			if call, ok := n.(*ast.CallExpr); ok {
+				if id, ok := call.Fun.(*ast.Ident); ok && id.Name == "declareErrorType" && len(call.Args) > 0 {
+					if u, ok := call.Args[0].(*ast.UnaryExpr); ok {
+						wrapped[u.X] = true
+					}
+				}
+			}
+			return true
+		})
+		ast.Inspect(file, func(n ast.Node) bool {
+			lit, ok := n.(*ast.CompositeLit)
+			if !ok || wrapped[n] {
+				return true
+			}
+			if sel, ok := lit.Type.(*ast.SelectorExpr); !ok || sel.Sel.Name != "BifrostError" {
+				return true
+			}
+			declared, status, marker, sentFalse := "", 0, false, false
+			for _, elt := range lit.Elts {
+				kv, ok := elt.(*ast.KeyValueExpr)
+				if !ok {
+					continue
+				}
+				switch kv.Key.(*ast.Ident).Name {
+				case "StatusCode":
+					if call, ok := kv.Value.(*ast.CallExpr); ok && len(call.Args) == 1 {
+						if b, ok := call.Args[0].(*ast.BasicLit); ok {
+							status, _ = strconv.Atoi(b.Value)
+						}
+					}
+				case "Error":
+					marker = strings.Contains(types.ExprString(kv.Value), "Type:")
+				case "ExtraFields":
+					extra, ok := kv.Value.(*ast.CompositeLit)
+					if !ok {
+						continue
+					}
+					for _, e := range extra.Elts {
+						ekv, ok := e.(*ast.KeyValueExpr)
+						if !ok {
+							continue
+						}
+						switch ekv.Key.(*ast.Ident).Name {
+						case "ErrorType":
+							if s, ok := ekv.Value.(*ast.SelectorExpr); ok {
+								declared = s.Sel.Name
+							}
+						case "UpstreamSent":
+							sentFalse = types.ExprString(ekv.Value) == "schemas.Ptr(false)"
+						}
+					}
+				}
+			}
+			refused := (strings.HasPrefix(declared, "ErrorTypeCaller") && declared != "ErrorTypeCallerCancelled") ||
+				declared == "ErrorTypeBifrostDropped" ||
+				(declared == "" && !marker && status >= 400 && status < 500 && status != 499)
+			if !refused {
+				return true
+			}
+			refusals++
+			if !sentFalse {
+				t.Errorf("%s: a refusal before dispatch (%s, status %d) does not declare UpstreamSent: schemas.Ptr(false)", fset.Position(lit.Pos()), declared, status)
+			}
+			return true
+		})
+	}
+	if refusals < 150 {
+		t.Fatalf("found %d refusals before dispatch; expected the package's (>=150)", refusals)
+	}
+}
+
 func literalDeclaresType(lit *ast.CompositeLit) bool {
 	for _, elt := range lit.Elts {
 		kv, ok := elt.(*ast.KeyValueExpr)
@@ -15152,6 +15246,56 @@ func TestRequestForAProviderTheGatewayLacks(t *testing.T) {
 	}
 	if got := bifrostErr.EffectiveHTTPStatus(); got != http.StatusBadRequest {
 		t.Errorf("status %d, want 400", got)
+	}
+	// Refused before any vendor call: upstream_sent false, on the wire (TXE-7651).
+	if s := bifrostErr.ExtraFields.UpstreamSent; s == nil || *s {
+		t.Errorf("upstream_sent %v, want false", s)
+	}
+	if raw, err := json.Marshal(bifrostErr); err != nil || !strings.Contains(string(raw), `"upstream_sent":false`) {
+		t.Errorf("serialized error %s (err %v) does not carry upstream_sent false", raw, err)
+	}
+}
+
+// upstream_sent is call-wide (C6): a primary refused before dispatch (a provider the gateway
+// lacks) whose fallback reached its vendor must not report upstream_sent false, whichever error the
+// call returns (connector P1 on #366, TXE-7651).
+func TestUpstreamSentIsCallWideAcrossFallbacks(t *testing.T) {
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"bad request from the vendor","type":"invalid_request_error"}}`))
+	}))
+	defer server.Close()
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 10, server.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "fallback-key", Value: *schemas.NewSecretVar("sk-fallback"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+	client, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewDefaultLogger(schemas.LogLevelError)})
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	defer client.Shutdown()
+
+	text := "ping"
+	_, bifrostErr := client.ChatCompletionRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.BifrostChatRequest{
+		Provider:  schemas.Mistral,
+		Model:     "mistral-small-latest",
+		Input:     []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &text}}},
+		Fallbacks: []schemas.Fallback{{Provider: schemas.OpenAI, Model: "gpt-4o-mini"}},
+	})
+	if bifrostErr == nil {
+		t.Fatal("the fallback's vendor answered 400: the call must fail")
+	}
+	if hits.Load() == 0 {
+		t.Fatal("the fallback never reached its vendor, so this test proves nothing")
+	}
+	if s := bifrostErr.ExtraFields.UpstreamSent; s != nil && !*s {
+		t.Errorf("upstream_sent false although the fallback reached its vendor (error_type %q)", bifrostErr.ExtraFields.ErrorType)
 	}
 }
 

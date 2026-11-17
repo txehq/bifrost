@@ -539,7 +539,7 @@ func (bifrost *Bifrost) ListModelsRequest(ctx *schemas.BifrostContext, req *sche
 			Error: &schemas.ErrorField{
 				Message: "list models request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.ListModelsRequest,
 			},
 		}
@@ -550,7 +550,7 @@ func (bifrost *Bifrost) ListModelsRequest(ctx *schemas.BifrostContext, req *sche
 			Error: &schemas.ErrorField{
 				Message: "provider is required for list models request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.ListModelsRequest,
 			},
 		}
@@ -701,7 +701,7 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 			Error: &schemas.ErrorField{
 				Message: "a request with a direct key must name its provider: listing models from every provider would send the key to each of them",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false),
 				RequestType: schemas.ListModelsRequest,
 			},
 		}
@@ -901,7 +901,7 @@ func (bifrost *Bifrost) ModelRetrieveRequest(ctx *schemas.BifrostContext, req *s
 			Error: &schemas.ErrorField{
 				Message: "model retrieve request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.ModelRetrieveRequest,
 			},
 		}
@@ -912,7 +912,7 @@ func (bifrost *Bifrost) ModelRetrieveRequest(ctx *schemas.BifrostContext, req *s
 			Error: &schemas.ErrorField{
 				Message: "provider is required for model retrieve request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.ModelRetrieveRequest,
 			},
 		}
@@ -923,7 +923,7 @@ func (bifrost *Bifrost) ModelRetrieveRequest(ctx *schemas.BifrostContext, req *s
 			Error: &schemas.ErrorField{
 				Message: "model is required for model retrieve request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				Provider:    req.Provider,
 				RequestType: schemas.ModelRetrieveRequest,
 			},
@@ -986,7 +986,7 @@ func (bifrost *Bifrost) TextCompletionRequest(ctx *schemas.BifrostContext, req *
 			Error: &schemas.ErrorField{
 				Message: "text completion request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.TextCompletionRequest,
 			},
 		}
@@ -997,7 +997,7 @@ func (bifrost *Bifrost) TextCompletionRequest(ctx *schemas.BifrostContext, req *
 			Error: &schemas.ErrorField{
 				Message: "prompt not provided for text completion request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType:            schemas.TextCompletionRequest,
 				Provider:               req.Provider,
 				OriginalModelRequested: req.Model,
@@ -1026,7 +1026,7 @@ func (bifrost *Bifrost) TextCompletionStreamRequest(ctx *schemas.BifrostContext,
 			Error: &schemas.ErrorField{
 				Message: "text completion stream request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.TextCompletionStreamRequest,
 			},
 		}
@@ -1037,7 +1037,7 @@ func (bifrost *Bifrost) TextCompletionStreamRequest(ctx *schemas.BifrostContext,
 			Error: &schemas.ErrorField{
 				Message: "text not provided for text completion stream request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType:            schemas.TextCompletionStreamRequest,
 				Provider:               req.Provider,
 				OriginalModelRequested: req.Model,
@@ -1058,7 +1058,7 @@ func (bifrost *Bifrost) makeChatCompletionRequest(ctx *schemas.BifrostContext, r
 			Error: &schemas.ErrorField{
 				Message: "chat completion request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.ChatCompletionRequest,
 			},
 		}
@@ -1069,7 +1069,7 @@ func (bifrost *Bifrost) makeChatCompletionRequest(ctx *schemas.BifrostContext, r
 			Error: &schemas.ErrorField{
 				Message: "chats not provided for chat completion request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType:            schemas.ChatCompletionRequest,
 				Provider:               req.Provider,
 				OriginalModelRequested: req.Model,
@@ -1123,7 +1123,7 @@ func (bifrost *Bifrost) ChatCompletionStreamRequest(ctx *schemas.BifrostContext,
 			Error: &schemas.ErrorField{
 				Message: "chat completion stream request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.ChatCompletionStreamRequest,
 			},
 		}
@@ -1134,7 +1134,7 @@ func (bifrost *Bifrost) ChatCompletionStreamRequest(ctx *schemas.BifrostContext,
 			Error: &schemas.ErrorField{
 				Message: "chats not provided for chat completion request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType:            schemas.ChatCompletionStreamRequest,
 				Provider:               req.Provider,
 				OriginalModelRequested: req.Model,
@@ -1157,7 +1157,7 @@ func (bifrost *Bifrost) makeResponsesRequest(ctx *schemas.BifrostContext, req *s
 			Error: &schemas.ErrorField{
 				Message: "responses request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.ResponsesRequest,
 			},
 		}
@@ -1171,7 +1171,7 @@ func (bifrost *Bifrost) makeResponsesRequest(ctx *schemas.BifrostContext, req *s
 				Error: &schemas.ErrorField{
 					Message: "responses not provided for responses request",
 				},
-				ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+				ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 					RequestType:            schemas.ResponsesRequest,
 					Provider:               req.Provider,
 					OriginalModelRequested: req.Model,
@@ -1225,7 +1225,7 @@ func (bifrost *Bifrost) ResponsesStreamRequest(ctx *schemas.BifrostContext, req 
 			Error: &schemas.ErrorField{
 				Message: "responses stream request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.ResponsesStreamRequest,
 			},
 		}
@@ -1239,7 +1239,7 @@ func (bifrost *Bifrost) ResponsesStreamRequest(ctx *schemas.BifrostContext, req 
 				Error: &schemas.ErrorField{
 					Message: "responses not provided for responses stream request",
 				},
-				ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+				ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 					RequestType:            schemas.ResponsesStreamRequest,
 					Provider:               req.Provider,
 					OriginalModelRequested: req.Model,
@@ -1264,7 +1264,7 @@ func (bifrost *Bifrost) CountTokensRequest(ctx *schemas.BifrostContext, req *sch
 			Error: &schemas.ErrorField{
 				Message: "count tokens request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.CountTokensRequest,
 			},
 		}
@@ -1275,7 +1275,7 @@ func (bifrost *Bifrost) CountTokensRequest(ctx *schemas.BifrostContext, req *sch
 			Error: &schemas.ErrorField{
 				Message: "input not provided for count tokens request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType:            schemas.CountTokensRequest,
 				Provider:               req.Provider,
 				OriginalModelRequested: req.Model,
@@ -1306,7 +1306,7 @@ func (bifrost *Bifrost) CompactionRequest(ctx *schemas.BifrostContext, req *sche
 			Error: &schemas.ErrorField{
 				Message: "compaction request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.CompactionRequest,
 			},
 		}
@@ -1318,7 +1318,7 @@ func (bifrost *Bifrost) CompactionRequest(ctx *schemas.BifrostContext, req *sche
 			Error: &schemas.ErrorField{
 				Message: "input not provided for compaction request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType:            schemas.CompactionRequest,
 				Provider:               req.Provider,
 				OriginalModelRequested: req.Model,
@@ -1347,7 +1347,7 @@ func (bifrost *Bifrost) ResponsesRetrieveRequest(ctx *schemas.BifrostContext, re
 			Error: &schemas.ErrorField{
 				Message: "responses retrieve request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.ResponsesRetrieveRequest,
 			},
 		}
@@ -1361,7 +1361,7 @@ func (bifrost *Bifrost) ResponsesRetrieveRequest(ctx *schemas.BifrostContext, re
 			Error: &schemas.ErrorField{
 				Message: "provider is required for responses retrieve request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.ResponsesRetrieveRequest,
 				Provider:    req.Provider,
 			},
@@ -1373,7 +1373,7 @@ func (bifrost *Bifrost) ResponsesRetrieveRequest(ctx *schemas.BifrostContext, re
 			Error: &schemas.ErrorField{
 				Message: "response_id is required for responses retrieve request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.ResponsesRetrieveRequest,
 				Provider:    req.Provider,
 			},
@@ -1398,7 +1398,7 @@ func (bifrost *Bifrost) ResponsesRetrieveStreamRequest(ctx *schemas.BifrostConte
 			Error: &schemas.ErrorField{
 				Message: "responses retrieve stream request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.ResponsesRetrieveStreamRequest,
 			},
 		}
@@ -1412,7 +1412,7 @@ func (bifrost *Bifrost) ResponsesRetrieveStreamRequest(ctx *schemas.BifrostConte
 			Error: &schemas.ErrorField{
 				Message: "provider is required for responses retrieve stream request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.ResponsesRetrieveStreamRequest,
 				Provider:    req.Provider,
 			},
@@ -1424,7 +1424,7 @@ func (bifrost *Bifrost) ResponsesRetrieveStreamRequest(ctx *schemas.BifrostConte
 			Error: &schemas.ErrorField{
 				Message: "response_id is required for responses retrieve stream request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.ResponsesRetrieveStreamRequest,
 				Provider:    req.Provider,
 			},
@@ -1444,7 +1444,7 @@ func (bifrost *Bifrost) ResponsesDeleteRequest(ctx *schemas.BifrostContext, req 
 			Error: &schemas.ErrorField{
 				Message: "responses delete request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.ResponsesDeleteRequest,
 			},
 		}
@@ -1458,7 +1458,7 @@ func (bifrost *Bifrost) ResponsesDeleteRequest(ctx *schemas.BifrostContext, req 
 			Error: &schemas.ErrorField{
 				Message: "provider is required for responses delete request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.ResponsesDeleteRequest,
 			},
 		}
@@ -1469,7 +1469,7 @@ func (bifrost *Bifrost) ResponsesDeleteRequest(ctx *schemas.BifrostContext, req 
 			Error: &schemas.ErrorField{
 				Message: "response_id is required for responses delete request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.ResponsesDeleteRequest,
 				Provider:    req.Provider,
 			},
@@ -1493,7 +1493,7 @@ func (bifrost *Bifrost) ResponsesCancelRequest(ctx *schemas.BifrostContext, req 
 			Error: &schemas.ErrorField{
 				Message: "responses cancel request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.ResponsesCancelRequest,
 			},
 		}
@@ -1507,7 +1507,7 @@ func (bifrost *Bifrost) ResponsesCancelRequest(ctx *schemas.BifrostContext, req 
 			Error: &schemas.ErrorField{
 				Message: "provider is required for responses cancel request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.ResponsesCancelRequest,
 			},
 		}
@@ -1518,7 +1518,7 @@ func (bifrost *Bifrost) ResponsesCancelRequest(ctx *schemas.BifrostContext, req 
 			Error: &schemas.ErrorField{
 				Message: "response_id is required for responses cancel request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.ResponsesCancelRequest,
 				Provider:    req.Provider,
 			},
@@ -1542,7 +1542,7 @@ func (bifrost *Bifrost) ResponsesInputItemsRequest(ctx *schemas.BifrostContext, 
 			Error: &schemas.ErrorField{
 				Message: "responses input items request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.ResponsesInputItemsRequest,
 			},
 		}
@@ -1556,7 +1556,7 @@ func (bifrost *Bifrost) ResponsesInputItemsRequest(ctx *schemas.BifrostContext, 
 			Error: &schemas.ErrorField{
 				Message: "provider is required for responses input items request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.ResponsesInputItemsRequest,
 			},
 		}
@@ -1567,7 +1567,7 @@ func (bifrost *Bifrost) ResponsesInputItemsRequest(ctx *schemas.BifrostContext, 
 			Error: &schemas.ErrorField{
 				Message: "response_id is required for responses input items request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.ResponsesInputItemsRequest,
 				Provider:    req.Provider,
 			},
@@ -1591,7 +1591,7 @@ func (bifrost *Bifrost) EmbeddingRequest(ctx *schemas.BifrostContext, req *schem
 			Error: &schemas.ErrorField{
 				Message: "embedding request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.EmbeddingRequest,
 			},
 		}
@@ -1602,7 +1602,7 @@ func (bifrost *Bifrost) EmbeddingRequest(ctx *schemas.BifrostContext, req *schem
 			Error: &schemas.ErrorField{
 				Message: "embedding input not provided for embedding request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType:            schemas.EmbeddingRequest,
 				Provider:               req.Provider,
 				OriginalModelRequested: req.Model,
@@ -1617,7 +1617,7 @@ func (bifrost *Bifrost) EmbeddingRequest(ctx *schemas.BifrostContext, req *schem
 				Error: &schemas.ErrorField{
 					Message: err.Error(),
 				},
-				ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+				ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 					RequestType:            schemas.EmbeddingRequest,
 					Provider:               req.Provider,
 					OriginalModelRequested: req.Model,
@@ -1647,7 +1647,7 @@ func (bifrost *Bifrost) RerankRequest(ctx *schemas.BifrostContext, req *schemas.
 			Error: &schemas.ErrorField{
 				Message: "rerank request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.RerankRequest,
 			},
 		}
@@ -1658,7 +1658,7 @@ func (bifrost *Bifrost) RerankRequest(ctx *schemas.BifrostContext, req *schemas.
 			Error: &schemas.ErrorField{
 				Message: "query not provided for rerank request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType:            schemas.RerankRequest,
 				Provider:               req.Provider,
 				OriginalModelRequested: req.Model,
@@ -1672,7 +1672,7 @@ func (bifrost *Bifrost) RerankRequest(ctx *schemas.BifrostContext, req *schemas.
 			Error: &schemas.ErrorField{
 				Message: "documents not provided for rerank request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType:            schemas.RerankRequest,
 				Provider:               req.Provider,
 				OriginalModelRequested: req.Model,
@@ -1688,7 +1688,7 @@ func (bifrost *Bifrost) RerankRequest(ctx *schemas.BifrostContext, req *schemas.
 				Error: &schemas.ErrorField{
 					Message: fmt.Sprintf("document has no text or data at index %d", i),
 				},
-				ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+				ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 					RequestType:            schemas.RerankRequest,
 					Provider:               req.Provider,
 					OriginalModelRequested: req.Model,
@@ -1716,7 +1716,7 @@ func (bifrost *Bifrost) DecisionRequest(ctx *schemas.BifrostContext, req *schema
 			Error: &schemas.ErrorField{
 				Message: "decision request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.DecisionRequest,
 			},
 		}
@@ -1727,7 +1727,7 @@ func (bifrost *Bifrost) DecisionRequest(ctx *schemas.BifrostContext, req *schema
 			Error: &schemas.ErrorField{
 				Message: message,
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType:            schemas.DecisionRequest,
 				Provider:               req.Provider,
 				OriginalModelRequested: req.Model,
@@ -1765,7 +1765,7 @@ func (bifrost *Bifrost) OCRRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 			Error: &schemas.ErrorField{
 				Message: "ocr request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.OCRRequest,
 			},
 		}
@@ -1776,7 +1776,7 @@ func (bifrost *Bifrost) OCRRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 			Error: &schemas.ErrorField{
 				Message: "document type not provided for ocr request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType:            schemas.OCRRequest,
 				Provider:               req.Provider,
 				OriginalModelRequested: req.Model,
@@ -1790,7 +1790,7 @@ func (bifrost *Bifrost) OCRRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 			Error: &schemas.ErrorField{
 				Message: "document_url not provided for document_url type ocr request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType:            schemas.OCRRequest,
 				Provider:               req.Provider,
 				OriginalModelRequested: req.Model,
@@ -1804,7 +1804,7 @@ func (bifrost *Bifrost) OCRRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 			Error: &schemas.ErrorField{
 				Message: "image_url not provided for image_url type ocr request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType:            schemas.OCRRequest,
 				Provider:               req.Provider,
 				OriginalModelRequested: req.Model,
@@ -1831,7 +1831,7 @@ func (bifrost *Bifrost) SpeechRequest(ctx *schemas.BifrostContext, req *schemas.
 			Error: &schemas.ErrorField{
 				Message: "speech request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.SpeechRequest,
 			},
 		}
@@ -1842,7 +1842,7 @@ func (bifrost *Bifrost) SpeechRequest(ctx *schemas.BifrostContext, req *schemas.
 			Error: &schemas.ErrorField{
 				Message: "speech input not provided for speech request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType:            schemas.SpeechRequest,
 				Provider:               req.Provider,
 				OriginalModelRequested: req.Model,
@@ -1871,7 +1871,7 @@ func (bifrost *Bifrost) SpeechStreamRequest(ctx *schemas.BifrostContext, req *sc
 			Error: &schemas.ErrorField{
 				Message: "speech stream request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.SpeechStreamRequest,
 			},
 		}
@@ -1882,7 +1882,7 @@ func (bifrost *Bifrost) SpeechStreamRequest(ctx *schemas.BifrostContext, req *sc
 			Error: &schemas.ErrorField{
 				Message: "speech input not provided for speech stream request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType:            schemas.SpeechStreamRequest,
 				Provider:               req.Provider,
 				OriginalModelRequested: req.Model,
@@ -1906,7 +1906,7 @@ func (bifrost *Bifrost) TranscriptionRequest(ctx *schemas.BifrostContext, req *s
 			Error: &schemas.ErrorField{
 				Message: "transcription request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.TranscriptionRequest,
 			},
 		}
@@ -1918,7 +1918,7 @@ func (bifrost *Bifrost) TranscriptionRequest(ctx *schemas.BifrostContext, req *s
 			Error: &schemas.ErrorField{
 				Message: "transcription input not provided for transcription request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType:            schemas.TranscriptionRequest,
 				Provider:               req.Provider,
 				OriginalModelRequested: req.Model,
@@ -1947,7 +1947,7 @@ func (bifrost *Bifrost) TranscriptionStreamRequest(ctx *schemas.BifrostContext, 
 			Error: &schemas.ErrorField{
 				Message: "transcription stream request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.TranscriptionStreamRequest,
 			},
 		}
@@ -1959,7 +1959,7 @@ func (bifrost *Bifrost) TranscriptionStreamRequest(ctx *schemas.BifrostContext, 
 			Error: &schemas.ErrorField{
 				Message: "transcription input not provided for transcription stream request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType:            schemas.TranscriptionStreamRequest,
 				Provider:               req.Provider,
 				OriginalModelRequested: req.Model,
@@ -1985,7 +1985,7 @@ func (bifrost *Bifrost) ImageGenerationRequest(ctx *schemas.BifrostContext,
 			Error: &schemas.ErrorField{
 				Message: "image generation request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.ImageGenerationRequest,
 			},
 		}
@@ -1996,7 +1996,7 @@ func (bifrost *Bifrost) ImageGenerationRequest(ctx *schemas.BifrostContext,
 			Error: &schemas.ErrorField{
 				Message: "prompt not provided for image generation request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType:            schemas.ImageGenerationRequest,
 				Provider:               req.Provider,
 				OriginalModelRequested: req.Model,
@@ -2041,7 +2041,7 @@ func (bifrost *Bifrost) ImageGenerationStreamRequest(ctx *schemas.BifrostContext
 			Error: &schemas.ErrorField{
 				Message: "image generation stream request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.ImageGenerationStreamRequest,
 			},
 		}
@@ -2052,7 +2052,7 @@ func (bifrost *Bifrost) ImageGenerationStreamRequest(ctx *schemas.BifrostContext
 			Error: &schemas.ErrorField{
 				Message: "prompt not provided for image generation stream request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType:            schemas.ImageGenerationStreamRequest,
 				Provider:               req.Provider,
 				OriginalModelRequested: req.Model,
@@ -2076,7 +2076,7 @@ func (bifrost *Bifrost) ImageEditRequest(ctx *schemas.BifrostContext, req *schem
 			Error: &schemas.ErrorField{
 				Message: "image edit request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.ImageEditRequest,
 			},
 		}
@@ -2087,7 +2087,7 @@ func (bifrost *Bifrost) ImageEditRequest(ctx *schemas.BifrostContext, req *schem
 			Error: &schemas.ErrorField{
 				Message: "images not provided for image edit request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType:            schemas.ImageEditRequest,
 				Provider:               req.Provider,
 				OriginalModelRequested: req.Model,
@@ -2107,7 +2107,7 @@ func (bifrost *Bifrost) ImageEditRequest(ctx *schemas.BifrostContext, req *schem
 			Error: &schemas.ErrorField{
 				Message: "prompt not provided for image edit request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType:            schemas.ImageEditRequest,
 				Provider:               req.Provider,
 				OriginalModelRequested: req.Model,
@@ -2151,7 +2151,7 @@ func (bifrost *Bifrost) ImageEditStreamRequest(ctx *schemas.BifrostContext, req 
 			Error: &schemas.ErrorField{
 				Message: "image edit stream request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.ImageEditStreamRequest,
 			},
 		}
@@ -2162,7 +2162,7 @@ func (bifrost *Bifrost) ImageEditStreamRequest(ctx *schemas.BifrostContext, req 
 			Error: &schemas.ErrorField{
 				Message: "images not provided for image edit stream request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType:            schemas.ImageEditStreamRequest,
 				Provider:               req.Provider,
 				OriginalModelRequested: req.Model,
@@ -2182,7 +2182,7 @@ func (bifrost *Bifrost) ImageEditStreamRequest(ctx *schemas.BifrostContext, req 
 			Error: &schemas.ErrorField{
 				Message: "prompt not provided for image edit stream request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType:            schemas.ImageEditStreamRequest,
 				Provider:               req.Provider,
 				OriginalModelRequested: req.Model,
@@ -2206,7 +2206,7 @@ func (bifrost *Bifrost) ImageVariationRequest(ctx *schemas.BifrostContext, req *
 			Error: &schemas.ErrorField{
 				Message: "image variation request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.ImageVariationRequest,
 			},
 		}
@@ -2217,7 +2217,7 @@ func (bifrost *Bifrost) ImageVariationRequest(ctx *schemas.BifrostContext, req *
 			Error: &schemas.ErrorField{
 				Message: "image not provided for image variation request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType:            schemas.ImageVariationRequest,
 				Provider:               req.Provider,
 				OriginalModelRequested: req.Model,
@@ -2263,7 +2263,7 @@ func (bifrost *Bifrost) VideoGenerationRequest(ctx *schemas.BifrostContext,
 			Error: &schemas.ErrorField{
 				Message: "video generation request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.VideoGenerationRequest,
 			},
 		}
@@ -2276,7 +2276,7 @@ func (bifrost *Bifrost) VideoGenerationRequest(ctx *schemas.BifrostContext,
 			Error: &schemas.ErrorField{
 				Message: "prompt, input_reference or video_uri not provided for video generation request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType:            schemas.VideoGenerationRequest,
 				Provider:               req.Provider,
 				OriginalModelRequested: req.Model,
@@ -2321,7 +2321,7 @@ func (bifrost *Bifrost) VideoEditRequest(ctx *schemas.BifrostContext,
 			Error: &schemas.ErrorField{
 				Message: "video edit request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.VideoEditRequest,
 			},
 		}
@@ -2333,7 +2333,7 @@ func (bifrost *Bifrost) VideoEditRequest(ctx *schemas.BifrostContext,
 			Error: &schemas.ErrorField{
 				Message: "source video not provided for video edit request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType:            schemas.VideoEditRequest,
 				Provider:               req.Provider,
 				OriginalModelRequested: req.Model,
@@ -2352,7 +2352,7 @@ func (bifrost *Bifrost) VideoEditRequest(ctx *schemas.BifrostContext,
 			Error: &schemas.ErrorField{
 				Message: "prompt not provided for video edit request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType:            schemas.VideoEditRequest,
 				Provider:               req.Provider,
 				OriginalModelRequested: req.Model,
@@ -2394,7 +2394,7 @@ func (bifrost *Bifrost) VideoRetrieveRequest(ctx *schemas.BifrostContext, req *s
 			Error: &schemas.ErrorField{
 				Message: "video retrieve request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.VideoRetrieveRequest,
 			},
 		}
@@ -2405,7 +2405,7 @@ func (bifrost *Bifrost) VideoRetrieveRequest(ctx *schemas.BifrostContext, req *s
 			Error: &schemas.ErrorField{
 				Message: "provider is required for video retrieve request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.VideoRetrieveRequest,
 			},
 		}
@@ -2416,7 +2416,7 @@ func (bifrost *Bifrost) VideoRetrieveRequest(ctx *schemas.BifrostContext, req *s
 			Error: &schemas.ErrorField{
 				Message: "video_id is required for video retrieve request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.VideoRetrieveRequest,
 				Provider:    req.Provider,
 			},
@@ -2454,7 +2454,7 @@ func (bifrost *Bifrost) VideoDownloadRequest(ctx *schemas.BifrostContext, req *s
 			Error: &schemas.ErrorField{
 				Message: "video download request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.VideoDownloadRequest,
 			},
 		}
@@ -2465,7 +2465,7 @@ func (bifrost *Bifrost) VideoDownloadRequest(ctx *schemas.BifrostContext, req *s
 			Error: &schemas.ErrorField{
 				Message: "provider is required for video download request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.VideoDownloadRequest,
 			},
 		}
@@ -2476,7 +2476,7 @@ func (bifrost *Bifrost) VideoDownloadRequest(ctx *schemas.BifrostContext, req *s
 			Error: &schemas.ErrorField{
 				Message: "video_id is required for video download request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.VideoDownloadRequest,
 				Provider:    req.Provider,
 			},
@@ -2501,7 +2501,7 @@ func (bifrost *Bifrost) VideoRemixRequest(ctx *schemas.BifrostContext, req *sche
 			Error: &schemas.ErrorField{
 				Message: "video remix request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.VideoRemixRequest,
 			},
 		}
@@ -2512,7 +2512,7 @@ func (bifrost *Bifrost) VideoRemixRequest(ctx *schemas.BifrostContext, req *sche
 			Error: &schemas.ErrorField{
 				Message: "provider is required for video remix request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.VideoRemixRequest,
 			},
 		}
@@ -2523,7 +2523,7 @@ func (bifrost *Bifrost) VideoRemixRequest(ctx *schemas.BifrostContext, req *sche
 			Error: &schemas.ErrorField{
 				Message: "video_id is required for video remix request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.VideoRemixRequest,
 				Provider:    req.Provider,
 			},
@@ -2535,7 +2535,7 @@ func (bifrost *Bifrost) VideoRemixRequest(ctx *schemas.BifrostContext, req *sche
 			Error: &schemas.ErrorField{
 				Message: "prompt is required for video remix request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.VideoRemixRequest,
 				Provider:    req.Provider,
 			},
@@ -2572,7 +2572,7 @@ func (bifrost *Bifrost) VideoListRequest(ctx *schemas.BifrostContext, req *schem
 			Error: &schemas.ErrorField{
 				Message: "video list request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.VideoListRequest,
 			},
 		}
@@ -2583,7 +2583,7 @@ func (bifrost *Bifrost) VideoListRequest(ctx *schemas.BifrostContext, req *schem
 			Error: &schemas.ErrorField{
 				Message: "provider is required for video list request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.VideoListRequest,
 			},
 		}
@@ -2607,7 +2607,7 @@ func (bifrost *Bifrost) VideoDeleteRequest(ctx *schemas.BifrostContext, req *sch
 			Error: &schemas.ErrorField{
 				Message: "video delete request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.VideoDeleteRequest,
 			},
 		}
@@ -2618,7 +2618,7 @@ func (bifrost *Bifrost) VideoDeleteRequest(ctx *schemas.BifrostContext, req *sch
 			Error: &schemas.ErrorField{
 				Message: "provider is required for video delete request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.VideoDeleteRequest,
 			},
 		}
@@ -2629,7 +2629,7 @@ func (bifrost *Bifrost) VideoDeleteRequest(ctx *schemas.BifrostContext, req *sch
 			Error: &schemas.ErrorField{
 				Message: "video_id is required for video delete request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.VideoDeleteRequest,
 				Provider:    req.Provider,
 			},
@@ -2655,7 +2655,7 @@ func (bifrost *Bifrost) VideoCancelRequest(ctx *schemas.BifrostContext, req *sch
 		return &schemas.BifrostError{
 			IsBifrostError: false,
 			Error:          &schemas.ErrorField{Message: message},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.VideoCancelRequest,
 				Provider:    provider,
 			},
@@ -2692,7 +2692,7 @@ func imageTaskRequestError(requestType schemas.RequestType, provider schemas.Mod
 	return &schemas.BifrostError{
 		IsBifrostError: false,
 		Error:          &schemas.ErrorField{Message: message},
-		ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+		ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 			RequestType:            requestType,
 			Provider:               provider,
 			OriginalModelRequested: model,
@@ -2804,7 +2804,7 @@ func (bifrost *Bifrost) BatchCreateRequest(ctx *schemas.BifrostContext, req *sch
 			Error: &schemas.ErrorField{
 				Message: "batch create request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if req.Provider == "" {
@@ -2813,7 +2813,7 @@ func (bifrost *Bifrost) BatchCreateRequest(ctx *schemas.BifrostContext, req *sch
 			Error: &schemas.ErrorField{
 				Message: "provider is required for batch create request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	hasInputBlob := req.InputBlob != nil && strings.TrimSpace(*req.InputBlob) != ""
@@ -2823,7 +2823,7 @@ func (bifrost *Bifrost) BatchCreateRequest(ctx *schemas.BifrostContext, req *sch
 			Error: &schemas.ErrorField{
 				Message: "either input_file_id, input_blob, or requests is required for batch create request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	// A batch's work is named once. No provider runs inline requests beside a file: OpenAI, Azure
@@ -2838,6 +2838,7 @@ func (bifrost *Bifrost) BatchCreateRequest(ctx *schemas.BifrostContext, req *sch
 			Error: &schemas.ErrorField{
 				Message: "input_file_id or input_blob and requests are exclusive: name the batch's work as a file, a blob, or inline requests, not both",
 			},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false)},
 		}
 	}
 	if ctx == nil {
@@ -2851,7 +2852,7 @@ func (bifrost *Bifrost) BatchCreateRequest(ctx *schemas.BifrostContext, req *sch
 			Error: &schemas.ErrorField{
 				Message: "provider not found for batch create request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerModelNotAvailable},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerModelNotAvailable},
 		}
 	}
 
@@ -2874,7 +2875,7 @@ func (bifrost *Bifrost) BatchListRequest(ctx *schemas.BifrostContext, req *schem
 			Error: &schemas.ErrorField{
 				Message: "batch list request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if req.Provider == "" {
@@ -2883,7 +2884,7 @@ func (bifrost *Bifrost) BatchListRequest(ctx *schemas.BifrostContext, req *schem
 			Error: &schemas.ErrorField{
 				Message: "provider is required for batch list request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if ctx == nil {
@@ -2909,7 +2910,7 @@ func (bifrost *Bifrost) BatchRetrieveRequest(ctx *schemas.BifrostContext, req *s
 			Error: &schemas.ErrorField{
 				Message: "batch retrieve request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if req.Provider == "" {
@@ -2918,7 +2919,7 @@ func (bifrost *Bifrost) BatchRetrieveRequest(ctx *schemas.BifrostContext, req *s
 			Error: &schemas.ErrorField{
 				Message: "provider is required for batch retrieve request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if req.BatchID == "" {
@@ -2927,7 +2928,7 @@ func (bifrost *Bifrost) BatchRetrieveRequest(ctx *schemas.BifrostContext, req *s
 			Error: &schemas.ErrorField{
 				Message: "batch_id is required for batch retrieve request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if ctx == nil {
@@ -2953,7 +2954,7 @@ func (bifrost *Bifrost) BatchCancelRequest(ctx *schemas.BifrostContext, req *sch
 			Error: &schemas.ErrorField{
 				Message: "batch cancel request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if req.Provider == "" {
@@ -2962,7 +2963,7 @@ func (bifrost *Bifrost) BatchCancelRequest(ctx *schemas.BifrostContext, req *sch
 			Error: &schemas.ErrorField{
 				Message: "provider is required for batch cancel request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if req.BatchID == "" {
@@ -2971,7 +2972,7 @@ func (bifrost *Bifrost) BatchCancelRequest(ctx *schemas.BifrostContext, req *sch
 			Error: &schemas.ErrorField{
 				Message: "batch_id is required for batch cancel request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if ctx == nil {
@@ -2997,7 +2998,7 @@ func (bifrost *Bifrost) BatchDeleteRequest(ctx *schemas.BifrostContext, req *sch
 			Error: &schemas.ErrorField{
 				Message: "batch delete request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if req.Provider == "" {
@@ -3006,7 +3007,7 @@ func (bifrost *Bifrost) BatchDeleteRequest(ctx *schemas.BifrostContext, req *sch
 			Error: &schemas.ErrorField{
 				Message: "provider is required for batch delete request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if req.BatchID == "" {
@@ -3015,7 +3016,7 @@ func (bifrost *Bifrost) BatchDeleteRequest(ctx *schemas.BifrostContext, req *sch
 			Error: &schemas.ErrorField{
 				Message: "batch_id is required for batch delete request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if ctx == nil {
@@ -3041,7 +3042,7 @@ func (bifrost *Bifrost) BatchResultsRequest(ctx *schemas.BifrostContext, req *sc
 			Error: &schemas.ErrorField{
 				Message: "batch results request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.BatchResultsRequest,
 			},
 		}
@@ -3052,7 +3053,7 @@ func (bifrost *Bifrost) BatchResultsRequest(ctx *schemas.BifrostContext, req *sc
 			Error: &schemas.ErrorField{
 				Message: "provider is required for batch results request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.BatchResultsRequest,
 			},
 		}
@@ -3063,7 +3064,7 @@ func (bifrost *Bifrost) BatchResultsRequest(ctx *schemas.BifrostContext, req *sc
 			Error: &schemas.ErrorField{
 				Message: "batch_id is required for batch results request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.BatchResultsRequest,
 				Provider:    req.Provider,
 			},
@@ -3092,7 +3093,7 @@ func (bifrost *Bifrost) FileUploadRequest(ctx *schemas.BifrostContext, req *sche
 			Error: &schemas.ErrorField{
 				Message: "file upload request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.FileUploadRequest,
 			},
 		}
@@ -3103,7 +3104,7 @@ func (bifrost *Bifrost) FileUploadRequest(ctx *schemas.BifrostContext, req *sche
 			Error: &schemas.ErrorField{
 				Message: "provider is required for file upload request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.FileUploadRequest,
 			},
 		}
@@ -3115,7 +3116,7 @@ func (bifrost *Bifrost) FileUploadRequest(ctx *schemas.BifrostContext, req *sche
 			Error: &schemas.ErrorField{
 				Message: "file content is required for file upload request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.FileUploadRequest,
 				Provider:    req.Provider,
 			},
@@ -3144,7 +3145,7 @@ func (bifrost *Bifrost) FileListRequest(ctx *schemas.BifrostContext, req *schema
 			Error: &schemas.ErrorField{
 				Message: "file list request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.FileListRequest,
 			},
 		}
@@ -3155,7 +3156,7 @@ func (bifrost *Bifrost) FileListRequest(ctx *schemas.BifrostContext, req *schema
 			Error: &schemas.ErrorField{
 				Message: "provider is required for file list request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 				RequestType: schemas.FileListRequest,
 			},
 		}
@@ -3183,7 +3184,7 @@ func (bifrost *Bifrost) FileRetrieveRequest(ctx *schemas.BifrostContext, req *sc
 			Error: &schemas.ErrorField{
 				Message: "file retrieve request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if req.Provider == "" {
@@ -3192,7 +3193,7 @@ func (bifrost *Bifrost) FileRetrieveRequest(ctx *schemas.BifrostContext, req *sc
 			Error: &schemas.ErrorField{
 				Message: "provider is required for file retrieve request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if req.FileID == "" {
@@ -3201,7 +3202,7 @@ func (bifrost *Bifrost) FileRetrieveRequest(ctx *schemas.BifrostContext, req *sc
 			Error: &schemas.ErrorField{
 				Message: "file_id is required for file retrieve request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if ctx == nil {
@@ -3227,7 +3228,7 @@ func (bifrost *Bifrost) FileDeleteRequest(ctx *schemas.BifrostContext, req *sche
 			Error: &schemas.ErrorField{
 				Message: "file delete request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if req.Provider == "" {
@@ -3236,7 +3237,7 @@ func (bifrost *Bifrost) FileDeleteRequest(ctx *schemas.BifrostContext, req *sche
 			Error: &schemas.ErrorField{
 				Message: "provider is required for file delete request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if req.FileID == "" {
@@ -3245,7 +3246,7 @@ func (bifrost *Bifrost) FileDeleteRequest(ctx *schemas.BifrostContext, req *sche
 			Error: &schemas.ErrorField{
 				Message: "file_id is required for file delete request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if ctx == nil {
@@ -3271,7 +3272,7 @@ func (bifrost *Bifrost) FileContentRequest(ctx *schemas.BifrostContext, req *sch
 			Error: &schemas.ErrorField{
 				Message: "file content request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if req.Provider == "" {
@@ -3280,7 +3281,7 @@ func (bifrost *Bifrost) FileContentRequest(ctx *schemas.BifrostContext, req *sch
 			Error: &schemas.ErrorField{
 				Message: "provider is required for file content request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if req.FileID == "" {
@@ -3289,7 +3290,7 @@ func (bifrost *Bifrost) FileContentRequest(ctx *schemas.BifrostContext, req *sch
 			Error: &schemas.ErrorField{
 				Message: "file_id is required for file content request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if ctx == nil {
@@ -3310,13 +3311,13 @@ func (bifrost *Bifrost) FileContentRequest(ctx *schemas.BifrostContext, req *sch
 // CachedContentCreateRequest creates a new cached content (Gemini / Vertex AI named cache lifecycle).
 func (bifrost *Bifrost) CachedContentCreateRequest(ctx *schemas.BifrostContext, req *schemas.BifrostCachedContentCreateRequest) (*schemas.BifrostCachedContentCreateResponse, *schemas.BifrostError) {
 	if req == nil {
-		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "cached content create request is nil"}, ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest}}
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "cached content create request is nil"}, ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest}}
 	}
 	if req.Provider == "" {
-		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "provider is required for cached content create request"}, ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest}}
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "provider is required for cached content create request"}, ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest}}
 	}
 	if req.Model == "" {
-		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "model is required for cached content create request"}, ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest}}
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "model is required for cached content create request"}, ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest}}
 	}
 	if ctx == nil {
 		ctx = bifrost.ctx
@@ -3334,10 +3335,10 @@ func (bifrost *Bifrost) CachedContentCreateRequest(ctx *schemas.BifrostContext, 
 // CachedContentListRequest lists cached contents.
 func (bifrost *Bifrost) CachedContentListRequest(ctx *schemas.BifrostContext, req *schemas.BifrostCachedContentListRequest) (*schemas.BifrostCachedContentListResponse, *schemas.BifrostError) {
 	if req == nil {
-		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "cached content list request is nil"}, ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest}}
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "cached content list request is nil"}, ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest}}
 	}
 	if req.Provider == "" {
-		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "provider is required for cached content list request"}, ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest}}
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "provider is required for cached content list request"}, ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest}}
 	}
 	if ctx == nil {
 		ctx = bifrost.ctx
@@ -3355,13 +3356,13 @@ func (bifrost *Bifrost) CachedContentListRequest(ctx *schemas.BifrostContext, re
 // CachedContentRetrieveRequest retrieves a single cached content by name.
 func (bifrost *Bifrost) CachedContentRetrieveRequest(ctx *schemas.BifrostContext, req *schemas.BifrostCachedContentRetrieveRequest) (*schemas.BifrostCachedContentRetrieveResponse, *schemas.BifrostError) {
 	if req == nil {
-		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "cached content retrieve request is nil"}, ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest}}
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "cached content retrieve request is nil"}, ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest}}
 	}
 	if req.Provider == "" {
-		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "provider is required for cached content retrieve request"}, ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest}}
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "provider is required for cached content retrieve request"}, ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest}}
 	}
 	if req.Name == "" {
-		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "name is required for cached content retrieve request"}, ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest}}
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "name is required for cached content retrieve request"}, ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest}}
 	}
 	if ctx == nil {
 		ctx = bifrost.ctx
@@ -3379,13 +3380,13 @@ func (bifrost *Bifrost) CachedContentRetrieveRequest(ctx *schemas.BifrostContext
 // CachedContentUpdateRequest updates expiration on a cached content.
 func (bifrost *Bifrost) CachedContentUpdateRequest(ctx *schemas.BifrostContext, req *schemas.BifrostCachedContentUpdateRequest) (*schemas.BifrostCachedContentUpdateResponse, *schemas.BifrostError) {
 	if req == nil {
-		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "cached content update request is nil"}, ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest}}
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "cached content update request is nil"}, ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest}}
 	}
 	if req.Provider == "" {
-		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "provider is required for cached content update request"}, ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest}}
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "provider is required for cached content update request"}, ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest}}
 	}
 	if req.Name == "" {
-		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "name is required for cached content update request"}, ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest}}
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "name is required for cached content update request"}, ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest}}
 	}
 	if ctx == nil {
 		ctx = bifrost.ctx
@@ -3403,13 +3404,13 @@ func (bifrost *Bifrost) CachedContentUpdateRequest(ctx *schemas.BifrostContext, 
 // CachedContentDeleteRequest deletes a cached content by name.
 func (bifrost *Bifrost) CachedContentDeleteRequest(ctx *schemas.BifrostContext, req *schemas.BifrostCachedContentDeleteRequest) (*schemas.BifrostCachedContentDeleteResponse, *schemas.BifrostError) {
 	if req == nil {
-		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "cached content delete request is nil"}, ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest}}
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "cached content delete request is nil"}, ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest}}
 	}
 	if req.Provider == "" {
-		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "provider is required for cached content delete request"}, ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest}}
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "provider is required for cached content delete request"}, ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest}}
 	}
 	if req.Name == "" {
-		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "name is required for cached content delete request"}, ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest}}
+		return nil, &schemas.BifrostError{IsBifrostError: false, Error: &schemas.ErrorField{Message: "name is required for cached content delete request"}, ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest}}
 	}
 	if ctx == nil {
 		ctx = bifrost.ctx
@@ -3540,7 +3541,7 @@ func (bifrost *Bifrost) ExecuteChatMCPTool(ctx *schemas.BifrostContext, toolCall
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error:          &schemas.ErrorField{Message: "mcp is not configured in this bifrost instance"},
-			ExtraFields:    schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest, RequestType: schemas.ChatCompletionRequest},
+			ExtraFields:    schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest, RequestType: schemas.ChatCompletionRequest},
 		}
 	}
 	return bifrost.MCPManager.ExecuteChatTool(ctx, toolCall)
@@ -3560,7 +3561,7 @@ func (bifrost *Bifrost) ExecuteResponsesMCPTool(ctx *schemas.BifrostContext, too
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error:          &schemas.ErrorField{Message: "mcp is not configured in this bifrost instance"},
-			ExtraFields:    schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest, RequestType: schemas.ResponsesRequest},
+			ExtraFields:    schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest, RequestType: schemas.ResponsesRequest},
 		}
 	}
 	return bifrost.MCPManager.ExecuteResponsesTool(ctx, toolCall)
@@ -3574,7 +3575,7 @@ func (bifrost *Bifrost) ContainerCreateRequest(ctx *schemas.BifrostContext, req 
 			Error: &schemas.ErrorField{
 				Message: "container create request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if req.Provider == "" {
@@ -3583,7 +3584,7 @@ func (bifrost *Bifrost) ContainerCreateRequest(ctx *schemas.BifrostContext, req 
 			Error: &schemas.ErrorField{
 				Message: "provider is required for container create request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if req.Name == "" {
@@ -3592,7 +3593,7 @@ func (bifrost *Bifrost) ContainerCreateRequest(ctx *schemas.BifrostContext, req 
 			Error: &schemas.ErrorField{
 				Message: "name is required for container create request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if ctx == nil {
@@ -3618,7 +3619,7 @@ func (bifrost *Bifrost) ContainerListRequest(ctx *schemas.BifrostContext, req *s
 			Error: &schemas.ErrorField{
 				Message: "container list request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if req.Provider == "" {
@@ -3627,7 +3628,7 @@ func (bifrost *Bifrost) ContainerListRequest(ctx *schemas.BifrostContext, req *s
 			Error: &schemas.ErrorField{
 				Message: "provider is required for container list request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if ctx == nil {
@@ -3653,7 +3654,7 @@ func (bifrost *Bifrost) ContainerRetrieveRequest(ctx *schemas.BifrostContext, re
 			Error: &schemas.ErrorField{
 				Message: "container retrieve request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if req.Provider == "" {
@@ -3662,7 +3663,7 @@ func (bifrost *Bifrost) ContainerRetrieveRequest(ctx *schemas.BifrostContext, re
 			Error: &schemas.ErrorField{
 				Message: "provider is required for container retrieve request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if req.ContainerID == "" {
@@ -3671,7 +3672,7 @@ func (bifrost *Bifrost) ContainerRetrieveRequest(ctx *schemas.BifrostContext, re
 			Error: &schemas.ErrorField{
 				Message: "container_id is required for container retrieve request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if ctx == nil {
@@ -3697,7 +3698,7 @@ func (bifrost *Bifrost) ContainerDeleteRequest(ctx *schemas.BifrostContext, req 
 			Error: &schemas.ErrorField{
 				Message: "container delete request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if req.Provider == "" {
@@ -3706,7 +3707,7 @@ func (bifrost *Bifrost) ContainerDeleteRequest(ctx *schemas.BifrostContext, req 
 			Error: &schemas.ErrorField{
 				Message: "provider is required for container delete request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if req.ContainerID == "" {
@@ -3715,7 +3716,7 @@ func (bifrost *Bifrost) ContainerDeleteRequest(ctx *schemas.BifrostContext, req 
 			Error: &schemas.ErrorField{
 				Message: "container_id is required for container delete request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if ctx == nil {
@@ -3741,7 +3742,7 @@ func (bifrost *Bifrost) ContainerFileCreateRequest(ctx *schemas.BifrostContext, 
 			Error: &schemas.ErrorField{
 				Message: "container file create request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if req.Provider == "" {
@@ -3750,7 +3751,7 @@ func (bifrost *Bifrost) ContainerFileCreateRequest(ctx *schemas.BifrostContext, 
 			Error: &schemas.ErrorField{
 				Message: "provider is required for container file create request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if req.ContainerID == "" {
@@ -3759,7 +3760,7 @@ func (bifrost *Bifrost) ContainerFileCreateRequest(ctx *schemas.BifrostContext, 
 			Error: &schemas.ErrorField{
 				Message: "container_id is required for container file create request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if len(req.File) == 0 && (req.FileID == nil || strings.TrimSpace(*req.FileID) == "") && (req.Path == nil || strings.TrimSpace(*req.Path) == "") {
@@ -3768,7 +3769,7 @@ func (bifrost *Bifrost) ContainerFileCreateRequest(ctx *schemas.BifrostContext, 
 			Error: &schemas.ErrorField{
 				Message: "one of file, file_id, or path is required for container file create request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if ctx == nil {
@@ -3794,7 +3795,7 @@ func (bifrost *Bifrost) ContainerFileListRequest(ctx *schemas.BifrostContext, re
 			Error: &schemas.ErrorField{
 				Message: "container file list request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if req.Provider == "" {
@@ -3803,7 +3804,7 @@ func (bifrost *Bifrost) ContainerFileListRequest(ctx *schemas.BifrostContext, re
 			Error: &schemas.ErrorField{
 				Message: "provider is required for container file list request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if req.ContainerID == "" {
@@ -3812,7 +3813,7 @@ func (bifrost *Bifrost) ContainerFileListRequest(ctx *schemas.BifrostContext, re
 			Error: &schemas.ErrorField{
 				Message: "container_id is required for container file list request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if ctx == nil {
@@ -3838,7 +3839,7 @@ func (bifrost *Bifrost) ContainerFileRetrieveRequest(ctx *schemas.BifrostContext
 			Error: &schemas.ErrorField{
 				Message: "container file retrieve request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if req.Provider == "" {
@@ -3847,7 +3848,7 @@ func (bifrost *Bifrost) ContainerFileRetrieveRequest(ctx *schemas.BifrostContext
 			Error: &schemas.ErrorField{
 				Message: "provider is required for container file retrieve request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if req.ContainerID == "" {
@@ -3856,7 +3857,7 @@ func (bifrost *Bifrost) ContainerFileRetrieveRequest(ctx *schemas.BifrostContext
 			Error: &schemas.ErrorField{
 				Message: "container_id is required for container file retrieve request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if req.FileID == "" {
@@ -3865,7 +3866,7 @@ func (bifrost *Bifrost) ContainerFileRetrieveRequest(ctx *schemas.BifrostContext
 			Error: &schemas.ErrorField{
 				Message: "file_id is required for container file retrieve request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if ctx == nil {
@@ -3891,7 +3892,7 @@ func (bifrost *Bifrost) LiveSessionContentRequest(ctx *schemas.BifrostContext, r
 			Error: &schemas.ErrorField{
 				Message: "live content request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if req.Provider == "" {
@@ -3900,7 +3901,7 @@ func (bifrost *Bifrost) LiveSessionContentRequest(ctx *schemas.BifrostContext, r
 			Error: &schemas.ErrorField{
 				Message: "provider is required for live content request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if req.SessionID == "" {
@@ -3909,7 +3910,7 @@ func (bifrost *Bifrost) LiveSessionContentRequest(ctx *schemas.BifrostContext, r
 			Error: &schemas.ErrorField{
 				Message: "session_id is required for live content request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if ctx == nil {
@@ -3935,7 +3936,7 @@ func (bifrost *Bifrost) ContainerFileContentRequest(ctx *schemas.BifrostContext,
 			Error: &schemas.ErrorField{
 				Message: "container file content request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if req.Provider == "" {
@@ -3944,7 +3945,7 @@ func (bifrost *Bifrost) ContainerFileContentRequest(ctx *schemas.BifrostContext,
 			Error: &schemas.ErrorField{
 				Message: "provider is required for container file content request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if req.ContainerID == "" {
@@ -3953,7 +3954,7 @@ func (bifrost *Bifrost) ContainerFileContentRequest(ctx *schemas.BifrostContext,
 			Error: &schemas.ErrorField{
 				Message: "container_id is required for container file content request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if req.FileID == "" {
@@ -3962,7 +3963,7 @@ func (bifrost *Bifrost) ContainerFileContentRequest(ctx *schemas.BifrostContext,
 			Error: &schemas.ErrorField{
 				Message: "file_id is required for container file content request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if ctx == nil {
@@ -3988,7 +3989,7 @@ func (bifrost *Bifrost) ContainerFileDeleteRequest(ctx *schemas.BifrostContext, 
 			Error: &schemas.ErrorField{
 				Message: "container file delete request is nil",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if req.Provider == "" {
@@ -3997,7 +3998,7 @@ func (bifrost *Bifrost) ContainerFileDeleteRequest(ctx *schemas.BifrostContext, 
 			Error: &schemas.ErrorField{
 				Message: "provider is required for container file delete request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if req.ContainerID == "" {
@@ -4006,7 +4007,7 @@ func (bifrost *Bifrost) ContainerFileDeleteRequest(ctx *schemas.BifrostContext, 
 			Error: &schemas.ErrorField{
 				Message: "container_id is required for container file delete request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if req.FileID == "" {
@@ -4015,7 +4016,7 @@ func (bifrost *Bifrost) ContainerFileDeleteRequest(ctx *schemas.BifrostContext, 
 			Error: &schemas.ErrorField{
 				Message: "file_id is required for container file delete request",
 			},
-			ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+			ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest},
 		}
 	}
 	if ctx == nil {
@@ -4631,7 +4632,7 @@ func (bifrost *Bifrost) UpdateProvider(providerKey schemas.ModelProvider) error 
 					case r.Err <- schemas.BifrostError{StatusCode: schemas.Ptr(503),
 						IsBifrostError: false,
 						Error:          &schemas.ErrorField{Message: "request failed during provider concurrency update: queue full"},
-						ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeBifrostDropped,
+						ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeBifrostDropped,
 							RequestType:            r.RequestType,
 							Provider:               prov,
 							OriginalModelRequested: mod,
@@ -6372,6 +6373,8 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	// the error that triggered it (primary error for the first iteration, the
 	// prior fallback's error for subsequent iterations).
 	lastErr := primaryErr
+	// upstream_sent is call-wide (C6): the error returned below carries every attempt's.
+	sentAcross := newCallUpstreamSent(primaryErr)
 
 	// Try fallbacks in order
 	for i, fallback := range fallbacks {
@@ -6426,19 +6429,20 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 			tracer.SetAttribute(handle, "error", fallbackErr.Error.Message)
 		}
 		tracer.EndSpan(handle, schemas.SpanStatusError, "fallback failed")
+		sentAcross.observe(fallbackErr)
 
 		// Check if we should continue with more fallbacks
 		if !bifrost.shouldContinueWithFallbacks(fallback, fallbackErr) {
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Fallback %s/%s failed (%s); halting further fallbacks", fallback.Provider, fallback.Model, routingErrorSummary(fallbackErr)))
-			return nil, fallbackErr
+			return nil, sentAcross.apply(fallbackErr)
 		}
 		if injectedToolsRan(ctx) {
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Fallback %s/%s ran a provider-injected tool before failing (%s); halting further fallbacks", fallback.Provider, fallback.Model, routingErrorSummary(fallbackErr)))
-			return nil, fallbackErr
+			return nil, sentAcross.apply(fallbackErr)
 		}
 		if upstreamWriteUnknown(fallbackErr) {
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Fallback %s/%s sent a write-once request and got no response (%s); halting further fallbacks", fallback.Provider, fallback.Model, routingErrorSummary(fallbackErr)))
-			return nil, fallbackErr
+			return nil, sentAcross.apply(fallbackErr)
 		}
 
 		lastErr = fallbackErr
@@ -6447,7 +6451,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("All %d fallback(s) exhausted; returning primary error (%s)", len(fallbacks), routingErrorSummary(primaryErr)))
 	// All providers failed, return the original error, with the provider headers it came with
 	restoreProviderResponseHeaders(ctx, primaryHeaders)
-	return nil, primaryErr
+	return nil, sentAcross.apply(primaryErr)
 }
 
 // continueOnServedRoute sends a later turn of an MCP agent loop to the provider/model that
@@ -6604,6 +6608,8 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Primary %s/%s failed (%s); evaluating %d configured fallback(s)", provider, model, routingErrorSummary(primaryErr), len(fallbacks)))
 
 	lastErr := primaryErr
+	// upstream_sent is call-wide (C6): the error returned below carries every attempt's.
+	sentAcross := newCallUpstreamSent(primaryErr)
 
 	// Try fallbacks in order
 	for i, fallback := range fallbacks {
@@ -6672,19 +6678,20 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 			tracer.SetAttribute(handle, "error", fallbackErr.Error.Message)
 		}
 		tracer.EndSpan(handle, schemas.SpanStatusError, "fallback failed")
+		sentAcross.observe(fallbackErr)
 
 		// Check if we should continue with more fallbacks
 		if !bifrost.shouldContinueWithFallbacks(fallback, fallbackErr) {
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Fallback %s/%s failed (%s); halting further fallbacks", fallback.Provider, fallback.Model, routingErrorSummary(fallbackErr)))
-			return nil, fallbackErr
+			return nil, sentAcross.apply(fallbackErr)
 		}
 		if injectedToolsRan(ctx) {
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Fallback %s/%s ran a provider-injected tool before failing (%s); halting further fallbacks", fallback.Provider, fallback.Model, routingErrorSummary(fallbackErr)))
-			return nil, fallbackErr
+			return nil, sentAcross.apply(fallbackErr)
 		}
 		if upstreamWriteUnknown(fallbackErr) {
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Fallback %s/%s sent a write-once request and got no response (%s); halting further fallbacks", fallback.Provider, fallback.Model, routingErrorSummary(fallbackErr)))
-			return nil, fallbackErr
+			return nil, sentAcross.apply(fallbackErr)
 		}
 
 		lastErr = fallbackErr
@@ -6693,7 +6700,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("All %d fallback(s) exhausted; returning primary error (%s)", len(fallbacks), routingErrorSummary(primaryErr)))
 	// All providers failed, return the original error, with the provider headers it came with
 	restoreProviderResponseHeaders(ctx, primaryHeaders)
-	return nil, primaryErr
+	return nil, sentAcross.apply(primaryErr)
 }
 
 // tryRequest is a generic function that handles common request processing logic
@@ -8480,7 +8487,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 						Error: &schemas.ErrorField{
 							Message: "provider is shutting down",
 						},
-						ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeBifrostDropped,
+						ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeBifrostDropped,
 							RequestType:            r.RequestType,
 							Provider:               provKey,
 							OriginalModelRequested: mod,
@@ -8611,7 +8618,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 							Message: err.Error(),
 							Error:   err,
 						},
-						ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerModelNotAvailable,
+						ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerModelNotAvailable,
 							Provider:               provider.GetProviderKey(),
 							RequestType:            req.RequestType,
 							OriginalModelRequested: model,
@@ -8633,7 +8640,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 							Error: &schemas.ErrorField{
 								Message: fmt.Sprintf("no key found with id %q for provider %s", target, provider.GetProviderKey()),
 							},
-							ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest,
+							ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeCallerInvalidRequest,
 								Provider:               provider.GetProviderKey(),
 								RequestType:            req.RequestType,
 								OriginalModelRequested: model,
@@ -8702,7 +8709,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 								Error:   keyPoolErr,
 								Type:    schemas.Ptr(schemas.NoKeySupportsModel),
 							},
-							ExtraFields: schemas.BifrostErrorExtraFields{
+							ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false),
 								Provider:               provider.GetProviderKey(),
 								RequestType:            req.RequestType,
 								OriginalModelRequested: model,
@@ -11158,7 +11165,7 @@ func (bifrost *Bifrost) drainQueueWithErrors(pq *ProviderQueue) {
 			bifrost.sendWorkerError(r, schemas.BifrostError{StatusCode: schemas.Ptr(503),
 				IsBifrostError: false,
 				Error:          &schemas.ErrorField{Message: "provider is shutting down"},
-				ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeBifrostDropped,
+				ExtraFields: schemas.BifrostErrorExtraFields{UpstreamSent: schemas.Ptr(false), ErrorType: schemas.ErrorTypeBifrostDropped,
 					RequestType:            r.RequestType,
 					Provider:               provKey,
 					OriginalModelRequested: mod,

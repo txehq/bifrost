@@ -2457,6 +2457,11 @@ type BifrostErrorExtraFields struct {
 	BilledUsage         *BifrostLLMUsage     `json:"billed_usage,omitempty"`
 	EstimatedImageUsage *EstimatedImageUsage `json:"-"` // Bifrost's estimate for a refused image answer, never the vendor's count (TXE-7302)
 	NativeErrorResponse json.RawMessage      `json:"-"` // provider error body verbatim for native drop-in routes; never serialized
+	// UpstreamSent is whether any attempt of the call wrote the request to a vendor (contract C6,
+	// TXE-6746). false is declared by a refusal Bifrost core raises before dispatch (TXE-7651), so a
+	// client never charges it as a vendor rejection; nil is untold, which the C6 addendum counts as
+	// sent (TXE-7622). The vendor call's own value is TXE-6746's remaining work.
+	UpstreamSent *bool `json:"upstream_sent,omitempty"`
 
 	// ErrorType is this failure's normalized classification, declared by whoever
 	// produced the error. ClassifyErrorType returns it verbatim when set and infers
