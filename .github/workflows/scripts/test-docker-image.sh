@@ -61,8 +61,11 @@ trap cleanup EXIT
 echo "Building Docker image (local modules)..."
 NPM_BUILD_ARGS=()
 while IFS= read -r arg; do NPM_BUILD_ARGS+=("$arg"); done < <("$SCRIPT_DIR/npm-registry-build-args.sh" --flags)
+# The base images come from the GHCR mirror when .github/actions/ci-images set
+# BIFROST_CI_REGISTRY, and from docker.io otherwise (TXE-7684).
 docker build \
   --platform "${PLATFORM}" \
+  ${BIFROST_CI_REGISTRY:+--build-arg "BIFROST_CI_REGISTRY=${BIFROST_CI_REGISTRY}"} \
   ${NPM_BUILD_ARGS[@]+"${NPM_BUILD_ARGS[@]}"} \
   -f transports/Dockerfile.local \
   -t "${IMAGE_TAG}" \

@@ -17,6 +17,9 @@ failed=0
 check() { # Dockerfile, relative to the root
   local file="$ROOT/$1" base command
   base="$(awk 'toupper($1) == "FROM" { ref = $2 } END { print ref }' "$file")"
+  # The Dockerfiles take their docker.io bases from ${BIFROST_CI_REGISTRY}, docker.io unless CI
+  # set the GHCR mirror (TXE-7684); resolve it the way `docker build` resolves the ARG.
+  base="${base//\$\{BIFROST_CI_REGISTRY\}/${BIFROST_CI_REGISTRY:-docker.io}}"
   command="$(sed -E ':a; /\\$/ { N; s/\\\n/ /; ba }' "$file" | grep -m1 -E '^[[:space:]]*HEALTHCHECK' | sed -E 's/.*[[:space:]]CMD[[:space:]]+//' | awk '{ print $1 }')"
   if [ -z "$base" ] || [ -z "$command" ]; then
     echo "FAIL: $1: cannot read its final base image and HEALTHCHECK command" >&2

@@ -1,0 +1,104 @@
+name: CI image mirror
+
+# Copies every image CI pulls into ghcr.io/<owner>/bifrost-ci, byte for byte, and checks that the
+# mirror holds each pinned digest (TXE-7684).
+#
+# The images are the ${BIFROST_CI_REGISTRY:-docker.io}/<path>:<tag>@<digest> references in the
+# files CI reads (.github/workflows/scripts/ci-images.py list). Jobs pull them through
+# ./.github/actions/ci-images, authenticated with GITHUB_TOKEN, because anonymous Docker Hub pulls
+# hit `toomanyrequests` and failed required checks (PR #249, 17 Nov 2026).
+#
+# crane copy keeps the upstream manifest and its digest, so a job's pull by digest verifies the
+# mirror against the pin. This job pulls each new image from Docker Hub once, anonymously; nothing
+# else does. On a pull request that adds an image it copies it before merge, so the PR's own jobs
+# (which wait for it in ./.github/actions/ci-images) can pass. A pull request from another
+# repository gets a read-only token: it checks the mirror and copies nothing, and a maintainer's
+# run copies a new image.
+#
+# No path filter: with every image already mirrored the job makes one HEAD request per image.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mirror:
+    name: Mirror CI images to GHCR
+    # The same approval expression as the other pull_request jobs (test-approval-environment.py).
+    environment: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'pr-testing' || 'ci-trusted-branch' }}
+    runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: block
+          # crane's release (github.com, release-assets.githubusercontent.com); Docker Hub, the
+          # one anonymous pull CI keeps, with all four blob hosts (TXE-7427, TXE-7500) - crane
+          # names Docker Hub index.docker.io, docker pulls registry-1.docker.io; GHCR and its
+          # blob host for the copy.
+          allowed-endpoints: >
+            auth.docker.io:443
+            docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com:443
+            docker-images-prod.s3.dualstack.us-east-1.amazonaws.com:443
+            ghcr.io:443
+            github.com:443
+            index.docker.io:443
+            pkg-containers.githubusercontent.com:443
+            production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
+            registry-1.docker.io:443
+            release-assets.githubusercontent.com:443
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install crane
+        env:
+          VERSION: v0.21.7
+          SHA256_X86_64: 1a57bc98207fa1c0d04bf760699099e26f8383499bfd55b99c1b919a928a7230
+          SHA256_ARM64: b6ee979d9411dfb05ce35ab9e156fe5de7def11a230764a7856ffa2eb971fa88
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            x86_64) arch=x86_64; sum="$SHA256_X86_64" ;;
+            aarch64 | arm64) arch=arm64; sum="$SHA256_ARM64" ;;
+            *) echo "::error::no crane build for $(uname -m)"; exit 1 ;;
+          esac
+          tarball="$RUNNER_TEMP/crane.tar.gz"
+          curl -fsSL --retry 3 -o "$tarball" \
+            "https://github.com/google/go-containerregistry/releases/download/${VERSION}/go-containerregistry_Linux_${arch}.tar.gz"
+          echo "$sum  $tarball" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$tarball" -C "$RUNNER_TEMP/bin" crane
+          echo "CRANE=$RUNNER_TEMP/bin/crane" >> "$GITHUB_ENV"
+
+      - name: Copy the images the mirror lacks
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GITHUB_TOKEN" | "$CRANE" auth login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          python3 .github/workflows/scripts/ci-images.py mirror
+
+      - name: Check the mirror holds every pinned digest
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+        run: python3 .github/workflows/scripts/ci-images.py check-mirror

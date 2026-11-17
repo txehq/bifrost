@@ -1,7 +1,7 @@
 services:
     # Weaviate instance for basic tests
     weaviate:
-        image: semitechnologies/weaviate:1.32.4
+        image: ${BIFROST_CI_REGISTRY:-docker.io}/semitechnologies/weaviate:1.32.4@sha256:920463cf9a9b2b8d38e5b925d63f6928fa703277c93df11d5a75fc75e1fff758
         command:
             - --host
             - 0.0.0.0
@@ -31,7 +31,7 @@ services:
 
     # Redis Stack instance for vector store tests
     redis-stack:
-        image: redis/redis-stack:7.4.0-v6
+        image: ${BIFROST_CI_REGISTRY:-docker.io}/redis/redis-stack:7.4.0-v6@sha256:b6567ad2e9c0658bbf6c40657ee0576df4b82cb674763f8ae6d0c52046ef87f1
         command: redis-stack-server --protected-mode no
         ports:
             - "6379:6379"
@@ -50,7 +50,7 @@ services:
     # Generates self-signed TLS certs shared with the TLS Redis services.
     # Writes to ./redis-certs on the host so tests can read the CA cert.
     redis-certs-init:
-        image: alpine:3.21.7@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
+        image: ${BIFROST_CI_REGISTRY:-docker.io}/library/alpine:3.21.7@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
         volumes:
             - ./redis-certs:/tls
         command: >
@@ -71,7 +71,7 @@ services:
 
     # TLS-enabled standalone Redis on 6380 for TLS client tests.
     redis-tls:
-        image: redis:7.4-alpine
+        image: ${BIFROST_CI_REGISTRY:-docker.io}/library/redis:7.4-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
         depends_on:
             redis-certs-init:
                 condition: service_completed_successfully
@@ -94,7 +94,7 @@ services:
 
     # Single-node Redis Cluster on 7000 for cluster client tests.
     redis-cluster:
-        image: redis:7.4-alpine
+        image: ${BIFROST_CI_REGISTRY:-docker.io}/library/redis:7.4-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
         entrypoint: ["sh", "-c"]
         command:
             - |
@@ -126,7 +126,7 @@ services:
 
     # Single-node TLS Redis Cluster on 7100 for TLS cluster client tests.
     redis-cluster-tls:
-        image: redis:7.4-alpine
+        image: ${BIFROST_CI_REGISTRY:-docker.io}/library/redis:7.4-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
         depends_on:
             redis-certs-init:
                 condition: service_completed_successfully
@@ -169,7 +169,7 @@ services:
 
     # Qdrant instance for vector store tests
     qdrant:
-        image: qdrant/qdrant:v1.16.0
+        image: ${BIFROST_CI_REGISTRY:-docker.io}/qdrant/qdrant:v1.16.0@sha256:1005201498cf927d835383d0f918b17d8c9da7db58550f169f694455e42d78f4
         ports:
             - "6334:6334"  # gRPC API
         volumes:
@@ -195,7 +195,7 @@ services:
                 ipv4_address: 172.28.0.15
     # Postgres instance for configstore and encryption tests
     postgres:
-        image: postgres:16-alpine
+        image: ${BIFROST_CI_REGISTRY:-docker.io}/library/postgres:16-alpine@sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229
         environment:
             POSTGRES_USER: bifrost
             POSTGRES_PASSWORD: bifrost_password
@@ -223,7 +223,7 @@ services:
     # and framework/docker-compose.yml's clickhouse service. Without this
     # service every TestClickHouse* test is skipped, or fails when CI is set.
     clickhouse:
-        image: clickhouse/clickhouse-server:24.8-alpine
+        image: ${BIFROST_CI_REGISTRY:-docker.io}/clickhouse/clickhouse-server:24.8-alpine@sha256:b002e56ed5c16e224c312527f6fcba7e77216fec5d7a88a7828f59efc614feb5
         environment:
             CLICKHOUSE_DB: bifrost
             CLICKHOUSE_USER: bifrost

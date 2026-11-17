@@ -1,5 +1,10 @@
+# The registry the docker.io base images come from. Unset, it is docker.io itself; CI passes
+# --build-arg BIFROST_CI_REGISTRY=ghcr.io/<owner>/bifrost-ci, a byte-for-byte mirror with the same
+# digests, so its pulls are not anonymous Docker Hub pulls (TXE-7684, .github/workflows/scripts/ci-images.py).
+ARG BIFROST_CI_REGISTRY=docker.io
+
 # --- UI Build Stage: Build the React + Vite frontend ---
-  FROM node:25-alpine3.23@sha256:bdf2cca6fe3dabd014ea60163eca3f0f7015fbd5c7ee1b0e9ccb4ced6eb02ef4 AS ui-builder
+  FROM ${BIFROST_CI_REGISTRY}/library/node:25-alpine3.23@sha256:bdf2cca6fe3dabd014ea60163eca3f0f7015fbd5c7ee1b0e9ccb4ced6eb02ef4 AS ui-builder
   WORKDIR /app
 
   # Apply latest alpine security patches before installing packages
@@ -22,7 +27,7 @@
   # Skip the copy-build step since we'll copy the files in the Go build stage
 
   # --- Go Build Stage: Compile the Go binary ---
-  FROM golang:1.27.3-alpine3.24@sha256:f2c872bcee949b7be9c490efd02b48a8a2fbf947cdf533f1c58525ec9d8170fd AS builder
+  FROM ${BIFROST_CI_REGISTRY}/library/golang:1.27.3-alpine3.24@sha256:f2c872bcee949b7be9c490efd02b48a8a2fbf947cdf533f1c58525ec9d8170fd AS builder
   WORKDIR /app/transports
 
   # Install dependencies including gcc for CGO and sqlite (with latest security patches)
@@ -62,7 +67,7 @@
   RUN test -f /app/main || (echo "Build failed" && exit 1)
 
   # --- Runtime Stage: Minimal runtime image ---
-  FROM alpine:3.23.5@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40
+  FROM ${BIFROST_CI_REGISTRY}/library/alpine:3.23.5@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40
   WORKDIR /app
 
   # Install runtime dependencies for CGO-enabled binary

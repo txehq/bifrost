@@ -1,0 +1,47 @@
+# The ONE way a job gets container images (TXE-7684): from the GHCR mirror, authenticated with
+# GITHUB_TOKEN, never as an anonymous Docker Hub pull.
+#
+# ⚠️ WHY. Anonymous Docker Hub pulls share a rate limit. On 17 Nov 2026 "Harness fixture folders
+# (offline)" failed on PR #249 with `toomanyrequests` pulling Weaviate from cr.weaviate.io (which
+# fronts Docker Hub), and cc7's #342/#343 had hit the same limit. Each failure cost the merge-slot
+# holder a CI cycle and a manual rerun.
+#
+# ⚠️ HOW. Every image a CI file names is written ${BIFROST_CI_REGISTRY:-docker.io}/<path>:<tag>@<digest>
+# (Dockerfiles: ARG BIFROST_CI_REGISTRY=docker.io). This action logs in to ghcr.io, checks that the
+# mirror holds every pinned digest (waiting while ci-images-mirror.yml copies an image a pull
+# request adds), and exports BIFROST_CI_REGISTRY=ghcr.io/<owner>/bifrost-ci for the steps after
+# it. docker compose, docker run and the Dockerfile builds then pull from the mirror.
+#
+# ⚠️ ENFORCED. ci-images.py lint (workflow-lint) fails on a direct Docker Hub or cr.weaviate.io
+# image in a CI file and on a job that uses this action without packages: read or the GHCR egress
+# hosts. A job that forgets the action pulls docker.io, which harden-runner refuses: only jobs that
+# log in to Docker Hub, and the mirror job, may allow it (check-egress-allowlist.sh).
+#
+# Usage, after actions/checkout, in a job with `permissions: packages: read` that allows
+# ghcr.io:443 and pkg-containers.githubusercontent.com:443:
+#
+#   - name: Use the GHCR image mirror
+#     uses: ./.github/actions/ci-images
+name: Use the GHCR image mirror
+description: Log in to GHCR, check the mirror holds every pinned CI image, and point BIFROST_CI_REGISTRY at it.
+inputs:
+  wait-seconds:
+    description: How long to wait for an image the mirror job has not copied yet.
+    default: "1200"
+runs:
+  using: composite
+  steps:
+    - name: Log in to GHCR and check the mirror
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+        GITHUB_ACTOR: ${{ github.actor }}
+        GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+        WAIT: ${{ inputs.wait-seconds }}
+      run: |
+        set -euo pipefail
+        printf '%s' "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin >/dev/null
+        python3 .github/workflows/scripts/ci-images.py check-mirror --wait "$WAIT"
+        registry="ghcr.io/$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')/bifrost-ci"
+        echo "BIFROST_CI_REGISTRY=$registry" >> "$GITHUB_ENV"
+        echo "ci-images: BIFROST_CI_REGISTRY=$registry"

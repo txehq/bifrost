@@ -13,7 +13,9 @@ set -euo pipefail
 #      the Go module proxy and checksum database the workspace build verifies
 #      modules against;
 #   4. every job that allows Docker Hub allowlists all four hosts its blobs are
-#      served from.
+#      served from;
+#   5. no job pulls from Docker Hub anonymously: only a job that logs in to Docker
+#      Hub, or the mirror job, may allow it, and no job allows cr.weaviate.io.
 #
 # harden-runner's `egress-policy: block` drops every destination absent from
 # `allowed-endpoints`, so a job that shells out to `apt-get update` fails at the
@@ -665,4 +667,73 @@ if failures:
     sys.exit(1)
 
 print(f"OK: all {checked} Docker Hub blocked-egress job(s) allowlist every Docker Hub blob host.")
+PY
+
+# ---------------------------------------------------------------------------
+# 5. No anonymous Docker Hub pull
+# ---------------------------------------------------------------------------
+#
+# Anonymous Docker Hub pulls share a rate limit, and on 17 Nov 2026 the required
+# "Harness fixture folders (offline)" job failed with `toomanyrequests` pulling
+# Weaviate from cr.weaviate.io, which fronts Docker Hub (TXE-7684). Jobs now pull
+# every image from the GHCR mirror through ./.github/actions/ci-images, and the
+# block policy is what keeps them there: a job that does not allow Docker Hub
+# cannot pull from it, whatever a compose file or script names. So a job may allow
+# registry-1.docker.io only when it logs in to Docker Hub (a docker-login step with
+# no registry, or docker.io), or when it is the mirror job, which copies each new
+# image once. No job allows cr.weaviate.io: the mirror copies Weaviate from Docker
+# Hub, where it has the same digest.
+
+python3 - "${FILES[@]}" <<'PY'
+import os
+import sys
+import yaml
+
+# docker pulls Docker Hub as registry-1.docker.io; crane and other go-containerregistry
+# clients as index.docker.io.
+HUB = {"registry-1.docker.io:443", "index.docker.io:443"}
+WEAVIATE = "cr.weaviate.io:443"
+# (workflow file name, job) -> why the job may pull from Docker Hub without logging in.
+ANONYMOUS_OK = {
+    ("ci-images-mirror.yml", "mirror"): "copies each pinned image into the GHCR mirror once (TXE-7684)",
+    ("scorecards.yml", "analysis"): "ossf/scorecard-action resolves the Dockerfiles' image digests on index.docker.io: manifest lookups on a schedule, no image pull",
+}
+
+failures = []
+checked = 0
+for path in sys.argv[1:]:
+    with open(path, encoding="utf-8") as fh:
+        doc = yaml.safe_load(fh) or {}
+    for job_name, job in (doc.get("jobs") or {}).items():
+        if not isinstance(job, dict):
+            continue
+        steps = [s for s in job.get("steps") or [] if isinstance(s, dict)]
+        allowed = set()
+        for step in steps:
+            if "step-security/harden-runner" in (step.get("uses") or ""):
+                w = step.get("with") or {}
+                if str(w.get("egress-policy", "")).strip() == "block":
+                    allowed |= set(str(w.get("allowed-endpoints") or "").split())
+        if WEAVIATE in allowed:
+            failures.append(f"FAIL {path} :: job '{job_name}' allows {WEAVIATE}, which fronts Docker Hub's anonymous rate limit; pull Weaviate through ./.github/actions/ci-images")
+        hub = sorted(HUB & allowed)
+        if not hub:
+            continue
+        checked += 1
+        logged_in = any(
+            "docker-login-action" in (s.get("uses") or "")
+            and str((s.get("with") or {}).get("registry") or "docker.io").strip() in ("docker.io", "index.docker.io", "registry-1.docker.io")
+            for s in steps
+        )
+        if not logged_in and (os.path.basename(path), job_name) not in ANONYMOUS_OK:
+            failures.append(
+                f"FAIL {path} :: job '{job_name}' allows {', '.join(hub)} without logging in to Docker Hub; "
+                "an anonymous pull hits its rate limit: pull through ./.github/actions/ci-images and drop the Docker Hub hosts"
+            )
+
+for line in failures:
+    print(line, file=sys.stderr)
+if failures:
+    sys.exit(1)
+print(f"OK: none of the {checked} job(s) that allow Docker Hub pulls from it anonymously outside ANONYMOUS_OK.")
 PY
