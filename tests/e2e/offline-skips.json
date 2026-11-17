@@ -1,31 +1,17 @@
 {
-  "TXE-7737": [
-    {
-      "reason": "the vLLM, Ollama and SGLang providers are not configured offline",
-      "file": "features/providers/providers-crud.spec.ts",
-      "tests": [
-        "Provider specific configuration › should display complete vLLM key configuration when adding a key",
-        "Provider specific configuration › should display Ollama-specific key fields when adding key to Ollama provider",
-        "Provider specific configuration › should display SGLang-specific key fields when adding key to SGLang provider"
-      ]
-    },
-    {
-      "reason": "no OTel or Prometheus connector is configured offline, and the Datadog toggle is disabled there",
-      "file": "features/observability/observability.spec.ts",
-      "tests": [
-        "Observability › OTel Connector › should display OTel delete button when connector is configured",
-        "Observability › OTel Connector › should configure OTel endpoint",
-        "Observability › Prometheus Connector › should display Prometheus delete button when connector is configured",
-        "Observability › Datadog Connector › should toggle Datadog connector if available"
-      ]
-    },
-    {
-      "reason": "the offline run sets no MCP_SSE_HEADERS for an authenticated SSE MCP endpoint",
-      "file": "features/mcp-registry/mcp-registry-crud.spec.ts",
-      "tests": [
-        "MCP Registry › MCP Client Creation › should create SSE client",
-        "MCP Registry › MCP Server Connection Validation › should connect to SSE server and list tools"
-      ]
-    }
-  ]
+  "TXE-7737": {
+    "reason": "permanent: the OSS build renders Datadog as the enterprise paywall (app/_fallbacks/enterprise/components/data-connectors/datadog), which has no toggle; the test can only run against an enterprise build",
+    "file": "features/observability/observability.spec.ts",
+    "tests": [
+      "Observability › Datadog Connector › should toggle Datadog connector if available"
+    ]
+  },
+  "TXE-7744": {
+    "reason": "observabilityView.tsx renders OtelView and PrometheusView without onDelete, so neither delete button can render whatever is configured",
+    "file": "features/observability/observability.spec.ts",
+    "tests": [
+      "Observability › OTel Connector › should display OTel delete button when connector is configured",
+      "Observability › Prometheus Connector › should display Prometheus delete button when connector is configured"
+    ]
+  }
 }
