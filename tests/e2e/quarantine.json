@@ -1,7 +1,1 @@
-{
-  "TXE-7400": {
-    "kind": "stale test or product defect, not offline",
-    "file": "features/providers/providers-crud.spec.ts",
-    "tests": ["Providers › Provider Navigation › Voyage catalog entry opens an API key form"]
-  }
-}
+{}
