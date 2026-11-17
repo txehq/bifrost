@@ -643,7 +643,7 @@ func (h *PluginsHandler) deletePlugin(ctx *fasthttp.RequestCtx) {
 	}
 	defer h.lockPlugin(name)()
 
-	if err := h.configStore.DeletePlugin(ctx, name); err != nil {
+	if err := h.deletePluginRow(ctx, name); err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, "Plugin not found")
 			return
@@ -661,6 +661,26 @@ func (h *PluginsHandler) deletePlugin(ctx *fasthttp.RequestCtx) {
 	}
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Plugin deleted successfully",
+	})
+}
+
+// deletePluginRow deletes the plugin's stored row. A plugin the server loads when it has no row
+// (lib.PluginLoadsWhenRowAbsent: telemetry) gets a disabled row with an empty config in its place,
+// in the same transaction, so the delete survives a restart: deleting the row alone stopped
+// /metrics only until the next start (TXE-7746).
+func (h *PluginsHandler) deletePluginRow(ctx context.Context, name string) error {
+	if !lib.PluginLoadsWhenRowAbsent(name) {
+		return h.configStore.DeletePlugin(ctx, name)
+	}
+	return h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+		if err := h.configStore.DeletePlugin(ctx, name, tx); err != nil {
+			return err
+		}
+		return h.configStore.CreatePlugin(ctx, &configstoreTables.TablePlugin{
+			Name:    name,
+			Enabled: false,
+			Config:  map[string]any{},
+		}, tx)
 	})
 }
 

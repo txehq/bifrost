@@ -151,8 +151,11 @@ export default function ObservabilityView() {
 		}
 	}, [selectedPluginId]);
 
-	// A connector can be deleted only when it has a stored plugin row.
-	const isConfigured = (tabId: string) => !!plugins?.some((plugin) => plugin.name === getPluginNameForTab(tabId));
+	// A connector can be deleted only when it has a stored plugin row. Deleting telemetry (the
+	// Prometheus tab) leaves a disabled row so it stays off after a restart, so for Prometheus the
+	// row must also be enabled.
+	const isConfigured = (tabId: string) =>
+		!!plugins?.some((plugin) => plugin.name === getPluginNameForTab(tabId) && (tabId !== "prometheus" || plugin.enabled));
 
 	const handleConfirmDelete = async () => {
 		if (!pendingDelete) return;

@@ -1118,3 +1118,67 @@ func TestUpdatePluginRefusedForAMissingPluginWritesNothing(t *testing.T) {
 		t.Fatalf("a malformed update must not create the plugin row, created %+v", store.existingPlugin)
 	}
 }
+
+// Deleting telemetry (the Prometheus connector) must leave a disabled row: the server loads
+// telemetry at startup when it has no row, so a plain row delete stopped /metrics only until the
+// next restart (TXE-7746). Any other plugin's row is just deleted.
+func TestDeletePlugin_TelemetryLeavesADisabledRow(t *testing.T) {
+	cases := []struct {
+		name        string
+		wantCreated bool
+	}{
+		{"telemetry", true},
+		{"otel", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			SetLogger(&mockLogger{})
+			store := &rollbackPluginsStore{existing: &configstoreTables.TablePlugin{
+				Name:    tc.name,
+				Enabled: true,
+				Config:  map[string]any{"push_gateway": map[string]any{"enabled": true, "push_gateway_url": "http://127.0.0.1:9091"}},
+			}}
+			h := &PluginsHandler{pluginsLoader: noopPluginsLoader{}, configStore: store}
+
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod("DELETE")
+			ctx.SetUserValue("name", tc.name)
+			h.deletePlugin(ctx)
+
+			if got := ctx.Response.StatusCode(); got != fasthttp.StatusOK {
+				t.Fatalf("status = %d, want 200: %s", got, ctx.Response.Body())
+			}
+			if len(store.deleted) != 1 || store.deleted[0] != tc.name {
+				t.Fatalf("deleted = %v, want [%s]", store.deleted, tc.name)
+			}
+			if !tc.wantCreated {
+				if len(store.created) != 0 {
+					t.Fatalf("created %d rows, want none", len(store.created))
+				}
+				return
+			}
+			if len(store.created) != 1 {
+				t.Fatalf("created %d rows, want one disabled row", len(store.created))
+			}
+			row := store.created[0]
+			if row.Name != tc.name || row.Enabled {
+				t.Fatalf("created row = %s enabled=%v, want %s disabled", row.Name, row.Enabled, tc.name)
+			}
+			if cfg, _ := row.Config.(map[string]any); len(cfg) != 0 {
+				t.Fatalf("created row config = %v, want empty", row.Config)
+			}
+		})
+	}
+}
+
+// Only telemetry loads with no row (server.loadBuiltinPlugins), so only its delete stores a disabled row.
+func TestPluginLoadsWhenRowAbsentIsTelemetryOnly(t *testing.T) {
+	if !lib.PluginLoadsWhenRowAbsent("telemetry") {
+		t.Fatal("telemetry loads with no row, so its delete must store a disabled row")
+	}
+	for _, name := range []string{"otel", "maxim", "datadog", "semantic_cache"} {
+		if lib.PluginLoadsWhenRowAbsent(name) {
+			t.Errorf("%s does not load without a row", name)
+		}
+	}
+}

@@ -34,7 +34,10 @@ export default function PrometheusView({ onDelete, isDeleting }: PrometheusViewP
 	const currentConfig = useMemo(() => {
 		const telemetryConfig = (selectedPlugin?.config as TelemetryConfig) ?? {};
 		const pushGateway = telemetryConfig.push_gateway ?? {};
-		const metricsEnabled = telemetryConfig.metrics_enabled ?? true;
+		// A stored telemetry row with enabled=false (a deleted Prometheus connector) serves no /metrics.
+		// With no row the view gets a placeholder named after the tab, and telemetry runs by default.
+		const pluginStoredDisabled = selectedPlugin?.name === "telemetry" && selectedPlugin.enabled === false;
+		const metricsEnabled = pluginStoredDisabled ? false : (telemetryConfig.metrics_enabled ?? true);
 		return {
 			...pushGateway,
 			metrics_enabled: metricsEnabled,

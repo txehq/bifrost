@@ -25,11 +25,30 @@ const CONNECTOR_CONFIG: Record<DeletableConnector, { enabled: boolean; config: R
   prometheus: { enabled: true, config: { metrics_enabled: true, push_gateway: { enabled: false } } },
 }
 
-async function storedPluginNames(request: APIRequestContext): Promise<string[]> {
+type StoredPlugin = { name: string; enabled: boolean; config: Record<string, unknown> | null }
+
+async function storedPlugins(request: APIRequestContext): Promise<StoredPlugin[]> {
   const res = await request.get('/api/plugins')
   expect(res.ok()).toBe(true)
-  const body = (await res.json()) as { plugins?: { name: string }[] }
-  return (body.plugins ?? []).map((p) => p.name)
+  const body = (await res.json()) as { plugins?: StoredPlugin[] }
+  return body.plugins ?? []
+}
+
+async function storedPluginNames(request: APIRequestContext): Promise<string[]> {
+  return (await storedPlugins(request)).map((p) => p.name)
+}
+
+// Deleted means: OTel has no row; telemetry keeps a disabled row with an empty config, because
+// the server loads telemetry at startup when it has no row (TXE-7746).
+async function expectDeleted(request: APIRequestContext, connector: DeletableConnector): Promise<void> {
+  const row = (await storedPlugins(request)).find((p) => p.name === PLUGIN_NAME[connector])
+  if (connector === 'otel') {
+    expect(row).toBeUndefined()
+    return
+  }
+  expect(row, 'telemetry keeps a disabled row').toBeDefined()
+  expect(row!.enabled).toBe(false)
+  expect(Object.keys(row!.config ?? {})).toHaveLength(0)
 }
 
 test.describe('Observability', () => {
@@ -249,9 +268,13 @@ test.describe('Observability', () => {
         expect((await deleted).ok()).toBe(true)
         await expect(observabilityPage.deleteDialog).toBeHidden()
 
-        // Gone from the server, and the page no longer offers a delete for it.
-        expect(await storedPluginNames(page.request)).not.toContain(pluginName)
+        // Deleted on the server, and the page no longer offers a delete for it.
+        await expectDeleted(page.request, connector)
         await expect(deleteBtn).toBeHidden()
+        if (connector === 'prometheus') {
+          // The stored telemetry row is off, so the form no longer shows /metrics as served.
+          await expect(observabilityPage.getConnectorToggle('prometheus')).toHaveAttribute('data-state', 'unchecked')
+        }
       })
     }
 

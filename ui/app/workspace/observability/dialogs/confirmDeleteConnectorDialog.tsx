@@ -17,7 +17,7 @@ interface Props {
 	onConfirm: () => void;
 }
 
-// Deleting the Prometheus connector deletes the "telemetry" plugin, which also serves the
+// Deleting the Prometheus connector turns off the "telemetry" plugin, which also serves the
 // /metrics scrape endpoint, so its warning says so (TXE-7746).
 const COPY = {
 	otel: {
@@ -27,7 +27,7 @@ const COPY = {
 	prometheus: {
 		title: "Delete Prometheus connector",
 		description:
-			"This removes the telemetry plugin and its configuration. Bifrost stops serving the /metrics endpoint, so Prometheus can no longer scrape it, and stops pushing to the Push Gateway.",
+			"This turns off the telemetry plugin and clears its configuration. Bifrost stops serving the /metrics endpoint, so Prometheus can no longer scrape it, and stops pushing to the Push Gateway. It stays off after a restart until you save the Prometheus connector again.",
 	},
 } as const;
 

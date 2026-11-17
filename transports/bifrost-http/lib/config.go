@@ -158,6 +158,14 @@ func IsBuiltinPlugin(name string) bool {
 	return slices.Contains(builtinPluginNames, name)
 }
 
+// PluginLoadsWhenRowAbsent reports whether the server loads the plugin at startup when it has no
+// stored row (server.loadBuiltinPlugins: telemetry is default-on so upgraders keep /metrics, and
+// only a row with enabled=false turns it off). Deleting such a plugin must store a disabled row,
+// or the next restart brings it back (TXE-7746).
+func PluginLoadsWhenRowAbsent(name string) bool {
+	return name == telemetry.PluginName
+}
+
 // pluginOrderInfo stores ordering metadata for a plugin.
 type pluginOrderInfo struct {
 	Placement schemas.PluginPlacement
