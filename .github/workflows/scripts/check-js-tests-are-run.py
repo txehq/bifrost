@@ -75,6 +75,14 @@ RUNNERS = [
             ("tests/e2e/selftest/playwright.quarantine.config.ts", 'testDir: "./quarantine"', True),
         ],
     ),
+    # The sample suite the offline skip-rules test runs through Playwright (TXE-7733).
+    (
+        r"^tests/e2e/selftest/skips/[^/]+\.spec\.ts$",
+        [
+            ("tests/e2e/scripts/skips.test.mjs", "selftest/playwright.skips.config.ts", True),
+            ("tests/e2e/selftest/playwright.skips.config.ts", 'testDir: "./skips"', True),
+        ],
+    ),
 ]
 
 # Directories whose test files deliberately run in no CI job, and why.

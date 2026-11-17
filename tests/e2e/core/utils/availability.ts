@@ -13,24 +13,31 @@ import { expect, test, type Locator } from "@playwright/test";
  */
 export const AVAILABILITY_TIMEOUT = 10_000;
 
+// Only "the state never came" may become a skip. Any other failure is the test's own problem and
+// must fail it: a locator that matches several elements, for one, threw a strict-mode violation that
+// read as "not visible" and skipped the vLLM key-form test with its form on screen (#373 review).
 async function reaches(check: () => Promise<void>): Promise<boolean> {
 	try {
 		await check();
 		return true;
-	} catch {
+	} catch (error) {
+		if (/strict mode violation/i.test(String((error as Error)?.message ?? error))) throw error;
 		return false;
 	}
 }
 
-/** Waits for `target` to be visible; skips the test with `reason` if it never is. */
+/**
+ * Waits for `target` to be visible; skips the test with `reason` if it never is. A locator that
+ * matches several elements (an `.or()` of fields that render together) is judged by its first match.
+ */
 export async function skipUnlessVisible(target: Locator, reason: string, timeout = AVAILABILITY_TIMEOUT): Promise<void> {
-	const visible = await reaches(() => expect(target).toBeVisible({ timeout }));
+	const visible = await reaches(() => expect(target.first()).toBeVisible({ timeout }));
 	test.skip(!visible, reason); // skip-ok: decided by the wait above
 }
 
-/** Waits for `target` to be visible and enabled; skips the test with `reason` if it never is. */
+/** Waits for `target` (its first match) to be visible and enabled; skips the test with `reason` if it never is. */
 export async function skipUnlessEnabled(target: Locator, reason: string, timeout = AVAILABILITY_TIMEOUT): Promise<void> {
-	const enabled = await reaches(() => expect(target).toBeEnabled({ timeout }));
+	const enabled = await reaches(() => expect(target.first()).toBeEnabled({ timeout }));
 	test.skip(!enabled, reason); // skip-ok: decided by the wait above
 }
 
