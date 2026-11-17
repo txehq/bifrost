@@ -873,9 +873,10 @@ func (p *LoggerPlugin) recordVideoJobLifecycle(entry *logstore.Log, result *sche
 	// A create that named no duration renders the vendor's default, and the vendor reports
 	// none back. Settlement needs a duration to price the job, so it gets that default here,
 	// on the accounting row only: without it the job is unpriceable and never charged. The
-	// default is the base provider's: a custom provider over Vertex renders Veo's 8 seconds too,
-	// and keyed on its own name it got none and settled unpriced (TXE-6570). A remix keeps its
-	// source's duration, and no provider with a known default (Gemini, Vertex) offers one.
+	// default is the base provider's: a custom provider over Vertex renders Veo's 8 seconds too.
+	// Keyed on its own name it got none, so the sweeper charged only the length it measured and
+	// the default no longer floored it (TXE-7706). A remix keeps its source's duration, and no
+	// provider with a known default (Gemini, Vertex) offers one.
 	if requestType == schemas.VideoGenerationRequest {
 		defaultsFrom := schemas.ModelProvider(entry.Provider)
 		if baseProvider != "" {

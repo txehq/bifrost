@@ -1,0 +1,360 @@
+{
+  "name": "631. A Veo job on a custom provider over Gemini keeps Veo's 8-second default as its settlement floor (Veo default seconds on a custom provider)",
+  "description": "Local fixture regression for TXE-7706, no live provider calls. fixture-folders.mjs's video-settlement group starts tests/e2e/api/runners/provider-error-fixture.mjs and a gateway on tests/e2e/api/provider_config/video-settlement.config.json: gemini and veo_custom, a custom provider whose base is gemini, both at the fixture, provider job accounting and request logging on, and the fixture's pricing sheet, which prices fixture-veo-short at $0.10 a second on both. Run with videoSettlementFixture=1 and videoSettlementFixtureUrl; every case is skipped otherwise. A Veo create that names no duration renders Veo's 8-second default, and the vendor reports no duration back, so the accounting row of the create gets that default (TXE-6537). The sweeper then measures the rendered file and charges the larger of the measured length and the row's seconds: the default is a floor, so a caller who swaps a shorter file into the bucket Veo wrote to cannot shrink the bill. The fixture's operation is done with a 4-second clip on the provider's own origin (framework/videoduration/testdata/four-seconds-silent.mp4). 631.2 to 631.4: on veo_custom the job settles at 8 seconds, $0.80. Red before TXE-7706: the default was looked up under the custom provider's own name, which has none, so the row had no seconds and the job settled at the 4 measured seconds, $0.40. 631.5 to 631.7: the same on gemini itself, $0.80, which held before too.",
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "if (pm.variables.get('videoSettlementFixture') !== '1') {",
+          "  pm.execution.skipRequest();",
+          "}"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "631.1 reset the fixture's record (Veo default seconds on a custom provider)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{videoSettlementFixtureUrl}}/__reset",
+          "host": [
+            "{{videoSettlementFixtureUrl}}"
+          ],
+          "path": [
+            "__reset"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the fixture record is reset', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "631.2 veo_custom/fixture-veo-short POST /v1/videos naming no seconds is a queued task (Veo default seconds on a custom provider)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"veo_custom/fixture-veo-short\",\n  \"prompt\": \"a paper boat drifting down a rain gutter\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the create is a queued Veo operation', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, pm.response.text()).to.include('fixture-video-op');",
+              "  pm.expect(j.seconds, pm.response.text()).to.not.be.ok;",
+              "  pm.variables.set('veoCustomVideoId', j.id);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "631.3 veo_custom GET /v1/videos/{id} reads the finished operation, which names no duration (Veo default seconds on a custom provider)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/{{veoCustomVideoId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "{{veoCustomVideoId}}"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the task is completed and reports no seconds of its own', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.status, pm.response.text()).to.eql('completed');",
+              "  pm.expect(j.seconds, pm.response.text()).to.not.be.ok;",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "631.4 the video sweeper settles the veo_custom job at Veo's 8-second default, $0.80, not the 4 seconds its clip measures (Veo default seconds on a custom provider)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-Bifrost-Setup-Token",
+            "value": "{{setupToken}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/logs?providers=veo_custom&limit=1",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "logs"
+          ],
+          "query": [
+            {
+              "key": "providers",
+              "value": "veo_custom"
+            },
+            {
+              "key": "limit",
+              "value": "1"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// The settlement row's id is jobaccounting.AccountingLogID: UUIDv5 (SHA-1) of the video namespace and",
+              "// '<provider>:<video id>'.",
+              "var CryptoJS = require('crypto-js');",
+              "function uuidv5(namespace, name) {",
+              "  var hash = CryptoJS.SHA1(CryptoJS.enc.Hex.parse(namespace.replace(/-/g, '')).concat(CryptoJS.enc.Utf8.parse(name))).toString();",
+              "  var b = hash.slice(0, 32).split('');",
+              "  b[12] = '5';",
+              "  b[16] = ((parseInt(b[16], 16) & 0x3) | 0x8).toString(16);",
+              "  var s = b.join('');",
+              "  return s.slice(0, 8) + '-' + s.slice(8, 12) + '-' + s.slice(12, 16) + '-' + s.slice(16, 20) + '-' + s.slice(20, 32);",
+              "}",
+              "var videoId = pm.variables.get('veoCustomVideoId');",
+              "var logId = uuidv5('b1e0f7c4-2a63-4d18-9f5b-6c0a3d8e41d7', 'veo_custom:' + videoId);",
+              "var token = pm.variables.get('setupToken');",
+              "var last = '';",
+              "function check(attempt) {",
+              "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + logId, method: 'GET', header: { 'X-Bifrost-Setup-Token': token } }, function (err, res) {",
+              "    if (!err && res.code === 200 && res.json().cost !== undefined) {",
+              "      var j = res.json();",
+              "      pm.test('the job on the custom provider is charged at the default, not the shorter clip', function () {",
+              "        pm.expect(j.cost, JSON.stringify(j)).to.be.closeTo(0.8, 1e-9);",
+              "        var accounting = j.video_debug && j.video_debug.accounting;",
+              "        pm.expect(accounting, JSON.stringify(j.video_debug)).to.be.ok;",
+              "        pm.expect(accounting.seconds, JSON.stringify(accounting)).to.eql(8);",
+              "        pm.expect(accounting.incomplete, JSON.stringify(accounting)).to.not.be.ok;",
+              "      });",
+              "      return;",
+              "    }",
+              "    last = err ? String(err) : (res.code + ' ' + res.text().slice(0, 300));",
+              "    if (attempt < 120) { setTimeout(function () { check(attempt + 1); }, 1000); return; }",
+              "    pm.test('the settlement row appeared', function () { pm.expect.fail('settlement row ' + logId + ' never appeared: ' + last); });",
+              "  });",
+              "}",
+              "pm.test('the logs API answered', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+              "});",
+              "check(0);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "631.5 gemini/fixture-veo-short POST /v1/videos naming no seconds is a queued task (Veo default seconds on a custom provider)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"gemini/fixture-veo-short\",\n  \"prompt\": \"a paper boat drifting down a rain gutter\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the create is a queued Veo operation', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, pm.response.text()).to.include('fixture-video-op');",
+              "  pm.expect(j.seconds, pm.response.text()).to.not.be.ok;",
+              "  pm.variables.set('veoGeminiVideoId', j.id);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "631.6 gemini GET /v1/videos/{id} reads the finished operation, which names no duration (Veo default seconds on a custom provider)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/{{veoGeminiVideoId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "{{veoGeminiVideoId}}"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the task is completed and reports no seconds of its own', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.status, pm.response.text()).to.eql('completed');",
+              "  pm.expect(j.seconds, pm.response.text()).to.not.be.ok;",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "631.7 the video sweeper settles the gemini job at Veo's 8-second default, $0.80, not the 4 seconds its clip measures (Veo default seconds on a custom provider)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-Bifrost-Setup-Token",
+            "value": "{{setupToken}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/logs?providers=gemini&limit=1",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "logs"
+          ],
+          "query": [
+            {
+              "key": "providers",
+              "value": "gemini"
+            },
+            {
+              "key": "limit",
+              "value": "1"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// The settlement row's id is jobaccounting.AccountingLogID: UUIDv5 (SHA-1) of the video namespace and",
+              "// '<provider>:<video id>'.",
+              "var CryptoJS = require('crypto-js');",
+              "function uuidv5(namespace, name) {",
+              "  var hash = CryptoJS.SHA1(CryptoJS.enc.Hex.parse(namespace.replace(/-/g, '')).concat(CryptoJS.enc.Utf8.parse(name))).toString();",
+              "  var b = hash.slice(0, 32).split('');",
+              "  b[12] = '5';",
+              "  b[16] = ((parseInt(b[16], 16) & 0x3) | 0x8).toString(16);",
+              "  var s = b.join('');",
+              "  return s.slice(0, 8) + '-' + s.slice(8, 12) + '-' + s.slice(12, 16) + '-' + s.slice(16, 20) + '-' + s.slice(20, 32);",
+              "}",
+              "var videoId = pm.variables.get('veoGeminiVideoId');",
+              "var logId = uuidv5('b1e0f7c4-2a63-4d18-9f5b-6c0a3d8e41d7', 'gemini:' + videoId);",
+              "var token = pm.variables.get('setupToken');",
+              "var last = '';",
+              "function check(attempt) {",
+              "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + logId, method: 'GET', header: { 'X-Bifrost-Setup-Token': token } }, function (err, res) {",
+              "    if (!err && res.code === 200 && res.json().cost !== undefined) {",
+              "      var j = res.json();",
+              "      pm.test('the gemini job is charged at the default, not the shorter clip', function () {",
+              "        pm.expect(j.cost, JSON.stringify(j)).to.be.closeTo(0.8, 1e-9);",
+              "        var accounting = j.video_debug && j.video_debug.accounting;",
+              "        pm.expect(accounting, JSON.stringify(j.video_debug)).to.be.ok;",
+              "        pm.expect(accounting.seconds, JSON.stringify(accounting)).to.eql(8);",
+              "        pm.expect(accounting.incomplete, JSON.stringify(accounting)).to.not.be.ok;",
+              "      });",
+              "      return;",
+              "    }",
+              "    last = err ? String(err) : (res.code + ' ' + res.text().slice(0, 300));",
+              "    if (attempt < 120) { setTimeout(function () { check(attempt + 1); }, 1000); return; }",
+              "    pm.test('the settlement row appeared', function () { pm.expect.fail('settlement row ' + logId + ' never appeared: ' + last); });",
+              "  });",
+              "}",
+              "pm.test('the logs API answered', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+              "});",
+              "check(0);"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

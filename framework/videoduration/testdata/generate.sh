@@ -19,3 +19,6 @@ ffmpeg "${global[@]}" "${video[@]}" "${out[@]}" -c:v mpeg4 -q:v 31 twelve-second
 # fragmented: an empty moov, then one moof and mdat per 2-second group of pictures.
 ffmpeg "${global[@]}" "${video[@]}" "${audio[@]}" "${out[@]}" -c:v mpeg4 -q:v 31 -g 20 -c:a aac -b:a 16k \
 	-movflags frag_keyframe+empty_moov+default_base_moof twelve-seconds-fragmented.mp4
+# four seconds, no audio: shorter than Veo's 8-second default, so a harness case can show the default is a
+# floor the settler keeps (TXE-7706, folder 631).
+ffmpeg "${global[@]}" -f lavfi -i testsrc=size=64x48:rate=10:duration=4 "${out[@]}" -c:v mpeg4 -q:v 31 four-seconds-silent.mp4

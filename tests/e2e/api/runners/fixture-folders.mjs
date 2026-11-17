@@ -183,13 +183,14 @@ export const GROUPS = [
 	},
 	{
 		// Folders 520 (TXE-7329), 582 (TXE-7401) and 616 (TXE-7131): the provider error fixture behind replicate, volcengine
-		// and modelark, and folder 617 (TXE-7513) behind openai's batches, with provider job accounting on
+		// and modelark, folder 617 (TXE-7513) behind openai's batches, and folder 631 (TXE-7706) behind gemini and a
+		// custom provider over it, with provider job accounting on
 		// (provider-error-fixture.config.json turns it off) and request logging on, since the rows wait for the
 		// video sweeper to settle a job and read its cost row back.
 		id: "video-settlement",
 		...providerError,
 		variables: ["videoSettlementFixture", "videoSettlementFixtureUrl"],
-		files: ["520-a-replicate-video-longer-than-the-seconds-asked-for-is-cha.json", "582-a-rendered-video-whose-length-cannot-be-measured-is-charged.json", "616-volcengine-and-modelark-video-jobs-settle-at-the-video-token.json", "617-a-batch-past-the-response-limit-is-settled-page-by-page-and-billed-in-full.json"],
+		files: ["520-a-replicate-video-longer-than-the-seconds-asked-for-is-cha.json", "582-a-rendered-video-whose-length-cannot-be-measured-is-charged.json", "616-volcengine-and-modelark-video-jobs-settle-at-the-video-token.json", "617-a-batch-past-the-response-limit-is-settled-page-by-page-and-billed-in-full.json", "631-a-veo-job-on-a-custom-provider-keeps-veo-s-default-seconds.json"],
 		config: "tests/e2e/api/provider_config/video-settlement.config.json",
 		vars: (p) => ({ videoSettlementFixture: "1", videoSettlementFixtureUrl: `http://127.0.0.1:${p.main}`, setupToken: SETUP_TOKEN }),
 	},

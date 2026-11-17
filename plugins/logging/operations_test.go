@@ -4058,7 +4058,7 @@ func newVideoLifecyclePlugin(t *testing.T) (*LoggerPlugin, *fakeBatchStore) {
 // charged to the caller's budget. A provider whose default Bifrost does not know gets none, and
 // so does an Omni model, which picks its own duration (TXE-6538). A custom provider gets the
 // default of its base provider: keyed on its own name, a Veo job on a custom provider over Vertex
-// had no duration and settled unpriced.
+// had no duration on its row, so the default no longer floored what the sweeper measured.
 func TestRecordVideoJobLifecycle_DefaultDurationPricesAVeoJobWithoutSeconds(t *testing.T) {
 	cases := []struct {
 		provider schemas.ModelProvider
@@ -5532,6 +5532,36 @@ func BenchmarkRecordVideoJobLifecycleGate(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		plugin.recordVideoJobLifecycle(entry, result, schemas.VideoGenerationRequest, nil, modelcatalog.VideoInputs{}, "")
+	}
+}
+
+// BenchmarkRecordVideoJobLifecycleCreate measures a video create's accounting row through the
+// block that fills Veo's default duration (TXE-7706): a create naming no seconds on vertex itself
+// and on a custom provider over vertex, whose default is now read for its base provider. The gate
+// benchmark above returns before this block, since its response has no video.
+func BenchmarkRecordVideoJobLifecycleCreate(b *testing.B) {
+	for _, tc := range []struct {
+		name           string
+		provider, base schemas.ModelProvider
+	}{
+		{"vertex", schemas.Vertex, ""},
+		{"custom over vertex", "my-vertex", schemas.Vertex},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			plugin := &LoggerPlugin{ctx: context.Background(), store: newTestStore(b), batchStore: newFakeBatchStore(), logger: testLogger{}}
+			entry := &logstore.Log{
+				ID: "req-veo", Provider: string(tc.provider), Model: "veo-3.1-generate-001", SelectedKeyID: "key-abc",
+				ParamsParsed: &schemas.VideoGenerationParameters{Size: "1280x720"},
+			}
+			result := &schemas.BifrostResponse{
+				VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{ID: "op-1", Status: schemas.VideoStatusInProgress},
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				entry.VideoDebugParsed = nil
+				plugin.recordVideoJobLifecycle(entry, result, schemas.VideoGenerationRequest, nil, modelcatalog.VideoInputs{}, tc.base)
+			}
+		})
 	}
 }
 
