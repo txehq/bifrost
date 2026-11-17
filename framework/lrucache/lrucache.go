@@ -172,6 +172,12 @@ func (c *Cache[V]) Get(key string) (V, bool) {
 // error. A successful result is cached unless an eviction or flush landed
 // while the load was in flight; errors are propagated but never cached.
 //
+// The leader reads the cache before it loads, so a caller that missed on
+// Get just before another leader stored the value, and reached Fill just
+// after that leader cleared its inflight slot, returns the stored value
+// instead of loading it a second time (TXE-4982). An evicted, flushed or
+// validator-rejected entry is a miss there as on Get, so it is loaded again.
+//
 // A follower waits on its own ctx as well as the leader's completion: if
 // ctx is canceled first, Fill returns ctx.Err() immediately rather than
 // blocking until the (possibly unrelated, possibly slow) leader finishes.
@@ -220,6 +226,14 @@ func (c *Cache[V]) Fill(ctx context.Context, key string, load Loader[V]) (V, err
 		}
 		close(call.done)
 	}()
+
+	// A previous leader stores its value before it clears the inflight slot
+	// (setIfGeneration runs before the deferred delete), so a value present
+	// now is the one that leader loaded or a newer one.
+	if cached, ok := c.Get(key); ok {
+		call.result = cached
+		return cached, nil
+	}
 
 	gen := c.currentGeneration()
 	value, indexKey, err := load()
