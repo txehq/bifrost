@@ -226,6 +226,22 @@ const behaviours = {
 		}),
 	}),
 };
+// Folder 630 (TXE-7358): a chat answer for each pricing row that names a rate by its older name. The
+// cache-hit rows read 800 cached of 1000 prompt tokens; the per-request row reads no cache.
+for (const [model, cached] of [["legacy-cache-hit-only", 800], ["legacy-cache-hit-both", 800], ["legacy-per-request-only", 0]]) {
+	behaviours[model] = () => ({
+		status: 200,
+		headers: {},
+		body: JSON.stringify({
+			id: `chatcmpl-${model}`,
+			object: "chat.completion",
+			created: 1,
+			model,
+			choices: [{ index: 0, message: { role: "assistant", content: "hello" }, finish_reason: "stop" }],
+			usage: { prompt_tokens: 1000, completion_tokens: 10, total_tokens: 1010, prompt_tokens_details: { cached_tokens: cached } },
+		}),
+	});
+}
 // Azure OpenAI's documented answer to a prompt its content filter blocked, TXE-6527 (contract C6): HTTP 400 with
 // error.code "content_filter" and the per-category verdicts under innererror.
 behaviours["azure-content-filter"] = () => ({
@@ -584,6 +600,15 @@ const fixturePricing = {
 		input_cost_per_token: 6e-7, output_cost_per_token: 2.4e-6, input_cost_per_audio_token: 1e-5,
 		cache_read_input_token_cost: 6e-8, cache_read_input_audio_token_cost: 3e-7,
 	},
+	// TXE-7358, folder 630: rows that name a rate by its older name, as DeepSeek/Tencent rows do for the
+	// cache-read rate and legacy Perplexity rows for the per-request fee. The -both row carries the
+	// canonical name too, which wins.
+	"legacy-cache-hit-only": { provider: "openai", mode: "chat", input_cost_per_token: 1.4e-7, output_cost_per_token: 2.8e-7, input_cost_per_token_cache_hit: 2.8e-8 },
+	"legacy-cache-hit-both": {
+		provider: "openai", mode: "chat", input_cost_per_token: 1.4e-7, output_cost_per_token: 2.8e-7,
+		cache_read_input_token_cost: 3e-8, input_cost_per_token_cache_hit: 2.8e-8,
+	},
+	"legacy-per-request-only": { provider: "openai", mode: "chat", input_cost_per_token: 1e-6, output_cost_per_token: 1e-6, input_cost_per_request: 0.005 },
 	"typesafe/jev-1.13": { provider: "openrouter", mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002 },
 	"decision-emulated": { provider: "openai", mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002, cache_read_input_token_cost: 0.0000001 },
 	"pp-custom-legacy": { provider: "openai", mode: "responses", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002 },

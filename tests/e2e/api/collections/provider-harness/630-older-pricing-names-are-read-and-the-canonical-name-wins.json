@@ -1,0 +1,231 @@
+{
+  "name": "630. Older names for the cache-read rate and the per-request fee are read, and the canonical name wins (legacy pricing alias) [SERIAL]",
+  "description": "TXE-7358. Upstream still publishes input_cost_per_token_cache_hit, an older name for cache_read_input_token_cost (41 DeepSeek and Tencent rows), and input_cost_per_request, an older name for the flat per-request fee (four legacy Perplexity rows). Sync dropped both, so a pricing sheet that names a rate only by its older name priced cached tokens at the input rate and dropped the fee. Fixture only: the fixture's pricing sheet carries one row per case, and each row checks the cost the gateway logs for one chat call. 630.1 pins precedence: on a row with both names, the canonical cache_read_input_token_cost wins.",
+  "item": [
+    {
+      "name": "630.0 a row that names the cache-read rate only as input_cost_per_token_cache_hit prices cached tokens at it (fixture) - openai/legacy-cache-hit-only",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.collectionVariables.set('legacyCacheHitOnlyReq', 'e2e-legacy-alias-0-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('chat through the fixture succeeds', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+              "});",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var reqId = pm.collectionVariables.get('legacyCacheHitOnlyReq');",
+              "// 1000 prompt tokens, 800 cached, 10 out: 200 x 1.4e-07 + 800 x 2.8e-08 (input_cost_per_token_cache_hit) + 10 x 2.8e-07. Without the older name read, the row has no cache-read rate and all 1000 take the input rate.",
+              "var want = 0.0000532, before = 0.0001428;",
+              "function read(tries) {",
+              "  pm.sendRequest({ url: BASE + '/api/logs?request_id=' + reqId + '&limit=1', method: 'GET' }, function (err, res) {",
+              "    var rows = (!err && res.code === 200) ? (res.json().logs || []) : [];",
+              "    var logRow = rows.filter(function (r) { return r.id === reqId; })[0];",
+              "    if ((!logRow || !(logRow.cost > 0)) && tries > 0) { setTimeout(function () { read(tries - 1); }, 300); return; }",
+              "    pm.test('the call was logged under its request id', function () {",
+              "      pm.expect(logRow, err ? String(err) : res.text()).to.not.equal(undefined);",
+              "    });",
+              "    if (!logRow) { return; }",
+              "    pm.test(\"a row that names the cache-read rate only as input_cost_per_token_cache_hit prices cached tokens at it\", function () {",
+              "      pm.expect(Math.abs(logRow.cost - want), 'cost ' + logRow.cost + ' vs ' + want + ' (without the older name read: ' + before + '); token_usage: ' + JSON.stringify(logRow.token_usage)).to.be.at.most(Math.max(1e-12, want * 1e-6));",
+              "    });",
+              "  });",
+              "}",
+              "read(20);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-request-id",
+            "value": "{{legacyCacheHitOnlyReq}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"openai/legacy-cache-hit-only\", \"messages\": [{\"role\": \"user\", \"content\": \"hello\"}]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "630.1 a row with both names prices cached tokens at cache_read_input_token_cost (fixture) - openai/legacy-cache-hit-both",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.collectionVariables.set('legacyCacheHitBothReq', 'e2e-legacy-alias-1-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('chat through the fixture succeeds', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+              "});",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var reqId = pm.collectionVariables.get('legacyCacheHitBothReq');",
+              "// 200 x 1.4e-07 + 800 x 3e-08 (cache_read_input_token_cost, which wins over the older name's 2.8e-08) + 10 x 2.8e-07.",
+              "var want = 0.0000548, before = 0.0000548;",
+              "function read(tries) {",
+              "  pm.sendRequest({ url: BASE + '/api/logs?request_id=' + reqId + '&limit=1', method: 'GET' }, function (err, res) {",
+              "    var rows = (!err && res.code === 200) ? (res.json().logs || []) : [];",
+              "    var logRow = rows.filter(function (r) { return r.id === reqId; })[0];",
+              "    if ((!logRow || !(logRow.cost > 0)) && tries > 0) { setTimeout(function () { read(tries - 1); }, 300); return; }",
+              "    pm.test('the call was logged under its request id', function () {",
+              "      pm.expect(logRow, err ? String(err) : res.text()).to.not.equal(undefined);",
+              "    });",
+              "    if (!logRow) { return; }",
+              "    pm.test(\"a row with both names prices cached tokens at cache_read_input_token_cost\", function () {",
+              "      pm.expect(Math.abs(logRow.cost - want), 'cost ' + logRow.cost + ' vs ' + want + ' (without the older name read: ' + before + '); token_usage: ' + JSON.stringify(logRow.token_usage)).to.be.at.most(Math.max(1e-12, want * 1e-6));",
+              "    });",
+              "  });",
+              "}",
+              "read(20);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-request-id",
+            "value": "{{legacyCacheHitBothReq}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"openai/legacy-cache-hit-both\", \"messages\": [{\"role\": \"user\", \"content\": \"hello\"}]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "630.2 a row that names the per-request fee only as input_cost_per_request bills it (fixture) - openai/legacy-per-request-only",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.collectionVariables.set('legacyPerRequestOnlyReq', 'e2e-legacy-alias-2-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('chat through the fixture succeeds', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+              "});",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var reqId = pm.collectionVariables.get('legacyPerRequestOnlyReq');",
+              "// 1000 x 1e-06 + 10 x 1e-06 + 0.005 per request (input_cost_per_request). Without the older name read, the fee is dropped.",
+              "var want = 0.00601, before = 0.00101;",
+              "function read(tries) {",
+              "  pm.sendRequest({ url: BASE + '/api/logs?request_id=' + reqId + '&limit=1', method: 'GET' }, function (err, res) {",
+              "    var rows = (!err && res.code === 200) ? (res.json().logs || []) : [];",
+              "    var logRow = rows.filter(function (r) { return r.id === reqId; })[0];",
+              "    if ((!logRow || !(logRow.cost > 0)) && tries > 0) { setTimeout(function () { read(tries - 1); }, 300); return; }",
+              "    pm.test('the call was logged under its request id', function () {",
+              "      pm.expect(logRow, err ? String(err) : res.text()).to.not.equal(undefined);",
+              "    });",
+              "    if (!logRow) { return; }",
+              "    pm.test(\"a row that names the per-request fee only as input_cost_per_request bills it\", function () {",
+              "      pm.expect(Math.abs(logRow.cost - want), 'cost ' + logRow.cost + ' vs ' + want + ' (without the older name read: ' + before + '); token_usage: ' + JSON.stringify(logRow.token_usage)).to.be.at.most(Math.max(1e-12, want * 1e-6));",
+              "    });",
+              "  });",
+              "}",
+              "read(20);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-request-id",
+            "value": "{{legacyPerRequestOnlyReq}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"openai/legacy-per-request-only\", \"messages\": [{\"role\": \"user\", \"content\": \"hello\"}]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    }
+  ]
+}
