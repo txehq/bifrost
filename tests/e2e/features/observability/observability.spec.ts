@@ -244,6 +244,11 @@ test.describe('Observability', () => {
 
         await observabilityPage.goto()
         await observabilityPage.selectConnector(connector)
+        const otelServiceName = observabilityPage.page.getByTestId('otel-profile-0').getByPlaceholder('bifrost', { exact: true })
+        if (connector === 'otel') {
+          await observabilityPage.expandOtelProfile(0)
+          await expect(otelServiceName).toHaveValue('bifrost-e2e-delete')
+        }
         const deleteBtn = observabilityPage.getConnectorDeleteBtn(connector)
         await expect(deleteBtn).toBeVisible()
         await deleteBtn.click()
@@ -271,6 +276,11 @@ test.describe('Observability', () => {
         // Deleted on the server, and the page no longer offers a delete for it.
         await expectDeleted(page.request, connector)
         await expect(deleteBtn).toBeHidden()
+        if (connector === 'otel') {
+          // The form no longer holds the deleted profile, so a save cannot recreate it.
+          await observabilityPage.expandOtelProfile(0)
+          await expect(otelServiceName).not.toHaveValue('bifrost-e2e-delete')
+        }
         if (connector === 'prometheus') {
           // The stored telemetry row is off, so the form no longer shows /metrics as served.
           await expect(observabilityPage.getConnectorToggle('prometheus')).toHaveAttribute('data-state', 'unchecked')

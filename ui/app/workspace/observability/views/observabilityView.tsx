@@ -118,7 +118,9 @@ export default function ObservabilityView() {
 	const getPluginNameForTab = (tabId: string) => (tabId === "prometheus" ? "telemetry" : tabId);
 
 	useEffect(() => {
-		if (!plugins || plugins.length === 0) return;
+		// An empty list is a real answer (the last stored connector was just deleted): select the
+		// placeholder for the tab rather than keep the deleted plugin selected.
+		if (!plugins) return;
 		if (!selectedPluginId) {
 			setSelectedPluginId(supportedPlatforms[0].id);
 		} else {
