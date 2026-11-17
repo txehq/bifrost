@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/capsohq/bifrost/core/schemas"
+	"github.com/capsohq/bifrost/framework/configstore"
 	configstoreTables "github.com/capsohq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -86,7 +87,8 @@ func storageRequests(provider schemas.ModelProvider, location string) map[string
 
 // A virtual key with allowed_storage_prefixes names only storage the list covers, whether the
 // request reads it or writes it, on every surface and in every form of the name; a key with no
-// list, and a request with no key, are not restricted (TXE-7088). The objects here are recorded
+// list may name none on these providers (TXE-7705), and a request with no key is not restricted
+// (TXE-7088). The objects here are recorded
 // for nobody, so ownership has nothing to say: this is the rule for a path nobody recorded.
 func TestVirtualKeyStorageAllowlist(t *testing.T) {
 	plugin := restrictedPlugin(t, []string{"gs://shared-bucket/tenant-a/", "s3://tenant-a-bucket"}, nil)
@@ -120,7 +122,7 @@ func TestVirtualKeyStorageAllowlist(t *testing.T) {
 
 					_, shortCircuit, err = open.PreLLMHook(presentCtx(mcpTestVKValue), build(location))
 					require.NoError(t, err)
-					assert.Nil(t, shortCircuit, "a key with no list is not restricted: %s", location)
+					requireUnlistedRefusal(t, shortCircuit, "storage_location", "a key with no list names no storage on "+string(tc.provider)+": "+location)
 					_, shortCircuit, err = plugin.PreLLMHook(emptyCtx(), build(location))
 					require.NoError(t, err)
 					assert.Nil(t, shortCircuit, "a request that presented no key is not restricted: %s", location)
@@ -255,6 +257,162 @@ func TestVirtualKeyStorageAllowlistCoversEveryStorageConfig(t *testing.T) {
 		}
 	}
 	require.GreaterOrEqual(t, found, 5, "the file operations with a storage_config were not found by reflection")
+}
+
+// requireUnlistedRefusal asserts the default-deny refusal of TXE-7705: 400
+// caller_unsupported_parameter, naming the list the key lacks.
+func requireUnlistedRefusal(t *testing.T, shortCircuit *schemas.LLMPluginShortCircuit, param, msg string) {
+	t.Helper()
+	require.NotNil(t, shortCircuit, msg)
+	require.NotNil(t, shortCircuit.Error, msg)
+	assert.Equal(t, 400, *shortCircuit.Error.StatusCode, msg)
+	assert.Equal(t, schemas.ErrorTypeCallerUnsupportedParameter, shortCircuit.Error.ExtraFields.ErrorType, msg)
+	assert.Equal(t, param, shortCircuit.Error.Error.Param, msg)
+	list := map[string]string{"storage_location": "allowed_storage_prefixes", "pubsub_topic": "allowed_pubsub_topics"}[param]
+	assert.Contains(t, shortCircuit.Error.Error.Message, list, msg)
+}
+
+// Default-deny (TXE-7705): on Vertex and Bedrock, which act on storage and topics with the
+// operator's own cloud identity, a virtual key with no allowed_storage_prefixes may name no
+// storage and one with no allowed_pubsub_topics may name no topic. Each list is its own: a key
+// with a storage list and no topic list may name its storage and no topic. Other providers, a
+// request with no virtual key, and a request that names nothing are not affected, and a custom
+// provider built on Vertex or Bedrock is held like its base.
+func TestVirtualKeyWithoutAListNamesNoCloudResourceOnCloudIdentityProviders(t *testing.T) {
+	const topic = "projects/p/topics/veo"
+	open := restrictedPlugin(t, nil, nil)
+	storageOnly := restrictedPlugin(t, []string{"gs://shared-bucket/tenant-a", "s3://shared-bucket/tenant-a"}, nil)
+	topicsOnly := restrictedPlugin(t, nil, []string{topic})
+	str := func(s string) *string { return &s }
+	veo := func(provider schemas.ModelProvider, input *schemas.VideoGenerationInput, params *schemas.VideoGenerationParameters) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.VideoGenerationRequest, VideoGenerationRequest: &schemas.BifrostVideoGenerationRequest{Provider: provider, Model: "veo", Input: input, Params: params}}
+	}
+	for _, provider := range []schemas.ModelProvider{schemas.Vertex, schemas.Bedrock} {
+		location := map[schemas.ModelProvider]string{schemas.Vertex: "gs://shared-bucket/tenant-a/in/a.png", schemas.Bedrock: "s3://shared-bucket/tenant-a/in/a.png"}[provider]
+		for name, req := range map[string]*schemas.BifrostRequest{
+			// The unified Veo fields.
+			"unified input_reference":    veo(provider, &schemas.VideoGenerationInput{Prompt: "p", InputReference: str(location)}, nil),
+			"unified last_frame":         veo(provider, &schemas.VideoGenerationInput{Prompt: "p"}, &schemas.VideoGenerationParameters{LastFrame: schemas.TolerantString(location)}),
+			"unified reference_images":   veo(provider, &schemas.VideoGenerationInput{Prompt: "p"}, &schemas.VideoGenerationParameters{ReferenceImages: schemas.VideoReferenceImages{location}}),
+			"unified output_storage_uri": veo(provider, &schemas.VideoGenerationInput{Prompt: "p"}, &schemas.VideoGenerationParameters{TaskControlParameters: schemas.TaskControlParameters{OutputStorageURI: str(location)}}),
+			// Extra params, a gcsUri object among them.
+			"extra param storageUri": veo(provider, &schemas.VideoGenerationInput{Prompt: "p"}, &schemas.VideoGenerationParameters{ExtraParams: map[string]interface{}{"storageUri": location}}),
+			"extra param gcsUri object": veo(provider, &schemas.VideoGenerationInput{Prompt: "p"}, &schemas.VideoGenerationParameters{ExtraParams: map[string]interface{}{
+				"image": map[string]any{"gcsUri": location, "mimeType": "image/png"}}}),
+			// Batch: an input file, an output folder, and an inline item that names storage.
+			"batch input file": {RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{Provider: provider, Model: str("m"), InputFileID: location}},
+			"batch output folder": {RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{Provider: provider, Model: str("m"),
+				Requests: []schemas.BatchRequestItem{{CustomID: "1", Body: map[string]any{"model": "m"}}}, OutputFolder: &schemas.BatchOutputFolder{URL: location}}},
+			"batch inline item gcsUri": {RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{Provider: provider, Model: str("m"),
+				Requests: []schemas.BatchRequestItem{{CustomID: "1", Body: map[string]any{"contents": []any{map[string]any{"parts": []any{map[string]any{"fileData": map[string]any{"fileUri": location}}}}}}}}}},
+			// A file operation run in a storage_config.
+			"file upload storage_config": {RequestType: schemas.FileUploadRequest, FileUploadRequest: &schemas.BifrostFileUploadRequest{Provider: provider,
+				StorageConfig: &schemas.FileStorageConfig{GCS: &schemas.GCSStorageConfig{Bucket: "shared-bucket", Prefix: "tenant-a"}, S3: &schemas.S3StorageConfig{Bucket: "shared-bucket", Prefix: "tenant-a"}}}},
+		} {
+			_, shortCircuit, err := open.PreLLMHook(presentCtx(mcpTestVKValue), req)
+			require.NoError(t, err)
+			requireUnlistedRefusal(t, shortCircuit, "storage_location", string(provider)+" "+name)
+
+			_, shortCircuit, err = storageOnly.PreLLMHook(presentCtx(mcpTestVKValue), req)
+			require.NoError(t, err)
+			if req.BatchCreateRequest != nil && len(req.BatchCreateRequest.Requests) > 0 {
+				// An inline batch is refused for a key with a list on its own ground
+				// (TestVirtualKeyStorageAllowlistRefusesInlineBatchesThatUploadTheirInput).
+				require.NotNil(t, shortCircuit, "%s %s", provider, name)
+			} else {
+				assert.Nil(t, shortCircuit, "%s %s: a key whose list covers the location keeps working", provider, name)
+			}
+
+			_, shortCircuit, err = open.PreLLMHook(emptyCtx(), req)
+			require.NoError(t, err)
+			assert.Nil(t, shortCircuit, "%s %s: a request with no virtual key is not restricted", provider, name)
+
+			other := cloneWithProvider(t, req, schemas.OpenAI)
+			_, shortCircuit, err = open.PreLLMHook(presentCtx(mcpTestVKValue), other)
+			require.NoError(t, err)
+			assert.Nil(t, shortCircuit, "%s on openai: a provider that does not act with the operator's cloud identity is not affected", name)
+		}
+
+		// Topics: the Veo pubsubTopic, in extra params and in an inline batch item.
+		for name, req := range map[string]*schemas.BifrostRequest{
+			"extra param pubsubTopic": veo(provider, &schemas.VideoGenerationInput{Prompt: "p"}, &schemas.VideoGenerationParameters{ExtraParams: map[string]interface{}{"pubsubTopic": topic}}),
+			"inline batch item pubsubTopic": {RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{Provider: provider, Model: str("m"),
+				Requests: []schemas.BatchRequestItem{{CustomID: "1", Body: map[string]any{"parameters": map[string]any{"pubsubTopic": topic}}}}}},
+		} {
+			for label, plugin := range map[string]*GovernancePlugin{"no list": open, "a storage list only": storageOnly} {
+				_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), req)
+				require.NoError(t, err)
+				requireUnlistedRefusal(t, shortCircuit, "pubsub_topic", string(provider)+" "+name+", "+label)
+			}
+			_, shortCircuit, err := topicsOnly.PreLLMHook(presentCtx(mcpTestVKValue), req)
+			require.NoError(t, err)
+			assert.Nil(t, shortCircuit, "%s %s: a key whose topic list holds the topic keeps working", provider, name)
+		}
+
+		// A request that names no storage and no topic is untouched.
+		for name, req := range map[string]*schemas.BifrostRequest{
+			"plain video": veo(provider, &schemas.VideoGenerationInput{Prompt: "a gs://bucket/x path and " + topic + " in prose"}, nil),
+			"web image":   veo(provider, &schemas.VideoGenerationInput{Prompt: "p", InputReference: str("https://example.com/cat.png")}, nil),
+			"inline batch": {RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{Provider: provider, Model: str("m"),
+				Requests: []schemas.BatchRequestItem{{CustomID: "1", Body: map[string]any{"model": "m"}}}}},
+			"file upload to the configured bucket": {RequestType: schemas.FileUploadRequest, FileUploadRequest: &schemas.BifrostFileUploadRequest{Provider: provider}},
+		} {
+			_, shortCircuit, err := open.PreLLMHook(presentCtx(mcpTestVKValue), req)
+			require.NoError(t, err)
+			assert.Nil(t, shortCircuit, "%s %s", provider, name)
+		}
+	}
+}
+
+// A custom provider is held like its base. When its base cannot be read (no in-memory store, as
+// in a direct Go SDK deployment, or a provider the store does not hold) it may be built on Vertex
+// or Bedrock, so a key with no list is refused there too: the check fails closed. A standard
+// provider other than Vertex and Bedrock is never affected.
+func TestDefaultDenyOnCustomProvidersFailsClosedWhenTheBaseIsUnknown(t *testing.T) {
+	vk := buildVKForMCPStamping(nil)
+	vk.ProviderConfigs = append(vk.ProviderConfigs, buildProviderConfig("my-bedrock", []string{"*"}), buildProviderConfig("my-openai", []string{"*"}),
+		buildProviderConfig("unlisted-custom", []string{"*"}), buildProviderConfig("gemini", []string{"*"}))
+	plugin := newAccessTestPlugin(t, vk, nil)
+	chat := func(provider schemas.ModelProvider) *schemas.BifrostRequest {
+		return storageRequests(provider, "s3://shared-bucket/tenant-a/in/a.png")["chat file"]
+	}
+	run := func(provider schemas.ModelProvider) *schemas.LLMPluginShortCircuit {
+		t.Helper()
+		_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), chat(provider))
+		require.NoError(t, err)
+		return shortCircuit
+	}
+
+	plugin.inMemoryStore = nil
+	requireUnlistedRefusal(t, run("my-openai"), "storage_location", "no in-memory store: a custom provider's base is unknown")
+	assert.Nil(t, run(schemas.Gemini), "a standard provider needs no store to be known")
+
+	plugin.inMemoryStore = &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		"my-bedrock": {CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Bedrock}},
+		"my-openai":  {CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI}},
+	}}
+	requireUnlistedRefusal(t, run("my-bedrock"), "storage_location", "a custom provider built on Bedrock")
+	assert.Nil(t, run("my-openai"), "a custom provider built on OpenAI is not affected")
+	requireUnlistedRefusal(t, run("unlisted-custom"), "storage_location", "a provider the store does not hold")
+	assert.Nil(t, run(schemas.Gemini))
+}
+
+// cloneWithProvider returns a copy of req's request struct with its Provider set to provider.
+func cloneWithProvider(t testing.TB, req *schemas.BifrostRequest, provider schemas.ModelProvider) *schemas.BifrostRequest {
+	t.Helper()
+	clone := &schemas.BifrostRequest{RequestType: req.RequestType}
+	src, dst := reflect.ValueOf(req).Elem(), reflect.ValueOf(clone).Elem()
+	for i := 0; i < src.NumField(); i++ {
+		field := src.Field(i)
+		if field.Kind() != reflect.Pointer || field.IsNil() || field.Elem().Kind() != reflect.Struct {
+			continue
+		}
+		copied := reflect.New(field.Elem().Type())
+		copied.Elem().Set(field.Elem())
+		copied.Elem().FieldByName("Provider").Set(reflect.ValueOf(provider))
+		dst.Field(i).Set(copied)
+	}
+	return clone
 }
 
 // A virtual key with allowed_pubsub_topics names only those topics. A topic reaches the
@@ -489,9 +647,16 @@ func TestVirtualKeyStorageAllowlistRefusesInlineBatchesThatUploadTheirInput(t *t
 		require.NoError(t, err)
 		assert.Nil(t, shortCircuit, "%s: a batch on an input file inside the key's storage", provider)
 
+		// A key with no list names no output folder on these providers (TXE-7705); an inline
+		// batch that names none goes to the location the operator configured, as before.
 		_, shortCircuit, err = open.PreLLMHook(presentCtx(mcpTestVKValue), inline(provider, folder))
 		require.NoError(t, err)
-		assert.Nil(t, shortCircuit, "%s: a key with no list creates inline batches as before", provider)
+		requireUnlistedRefusal(t, shortCircuit, "storage_location", string(provider)+": a key with no list names an output folder")
+		noFolder := inline(provider, folder)
+		noFolder.BatchCreateRequest.OutputFolder = nil
+		_, shortCircuit, err = open.PreLLMHook(presentCtx(mcpTestVKValue), noFolder)
+		require.NoError(t, err)
+		assert.Nil(t, shortCircuit, "%s: a key with no list creates an inline batch that names no storage", provider)
 	}
 	// A provider that takes inline items in the request itself uploads nothing.
 	_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{Provider: schemas.OpenAI,
@@ -542,29 +707,40 @@ func BenchmarkPreLLMHookCloudResourceAllowlists(b *testing.B) {
 		"storage_list":       {{"gs://shared-bucket/tenant-a"}, nil},
 		"storage_and_topics": {{"gs://shared-bucket/tenant-a"}, {"projects/p/topics/tenant-a"}},
 	}
-	for keyName, lists := range keys {
-		vk := buildVKForMCPStamping(nil)
-		vk.AllowedStoragePrefixes, vk.AllowedPubSubTopics = lists[0], lists[1]
-		plugin := newAccessTestPlugin(b, vk, nil)
-		plugin.objectOwnershipEnforcedFn = func() bool { return false }
-		for reqName, req := range requests {
-			newCtx := func() *schemas.BifrostContext {
-				ctx := presentCtx(mcpTestVKValue)
-				if strings.HasPrefix(reqName, "genai_") {
-					ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "genai")
+	// Each request runs on OpenAI and on Vertex. On Vertex a key with no list is checked too
+	// (TXE-7705, default-deny): its requests that name nothing are served after the walk, and
+	// vertex/no_lists/chat_stored_image is the refusal.
+	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.Vertex} {
+		for keyName, lists := range keys {
+			vk := buildVKForMCPStamping(nil)
+			vk.ProviderConfigs = append(vk.ProviderConfigs, buildProviderConfig("vertex", []string{"*"}))
+			vk.AllowedStoragePrefixes, vk.AllowedPubSubTopics = lists[0], lists[1]
+			plugin := newAccessTestPlugin(b, vk, nil)
+			plugin.objectOwnershipEnforcedFn = func() bool { return false }
+			for reqName, base := range requests {
+				req := base
+				if provider != schemas.OpenAI {
+					req = cloneWithProvider(b, base, provider)
 				}
-				return ctx
+				refused := provider == schemas.Vertex && keyName == "no_lists" && reqName == "chat_stored_image"
+				newCtx := func() *schemas.BifrostContext {
+					ctx := presentCtx(mcpTestVKValue)
+					if strings.HasPrefix(reqName, "genai_") {
+						ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "genai")
+					}
+					return ctx
+				}
+				b.Run(string(provider)+"/"+keyName+"/"+reqName, func(b *testing.B) {
+					if _, shortCircuit, err := plugin.PreLLMHook(newCtx(), req); err != nil || (shortCircuit != nil) != refused {
+						b.Fatalf("refused is %v, want %v: %v %v", shortCircuit != nil, refused, err, shortCircuit)
+					}
+					b.ReportAllocs()
+					b.ResetTimer()
+					for i := 0; i < b.N; i++ {
+						_, _, _ = plugin.PreLLMHook(newCtx(), req)
+					}
+				})
 			}
-			b.Run(keyName+"/"+reqName, func(b *testing.B) {
-				if _, shortCircuit, err := plugin.PreLLMHook(newCtx(), req); err != nil || shortCircuit != nil {
-					b.Fatalf("the request is refused: %v %v", err, shortCircuit)
-				}
-				b.ReportAllocs()
-				b.ResetTimer()
-				for i := 0; i < b.N; i++ {
-					_, _, _ = plugin.PreLLMHook(newCtx(), req)
-				}
-			})
 		}
 	}
 }

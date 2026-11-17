@@ -235,6 +235,7 @@ NOT_DIALLED_HOSTS = {
     "en.wikipedia.org": "googleSearch excludeDomains filter value, not a URL anyone fetches",
     "petstore3.swagger.io": "servers/base_url inside the inline specs of the 229 mcp-openapi-spec rows; no tool is called, and the rows carry the setup token, so the auth-bypassed public-target DNS check never runs",
     "upload.wikimedia.org": "Volcengine multimodal embedding image_url in the 277 rows - Volcengine fetches it server-side",
+    "bifrost-fixture-bucket.s3.us-east-1.amazonaws.com": "640.4: the https form of an S3 object named by a virtual key with no storage list on Bedrock; governance refuses it with 400 before any provider call (TXE-7705), so nothing dials it",
     "raw.githubusercontent.com": "Groq transcription audio url in the 310 rows - Groq fetches it server-side; Bifrost forwards the url and never downloads it, and the openai row is refused before any upstream call",
     "placeholder.search.windows.net": "Azure AI Search placeholder in a request body; never resolved",
     "www.w3.org": "the SSML namespace (xmlns) in the expected request body of the 400 azure speech provider rows; an XML namespace name, never fetched",

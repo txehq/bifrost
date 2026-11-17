@@ -297,7 +297,12 @@ A virtual key can be limited to its own storage and topics:
 - `allowed_storage_prefixes`: buckets or folders, written `gs://<bucket>[/<folder>]` or `s3://<bucket>[/<folder>]`. With a list set, every storage location a request names, read or written, must lie under one of the entries at a folder boundary (`gs://bucket/tenant-a` covers `gs://bucket/tenant-a/in/x.jsonl`, not `gs://bucket/tenant-ab/x.jsonl`).
 - `allowed_pubsub_topics`: full topic names, `projects/<project>/topics/<topic>`. With a list set, a topic a request names in its provider-specific fields must be one of them.
 
-A key with no list is not restricted, which is the default. A request with no virtual key is never restricted.
+What a key with no list may name depends on the provider:
+
+- **Vertex and Bedrock** (also a custom provider built on either, and a custom provider whose base the gateway cannot read, such as one in a direct Go SDK setup with no provider store) act on storage and topics with the operator's own cloud identity, the provider key's service account or IAM role. There a key with no `allowed_storage_prefixes` may name no storage at all, and a key with no `allowed_pubsub_topics` no topic. The request is refused with `400`, `error_type` `caller_unsupported_parameter`, `error.param` `storage_location` or `pubsub_topic`, and a message naming the list the key lacks. Each list is its own: a key with a storage list and no topic list may name its storage and no topic. A request that names neither (a plain chat, an inline batch, a file upload to the bucket configured on the provider key) is served as before. This covers storage named by a stored object's own id too, such as the `s3://` id of a file uploaded through the gateway, so a key that uses the files, batch or video routes with storage on these providers needs a list. (TXE-7705; until then a key with no list was not restricted here either.)
+- **Every other provider:** a key with no list is not restricted.
+
+A request with no virtual key is never restricted.
 
 The lists are separate from the ownership of stored objects, which needs no configuration: a file belongs to the key that uploaded it, and an output folder, with the results written into it, to the key that first wrote there (see [Files and Batch](/integrations/openai-sdk/files-and-batch)). Ownership covers what Bifrost recorded; the lists also cover objects nobody recorded.
 
@@ -314,7 +319,8 @@ curl -X POST http://localhost:8080/api/governance/virtual-keys \
     "provider_configs": [{ "provider": "vertex", "allowed_models": ["*"], "key_ids": ["*"] }]
   }'
 
-# Replace a list (omit the field to leave it unchanged, send [] to remove the limit)
+# Replace a list (omit the field to leave it unchanged, send [] to remove the list; on Vertex
+# and Bedrock a key without a list may then name no storage or topic)
 curl -X PUT http://localhost:8080/api/governance/virtual-keys/{vk_id} \
   -H "Content-Type: application/json" \
   -d '{ "allowed_storage_prefixes": ["gs://shared-bucket/tenant-a/", "s3://tenant-a-bucket"] }'

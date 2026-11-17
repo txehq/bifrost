@@ -20,7 +20,10 @@ import (
 //
 // A virtual key can therefore be given the storage it may use (allowed_storage_prefixes) and the
 // topics it may name (allowed_pubsub_topics). A key with a list may name only what the list
-// covers; a key with none is not restricted, as before. The check is one function over the
+// covers. A key with none is not restricted, except on the providers that act with the
+// operator's own cloud identity (Vertex and Bedrock, cloudIdentityProviders): there a key with no
+// storage list may name no storage and a key with no topic list may name no topic, and the
+// request is refused with caller_unsupported_parameter (TXE-7705, default-deny). The check is one function over the
 // references the ownership walk already finds (requestFileRefs, see filerefs.go), on every
 // provider and every route, so a field or a route added later is covered when it is classified
 // there. It does not depend on client.enforce_vk_object_ownership: the list is the key's own.
@@ -478,10 +481,68 @@ func (c *topicCollector) walkStructs(value reflect.Value, plan *fileRefPlan) {
 	}
 }
 
+// cloudIdentityProviders are the providers that read, write and publish to the storage and
+// topics a request names with the operator's own cloud identity (the provider key's service
+// account or IAM role), not with anything the caller holds. On them a virtual key with no list
+// may name none (TXE-7705). Azure is not here: its storage is reached by URLs the caller signs.
+var cloudIdentityProviders = map[schemas.ModelProvider]struct{}{
+	schemas.Vertex:  {},
+	schemas.Bedrock: {},
+}
+
+// standardProviders is schemas.StandardProviders as a set: the built-in providers, whose
+// implementation is their own name.
+var standardProviders = func() map[schemas.ModelProvider]struct{} {
+	set := make(map[schemas.ModelProvider]struct{}, len(schemas.StandardProviders))
+	for _, provider := range schemas.StandardProviders {
+		set[provider] = struct{}{}
+	}
+	return set
+}()
+
+// actsWithOperatorCloudIdentity reports whether req runs on a cloud identity provider, directly
+// or as the base of a custom provider. Pre-hooks run again for each fallback, so the provider is
+// the one this attempt goes to. A custom provider whose base cannot be read (no in-memory store,
+// as in a direct Go SDK deployment, or a provider the store does not hold) may be built on one,
+// so it is treated as one: the check fails closed.
+func (p *GovernancePlugin) actsWithOperatorCloudIdentity(req *schemas.BifrostRequest) bool {
+	provider, _, _ := req.GetRequestFields()
+	if provider == "" {
+		return false
+	}
+	if _, ok := cloudIdentityProviders[provider]; ok {
+		return true
+	}
+	if _, ok := standardProviders[provider]; ok {
+		return false
+	}
+	if p.inMemoryStore == nil {
+		return true
+	}
+	config, ok := configuredProvider(p.inMemoryStore, provider)
+	if !ok || config.CustomProviderConfig == nil || config.CustomProviderConfig.BaseProviderType == "" {
+		return true
+	}
+	_, ok = cloudIdentityProviders[config.CustomProviderConfig.BaseProviderType]
+	return ok
+}
+
+// refuseUnlistedCloudResource is the default-deny refusal: a virtual key with no list for a kind
+// of resource named one on a cloud identity provider. It is caller_unsupported_parameter, since
+// the request is the caller's to change (drop the name, or have the key given a list), and it
+// names the list that would allow it.
+func refuseUnlistedCloudResource(ctx *schemas.BifrostContext, provider schemas.ModelProvider, param, list, what string) *schemas.LLMPluginShortCircuit {
+	ctx.SetValue(governanceRejectedContextKey, true)
+	return &schemas.LLMPluginShortCircuit{Error: schemas.NewUnsupportedParameterError(param, fmt.Sprintf(
+		"this virtual key has no %s, and %s acts on %s with the gateway's own cloud credentials: a key without that list may not name %s on this provider; give the key an %s list that covers it",
+		list, provider, what, what, list))}
+}
+
 // enforceCloudResourceAllowlists refuses a request that names storage or a Pub/Sub topic
-// outside what its virtual key may use. A key with no list, and a request with no virtual key,
-// are not restricted. A reference that cannot be read or resolved cannot be shown to be inside
-// the list, so it is refused.
+// outside what its virtual key may use. A request with no virtual key is not restricted. A key
+// with no list is not restricted either, except on a cloud identity provider, where it may name
+// no storage (or no topic) at all. A reference that cannot be read or resolved cannot be shown
+// to be inside the list, or to be absent, so it is refused.
 func (p *GovernancePlugin) enforceCloudResourceAllowlists(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) *schemas.LLMPluginShortCircuit {
 	if ctx == nil || req == nil {
 		return nil
@@ -489,8 +550,27 @@ func (p *GovernancePlugin) enforceCloudResourceAllowlists(ctx *schemas.BifrostCo
 	// Restricted when a list was stamped, even one with no valid entry left.
 	prefixes, storageRestricted := ctx.Value(governanceAllowedStoragePrefixesContextKey).([]string)
 	topics, topicsRestricted := ctx.Value(governanceAllowedPubSubTopicsContextKey).([]string)
-	if !storageRestricted && !topicsRestricted {
+	// Default-deny (TXE-7705): a list the key lacks allows nothing on a cloud identity provider.
+	var storageDenied, topicsDenied bool
+	if (!storageRestricted || !topicsRestricted) && requestVirtualKeyID(ctx) != "" && p.actsWithOperatorCloudIdentity(req) {
+		storageDenied, topicsDenied = !storageRestricted, !topicsRestricted
+	}
+	if !storageRestricted && !topicsRestricted && !storageDenied && !topicsDenied {
 		return nil
+	}
+	if storageDenied {
+		locations, unverifiable := requestStorageLocations(req)
+		if unverifiable || len(locations) > 0 || len(storageConfigLocations(req)) > 0 {
+			provider, _, _ := req.GetRequestFields()
+			return refuseUnlistedCloudResource(ctx, provider, "storage_location", "allowed_storage_prefixes", "storage locations")
+		}
+	}
+	if topicsDenied {
+		named, unreadable := requestPubSubTopics(req, rawBodyText(ctx))
+		if unreadable || len(named) > 0 {
+			provider, _, _ := req.GetRequestFields()
+			return refuseUnlistedCloudResource(ctx, provider, "pubsub_topic", "allowed_pubsub_topics", "Pub/Sub topics")
+		}
 	}
 	refuse := func(status int, message string) *schemas.LLMPluginShortCircuit {
 		ctx.SetValue(governanceRejectedContextKey, true)

@@ -47,13 +47,36 @@ func storageFolderOwner(t *testing.T, store configstore.ConfigStore, folder stri
 	return rows[0].VirtualKeyID
 }
 
+// storageFolderTestBuckets are the buckets the folder tests name. Their key lists them all:
+// on Vertex and Bedrock a key with no allowed_storage_prefixes may name no storage (TXE-7705),
+// and these tests are about ownership, which a list covering everything leaves to decide.
+var storageFolderTestBuckets = []string{"folder-bucket", "quiet-bucket", "kept-bucket", "race-bucket", "open-bucket", "bench-bucket", "b", "ret", "bench", "list-bucket", "root-only"}
+
+// storageFolderTestPrefixes lists every storageFolderTestBuckets bucket in both schemes.
+func storageFolderTestPrefixes() []string {
+	var prefixes []string
+	for _, bucket := range storageFolderTestBuckets {
+		prefixes = append(prefixes, "gs://"+bucket, "s3://"+bucket)
+	}
+	return prefixes
+}
+
 // newStorageFolderTestPlugin is a plugin on a real config store whose test key is allowed on
-// the providers that read and write object storage.
+// the providers that read and write object storage, with a storage list covering the test
+// buckets.
 func newStorageFolderTestPlugin(t *testing.T) (*GovernancePlugin, configstore.ConfigStore) {
+	t.Helper()
+	return newStorageFolderTestPluginWithList(t, storageFolderTestPrefixes())
+}
+
+// newStorageFolderTestPluginWithList is newStorageFolderTestPlugin with the given storage list
+// (nil for none).
+func newStorageFolderTestPluginWithList(t *testing.T, prefixes []string) (*GovernancePlugin, configstore.ConfigStore) {
 	t.Helper()
 	store := newProviderObjectConfigStore(t)
 	vk := buildVKForMCPStamping(nil)
 	vk.ProviderConfigs = append(vk.ProviderConfigs, buildProviderConfig("vertex", []string{"*"}), buildProviderConfig("bedrock", []string{"*"}))
+	vk.AllowedStoragePrefixes = prefixes
 	plugin := newAccessTestPlugin(t, vk, nil)
 	plugin.configStore = store
 	return plugin, store
@@ -280,6 +303,7 @@ func TestOutputFolderIsNotClaimedWithoutEnforcement(t *testing.T) {
 
 	vk := buildVKForMCPStamping(nil)
 	vk.ProviderConfigs = append(vk.ProviderConfigs, buildProviderConfig("vertex", []string{"*"}))
+	vk.AllowedStoragePrefixes = storageFolderTestPrefixes()
 	bare := newAccessTestPlugin(t, vk, nil)
 	_, shortCircuit, err = bare.PreLLMHook(presentCtx(mcpTestVKValue), s.batchInto(folder))
 	require.NoError(t, err)
@@ -376,8 +400,11 @@ func TestStorageNamedInUntypedDataIsCheckedAsAFolderToo(t *testing.T) {
 		return &schemas.BifrostRequest{RequestType: schemas.ImageGenerationRequest, ImageGenerationRequest: &schemas.BifrostImageGenerationRequest{Provider: schemas.Vertex, Model: "m",
 			Input: &schemas.ImageGenerationInput{Prompt: "a cat"}, Params: &schemas.ImageGenerationParameters{ExtraParams: extra}}}
 	}
+	// An inline batch on Vertex is refused for a key with a storage list before ownership is
+	// asked (TestVirtualKeyStorageAllowlistRefusesInlineBatchesThatUploadTheirInput), so the
+	// inline item is shown on a provider that takes its items in the request.
 	inline := func(body map[string]any) *schemas.BifrostRequest {
-		return &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{Provider: schemas.Vertex, Model: schemas.Ptr("m"),
+		return &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{Provider: schemas.OpenAI, Model: schemas.Ptr("m"),
 			Requests: []schemas.BatchRequestItem{{CustomID: "1", Body: body}}}}
 	}
 
@@ -429,14 +456,25 @@ func BenchmarkStorageFolderCheck(b *testing.B) {
 // batch's output folder or a task's output location: claiming the root would take the whole
 // bucket from every other key, and writing there unclaimed would leave its results readable by
 // them. The 400 names the fix. A key whose list covers the root claims it as any other folder.
+// On Vertex and Bedrock a key with no list names no storage at all (TXE-7705), so the rule for a
+// key with no list is shown on a provider outside that default; the walk is the same for every
+// provider.
 func TestBucketRootIsAnOutputLocationOnlyForAKeyWithAStorageList(t *testing.T) {
-	plugin, store := newStorageFolderTestPlugin(t)
-	vertex, bedrock := storageFolderSurfaces{provider: schemas.Vertex}, storageFolderSurfaces{provider: schemas.Bedrock}
+	plugin, store := newStorageFolderTestPluginWithList(t, nil)
+	for _, onVertex := range []*schemas.BifrostRequest{
+		storageFolderSurfaces{provider: schemas.Vertex}.batchInto("gs://bare-bucket/"),
+		storageFolderSurfaces{provider: schemas.Bedrock}.batchInto("s3://bare-bucket/"),
+	} {
+		_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), onVertex)
+		require.NoError(t, err)
+		requireUnlistedRefusal(t, shortCircuit, "storage_location", "a key with no list names no storage on Vertex or Bedrock")
+	}
+	unlisted := storageFolderSurfaces{provider: schemas.OpenAI}
 	for name, req := range map[string]*schemas.BifrostRequest{
-		"batch, with slash":    vertex.batchInto("gs://bare-bucket/"),
-		"batch, without slash": vertex.batchInto("gs://bare-bucket"),
-		"bedrock batch":        bedrock.batchInto("s3://bare-bucket/"),
-		"video task":           vertex.videoInto("gs://bare-bucket/"),
+		"batch, with slash":    unlisted.batchInto("gs://bare-bucket/"),
+		"batch, without slash": unlisted.batchInto("gs://bare-bucket"),
+		"s3 batch":             unlisted.batchInto("s3://bare-bucket/"),
+		"video task":           unlisted.videoInto("gs://bare-bucket/"),
 	} {
 		_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), req)
 		require.NoError(t, err, name)
@@ -449,15 +487,15 @@ func TestBucketRootIsAnOutputLocationOnlyForAKeyWithAStorageList(t *testing.T) {
 	// A root the key already holds (claimed before this rule, or while it had a list) is refused
 	// the same way.
 	seedProviderObject(t, store, configstoreTables.ProviderObjectKindStorageFolder, "gcs", "gs://held-bucket/", "vk-mcp-stamp")
-	_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), vertex.batchInto("gs://held-bucket/"))
+	_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), unlisted.batchInto("gs://held-bucket/"))
 	require.NoError(t, err)
 	require.NotNil(t, shortCircuit, "an existing claim does not lift the rule")
 	assert.Equal(t, 400, *shortCircuit.Error.StatusCode)
 	assert.Empty(t, storageFolderOwner(t, store, "s3://bare-bucket/"))
-	_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), vertex.chatFile("gs://bare-bucket/input.pdf"))
+	_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), unlisted.chatFile("gs://bare-bucket/input.pdf"))
 	require.NoError(t, err)
 	assert.Nil(t, shortCircuit, "an object at the root is still an input")
-	_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), vertex.batchInto("gs://bare-bucket/out/"))
+	_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), unlisted.batchInto("gs://bare-bucket/out/"))
 	require.NoError(t, err)
 	require.Nil(t, shortCircuit)
 	assert.Equal(t, "vk-mcp-stamp", storageFolderOwner(t, store, "gs://bare-bucket/out/"), "a folder inside the bucket is claimed")
