@@ -174,7 +174,10 @@ test.describe("LLM Logs", () => {
       expect(newValue || initialValue).toBeTruthy();
     });
 
-    test("should filter logs by model", async ({ logsPage }) => {
+    // TXE-7736: logsPage.modelFilter is stale. No [data-testid="filter-model"] renders, and its
+    // fallback (any button whose text matches /Model/) finds another button, so the test cannot pass
+    // as written. It used to skip silently on a strict-mode violation; offline-skips.json lists it.
+    test.fixme("should filter logs by model", async ({ logsPage }) => {
       const modelFilter = logsPage.modelFilter;
       await skipUnlessVisible(modelFilter, "Model filter not visible");
 

@@ -16,14 +16,11 @@
     ]
   },
   "TXE-7736": {
-    "reason": "the page objects look for filter and live controls that no longer render (stale locators since the filter sidebar refactor)",
+    "reason": "stale page-object locators: the model filter's fallback finds another button (test.fixme), and no live-updates control renders",
     "file": "features/logs/logs.spec.ts",
     "tests": [
       "LLM Logs › Log Filtering › should filter logs by model",
-      "LLM Logs › Log Filtering › should filter logs by status",
-      "LLM Logs › Log Filtering › should filter logs by tool call name",
-      "LLM Logs › Live Updates › should toggle live updates",
-      "LLM Logs › Advanced Filtering › should search within filtered results"
+      "LLM Logs › Live Updates › should toggle live updates"
     ]
   },
   "TXE-7737": [
