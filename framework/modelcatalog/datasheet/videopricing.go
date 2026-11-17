@@ -1,6 +1,7 @@
 package datasheet
 
 import (
+	"maps"
 	"math"
 	"slices"
 	"strconv"
@@ -61,6 +62,13 @@ type VideoPricingDimensions struct {
 	// persisted here.
 	InputVideoRateExempt     bool `json:"-"`
 	UnmeasuredDefaultSeconds int  `json:"-"` // provider default bound when the length could not be measured (TXE-7401)
+
+	// AspectRatio and OutputFormat are the create's unified aspect_ratio ("16:9") and
+	// output_format ("mp4"). No published rate reads them yet; they are recorded because
+	// contract C4 counts them as price-affecting, so a rate that does is already on the row
+	// (TXE-7122).
+	AspectRatio  string  `json:"aspect_ratio,omitempty"`
+	OutputFormat *string `json:"output_format,omitempty"`
 
 	// Type is the operation selector ("upscale", "3d"). These do not bill per
 	// second of output at all, so a rate keyed only on duration is wrong for them.
@@ -169,11 +177,19 @@ func (d VideoPricingDimensions) MergedWith(observed VideoPricingDimensions) Vide
 	if observed.ProviderCost != nil {
 		out.ProviderCost = observed.ProviderCost
 	}
-	for key, value := range observed.Extra {
-		if out.Extra == nil {
-			out.Extra = map[string]any{}
-		}
-		out.Extra[key] = value
+	if observed.AspectRatio != "" {
+		out.AspectRatio = observed.AspectRatio
+	}
+	if observed.OutputFormat != nil {
+		out.OutputFormat = observed.OutputFormat
+	}
+	if len(observed.Extra) > 0 {
+		// A fresh map: the receiver's Extra can be the request's own ExtraParams, which the
+		// merge must not write into (TXE-7122).
+		merged := make(map[string]any, len(out.Extra)+len(observed.Extra))
+		maps.Copy(merged, out.Extra)
+		maps.Copy(merged, observed.Extra)
+		out.Extra = merged
 	}
 	return out
 }
@@ -472,6 +488,65 @@ func VideoBillingSelectors(extra map[string]any) map[string]any {
 		}
 	}
 	return out
+}
+
+// videoInputExtraKeys are the extra params that carry a video create's input media: the last
+// frame and the reference images (the copies the handlers keep, schemas.UnifiedVideoGenerationFields),
+// Seedance's reference_videos and each provider's own first-frame name (videoNativeFirstFrameNames).
+// ReadVideoInputs reads them, and pricing keeps only what it read (InputImages, VideoInput), never
+// the media. TestVideoInputExtraKeysCoverEveryReadVideoInputsKey fails when ReadVideoInputs reads a
+// key that is not listed here.
+var videoInputExtraKeys = func() []string {
+	keys := []string{"last_frame", "reference_images", "reference_videos"}
+	for _, native := range videoNativeFirstFrameNames {
+		keys = append(keys, native.name)
+	}
+	return keys
+}()
+
+// VideoPricingExtra returns the extra params a video job's pricing row keeps: all of them, less the
+// input media (videoInputExtraKeys) and any value that is a data URL. A frame or a reference image
+// is a URL or a whole base64 data URL, which has no place in a pricing row and is already counted
+// where pricing reads it (TXE-7122). The billing selectors (videoBillingExtraKeys) are always kept,
+// and every other knob stays as the research hatch on Extra describes.
+//
+// It returns extra itself when nothing is dropped, so a create with no media in its extra params
+// allocates nothing; the result must then be treated as read-only, which MergedWith honours.
+func VideoPricingExtra(extra map[string]any) map[string]any {
+	if len(extra) == 0 {
+		return nil
+	}
+	drop := 0
+	for key, value := range extra {
+		if isVideoMediaExtra(key, value) {
+			drop++
+		}
+	}
+	if drop == 0 {
+		return extra
+	}
+	if drop == len(extra) {
+		return nil
+	}
+	out := make(map[string]any, len(extra)-drop)
+	for key, value := range extra {
+		if !isVideoMediaExtra(key, value) {
+			out[key] = value
+		}
+	}
+	return out
+}
+
+// isVideoMediaExtra reports whether an extra param is input media a pricing row must not hold.
+func isVideoMediaExtra(key string, value any) bool {
+	if slices.Contains(videoBillingExtraKeys, key) {
+		return false
+	}
+	if slices.Contains(videoInputExtraKeys, key) {
+		return true
+	}
+	s, ok := value.(string)
+	return ok && strings.HasPrefix(strings.TrimSpace(s), "data:")
 }
 
 // VideoRequestHasVideoInput reports whether a video create sends the vendor a video as input:

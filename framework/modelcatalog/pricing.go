@@ -195,6 +195,12 @@ func VideoBillingSelectors(extra map[string]any) map[string]any {
 	return datasheet.VideoBillingSelectors(extra)
 }
 
+// VideoPricingExtra returns the extra params a video job's pricing row keeps, without the input
+// media; see datasheet.VideoPricingExtra.
+func VideoPricingExtra(extra map[string]any) map[string]any {
+	return datasheet.VideoPricingExtra(extra)
+}
+
 // VideoRequestHasVideoInput reports whether a video create takes a video as input; see
 // datasheet.VideoRequestHasVideoInput.
 func VideoRequestHasVideoInput(provider schemas.ModelProvider, input *schemas.VideoGenerationInput, extra map[string]any) bool {
