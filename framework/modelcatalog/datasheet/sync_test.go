@@ -382,6 +382,9 @@ func sortedKeys[V any](m map[string]V) []string {
 // ignoredUpstreamCostKeys are the upstream cost keys the fork does not parse yet, each with the
 // ticket that decides it. TXE-7350 owns every key here that names it: each family is parsed or
 // recorded as deliberately ignored with its reason, and its entries leave this list.
+// dbuRestatesUSD is the reason the Databricks DBU keys are not parsed (TXE-7359).
+const dbuRestatesUSD = "TXE-7359: deliberately ignored: every Databricks row that publishes a DBU rate publishes the same price in USD, which the fork prices from"
+
 var ignoredUpstreamCostKeys = map[string]string{
 	// Batch tiers.
 	"annotation_cost_per_page_batches":                     "TXE-7354: deliberately ignored: the fork has no Mistral batch API, so an OCR batch cannot be created and these rates price nothing",
@@ -395,11 +398,14 @@ var ignoredUpstreamCostKeys = map[string]string{
 	"input_cost_per_token_balanced":                         "TXE-7353: deliberately ignored: upstream publishes _balanced rates only for sail/*, which is not a fork provider, so no request the fork serves can reach them",
 	"output_cost_per_token_balanced":                        "TXE-7353: deliberately ignored: upstream publishes _balanced rates only for sail/*, which is not a fork provider, so no request the fork serves can reach them",
 	// 12-hour cache write.
-	// Databricks DBU costs.
-	"cache_creation_input_token_dbu_cost": "TXE-7350: Databricks DBU",
-	"cache_read_input_token_dbu_cost":     "TXE-7350: Databricks DBU",
-	"input_dbu_cost_per_token":            "TXE-7350: Databricks DBU",
-	"output_dbu_cost_per_token":           "TXE-7350: Databricks DBU",
+	// Databricks DBU costs: deliberately ignored (TXE-7359). Every one of the 83 Databricks rows that
+	// carries a DBU rate also carries the same price in USD (input_cost_per_token and its siblings),
+	// which the fork already prices from: databricks-claude-fable-5's 0.00014286 DBU/token at
+	// $0.07/DBU is its 1e-05 USD/token. The DBU keys restate the price in another unit.
+	"cache_creation_input_token_dbu_cost": dbuRestatesUSD,
+	"cache_read_input_token_dbu_cost":     dbuRestatesUSD,
+	"input_dbu_cost_per_token":            dbuRestatesUSD,
+	"output_dbu_cost_per_token":           dbuRestatesUSD,
 	// Long-context thresholds the fork has no tier for.
 	"input_cost_per_audio_token_above_200k_tokens": "TXE-7355: deliberately ignored: every row publishing a 200k audio tier repeats its non-200k audio rate, except gemini-2.5-flash standard (3e-07 against Google flat 1e-06), an upstream error that would underbill",
 	"input_cost_per_character_above_128k_tokens": "TXE-7355: deliberately ignored: published only for two free Gemini models (gemma-3-27b-it, learnlm-1.5-pro-experimental), priced 0",
