@@ -259,3 +259,24 @@ func modelProviderConstants(t *testing.T) map[string]schemas.ModelProvider {
 	require.Contains(t, out, "Anthropic", "no ModelProvider constants parsed from core/schemas")
 	return out
 }
+
+// BenchmarkCheckBatchLineLimit is the cost every batch create now pays before it converts a
+// line (TXE-7696): a map lookup and a compare for an accepted batch, a file-based create (0
+// lines) included, and the 400 for a batch over the limit.
+func BenchmarkCheckBatchLineLimit(b *testing.B) {
+	for _, bc := range []struct {
+		name  string
+		lines int
+	}{
+		{"accepted, file-based (0 lines)", 0},
+		{"accepted, at the limit", 50_000},
+		{"refused, one over the limit", 50_001},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = CheckBatchLineLimit(schemas.OpenAI, bc.lines)
+			}
+		})
+	}
+}
