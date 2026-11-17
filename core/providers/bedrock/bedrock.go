@@ -3441,6 +3441,9 @@ func (provider *BedrockProvider) BatchCreate(ctx *schemas.BifrostContext, key sc
 		provider.logger.Error("batch create is not allowed for Bedrock provider", "error", err)
 		return nil, err
 	}
+	if err := providerUtils.CheckBatchLineLimit(schemas.Bedrock, len(request.Requests)); err != nil {
+		return nil, err
+	}
 
 	// Resolve the batch service role
 	roleArn := ""

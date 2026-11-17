@@ -1,0 +1,125 @@
+{
+  "name": "632. A batch create past its provider's line limit is refused before any line is converted (batch line limit)",
+  "description": "Local fixture regression for TXE-7696, no live provider calls. fixture-folders.mjs's video-settlement group starts tests/e2e/api/runners/provider-error-fixture.mjs and a gateway on tests/e2e/api/provider_config/video-settlement.config.json, whose openai provider has one batch-enabled key for results-bound-model on the fixture. Run with videoSettlementFixture=1 and videoSettlementFixtureUrl; every case is skipped otherwise. Each provider's BatchCreate refuses a batch with more inline lines than its vendor's published per-batch maximum (core/providers/utils/batchlines.go) before it converts a line: OpenAI's is 50,000. A create of 50,001 lines, built by the row's pre-request script, is a 400 caller_invalid_request on requests whose message names the limit, and the fixture's hit counters show no file upload and no batch create. Red before: on main the gateway converted all 50,001 lines, uploaded them and created the batch, so the create was a 200 and the fixture counted file.upload 1 and results_bound.create 1.",
+  "item": [
+    {
+      "name": "632.1 reset the fixture's record (batch line limit)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{videoSettlementFixtureUrl}}/__reset",
+          "host": [
+            "{{videoSettlementFixtureUrl}}"
+          ],
+          "path": [
+            "__reset"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the fixture record is reset', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "632.2 [EXPECT-400] openai/results-bound-model POST /v1/batches with 50,001 inline lines is refused, naming the 50,000 limit (batch line limit)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{{batchLineLimitBody}}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// OpenAI takes at most 50,000 requests in a batch; this one has 50,001.",
+              "var line = { method: 'POST', url: '/v1/chat/completions', body: { model: 'results-bound-model', messages: [{ role: 'user', content: 'hi' }], max_tokens: 8 } };",
+              "var requests = [];",
+              "for (var i = 0; i < 50001; i++) { requests.push(Object.assign({ custom_id: 'lim-' + i }, line)); }",
+              "pm.variables.set('batchLineLimitBody', JSON.stringify({ model: 'openai/results-bound-model', endpoint: '/v1/chat/completions', completion_window: '24h', requests: requests }));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('a batch one line over the limit is a 400 caller_invalid_request on requests naming the limit', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect((j.extra_fields || {}).error_type, pm.response.text()).to.eql('caller_invalid_request');",
+              "  pm.expect(pm.response.headers.get('x-bifrost-error-type'), 'the header carries the same value').to.eql('caller_invalid_request');",
+              "  pm.expect((j.error || {}).param, pm.response.text()).to.eql('requests');",
+              "  pm.expect(pm.response.text()).to.include('at most 50000 requests');",
+              "  pm.expect(pm.response.text()).to.include('has 50001');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "632.3 the refused batch reached no upstream: no file upload and no batch create (batch line limit)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{videoSettlementFixtureUrl}}/__hits",
+          "host": [
+            "{{videoSettlementFixtureUrl}}"
+          ],
+          "path": [
+            "__hits"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the fixture saw no upload and no create', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+              "  var hits = pm.response.json().data[0].hits;",
+              "  pm.expect(hits['file.upload'] || 0, pm.response.text()).to.eql(0);",
+              "  pm.expect(hits['results_bound.create'] || 0, pm.response.text()).to.eql(0);",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

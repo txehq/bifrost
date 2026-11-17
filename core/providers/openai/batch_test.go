@@ -1021,3 +1021,47 @@ func BenchmarkResourceURLForIDs(b *testing.B) {
 		})
 	}
 }
+
+// openAIBatchLines returns n inline chat lines, each with its own custom_id.
+func openAIBatchLines(n int) []schemas.BatchRequestItem {
+	body := map[string]any{"model": "gpt-4o-mini", "messages": []any{map[string]any{"role": "user", "content": "hi"}}}
+	items := make([]schemas.BatchRequestItem, n)
+	for i := range items {
+		items[i] = schemas.BatchRequestItem{CustomID: fmt.Sprintf("line-%d", i), Method: "POST", URL: "/v1/chat/completions", Body: body}
+	}
+	return items
+}
+
+// A batch one line over OpenAI's 50,000-request maximum is a 400 on requests with no line
+// converted and no upstream call; a batch at the maximum is uploaded whole (TXE-7696).
+func TestBatchCreateRefusesMoreLinesThanTheVendorTakes(t *testing.T) {
+	limit, ok := providerUtils.BatchLineLimit(schemas.OpenAI)
+	require.True(t, ok)
+	require.Equal(t, 50_000, limit)
+
+	t.Run("one over the limit", func(t *testing.T) {
+		vendor := newBatchVendor(t, completedBatch, nil)
+		provider, ctx, keys := newBatchTestProvider(vendor)
+		_, bifrostErr := provider.BatchCreate(ctx, keys[0], &schemas.BifrostBatchCreateRequest{
+			Provider: schemas.OpenAI, Model: schemas.Ptr("gpt-4o-mini"), Endpoint: schemas.BatchEndpointChatCompletions, CompletionWindow: "24h", Requests: openAIBatchLines(limit + 1),
+		})
+		require.NotNil(t, bifrostErr)
+		require.NotNil(t, bifrostErr.StatusCode)
+		assert.Equal(t, http.StatusBadRequest, *bifrostErr.StatusCode)
+		assert.Equal(t, schemas.ErrorTypeCallerInvalidRequest, bifrostErr.ExtraFields.ErrorType)
+		assert.Equal(t, "requests", bifrostErr.Error.Param)
+		assert.Contains(t, bifrostErr.Error.Message, "at most 50000 requests")
+		assert.Empty(t, vendor.calls, "no upstream call")
+	})
+
+	t.Run("at the limit", func(t *testing.T) {
+		vendor := newBatchVendor(t, completedBatch, nil)
+		provider, ctx, keys := newBatchTestProvider(vendor)
+		_, bifrostErr := provider.BatchCreate(ctx, keys[0], &schemas.BifrostBatchCreateRequest{
+			Provider: schemas.OpenAI, Model: schemas.Ptr("gpt-4o-mini"), Endpoint: schemas.BatchEndpointChatCompletions, CompletionWindow: "24h", Requests: openAIBatchLines(limit),
+		})
+		require.Nil(t, bifrostErr)
+		require.Len(t, vendor.uploads, 1)
+		assert.Equal(t, limit, strings.Count(strings.TrimSpace(vendor.uploads[0]), "\n")+1, "every line converted and uploaded")
+	})
+}

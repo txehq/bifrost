@@ -661,6 +661,9 @@ func (provider *XAIProvider) BatchCreate(ctx *schemas.BifrostContext, key schema
 	if request == nil {
 		return nil, providerUtils.NewBifrostBadRequestError("batch create request is required")
 	}
+	if err := providerUtils.CheckBatchLineLimit(schemas.XAI, len(request.Requests)); err != nil {
+		return nil, err
+	}
 	if request.InputBlob != nil && strings.TrimSpace(*request.InputBlob) != "" {
 		return nil, schemas.NewUnsupportedParameterError("input_blob", "")
 	}

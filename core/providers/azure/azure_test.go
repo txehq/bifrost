@@ -3,6 +3,7 @@ package azure_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/capsohq/bifrost/core/providers/azure"
 	"github.com/capsohq/bifrost/core/providers/typesafe"
+	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 )
 
@@ -1906,4 +1908,58 @@ func TestAzureSoraJobsAgreeWithTheProviderDeclaration(t *testing.T) {
 			t.Errorf("field %s: jobs path accepted=%v, provider declares it=%v", field, accepted, slices.Contains(declared, field))
 		}
 	}
+}
+
+// A batch one line over Azure's 100,000-request maximum is a 400 on requests with no line
+// converted and no upstream call; a batch at the maximum is uploaded whole (TXE-7696).
+func TestAzureBatchCreateRefusesMoreLinesThanTheVendorTakes(t *testing.T) {
+	limit, ok := providerUtils.BatchLineLimit(schemas.Azure)
+	if !ok || limit != 100_000 {
+		t.Fatalf("Azure batch line limit = %d (set %v), want 100000", limit, ok)
+	}
+	lines := func(n int) []schemas.BatchRequestItem {
+		body := map[string]any{"model": "gpt-4o-mini", "messages": []any{map[string]any{"role": "user", "content": "hi"}}}
+		items := make([]schemas.BatchRequestItem, n)
+		for i := range items {
+			items[i] = schemas.BatchRequestItem{CustomID: fmt.Sprintf("line-%d", i), Method: "POST", URL: "/v1/chat/completions", Body: body}
+		}
+		return items
+	}
+	create := func(vendor *azureBatchVendor, n int) *schemas.BifrostError {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		_, bifrostErr := newAzureDecisionProvider(t).BatchCreate(ctx, newAzureDecisionKey(vendor.URL), &schemas.BifrostBatchCreateRequest{
+			Provider: schemas.Azure, Model: schemas.Ptr("gpt-4o-mini"), Endpoint: schemas.BatchEndpointChatCompletions, CompletionWindow: "24h", Requests: lines(n),
+		})
+		return bifrostErr
+	}
+
+	t.Run("one over the limit", func(t *testing.T) {
+		vendor := newAzureBatchVendor(t, "", nil)
+		bifrostErr := create(vendor, limit+1)
+		if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+			t.Fatalf("got %+v, want a 400", bifrostErr)
+		}
+		if bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerInvalidRequest || bifrostErr.Error.Param != "requests" {
+			t.Errorf("error_type %q param %q, want caller_invalid_request on requests", bifrostErr.ExtraFields.ErrorType, bifrostErr.Error.Param)
+		}
+		if !strings.Contains(bifrostErr.Error.Message, "at most 100000 requests") {
+			t.Errorf("message %q does not name the limit", bifrostErr.Error.Message)
+		}
+		if len(vendor.calls) != 0 {
+			t.Errorf("upstream calls = %v, want none", vendor.calls)
+		}
+	})
+
+	t.Run("at the limit", func(t *testing.T) {
+		vendor := newAzureBatchVendor(t, "", nil)
+		if bifrostErr := create(vendor, limit); bifrostErr != nil {
+			t.Fatalf("at the limit: %+v", bifrostErr.Error)
+		}
+		if len(vendor.uploads) != 1 {
+			t.Fatalf("uploads = %d, want 1", len(vendor.uploads))
+		}
+		if got := strings.Count(strings.TrimSpace(vendor.uploads[0]), "\n") + 1; got != limit {
+			t.Errorf("uploaded %d lines, want every one of %d", got, limit)
+		}
+	})
 }

@@ -2807,6 +2807,9 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 	if err := providerUtils.CheckOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.BatchCreateRequest); err != nil {
 		return nil, err
 	}
+	if err := providerUtils.CheckBatchLineLimit(schemas.Gemini, len(request.Requests)); err != nil {
+		return nil, err
+	}
 
 	var jsonData []byte
 	if rawBody, ok := providerUtils.CheckAndGetRawRequestBody(ctx, request); ok && len(rawBody) > 0 {

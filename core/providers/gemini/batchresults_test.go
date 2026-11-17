@@ -13,6 +13,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/capsohq/bifrost/core/network"
+	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1654,4 +1655,48 @@ func BenchmarkCheckNativeBatchLineURL(b *testing.B) {
 			}
 		})
 	}
+}
+
+// A batch one line over Gemini's 200,000-line limit is a 400 on requests with no line
+// converted and no upstream call; a batch at the limit is converted and sent (TXE-7696).
+func TestGeminiBatchCreateRefusesMoreLinesThanTheLimit(t *testing.T) {
+	limit, ok := providerUtils.BatchLineLimit(schemas.Gemini)
+	require.True(t, ok)
+	require.Equal(t, 200_000, limit)
+	lines := func(n int) []schemas.BatchRequestItem {
+		body := map[string]any{"model": "gemini-2.5-flash", "messages": []any{map[string]any{"role": "user", "content": "hi"}}}
+		items := make([]schemas.BatchRequestItem, n)
+		for i := range items {
+			items[i] = schemas.BatchRequestItem{CustomID: fmt.Sprintf("line-%d", i), Method: "POST", URL: "/v1/chat/completions", Body: body}
+		}
+		return items
+	}
+	create := func(vendor *geminiBatchVendor, requests []schemas.BatchRequestItem) *schemas.BifrostError {
+		provider, keys := vendor.provider(false)
+		_, bifrostErr := provider.BatchCreate(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), keys[0], &schemas.BifrostBatchCreateRequest{
+			Provider: schemas.Gemini, Model: schemas.Ptr("gemini-2.5-flash"), Endpoint: schemas.BatchEndpointChatCompletions, Requests: requests,
+		})
+		return bifrostErr
+	}
+
+	t.Run("one over the limit", func(t *testing.T) {
+		vendor := newGeminiBatchVendor(t)
+		requests := lines(limit + 1)
+		// A last line no converter accepts: reaching it would be a line error, not the limit.
+		requests[limit] = schemas.BatchRequestItem{CustomID: "bad"}
+		bifrostErr := create(vendor, requests)
+		require.NotNil(t, bifrostErr)
+		require.NotNil(t, bifrostErr.StatusCode)
+		assert.Equal(t, http.StatusBadRequest, *bifrostErr.StatusCode)
+		assert.Equal(t, schemas.ErrorTypeCallerInvalidRequest, bifrostErr.ExtraFields.ErrorType)
+		assert.Equal(t, "requests", bifrostErr.Error.Param)
+		assert.Contains(t, bifrostErr.Error.Message, "at most 200000 requests")
+		assert.Empty(t, vendor.calls, "no upstream call")
+	})
+
+	t.Run("at the limit", func(t *testing.T) {
+		vendor := newGeminiBatchVendor(t)
+		require.Nil(t, create(vendor, lines(limit)))
+		assert.Equal(t, limit, int(gjson.Get(vendor.batchBody, "batch.inputConfig.requests.requests.#").Int()), "every line converted and sent")
+	})
 }

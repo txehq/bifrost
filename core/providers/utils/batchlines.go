@@ -12,6 +12,62 @@ import (
 // line the caller got wrong is a 400 naming the line, and a line naming a model other than
 // the batch's is refused, so the same rule holds whichever vendor runs the batch.
 
+// batchLineLimits is the most inline lines each provider's BatchCreate takes: the vendor's
+// published per-batch maximum, read on 2026-11-18. A batch the vendor would refuse anyway is
+// refused here before any line is converted, so a body under the request-size limit (about
+// 676,000 minimal chat lines at 100 MiB) cannot buy that many conversions for nothing
+// (TXE-7696).
+//
+//   - Anthropic 100,000: "A Message Batch is limited to either 100,000 Message requests or
+//     256 MB in size" (https://platform.claude.com/docs/en/build-with-claude/batch-processing).
+//   - OpenAI 50,000: "a single batch may include up to 50,000 requests"
+//     (https://developers.openai.com/api/docs/guides/batch).
+//   - Azure 100,000: "Maximum requests per file 100,000"
+//     (https://learn.microsoft.com/en-us/azure/ai-foundry/openai/quotas-limits).
+//   - Vertex 200,000: "A single batch job may include up to 200,000 requests"
+//     (https://docs.cloud.google.com/vertex-ai/generative-ai/docs/multimodal/batch-prediction-gemini).
+//   - Bedrock 100,000: the default "Records per batch inference job" quota for every model
+//     listed (adjustable per account; https://docs.aws.amazon.com/general/latest/gr/bedrock.html).
+//   - Gemini 200,000: the Gemini API publishes no request count, only "under 20MB" for an
+//     inline batch (https://ai.google.dev/gemini-api/docs/batch-mode); Vertex's count for the
+//     same models bounds it.
+//   - xAI 100,000: xAI publishes no hard count; "extremely large batches (>100,000 requests)
+//     may be throttled" (https://docs.x.ai/developers/advanced-api-usage/batch-api).
+var batchLineLimits = map[schemas.ModelProvider]int{
+	schemas.Anthropic: 100_000,
+	schemas.OpenAI:    50_000,
+	schemas.Azure:     100_000,
+	schemas.Vertex:    200_000,
+	schemas.Bedrock:   100_000,
+	schemas.Gemini:    200_000,
+	schemas.XAI:       100_000,
+}
+
+// BatchLineLimit returns the most inline lines provider's BatchCreate takes, and false for a
+// provider with no limit set.
+func BatchLineLimit(provider schemas.ModelProvider) (int, bool) {
+	limit, ok := batchLineLimits[provider]
+	return limit, ok
+}
+
+// CheckBatchLineLimit refuses a batch create with more inline lines than provider's vendor
+// accepts: a 400 caller_invalid_request on requests that names the limit. Every BatchCreate
+// calls it before it reads anything else from the request, so no line is converted and
+// nothing is sent; TestEveryBatchCreateChecksTheLineLimitFirst fails a provider that does
+// not. A provider with no limit set fails closed with a 500, never with no limit.
+func CheckBatchLineLimit(provider schemas.ModelProvider, lines int) *schemas.BifrostError {
+	limit, ok := batchLineLimits[provider]
+	if !ok {
+		return NewBifrostOperationError(fmt.Sprintf("no batch line limit is set for provider %s", provider), nil)
+	}
+	if lines <= limit {
+		return nil
+	}
+	bifrostErr := NewBifrostBadRequestError(fmt.Sprintf("a %s batch takes at most %d requests and this one has %d: split it into batches of %d or fewer", provider, limit, lines, limit))
+	bifrostErr.Error.Param = "requests"
+	return bifrostErr
+}
+
 // NewBatchLineBadRequestError answers a batch line the caller got wrong with a 400 that
 // names the line and the field in error.param. A line error marked Unsupported is a
 // well-formed field this provider's batch cannot take (a url it cannot run, an Imagen model

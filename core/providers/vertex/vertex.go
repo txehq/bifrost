@@ -3178,6 +3178,9 @@ func stripVertexGeminiUnsupportedFieldsRaw(jsonBody []byte) []byte {
 //
 // The output destination is taken from the typed output_folder.url (a gs:// prefix).
 func (provider *VertexProvider) BatchCreate(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostBatchCreateRequest) (*schemas.BifrostBatchCreateResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckBatchLineLimit(schemas.Vertex, len(request.Requests)); err != nil {
+		return nil, err
+	}
 	baseURL, cfgErr := vertexBatchJobsBaseURL(key)
 	if cfgErr != nil {
 		return nil, cfgErr

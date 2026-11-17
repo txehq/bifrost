@@ -1955,6 +1955,9 @@ func (provider *AnthropicProvider) BatchCreate(ctx *schemas.BifrostContext, key 
 	if err := providerUtils.CheckOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.BatchCreateRequest); err != nil {
 		return nil, err
 	}
+	if err := providerUtils.CheckBatchLineLimit(schemas.Anthropic, len(request.Requests)); err != nil {
+		return nil, err
+	}
 
 	providerName := provider.GetProviderKey()
 
