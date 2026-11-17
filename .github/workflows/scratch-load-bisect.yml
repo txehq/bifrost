@@ -12,9 +12,10 @@ jobs:
     runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     timeout-minutes: 30
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - { label: noopt, flags: "-gcflags=all=-N" }
+          - { label: noopt, flags: "-gcflags=github.com/capsohq/...=-N" }
           - { label: race, flags: "-race" }
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
