@@ -364,7 +364,7 @@ func TestVirtualKeyWithoutAListNamesNoCloudResourceOnCloudIdentityProviders(t *t
 }
 
 // cloneWithProvider returns a copy of req's request struct with its Provider set to provider.
-func cloneWithProvider(t *testing.T, req *schemas.BifrostRequest, provider schemas.ModelProvider) *schemas.BifrostRequest {
+func cloneWithProvider(t testing.TB, req *schemas.BifrostRequest, provider schemas.ModelProvider) *schemas.BifrostRequest {
 	t.Helper()
 	clone := &schemas.BifrostRequest{RequestType: req.RequestType}
 	src, dst := reflect.ValueOf(req).Elem(), reflect.ValueOf(clone).Elem()
@@ -673,29 +673,40 @@ func BenchmarkPreLLMHookCloudResourceAllowlists(b *testing.B) {
 		"storage_list":       {{"gs://shared-bucket/tenant-a"}, nil},
 		"storage_and_topics": {{"gs://shared-bucket/tenant-a"}, {"projects/p/topics/tenant-a"}},
 	}
-	for keyName, lists := range keys {
-		vk := buildVKForMCPStamping(nil)
-		vk.AllowedStoragePrefixes, vk.AllowedPubSubTopics = lists[0], lists[1]
-		plugin := newAccessTestPlugin(b, vk, nil)
-		plugin.objectOwnershipEnforcedFn = func() bool { return false }
-		for reqName, req := range requests {
-			newCtx := func() *schemas.BifrostContext {
-				ctx := presentCtx(mcpTestVKValue)
-				if strings.HasPrefix(reqName, "genai_") {
-					ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "genai")
+	// Each request runs on OpenAI and on Vertex. On Vertex a key with no list is checked too
+	// (TXE-7705, default-deny): its requests that name nothing are served after the walk, and
+	// vertex/no_lists/chat_stored_image is the refusal.
+	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.Vertex} {
+		for keyName, lists := range keys {
+			vk := buildVKForMCPStamping(nil)
+			vk.ProviderConfigs = append(vk.ProviderConfigs, buildProviderConfig("vertex", []string{"*"}))
+			vk.AllowedStoragePrefixes, vk.AllowedPubSubTopics = lists[0], lists[1]
+			plugin := newAccessTestPlugin(b, vk, nil)
+			plugin.objectOwnershipEnforcedFn = func() bool { return false }
+			for reqName, base := range requests {
+				req := base
+				if provider != schemas.OpenAI {
+					req = cloneWithProvider(b, base, provider)
 				}
-				return ctx
+				refused := provider == schemas.Vertex && keyName == "no_lists" && reqName == "chat_stored_image"
+				newCtx := func() *schemas.BifrostContext {
+					ctx := presentCtx(mcpTestVKValue)
+					if strings.HasPrefix(reqName, "genai_") {
+						ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "genai")
+					}
+					return ctx
+				}
+				b.Run(string(provider)+"/"+keyName+"/"+reqName, func(b *testing.B) {
+					if _, shortCircuit, err := plugin.PreLLMHook(newCtx(), req); err != nil || (shortCircuit != nil) != refused {
+						b.Fatalf("refused is %v, want %v: %v %v", shortCircuit != nil, refused, err, shortCircuit)
+					}
+					b.ReportAllocs()
+					b.ResetTimer()
+					for i := 0; i < b.N; i++ {
+						_, _, _ = plugin.PreLLMHook(newCtx(), req)
+					}
+				})
 			}
-			b.Run(keyName+"/"+reqName, func(b *testing.B) {
-				if _, shortCircuit, err := plugin.PreLLMHook(newCtx(), req); err != nil || shortCircuit != nil {
-					b.Fatalf("the request is refused: %v %v", err, shortCircuit)
-				}
-				b.ReportAllocs()
-				b.ResetTimer()
-				for i := 0; i < b.N; i++ {
-					_, _, _ = plugin.PreLLMHook(newCtx(), req)
-				}
-			})
 		}
 	}
 }
