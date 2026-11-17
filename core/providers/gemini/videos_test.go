@@ -485,6 +485,15 @@ func TestToGeminiVideoGenerationRequest_FramesAreSentOrRefused(t *testing.T) {
 	req.Params.ExtraParams = map[string]any{"aspectRatio": "9:16"}
 	_, err = gemini.ToVertexVideoGenerationRequest(req)
 	requireUnsupportedVideoParam(t, err, "aspect_ratio")
+	// A list mixing a data URL with a vendor reference object converts whole or is refused: the
+	// string entry is never dropped from a paid generation.
+	req = base()
+	req.Params.ExtraParams = map[string]any{"reference_images": []any{
+		veoTestDataURL,
+		map[string]any{"image": map[string]any{"gcsUri": "gs://b/ref.png", "mimeType": "image/png"}, "referenceType": "asset"},
+	}}
+	_, err = gemini.ToVertexVideoGenerationRequest(req)
+	requireUnsupportedVideoParam(t, err, "reference_images")
 
 	// seconds that is not a whole number is refused, not a conversion failure.
 	req = base()

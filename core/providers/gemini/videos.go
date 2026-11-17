@@ -239,20 +239,26 @@ func videoReferenceImagesFromExtraParam(value any) ([]VideoReferenceImage, bool)
 	switch v := value.(type) {
 	case []VideoReferenceImage:
 		return v, v != nil
+	// A list converts whole or not at all: an entry that does not decode fails the list, so a
+	// paid generation never runs with only some of the references the caller sent.
 	case []map[string]any:
 		referenceImages := make([]VideoReferenceImage, 0, len(v))
 		for _, item := range v {
-			if referenceImage, ok := videoReferenceImageFromExtraParam(item); ok {
-				referenceImages = append(referenceImages, referenceImage)
+			referenceImage, ok := videoReferenceImageFromExtraParam(item)
+			if !ok {
+				return nil, false
 			}
+			referenceImages = append(referenceImages, referenceImage)
 		}
 		return referenceImages, len(referenceImages) > 0
 	case []any:
 		referenceImages := make([]VideoReferenceImage, 0, len(v))
 		for _, item := range v {
-			if referenceImage, ok := videoReferenceImageFromExtraParam(item); ok {
-				referenceImages = append(referenceImages, referenceImage)
+			referenceImage, ok := videoReferenceImageFromExtraParam(item)
+			if !ok {
+				return nil, false
 			}
+			referenceImages = append(referenceImages, referenceImage)
 		}
 		return referenceImages, len(referenceImages) > 0
 	default:
