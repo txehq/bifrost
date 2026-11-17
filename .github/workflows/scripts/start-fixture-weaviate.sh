@@ -15,7 +15,7 @@
 # Usage: start-fixture-weaviate.sh [host port, default 8080]
 set -euo pipefail
 
-IMAGE="cr.weaviate.io/semitechnologies/weaviate:1.32.4@sha256:920463cf9a9b2b8d38e5b925d63f6928fa703277c93df11d5a75fc75e1fff758"
+IMAGE="${BIFROST_CI_REGISTRY:-docker.io}/semitechnologies/weaviate:1.32.4@sha256:920463cf9a9b2b8d38e5b925d63f6928fa703277c93df11d5a75fc75e1fff758"
 NETWORK="fixture-folders"
 SUBNET="172.39.0.0/24"
 ADDRESS="172.39.0.12"   # also in go-unit-tests.yml's fixture-folders allowlist

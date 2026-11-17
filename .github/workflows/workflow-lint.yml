@@ -12,6 +12,8 @@ on:
       - "**/go.mod"
       - "**/version"
       - "transports/Dockerfile*"
+      # ci-images.py lint reads the image references in these (TXE-7684).
+      - "tests/**/docker-compose*.yml"
       # The chart-coverage check below reads these two (TXE-7038).
       - "transports/config.schema.json"
       - "helm-charts/bifrost/**"
@@ -74,6 +76,15 @@ jobs:
       - name: Check the egress allowlist rule on fixture collections
         if: ${{ !cancelled() }}
         run: ./.github/workflows/scripts/check-egress-allowlist.test.sh
+
+      # Every image a CI file names comes from the GHCR mirror, pinned by digest, and every
+      # job that uses ./.github/actions/ci-images has packages: read and the GHCR egress hosts
+      # (TXE-7684): anonymous Docker Hub pulls hit `toomanyrequests` and failed required checks.
+      - name: Check CI pulls every image through the GHCR mirror
+        if: ${{ !cancelled() }}
+        run: |
+          python3 .github/workflows/scripts/ci-images.py --self-test
+          python3 .github/workflows/scripts/ci-images.py lint
 
       - name: Check every job names a runner the fork has
         if: ${{ !cancelled() }}
@@ -276,6 +287,9 @@ jobs:
     # ci-trusted-branch. Checked by scripts/test-approval-environment.py (TXE-7597).
     environment: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'pr-testing' || 'ci-trusted-branch' }}
     runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
+    permissions:
+      contents: read
+      packages: read
     timeout-minutes: 10
     steps:
       - name: Harden Runner
@@ -285,16 +299,15 @@ jobs:
           allowed-endpoints: >
             *.quay.io:443
             *.redhat.com:443
-            auth.docker.io:443
             github.com:443
-            docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com:443
-            production.cloudflare.docker.com:443
-            production.cloudfront.docker.com:443
-            docker-images-prod.s3.dualstack.us-east-1.amazonaws.com:443
-            registry-1.docker.io:443
+            ghcr.io:443
+            pkg-containers.githubusercontent.com:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Use the GHCR image mirror
+        uses: ./.github/actions/ci-images
 
       # Neither production Dockerfile is built in a pull request, and the release's image
       # test builds Dockerfile.local, so a health command that does not exist reaches users.

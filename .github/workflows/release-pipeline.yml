@@ -1439,6 +1439,7 @@ jobs:
     runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     permissions:
       contents: read
+      packages: read
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
@@ -1458,7 +1459,6 @@ jobs:
             api.mistral.ai:443
             api.parasail.io:443
             api.tokenfactory.nebius.com:443
-            auth.docker.io:443
             cluster.qdrant.io:443
             cluster.weaviate.network:443
             codecov.io:443
@@ -1468,12 +1468,7 @@ jobs:
             github.com:443
             openrouter.ai:443
             pkg-containers.githubusercontent.com:443
-            docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com:443
-            production.cloudflare.docker.com:443
-            production.cloudfront.docker.com:443
-            docker-images-prod.s3.dualstack.us-east-1.amazonaws.com:443
             proxy.golang.org:443
-            registry-1.docker.io:443
             release-assets.githubusercontent.com:443
             storage.googleapis.com:443
             sum.golang.org:443
@@ -1485,6 +1480,9 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+
+      - name: Use the GHCR image mirror
+        uses: ./.github/actions/ci-images
 
       - name: Set up Go
         uses: ./.github/actions/setup-go
@@ -1583,6 +1581,7 @@ jobs:
     runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     permissions:
       contents: read
+      packages: read
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
@@ -1607,12 +1606,9 @@ jobs:
             api.tokenfactory.nebius.com:443
             generativelanguage.googleapis.com:443
             openrouter.ai:443
-            production.cloudfront.docker.com:443
-            docker-images-prod.s3.dualstack.us-east-1.amazonaws.com:443
             dl.google.com:443
             api.github.com:443
             api.openai.com:443
-            auth.docker.io:443
             azure.archive.ubuntu.com:80
             *.ec2.archive.ubuntu.com:80
             archive.ubuntu.com:80
@@ -1627,12 +1623,7 @@ jobs:
             github.com:443
             pkg-containers.githubusercontent.com:443
             packages.microsoft.com:443
-            docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com:443
-            production.cloudflare.docker.com:443
-            production.cloudfront.docker.com:443
-            docker-images-prod.s3.dualstack.us-east-1.amazonaws.com:443
             proxy.golang.org:443
-            registry-1.docker.io:443
             release-assets.githubusercontent.com:443
             storage.googleapis.com:443
             sum.golang.org:443
@@ -1644,6 +1635,9 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+
+      - name: Use the GHCR image mirror
+        uses: ./.github/actions/ci-images
 
       - name: Install jq
         run: |
@@ -1931,7 +1925,6 @@ jobs:
             api.openai.com:443
             api.parasail.io:443
             api.tokenfactory.nebius.com:443
-            auth.docker.io:443
             azure.archive.ubuntu.com:80
             *.ec2.archive.ubuntu.com:80
             archive.ubuntu.com:80
@@ -1948,12 +1941,7 @@ jobs:
             nodejs.org:443
             openrouter.ai:443
             packages.microsoft.com:443
-            docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com:443
-            production.cloudflare.docker.com:443
-            production.cloudfront.docker.com:443
-            docker-images-prod.s3.dualstack.us-east-1.amazonaws.com:443
             proxy.golang.org:443
-            registry-1.docker.io:443
             registry.npmjs.org:443
             release-assets.githubusercontent.com:443
             storage.googleapis.com:443
@@ -1964,6 +1952,9 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+
+      - name: Use the GHCR image mirror
+        uses: ./.github/actions/ci-images
 
       - name: Set up Go
         uses: ./.github/actions/setup-go
@@ -2084,6 +2075,7 @@ jobs:
     runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     permissions:
       contents: read
+      packages: read
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
@@ -2132,12 +2124,10 @@ jobs:
             api.perplexity.ai:443
             api.replicate.com:443
             api.x.ai:443
-            auth.docker.io:443
             bedrock-mantle.us-east-1.api.aws:443
             bedrock-runtime.us-east-1.amazonaws.com:443
             bedrock.us-east-1.amazonaws.com:443
             bifrost-gateway-resource.openai.azure.com:443
-            cr.weaviate.io:443
             dl-cdn.alpinelinux.org:443
             fonts.googleapis.com:443
             fonts.gstatic.com:443
@@ -2151,12 +2141,7 @@ jobs:
             nodejs.org:443
             oauth2.googleapis.com:443
             openrouter.ai:443
-            docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com:443
-            production.cloudflare.docker.com:443
-            production.cloudfront.docker.com:443
-            docker-images-prod.s3.dualstack.us-east-1.amazonaws.com:443
             proxy.golang.org:443
-            registry-1.docker.io:443
             registry.npmjs.org:443
             release-assets.githubusercontent.com:443
             storage.googleapis.com:443
@@ -2169,6 +2154,9 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+
+      - name: Use the GHCR image mirror
+        uses: ./.github/actions/ci-images
 
       - name: Set up Go
         uses: ./.github/actions/setup-go
@@ -2312,6 +2300,7 @@ jobs:
     runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     permissions:
       contents: read
+      packages: read
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
@@ -2333,23 +2322,19 @@ jobs:
             api.mistral.ai:443
             api.parasail.io:443
             api.tokenfactory.nebius.com:443
-            auth.docker.io:443
             codeload.github.com:443
             generativelanguage.googleapis.com:443
             getbifrost.ai:443
             github.com:443
             objects.githubusercontent.com:443
             openrouter.ai:443
-            docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com:443
-            production.cloudflare.docker.com:443
-            production.cloudfront.docker.com:443
-            docker-images-prod.s3.dualstack.us-east-1.amazonaws.com:443
             proxy.golang.org:443
-            registry-1.docker.io:443
             release-assets.githubusercontent.com:443
             storage.googleapis.com:443
             sum.golang.org:443
             www.getbifrost.ai:443
+            ghcr.io:443
+            pkg-containers.githubusercontent.com:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -2357,6 +2342,9 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
           persist-credentials: false
+
+      - name: Use the GHCR image mirror
+        uses: ./.github/actions/ci-images
 
       # cost-accuracy-test.sh fetches bifrost-benchmarking at its pinned commit
       # (bifrost-benchmarking.sh, TXE-7452) into BENCHMARK_DIR below.
@@ -2498,6 +2486,7 @@ jobs:
     runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     permissions:
       contents: read
+      packages: read
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
@@ -2534,7 +2523,6 @@ jobs:
             api.replicate.com:443
             api.tokenfactory.nebius.com:443
             api.x.ai:443
-            auth.docker.io:443
             bedrock-mantle.us-east-1.api.aws:443
             bedrock.us-east-1.amazonaws.com:443
             bifrost-gateway-resource.openai.azure.com:443
@@ -2551,12 +2539,7 @@ jobs:
             nodejs.org:443
             oauth2.googleapis.com:443
             openrouter.ai:443
-            docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com:443
-            production.cloudflare.docker.com:443
-            production.cloudfront.docker.com:443
-            docker-images-prod.s3.dualstack.us-east-1.amazonaws.com:443
             proxy.golang.org:443
-            registry-1.docker.io:443
             registry.npmjs.org:443
             release-assets.githubusercontent.com:443
             storage.googleapis.com:443
@@ -2569,6 +2552,9 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+
+      - name: Use the GHCR image mirror
+        uses: ./.github/actions/ci-images
 
       - name: Set up Go
         uses: ./.github/actions/setup-go
@@ -2666,6 +2652,7 @@ jobs:
     runs-on: ${{ vars.BIFROST_RUNNER_ARM64 || 'ubuntu-24.04-arm' }}
     permissions:
       contents: read
+      packages: read
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
@@ -2702,7 +2689,6 @@ jobs:
             api.replicate.com:443
             api.tokenfactory.nebius.com:443
             api.x.ai:443
-            auth.docker.io:443
             bedrock-mantle.us-east-1.api.aws:443
             bedrock.us-east-1.amazonaws.com:443
             bifrost-gateway-resource.openai.azure.com:443
@@ -2719,12 +2705,7 @@ jobs:
             nodejs.org:443
             oauth2.googleapis.com:443
             openrouter.ai:443
-            docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com:443
-            production.cloudflare.docker.com:443
-            production.cloudfront.docker.com:443
-            docker-images-prod.s3.dualstack.us-east-1.amazonaws.com:443
             proxy.golang.org:443
-            registry-1.docker.io:443
             registry.npmjs.org:443
             release-assets.githubusercontent.com:443
             storage.googleapis.com:443
@@ -2737,6 +2718,9 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+
+      - name: Use the GHCR image mirror
+        uses: ./.github/actions/ci-images
 
       - name: Set up Go
         uses: ./.github/actions/setup-go
@@ -3592,19 +3576,13 @@ jobs:
         with:
           egress-policy: block
           allowed-endpoints: >
-            auth.docker.io:443
             dl-cdn.alpinelinux.org:443
             fonts.googleapis.com:443
             fonts.gstatic.com:443
             ghcr.io:443
             github.com:443
             pkg-containers.githubusercontent.com:443
-            docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com:443
-            production.cloudflare.docker.com:443
-            production.cloudfront.docker.com:443
-            docker-images-prod.s3.dualstack.us-east-1.amazonaws.com:443
             proxy.golang.org:443
-            registry-1.docker.io:443
             registry.npmjs.org:443
             storage.googleapis.com:443
             sum.golang.org:443
@@ -3614,6 +3592,9 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+
+      - name: Use the GHCR image mirror
+        uses: ./.github/actions/ci-images
 
       - name: Verify bifrost-http release
         id: verify
@@ -3681,6 +3662,7 @@ jobs:
           context: .
           build-args: |
             VERSION=${{ needs.detect-changes.outputs.transport-version }}
+            BIFROST_CI_REGISTRY=${{ env.BIFROST_CI_REGISTRY }}
             ${{ steps.npm-routes.outputs.build-args }}
           file: ./transports/Dockerfile
           push: true
@@ -3744,19 +3726,13 @@ jobs:
         with:
           egress-policy: block
           allowed-endpoints: >
-            auth.docker.io:443
             dl-cdn.alpinelinux.org:443
             fonts.googleapis.com:443
             fonts.gstatic.com:443
             ghcr.io:443
             github.com:443
             pkg-containers.githubusercontent.com:443
-            docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com:443
-            production.cloudflare.docker.com:443
-            production.cloudfront.docker.com:443
-            docker-images-prod.s3.dualstack.us-east-1.amazonaws.com:443
             proxy.golang.org:443
-            registry-1.docker.io:443
             registry.npmjs.org:443
             storage.googleapis.com:443
             sum.golang.org:443
@@ -3766,6 +3742,9 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+
+      - name: Use the GHCR image mirror
+        uses: ./.github/actions/ci-images
 
       - name: Verify bifrost-http release
         id: verify
@@ -3835,6 +3814,7 @@ jobs:
           push: true
           build-args: |
             VERSION=${{ needs.detect-changes.outputs.transport-version }}
+            BIFROST_CI_REGISTRY=${{ env.BIFROST_CI_REGISTRY }}
             ${{ steps.npm-routes.outputs.build-args }}
           tags: ${{ steps.tags.outputs.tags }}
           platforms: linux/arm64
@@ -3868,15 +3848,9 @@ jobs:
         with:
           egress-policy: block
           allowed-endpoints: >
-            auth.docker.io:443
             ghcr.io:443
             github.com:443
             pkg-containers.githubusercontent.com:443
-            docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com:443
-            production.cloudflare.docker.com:443
-            production.cloudfront.docker.com:443
-            docker-images-prod.s3.dualstack.us-east-1.amazonaws.com:443
-            registry-1.docker.io:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -3957,19 +3931,13 @@ jobs:
         with:
           egress-policy: block
           allowed-endpoints: >
-            auth.docker.io:443
             dl-cdn.alpinelinux.org:443
             fonts.googleapis.com:443
             fonts.gstatic.com:443
             ghcr.io:443
             github.com:443
             pkg-containers.githubusercontent.com:443
-            docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com:443
-            production.cloudflare.docker.com:443
-            production.cloudfront.docker.com:443
-            docker-images-prod.s3.dualstack.us-east-1.amazonaws.com:443
             proxy.golang.org:443
-            registry-1.docker.io:443
             *.redhat.com:443
             *.quay.io:443
             registry.npmjs.org:443
@@ -3981,6 +3949,9 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+
+      - name: Use the GHCR image mirror
+        uses: ./.github/actions/ci-images
 
       - name: Verify bifrost-http release
         id: verify
@@ -4050,6 +4021,7 @@ jobs:
           context: .
           build-args: |
             VERSION=${{ needs.detect-changes.outputs.transport-version }}
+            BIFROST_CI_REGISTRY=${{ env.BIFROST_CI_REGISTRY }}
             ${{ steps.npm-routes.outputs.build-args }}
           file: ./transports/Dockerfile.redhat
           push: true
@@ -4113,19 +4085,13 @@ jobs:
         with:
           egress-policy: block
           allowed-endpoints: >
-            auth.docker.io:443
             dl-cdn.alpinelinux.org:443
             fonts.googleapis.com:443
             fonts.gstatic.com:443
             ghcr.io:443
             github.com:443
             pkg-containers.githubusercontent.com:443
-            docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com:443
-            production.cloudflare.docker.com:443
-            production.cloudfront.docker.com:443
-            docker-images-prod.s3.dualstack.us-east-1.amazonaws.com:443
             proxy.golang.org:443
-            registry-1.docker.io:443
             *.redhat.com:443
             *.quay.io:443
             registry.npmjs.org:443
@@ -4137,6 +4103,9 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+
+      - name: Use the GHCR image mirror
+        uses: ./.github/actions/ci-images
 
       - name: Verify bifrost-http release
         id: verify
@@ -4208,6 +4177,7 @@ jobs:
           push: true
           build-args: |
             VERSION=${{ needs.detect-changes.outputs.transport-version }}
+            BIFROST_CI_REGISTRY=${{ env.BIFROST_CI_REGISTRY }}
             ${{ steps.npm-routes.outputs.build-args }}
           tags: ${{ steps.tags.outputs.tags }}
           platforms: linux/arm64
@@ -4241,15 +4211,9 @@ jobs:
         with:
           egress-policy: block
           allowed-endpoints: >
-            auth.docker.io:443
             ghcr.io:443
             github.com:443
             pkg-containers.githubusercontent.com:443
-            docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com:443
-            production.cloudflare.docker.com:443
-            production.cloudfront.docker.com:443
-            docker-images-prod.s3.dualstack.us-east-1.amazonaws.com:443
-            registry-1.docker.io:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

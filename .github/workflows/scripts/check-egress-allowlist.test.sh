@@ -184,6 +184,8 @@ docker_case() {
     printf '      - uses: step-security/harden-runner@v2\n        with:\n'
     printf '          egress-policy: %s\n          allowed-endpoints: >\n' "$policy"
     printf '            %s\n' "$@"
+    # Logged in, so rule 5 (no anonymous Docker Hub pull) passes and these cases test rule 4.
+    printf '      - uses: step-security/docker-login-action@v4\n        with:\n          username: u\n'
     printf '      - run: docker pull postgres:16-alpine\n'
   } > "$wf"
   out="$(bash "$SCRIPT_DIR/check-egress-allowlist.sh" "$wf" 2>&1)" || status=$?
@@ -207,6 +209,46 @@ docker_case "docker-hub-registry-only" fail "production.cloudfront.docker.com:44
   registry-1.docker.io:443
 docker_case "no-docker-hub-needs-no-blob-hosts" pass "" block github.com:443
 docker_case "audit-policy-is-not-checked" pass "" audit registry-1.docker.io:443
+
+# Rule 5 (TXE-7684): an anonymous Docker Hub pull hits its rate limit, so a job may allow
+# registry-1.docker.io only when it logs in to Docker Hub, or as the mirror job; no job
+# allows cr.weaviate.io, which fronts the same limit.
+HUB_ALL=(registry-1.docker.io:443 "$R2" production.cloudflare.docker.com:443 production.cloudfront.docker.com:443 "$S3")
+# anon_case <name> <pass|fail> <text expected in the failure, or ""> <file name> <job> <login registry|none> <host>...
+anon_case() {
+  local name="$1" want="$2" expect="$3" file="$4" job="$5" login="$6"; shift 6
+  mkdir -p "$WORK/anon-$name"
+  local wf="$WORK/anon-$name/$file" out status=0
+  {
+    printf 'jobs:\n  %s:\n    runs-on: ubuntu-24.04\n    steps:\n' "$job"
+    printf '      - uses: step-security/harden-runner@v2\n        with:\n'
+    printf '          egress-policy: block\n          allowed-endpoints: >\n'
+    printf '            %s\n' "$@"
+    case "$login" in
+      none) ;;
+      docker.io) printf '      - uses: step-security/docker-login-action@v4\n        with:\n          username: u\n' ;;
+      *) printf '      - uses: step-security/docker-login-action@v4\n        with:\n          registry: %s\n' "$login" ;;
+    esac
+    printf '      - run: docker compose up -d\n'
+  } > "$wf"
+  out="$(bash "$SCRIPT_DIR/check-egress-allowlist.sh" "$wf" 2>&1)" || status=$?
+  if [[ "$want" == "pass" && $status -ne 0 ]]; then
+    echo "FAIL $name: expected the check to pass, it failed:"; echo "$out" | sed 's/^/    /'
+    failures=$((failures + 1)); return
+  fi
+  if [[ "$want" == "fail" ]] && { [[ $status -eq 0 ]] || ! grep -qF -- "$expect" <<<"$out"; }; then
+    echo "FAIL $name: expected the check to fail naming $expect:"; echo "$out" | sed 's/^/    /'
+    failures=$((failures + 1)); return
+  fi
+  echo "ok   $name"
+}
+anon_case "anonymous-docker-hub-fails" fail "without logging in to Docker Hub" ci.yml pull none "${HUB_ALL[@]}"
+anon_case "ghcr-login-is-not-docker-hub" fail "without logging in to Docker Hub" ci.yml pull ghcr.io "${HUB_ALL[@]}"
+anon_case "docker-hub-login-passes" pass "" ci.yml pull docker.io "${HUB_ALL[@]}"
+anon_case "mirror-job-may-pull-anonymously" pass "" ci-images-mirror.yml mirror none "${HUB_ALL[@]}"
+anon_case "mirror-exemption-is-per-job" fail "without logging in to Docker Hub" ci-images-mirror.yml other none "${HUB_ALL[@]}"
+anon_case "cr-weaviate-fails" fail "cr.weaviate.io" ci.yml pull docker.io cr.weaviate.io:443
+anon_case "ghcr-mirror-only-passes" pass "" ci.yml pull none ghcr.io:443 pkg-containers.githubusercontent.com:443
 
 # apt on a hosted runner follows /etc/apt/apt-mirrors.txt: the Azure mirror, or the
 # region's EC2 mirror when the runner is on EC2, then archive.ubuntu.com and

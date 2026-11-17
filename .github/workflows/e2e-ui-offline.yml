@@ -35,6 +35,9 @@ jobs:
     # (scripts/test-approval-environment.py).
     environment: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'pr-testing' || 'ci-trusted-branch' }}
     runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
+    permissions:
+      contents: read
+      packages: read
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -48,34 +51,32 @@ jobs:
           # Setup only: setup-node and setup-go (api.github.com, github.com, nodejs.org,
           # release-assets.githubusercontent.com, storage.googleapis.com), the Go modules
           # (proxy.golang.org, sum.golang.org), npm ci for ui and tests/e2e (registry.npmjs.org),
-          # the e2e Postgres image (Docker Hub) and Playwright's Chromium (cdn.playwright.dev,
+          # the e2e Postgres image from the GHCR mirror (ghcr.io, pkg-containers.githubusercontent.com;
+          # ./.github/actions/ci-images, TXE-7684) and Playwright's Chromium (cdn.playwright.dev,
           # playwright.download.prss.microsoft.com). The tests themselves dial only loopback.
-          # Docker Hub redirects a blob to one of four hosts, R2 and S3 included, so all four
-          # are allowed: without one, a pull timed out on harden-runner's block address
-          # (TXE-7427 for R2, TXE-7500 for S3).
-          # check-egress-allowlist.sh fails a Docker Hub job that omits one.
+          # No Docker Hub host: an anonymous Docker Hub pull hit its rate limit, so one that
+          # bypasses the mirror is refused here (check-egress-allowlist.sh).
           allowed-endpoints: >
             api.github.com:443
-            auth.docker.io:443
             cdn.playwright.dev:443
-            docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com:443
             github.com:443
             nodejs.org:443
             playwright.download.prss.microsoft.com:443
-            production.cloudflare.docker.com:443
-            production.cloudfront.docker.com:443
-            docker-images-prod.s3.dualstack.us-east-1.amazonaws.com:443
             proxy.golang.org:443
-            registry-1.docker.io:443
             registry.npmjs.org:443
             release-assets.githubusercontent.com:443
             storage.googleapis.com:443
             sum.golang.org:443
+            ghcr.io:443
+            pkg-containers.githubusercontent.com:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+
+      - name: Use the GHCR image mirror
+        uses: ./.github/actions/ci-images
 
       - name: Set up Go
         uses: ./.github/actions/setup-go

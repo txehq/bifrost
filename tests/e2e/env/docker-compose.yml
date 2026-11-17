@@ -2,7 +2,7 @@ name: bifrost-e2e
 
 services:
   postgres:
-    image: postgres:16-alpine@sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229
+    image: ${BIFROST_CI_REGISTRY:-docker.io}/library/postgres:16-alpine@sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229
     environment:
       POSTGRES_USER: bifrost
       POSTGRES_PASSWORD: bifrost_password

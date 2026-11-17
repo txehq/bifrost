@@ -48,6 +48,7 @@ GATED_JOBS = {
     ("workflow-lint.yml", "release-no-main-push"),
     ("workflow-lint.yml", "dockerfile-health"),
     ("workflow-lint.yml", "helm-publish-index"),
+    ("ci-images-mirror.yml", "mirror"),
 }
 
 # pull_request jobs allowed to check out the pull request's own code without the approval
