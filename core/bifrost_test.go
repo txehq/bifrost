@@ -15348,6 +15348,67 @@ func TestVendorCallReportsWhetherTheRequestWasWritten(t *testing.T) {
 	}
 }
 
+// One request context is one call for upstream_sent (TXE-6746): an MCP agent run sends each turn
+// on the caller's context, so a turn refused at connect after an earlier turn reached the vendor
+// must still report the call as sent.
+func TestUpstreamSentSumsEveryRequestOnOneContext(t *testing.T) {
+	vendor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"bad request from the vendor","type":"invalid_request_error"}}`))
+	}))
+	defer vendor.Close()
+	closed, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	refusedURL := "http://" + closed.Addr().String()
+	_ = closed.Close()
+
+	// The first turn goes to a vendor that answers; the next goes to a provider whose endpoint
+	// refuses the connection, so that turn alone writes nothing.
+	account := NewMockAccount()
+	for provider, baseURL := range map[schemas.ModelProvider]string{schemas.OpenAI: vendor.URL, schemas.Groq: refusedURL} {
+		account.AddProviderWithBaseURL(provider, 1, 10, baseURL)
+		account.configs[provider].NetworkConfig.MaxRetries = 0
+		account.SetKeysForProvider(provider, []schemas.Key{
+			{ID: "k-" + string(provider), Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 100},
+		})
+	}
+	client, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewDefaultLogger(schemas.LogLevelError)})
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	defer client.Shutdown()
+	text := "ping"
+	chat := func(ctx *schemas.BifrostContext, provider schemas.ModelProvider) *schemas.BifrostError {
+		_, bifrostErr := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+			Provider: provider,
+			Model:    "gpt-4o-mini",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &text}}},
+		})
+		if bifrostErr == nil {
+			t.Fatalf("%s: the call must fail", provider)
+		}
+		return bifrostErr
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	if first := chat(ctx, schemas.OpenAI); first.ExtraFields.UpstreamSent == nil || !*first.ExtraFields.UpstreamSent {
+		t.Fatalf("first turn: want an answered error with upstream_sent true, got %v (%s: %v)", first.ExtraFields.UpstreamSent, first.Error.Message, first.Error.Error)
+	}
+	second := chat(ctx, schemas.Groq)
+	if s := second.ExtraFields.UpstreamSent; s == nil || !*s {
+		t.Errorf("second turn on the same context: upstream_sent %v, want true (the first turn reached the vendor); error_type %q, message %q", s, second.ResolveErrorType(), second.Error.Message)
+	}
+
+	// The same refused dial on a context of its own reports false: the true above came from the
+	// earlier turn, not from the refused provider.
+	if fresh := chat(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), schemas.Groq); fresh.ExtraFields.UpstreamSent == nil || *fresh.ExtraFields.UpstreamSent {
+		t.Errorf("a refused dial on a new context: want upstream_sent false, got %v (%s)", fresh.ExtraFields.UpstreamSent, fresh.Error.Message)
+	}
+}
+
 // TestProviderQueueErrorType: only getProviderQueue's no-config error is the caller's; a
 // provider that fails to start is Bifrost's own fault.
 func TestProviderQueueErrorType(t *testing.T) {

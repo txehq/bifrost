@@ -6,8 +6,9 @@ import (
 )
 
 // UpstreamAttempt records, for one provider call and its retries, whether the shared HTTP
-// client wrote the request to the vendor (contract C6 upstream_sent, TXE-6746). Core puts a
-// fresh one on the context before the call (BifrostContextKeyUpstreamAttempt); every exchange
+// client wrote the request to the vendor (contract C6 upstream_sent, TXE-6746). Core puts one
+// on the context the first time the call reaches a provider (BifrostContextKeyUpstreamAttempt),
+// and its fallbacks and MCP agent turns, which run on the same context, add to it; every exchange
 // through providerUtils' shared client marks it; core applies it to the error the call returns.
 type UpstreamAttempt struct {
 	written       atomic.Bool

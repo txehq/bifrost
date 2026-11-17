@@ -8797,9 +8797,15 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		var heldBackError atomic.Bool
 
 		// The shared HTTP client records on this whether the call's exchanges wrote the request
-		// (TXE-6746); it is applied to the error the retries end with, below.
-		upstreamAttempt := &schemas.UpstreamAttempt{}
-		req.Context.SetValue(schemas.BifrostContextKeyUpstreamAttempt, upstreamAttempt)
+		// (TXE-6746); it is applied to the error the retries end with, below. One record serves
+		// the whole call: a fallback, and each turn of an MCP agent run, re-enters this worker
+		// on the same context and adds to the record already there, so a turn that fails to
+		// connect after an earlier turn reached the vendor still reports upstream_sent true.
+		upstreamAttempt := schemas.UpstreamAttemptFrom(req.Context)
+		if upstreamAttempt == nil {
+			upstreamAttempt = &schemas.UpstreamAttempt{}
+			req.Context.SetValue(schemas.BifrostContextKeyUpstreamAttempt, upstreamAttempt)
+		}
 
 		// Execute request with retries. For streaming, the plugin pipeline,
 		// postHookRunner, and finalizer are allocated per-attempt inside the
