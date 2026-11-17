@@ -1,5 +1,4 @@
 import { expect, test } from '../../core/fixtures/base.fixture'
-import { skipUnlessVisible } from '../../core/utils/availability'
 import { ObservabilityState } from './pages/observability.page'
 
 test.describe('Observability', () => {
@@ -76,15 +75,6 @@ test.describe('Observability', () => {
       await expect
         .poll(async () => observabilityPage.isConnectorEnabled('otel'), { timeout: 3000 })
         .toBe(!initialState)
-    })
-
-    test('should display OTel delete button when connector is configured', async ({ observabilityPage }) => {
-      await observabilityPage.selectConnector('otel')
-
-      const deleteBtn = observabilityPage.getConnectorDeleteBtn('otel')
-      await skipUnlessVisible(deleteBtn, 'OTel delete button not visible (connector may not be configured)')
-
-      await expect(deleteBtn).toBeVisible()
     })
 
     test('should configure OTel endpoint', async ({ observabilityPage }) => {
@@ -190,20 +180,6 @@ test.describe('Observability', () => {
 
       const newState = await observabilityPage.isConnectorEnabled('prometheus')
       expect(newState).toBe(!initialState)
-    })
-
-    test('should display Prometheus delete button when connector is configured', async ({ observabilityPage }) => {
-      const isAvailable = await observabilityPage.isConnectorAvailable('prometheus')
-
-      // skip-ok: isConnectorAvailable waits for the tab to render and enable
-      test.skip(!isAvailable, 'Prometheus connector not available')
-
-      await observabilityPage.selectConnector('prometheus')
-
-      const deleteBtn = observabilityPage.getConnectorDeleteBtn('prometheus')
-      await skipUnlessVisible(deleteBtn, 'Prometheus delete button not visible (connector may not be configured)')
-
-      await expect(deleteBtn).toBeVisible()
     })
   })
 

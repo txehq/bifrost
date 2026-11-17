@@ -57,8 +57,6 @@ interface OtelFormFragmentProps {
 		config?: StoredOtelConfig;
 	};
 	onSave: (config: OtelFormSchema) => Promise<void>;
-	onDelete?: () => void;
-	isDeleting?: boolean;
 	isLoading?: boolean;
 }
 
@@ -162,8 +160,6 @@ const buildDefaults = (initial?: OtelFormFragmentProps["currentConfig"]): OtelFo
 export function OtelFormFragment({
 	currentConfig: initialConfig,
 	onSave,
-	onDelete,
-	isDeleting = false,
 	isLoading = false,
 }: OtelFormFragmentProps) {
 	const hasOtelAccess = useRbac(RbacResource.Observability, RbacOperation.Update);
@@ -265,19 +261,6 @@ export function OtelFormFragment({
 						)}
 					/>
 					<div className="ml-auto flex justify-end space-x-2 py-2">
-						{onDelete && (
-							<Button
-								type="button"
-								variant="outline"
-								onClick={onDelete}
-								disabled={isDeleting || !hasOtelAccess}
-								data-testid="otel-connector-delete-btn"
-								title="Delete connector"
-								aria-label="Delete connector"
-							>
-								<Trash2 className="size-4" />
-							</Button>
-						)}
 						<Button
 							type="button"
 							variant="outline"
