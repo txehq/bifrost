@@ -1,0 +1,115 @@
+# SCRATCH (TXE-7762) round 3: the release path with a control, and two real slowdowns
+# (unoptimised and -race builds) against a normal build. Throwaway branch; never a PR.
+name: scratch-load-bisect
+on:
+  push:
+    branches: [cc15-s8395e8/scratch-txe7762-loadbisect]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  build:
+    runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        include:
+          - { label: noopt, flags: "-gcflags=all=-N -l" }
+          - { label: race, flags: "-race" }
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - uses: ./.github/actions/setup-go
+      - name: Build sync.12 ${{ matrix.label }}
+        env:
+          FLAGS: ${{ matrix.flags }}
+        run: |
+          set -euo pipefail
+          src=$(mktemp -d); git archive transports/v2.4.0-sync.12 | tar -x -C "$src"
+          mkdir -p "$GITHUB_WORKSPACE/bins"
+          cd "$src"; source ./.github/workflows/scripts/setup-go-workspace.sh
+          mkdir -p transports/bifrost-http/ui && echo placeholder > transports/bifrost-http/ui/.gitkeep
+          cd transports/bifrost-http && go build $FLAGS -o "$GITHUB_WORKSPACE/bins/sync12-${{ matrix.label }}" .
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: bin-${{ matrix.label }}
+          path: bins/
+          retention-days: 3
+  measure:
+    needs: build
+    runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - uses: ./.github/actions/setup-go
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: bin-{noopt,race}
+          path: bins
+          merge-multiple: true
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: bin-10-sync12-ba39c73f52
+          path: bins
+          run-id: 44193139082
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: bifrost-http-binary
+          path: relbin
+          run-id: 44144252869
+          github-token: ${{ github.token }}
+      - uses: ./.github/actions/go-cache
+        with:
+          purpose: bifrost-http-build
+      - name: Measure
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BENCHMARK_DIR: ${{ github.workspace }}/bifrost-benchmarking
+          SKIP_STRESS: "1"
+          BIFROST_LOG_LEVEL: warn
+          RATE: "1000"
+          STREAMING_RATE: "1000"
+          MAX_WORKERS: "12000"
+          OVERHEAD_DURATION: "10"
+          OVERHEAD_SAMPLES: "3"
+          STRESS_DURATION: "10"
+          OVERHEAD_MOCKER_LATENCY_MS: "500"
+          STRESS_MOCKER_LATENCY_MS: "500"
+        run: |
+          set -uo pipefail
+          chmod +x bins/* relbin/bifrost-http
+          mkdir -p out tmp
+          R=.github/workflows/scripts/load-test-results.json
+          run() {  # name candidate control label
+            cp "$2" tmp/bifrost-http
+            rm -f "$R"
+            CONTROL_BIFROST_BIN="$3" CONTROL_LABEL="$4" ./.github/workflows/scripts/load-test.sh > "out/$1.log" 2>&1; echo "$1 load-test exit $?"
+            cp "$R" "out/$1.json" || true
+            python3 .github/workflows/scripts/load-trend.py compare --current "out/$1.json" ${5:+--control-recorded "$5"} --out "out/$1.md"; echo "$1 compare exit $?"
+          }
+          # A: the release path. sync.13 is the release being made; the control is three back.
+          tag=$(python3 .github/workflows/scripts/load-trend.py pick-control --repo "$GITHUB_REPOSITORY" \
+                --exclude-tag transports/v2.4.0-sync.13 --recorded-out tmp/control-recorded.json); echo "control=$tag"
+          ./.github/workflows/scripts/load-control.sh "$tag" "$PWD/tmp/bifrost-http-control"
+          run A-release "$PWD/relbin/bifrost-http" "$PWD/tmp/bifrost-http-control" "$tag" tmp/control-recorded.json
+          run B-noopt "$PWD/bins/sync12-noopt" "$PWD/bins/10-sync12-ba39c73f52" "transports/v2.4.0-sync.12 (optimised build)"
+          run C-race "$PWD/bins/sync12-race" "$PWD/bins/10-sync12-ba39c73f52" "transports/v2.4.0-sync.12 (build without -race)"
+          cat out/*.md
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        if: ${{ !cancelled() }}
+        with:
+          name: out-${{ matrix.shard }}
+          path: out/
+          retention-days: 7

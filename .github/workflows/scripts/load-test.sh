@@ -1364,6 +1364,9 @@ main() {
   OVERHEAD_STATS_RSS_AVG="${STATS_RSS_AVG}"
   OVERHEAD_STATS_RSS_PEAK="${STATS_RSS_PEAK}"
 
+  if [ "${SKIP_STRESS:-0}" = "1" ]; then
+    stop_mocker; stop_bifrost; finalize_results; cat "${RESULTS_FILE}"; return 0
+  fi
   # ── Phase 2: Stress test with high-latency mocker ──
   # Restart both mocker and bifrost to ensure a clean fasthttp connection pool.
   # Without restarting bifrost, stale TCP connections from the overhead phase
