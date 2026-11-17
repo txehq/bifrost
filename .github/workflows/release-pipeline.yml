@@ -2388,7 +2388,21 @@ jobs:
           path: tmp/cost-accuracy/
           retention-days: 30
 
-  # Non-blocking load performance test - runs streaming and non-streaming load flows
+  # Load performance test - runs streaming and non-streaming load flows. It gates nothing:
+  # continue-on-error, and no publishing job admits on its result (TXE-7762 measured why:
+  # hosted-runner noise, below). It does three things a release can be checked against:
+  #   1. measures overhead OVERHEAD_SAMPLES times on a fresh gateway and records the median,
+  #      checking the absolute limits in load-test.sh against that median;
+  #   2. compares the median with the results recorded on the last three releases
+  #      (load-trend.py; bounds and the noise they were set from are there) and warns;
+  #   3. hands its result to bifrost-http-release, which records it on the GitHub release
+  #      as load-performance.json for the next release to compare against.
+  # Why the trend check warns rather than gates: 11 builds x 12 runs on these runners
+  # (TXE-7762) put a single non-streaming sample's mean anywhere from 0.9 to 2.8 ms on the
+  # same code, and the release runs' own tails (p99 74-127 ms at sync.12) sat above every
+  # one of that build's 12 bisect runs. A gate that blocks a publish on noise that size is
+  # rerun until green. The median of three narrows the spread; the warning and the
+  # recorded table make a creep visible on the release where it starts.
   test-load-performance:
     needs: [check-skip, detect-changes, build-gateway]
     if: |
@@ -2470,12 +2484,30 @@ jobs:
           STREAMING_RATE: "1000"
           MAX_WORKERS: "12000"
           OVERHEAD_DURATION: "10"
+          OVERHEAD_SAMPLES: "3"
           STRESS_DURATION: "10"
           OVERHEAD_MOCKER_LATENCY_MS: "500"
           STRESS_MOCKER_LATENCY_MS: "500"
         run: |
           chmod +x ./.github/workflows/scripts/load-test.sh
           ./.github/workflows/scripts/load-test.sh
+
+      # Warns, never fails the job: see the comment on this job.
+      - name: Compare with the results recorded on earlier releases
+        if: ${{ !cancelled() && hashFiles('.github/workflows/scripts/load-test-results.json') != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: transports/v${{ needs.detect-changes.outputs.transport-version }}
+        run: |
+          python3 .github/workflows/scripts/load-trend.py fetch --repo "$GITHUB_REPOSITORY" \
+            --exclude-tag "$RELEASE_TAG" --out tmp/load-baselines
+          baselines=()
+          for f in tmp/load-baselines/*.json; do
+            [ -e "$f" ] && baselines+=(--baseline "$f")
+          done
+          python3 .github/workflows/scripts/load-trend.py compare --warn-only \
+            --current .github/workflows/scripts/load-test-results.json "${baselines[@]}" \
+            --summary "$GITHUB_STEP_SUMMARY" --out .github/workflows/scripts/load-trend.md
 
       - name: Upload load test artifacts
         if: ${{ !cancelled() }}
@@ -2485,6 +2517,7 @@ jobs:
           path: |
             .github/workflows/scripts/load-test-results.md
             .github/workflows/scripts/load-test-results.json
+            .github/workflows/scripts/load-trend.md
           retention-days: 30
 
   # Docker image test - amd64
@@ -3497,7 +3530,9 @@ jobs:
 
   # Finalize: changelog, tagging, GitHub release, R2 latest copy
   bifrost-http-release:
-    needs: [build-binaries-x86, build-binaries-arm64, detect-changes, bifrost-http-prep]
+    # test-load-performance is here for its result, not as a gate: this job's `if` does not
+    # read it, so a failed or skipped load test never holds the release (TXE-7762).
+    needs: [build-binaries-x86, build-binaries-arm64, detect-changes, bifrost-http-prep, test-load-performance]
     if: "always() && needs.build-binaries-x86.result == 'success' && needs.build-binaries-arm64.result == 'success'"
     runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     permissions:
@@ -3521,6 +3556,7 @@ jobs:
             pypi.org:443
             release-assets.githubusercontent.com:443
             storage.googleapis.com:443
+            uploads.github.com:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -3553,6 +3589,32 @@ jobs:
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
         run: ./.github/workflows/scripts/release-bifrost-http-finalize.sh "${{ needs.detect-changes.outputs.transport-version }}"
+
+      # The next release's load job compares against this asset (load-trend.py, TXE-7762).
+      # A missing result warns and records nothing; it never fails the release.
+      - name: Download the load test result
+        if: ${{ steps.release.outputs.success == 'true' && needs.test-load-performance.result != 'skipped' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: load-performance-results
+          path: tmp/load-performance
+
+      - name: Record the load test result on the release
+        if: ${{ steps.release.outputs.success == 'true' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN || github.token }}
+          RELEASE_TAG: transports/v${{ needs.detect-changes.outputs.transport-version }}
+          LOAD_RESULT: ${{ needs.test-load-performance.result }}
+        run: |
+          result=tmp/load-performance/load-test-results.json
+          if ! python3 .github/workflows/scripts/load-trend.py check-result "$result"; then
+            echo "::warning::no complete load test result to record on $RELEASE_TAG (test-load-performance: $LOAD_RESULT); the next release compares against the releases before this one"
+            exit 0
+          fi
+          cp "$result" tmp/load-performance.json
+          gh release upload "$RELEASE_TAG" tmp/load-performance.json --clobber
 
   # Docker build amd64
   docker-build-amd64:
