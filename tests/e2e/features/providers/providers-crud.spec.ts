@@ -1,6 +1,6 @@
 import type { APIRequestContext } from "@playwright/test";
 import { expect, test } from "../../core/fixtures/base.fixture";
-import { skipUnlessVisible } from "../../core/utils/availability";
+import type { ProvidersPage } from "./pages/providers.page";
 import {
   createCustomProviderData,
   createProviderKeyData,
@@ -1093,17 +1093,35 @@ test.describe("Providers", () => {
 });
 
 test.describe("Provider specific configuration", () => {
+  // Providers this block added from the dropdown; a provider that was already configured is left alone.
+  const addedProviders: string[] = [];
+
+  /**
+   * Shows `name` in the sidebar, adding it from the "Add provider" dropdown when the instance does not
+   * configure it (a fresh or offline instance configures none of vLLM, Ollama and SGLang) (TXE-7737).
+   */
+  async function ensureProvider(providersPage: ProvidersPage, name: string): Promise<void> {
+    if (!(await providersPage.providerExists(name))) {
+      await providersPage.addKnownProviderFromDropdown(name);
+      addedProviders.push(name);
+    }
+    await expect(providersPage.getProviderItem(name)).toBeVisible({ timeout: 15000 });
+  }
+
   test.beforeEach(async ({ providersPage }) => {
     await providersPage.goto();
+  });
+
+  test.afterEach(async ({ providersPage }) => {
+    for (const name of addedProviders.splice(0)) {
+      await providersPage.deleteProvider(name, { skipToastWait: true });
+    }
   });
 
   test("should display complete vLLM key configuration when adding a key", async ({
     providersPage,
   }) => {
-    await skipUnlessVisible(
-      providersPage.getProviderItem("vllm"),
-      "vLLM provider not in sidebar (add from dropdown first)",
-    );
+    await ensureProvider(providersPage, "vllm");
 
     await providersPage.selectProvider("vllm");
     await providersPage.addKeyBtn.click();
@@ -1113,10 +1131,6 @@ test.describe("Provider specific configuration", () => {
       "key-input-vllm-model-name",
     );
 
-    await skipUnlessVisible(
-      vllmUrlInput.or(vllmModelInput),
-      "vLLM key form fields not shown (provider may use standard key form)",
-    );
     await expect(vllmUrlInput).toBeVisible();
     await expect(vllmModelInput).toBeVisible();
     await expect(
@@ -1141,32 +1155,26 @@ test.describe("Provider specific configuration", () => {
   test("should display Ollama-specific key fields when adding key to Ollama provider", async ({
     providersPage,
   }) => {
-    await skipUnlessVisible(
-      providersPage.getProviderItem("ollama"),
-      "Ollama provider not in sidebar (add from dropdown first)",
-    );
+    await ensureProvider(providersPage, "ollama");
 
     await providersPage.selectProvider("ollama");
     await providersPage.addKeyBtn.click();
 
     const urlInput = providersPage.page.getByTestId("key-input-ollama-url");
-    await skipUnlessVisible(urlInput, "Ollama key form fields not shown");
+    await expect(urlInput).toBeVisible();
     await providersPage.keyCancelBtn.click();
   });
 
   test("should display SGLang-specific key fields when adding key to SGLang provider", async ({
     providersPage,
   }) => {
-    await skipUnlessVisible(
-      providersPage.getProviderItem("sgl"),
-      "SGLang provider not in sidebar (add from dropdown first)",
-    );
+    await ensureProvider(providersPage, "sgl");
 
     await providersPage.selectProvider("sgl");
     await providersPage.addKeyBtn.click();
 
     const urlInput = providersPage.page.getByTestId("key-input-sgl-url");
-    await skipUnlessVisible(urlInput, "SGLang key form fields not shown");
+    await expect(urlInput).toBeVisible();
     await providersPage.keyCancelBtn.click();
   });
 });

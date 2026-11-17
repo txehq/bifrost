@@ -6,7 +6,9 @@ import {
   createSTDIOClientData,
 } from "./mcp-registry.data";
 
-const hasSSEHeaders = Boolean(process.env.MCP_SSE_HEADERS);
+// Read per test, not at import: global-setup.ts sets these for the workers when it starts the local
+// SSE fixture (TXE-7737), and a hosted run sets them itself.
+const hasSSEEndpoint = () => Boolean(process.env.MCP_SSE_URL || process.env.MCP_SSE_HEADERS);
 
 // Track created clients for cleanup
 const createdClients: string[] = [];
@@ -80,8 +82,8 @@ test.describe("MCP Registry", () => {
 
     test("should create SSE client", async ({ mcpRegistryPage }) => {
       test.skip( // skip-ok: an environment variable, not the page's state
-        !hasSSEHeaders,
-        "Requires MCP_SSE_HEADERS for authenticated SSE MCP endpoint",
+        !hasSSEEndpoint(),
+        "Requires an SSE MCP endpoint (MCP_SSE_URL / MCP_SSE_HEADERS; global-setup starts a local one)",
       );
       const clientData = createSSEClientData({
         name: `sse_test_${Date.now()}`,
@@ -178,8 +180,8 @@ test.describe("MCP Registry", () => {
       mcpRegistryPage,
     }) => {
       test.skip( // skip-ok: an environment variable, not the page's state
-        !hasSSEHeaders,
-        "Requires MCP_SSE_HEADERS for authenticated SSE MCP endpoint",
+        !hasSSEEndpoint(),
+        "Requires an SSE MCP endpoint (MCP_SSE_URL / MCP_SSE_HEADERS; global-setup starts a local one)",
       );
       const clientData = createSSEClientData({
         name: `sse_validation_${Date.now()}`,

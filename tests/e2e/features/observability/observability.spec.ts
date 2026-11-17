@@ -90,9 +90,10 @@ test.describe('Observability', () => {
     test('should configure OTel endpoint', async ({ observabilityPage }) => {
       await observabilityPage.selectConnector('otel')
 
-      const endpointInput = observabilityPage.page.getByPlaceholder(/otel-collector/i)
-
-      await skipUnlessVisible(endpointInput, 'OTel endpoint input not available')
+      // The form always holds at least one profile, rendered collapsed: open it to reach its endpoint (TXE-7737).
+      await observabilityPage.expandOtelProfile(0)
+      const endpointInput = observabilityPage.page.getByTestId('otel-profile-0').getByPlaceholder(/otel-collector/i)
+      await expect(endpointInput).toBeVisible()
 
       const testEndpoint = 'http://test-otel-collector:4317'
       await endpointInput.clear()

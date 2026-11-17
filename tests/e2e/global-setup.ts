@@ -369,11 +369,72 @@ async function runMCPSetup(): Promise<void> {
     );
   }
 
+  await startLocalSSEServer();
+
   console.log("✓ MCP servers ready");
   console.log("  - HTTP/SSE server: http://localhost:3001/");
   console.log("  - Auth demo server: http://localhost:3002/");
   console.log("  - OAuth demo server: http://localhost:3003/");
   console.log("  - STDIO server: test-tools-server/dist/index.js");
+}
+
+/** A port the OS reports free right now (bind to 0, read it back, release it). */
+function freePort(): Promise<number> {
+  return new Promise((res, rej) => {
+    const srv = net.createServer();
+    srv.once("error", rej);
+    srv.listen(0, "127.0.0.1", () => {
+      const { port } = srv.address() as net.AddressInfo;
+      srv.close(() => res(port));
+    });
+  });
+}
+
+/**
+ * The SSE MCP tests (mcp-registry-crud.spec.ts) need an SSE endpoint. Online runs name a hosted one
+ * through MCP_SSE_URL / MCP_SSE_HEADERS; when neither is set (the offline run, a laptop), start
+ * examples/mcps/remote-test-server, the same no-auth SSE fixture core/internal/mcptests and the
+ * provider harness use, and point the tests at it. Ports are chosen at run time, as mcptests does,
+ * so a concurrent harness or mcptests run on the machine cannot collide with it. The header is a
+ * static marker the fixture ignores: it keeps the tests on their header-auth path (TXE-7737).
+ * Playwright passes environment set here to the test workers.
+ */
+async function startLocalSSEServer(): Promise<void> {
+  if (process.env.MCP_SSE_URL || process.env.MCP_SSE_HEADERS) {
+    console.log("✓ SSE MCP endpoint configured by MCP_SSE_URL / MCP_SSE_HEADERS; not starting a local one");
+    return;
+  }
+  const dir = join(REPO_ROOT, "examples", "mcps", "remote-test-server");
+  const binary = join(dir, "bin", isWindows ? "remote-test-server.exe" : "remote-test-server");
+  const stale = !existsSync(binary) || statSync(join(dir, "main.go")).mtimeMs > statSync(binary).mtimeMs;
+  if (stale) {
+    console.log("Building remote-test-server (SSE MCP fixture)...");
+    runCommand(goCommand, ["build", "-o", binary, "."], {
+      cwd: dir,
+      env: { ...process.env, CGO_ENABLED: "0", GOWORK: "off" },
+    });
+  }
+
+  const httpPort = await freePort();
+  const ssePort = await freePort();
+  const server = spawn(binary, [], {
+    cwd: dir,
+    detached: true,
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, MCP_HTTP_PORT: String(httpPort), MCP_SSE_PORT: String(ssePort) },
+  });
+  server.stdout?.on("data", (data) => console.log(`[SSE Server] ${data.toString().trim()}`));
+  server.stderr?.on("data", (data) => console.log(`[SSE Server] ${data.toString().trim()}`));
+  if (!server.pid) throw new Error("Failed to start remote-test-server - no PID assigned");
+  server.unref();
+  MCP_SERVERS.push(server);
+  if (!(await waitForPort(ssePort)) || server.exitCode !== null) {
+    throw new Error(`remote-test-server did not listen on SSE port ${ssePort}`);
+  }
+
+  process.env.MCP_SSE_URL = `http://localhost:${ssePort}/sse`;
+  process.env.MCP_SSE_HEADERS = JSON.stringify({ "X-E2E-Fixture": "remote-test-server" });
+  console.log(`✓ remote-test-server (SSE MCP fixture) on ${process.env.MCP_SSE_URL}`);
 }
 
 function runMCPTeardown(): void {
