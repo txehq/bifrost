@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/internal/llmtests"
 	"github.com/capsohq/bifrost/core/livetest"
+	"github.com/capsohq/bifrost/core/network"
 	"github.com/capsohq/bifrost/core/providers/anthropic"
 
 	"github.com/capsohq/bifrost/core/schemas"
@@ -413,6 +415,51 @@ func TestAnthropicBatchResultsArePagedOpenAIShapeLines(t *testing.T) {
 	require.Len(t, plain.Results, 4)
 	require.False(t, plain.HasMore)
 	require.NotContains(t, plain.Results[0].Response.Body, "extra_fields")
+}
+
+// TXE-7526 on the Anthropic results: a line larger than client.max_response_body_size_mb on
+// its own fits no page. It is read from a slim copy that keeps its custom_id, status and
+// usage, so it is still billed, and is marked truncated. A line with no slim copy (not JSON)
+// is a line_too_large parse error. Not parallel: the response limit is process-wide.
+func TestAnthropicBatchResultsReadALineTooLargeForAnyPage(t *testing.T) {
+	network.SetMaxResponseBodySizeMB(1)
+	t.Cleanup(func() { network.SetMaxResponseBodySizeMB(0) })
+	lines := strings.SplitN(anthropicBatchResultsFile, "\n", 3)
+	big := `{"custom_id":"line-big","result":{"type":"succeeded","message":{"id":"msg_big","type":"message","role":"assistant","model":"claude-haiku-4-5-20251001","content":[{"type":"text","text":"` + strings.Repeat("A", 1200<<10) + `"}],"stop_reason":"max_tokens","usage":{"input_tokens":12,"output_tokens":64000}}}}` + "\n"
+	notJSON := "garbage " + strings.Repeat("B", 1200<<10) + "\n"
+	vendor := newAnthropicBatchVendor(t, lines[0]+"\n"+big+notJSON+lines[1]+"\n")
+	provider := vendor.provider()
+
+	var got []string
+	var parseErrors []schemas.BatchError
+	var after *string
+	for page := 0; ; page++ {
+		require.Less(t, page, 10, "paging did not terminate")
+		resp, bifrostErr := provider.BatchResults(batchTestContext(), []schemas.Key{batchTestKey}, &schemas.BifrostBatchResultsRequest{Provider: schemas.Anthropic, BatchID: "msgbatch_1", Limit: 100, After: after})
+		require.Nil(t, bifrostErr, "%+v", bifrostErr)
+		for _, item := range resp.Results {
+			got = append(got, item.CustomID)
+			if item.CustomID != "line-big" {
+				require.Nil(t, item.Truncated, item.CustomID)
+				continue
+			}
+			require.NotNil(t, item.Truncated)
+			require.Equal(t, "line_too_large", item.Truncated.Reason)
+			require.EqualValues(t, len(big), item.Truncated.Bytes)
+			require.Equal(t, schemas.BatchResultStatusSucceeded, item.Status)
+			usage := item.Response.Body["usage"].(map[string]any)
+			require.EqualValues(t, 12, usage["prompt_tokens"])
+			require.EqualValues(t, 64000, usage["completion_tokens"])
+		}
+		parseErrors = append(parseErrors, resp.ExtraFields.ParseErrors...)
+		if !resp.HasMore {
+			break
+		}
+		after = resp.NextCursor
+	}
+	require.Equal(t, []string{"line-1", "line-big", "line-2"}, got)
+	require.Len(t, parseErrors, 1)
+	require.Equal(t, "line_too_large", parseErrors[0].Code)
 }
 
 // The /anthropic/v1/messages/batches route keeps returning the Messages results unchanged.
