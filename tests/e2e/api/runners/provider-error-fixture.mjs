@@ -542,6 +542,16 @@ const fixturePricing = {
 		input_cost_per_token: 2e-06, input_dbu_cost_per_token: 3.5714e-05, output_cost_per_token: 1.2e-05, output_dbu_cost_per_token: 0.000214286,
 		cache_read_input_token_cost: 2.4997e-07, cache_creation_input_token_cost: 2.49998e-06,
 	},
+	// Folder 634 (TXE-7763): two rows that publish a promotional rate, exactly as the upstream datasheet did on
+	// 18 Nov 2026. The gateway bills the standard rate from each promotion's last day (UTC).
+	"databricks/system.ai.gpt-5-6-sol": {
+		provider: "databricks", mode: "chat",
+		input_cost_per_token: 4.00001e-06, output_cost_per_token: 1.999998e-05, cache_read_input_token_cost: 3.9998e-07, cache_creation_input_token_cost: 5.00003e-06,
+	},
+	"databricks/databricks-gemini-4-argon": {
+		provider: "databricks", mode: "chat",
+		input_cost_per_token: 2.49998e-06, output_cost_per_token: 1.249997e-05, cache_read_input_token_cost: 1.2502e-07, cache_creation_input_token_cost: 2.49998e-06,
+	},
 	"databricks/databricks-gemini-3-6-flash": {
 		provider: "databricks", mode: "chat",
 		input_cost_per_token: 7.4998e-07, input_dbu_cost_per_token: 1.0714e-05, output_cost_per_token: 3.74997e-06, output_dbu_cost_per_token: 5.3571e-05,

@@ -1,0 +1,144 @@
+{
+  "name": "634. A promotional rate bills the standard rate from the promotion's last day (vendor promotion end dates)",
+  "description": "TXE-7763. The upstream datasheet publishes Databricks' promotional rates for GPT-5.6 Sol (through 21 Nov 2026) and Gemini 4 Argon (through 30 Nov 2026) and carries no end date. The gateway records each promotion in upstreamPromotions (framework/modelcatalog/datasheet/sync.go) and, from its last day in UTC, bills the standard rate in its place. The fixture's pricing sheet carries both rows exactly as upstream published them on 18 Nov 2026. Each row reads the rates back from the model catalog and expects the promotional rate before the last day and the standard rate from it, by today's UTC date.",
+  "item": [
+    {
+      "name": "634.0 the catalog shows system.ai.gpt-5-6-sol at its promotional rate until 21 Nov 2026 and at the standard rate from then (fixture) - databricks/system.ai.gpt-5-6-sol",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the model catalog answers', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+              "});",
+              "var row = (pm.response.json().models || []).filter(function (m) { return m.provider === 'databricks' && m.name === 'system.ai.gpt-5-6-sol'; })[0];",
+              "pm.test('the catalog lists system.ai.gpt-5-6-sol from the fixture pricing sheet', function () {",
+              "  pm.expect(row, pm.response.text()).to.not.equal(undefined);",
+              "});",
+              "if (!row) { return; }",
+              "// Standard: input and cache 1.25x the promotional rate, output 1.5x, from 21 Nov 2026 (UTC).",
+              "var ended = new Date().toISOString().slice(0, 10) >= '2026-11-21';",
+              "var want = ended ? { input_cost_per_token: 5.00001e-06, output_cost_per_token: 3e-05, cache_read_input_token_cost: 4.99975e-07, cache_creation_input_token_cost: 6.25004e-06 } : { input_cost_per_token: 4.00001e-06, output_cost_per_token: 1.999998e-05, cache_read_input_token_cost: 3.9998e-07, cache_creation_input_token_cost: 5.00003e-06 };",
+              "pm.test(ended ? 'the promotion has ended: every rate is the standard one' : 'the promotion runs: every rate is the promotional one', function () {",
+              "  Object.keys(want).forEach(function (key) {",
+              "    pm.expect(row[key], key + ' in ' + JSON.stringify(row)).to.equal(want[key]);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/models/details?provider=databricks&query=system.ai.gpt-5-6-sol&limit=50",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "models",
+            "details"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "databricks"
+            },
+            {
+              "key": "query",
+              "value": "system.ai.gpt-5-6-sol"
+            },
+            {
+              "key": "limit",
+              "value": "50"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "634.1 the catalog shows databricks-gemini-4-argon at its promotional rate until 30 Nov 2026 and at twice it from then (fixture) - databricks/databricks-gemini-4-argon",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the model catalog answers', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+              "});",
+              "var row = (pm.response.json().models || []).filter(function (m) { return m.provider === 'databricks' && m.name === 'databricks-gemini-4-argon'; })[0];",
+              "pm.test('the catalog lists databricks-gemini-4-argon from the fixture pricing sheet', function () {",
+              "  pm.expect(row, pm.response.text()).to.not.equal(undefined);",
+              "});",
+              "if (!row) { return; }",
+              "// Standard: twice the promotional rate, from 30 Nov 2026 (UTC).",
+              "var ended = new Date().toISOString().slice(0, 10) >= '2026-11-30';",
+              "var want = ended ? { input_cost_per_token: 4.99996e-06, output_cost_per_token: 2.49999e-05, cache_read_input_token_cost: 2.5004e-07, cache_creation_input_token_cost: 4.99996e-06 } : { input_cost_per_token: 2.49998e-06, output_cost_per_token: 1.249997e-05, cache_read_input_token_cost: 1.2502e-07, cache_creation_input_token_cost: 2.49998e-06 };",
+              "pm.test(ended ? 'the promotion has ended: every rate is the standard one' : 'the promotion runs: every rate is the promotional one', function () {",
+              "  Object.keys(want).forEach(function (key) {",
+              "    pm.expect(row[key], key + ' in ' + JSON.stringify(row)).to.equal(want[key]);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/models/details?provider=databricks&query=databricks-gemini-4-argon&limit=50",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "models",
+            "details"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "databricks"
+            },
+            {
+              "key": "query",
+              "value": "databricks-gemini-4-argon"
+            },
+            {
+              "key": "limit",
+              "value": "50"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

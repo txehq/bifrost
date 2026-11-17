@@ -100,13 +100,15 @@
               "});",
               "if (!row) { return; }",
               "// Databricks lists Gemini 3.6 Flash cache reads at 1.071 DBU per 1M, 7.497e-08 at $0.07: the USD key. The DBU keys (2.679e-06, 2.6786e-05) are Gemini 3.5 Flash's numbers, at $0.07 1.875e-07 and 1.875e-06.",
+              "// These are the 50% promotional rates through 31 Dec 2026; from that day (UTC) the gateway bills twice them (TXE-7763, folder 634).",
+              "var x = new Date().toISOString().slice(0, 10) >= '2026-12-31' ? 2 : 1;",
               "pm.test('the cache rates are the USD keys, not the DBU keys at $0.07', function () {",
-              "  pm.expect(row.cache_read_input_token_cost, JSON.stringify(row)).to.equal(7.497e-08);",
-              "  pm.expect(row.cache_creation_input_token_cost, JSON.stringify(row)).to.equal(7.4998e-07);",
+              "  pm.expect(row.cache_read_input_token_cost, JSON.stringify(row)).to.equal(x === 2 ? 1.4994e-07 : 7.497e-08);",
+              "  pm.expect(row.cache_creation_input_token_cost, JSON.stringify(row)).to.equal(x === 2 ? 1.49996e-06 : 7.4998e-07);",
               "});",
               "pm.test('input and output are unchanged', function () {",
-              "  pm.expect(row.input_cost_per_token, JSON.stringify(row)).to.equal(7.4998e-07);",
-              "  pm.expect(row.output_cost_per_token, JSON.stringify(row)).to.equal(3.74997e-06);",
+              "  pm.expect(row.input_cost_per_token, JSON.stringify(row)).to.equal(x === 2 ? 1.49996e-06 : 7.4998e-07);",
+              "  pm.expect(row.output_cost_per_token, JSON.stringify(row)).to.equal(x === 2 ? 7.49994e-06 : 3.74997e-06);",
               "});"
             ]
           }
