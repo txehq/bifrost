@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/capsohq/bifrost/core/schemas"
+	"github.com/capsohq/bifrost/framework/configstore"
 	configstoreTables "github.com/capsohq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -361,6 +362,39 @@ func TestVirtualKeyWithoutAListNamesNoCloudResourceOnCloudIdentityProviders(t *t
 			assert.Nil(t, shortCircuit, "%s %s", provider, name)
 		}
 	}
+}
+
+// A custom provider is held like its base. When its base cannot be read (no in-memory store, as
+// in a direct Go SDK deployment, or a provider the store does not hold) it may be built on Vertex
+// or Bedrock, so a key with no list is refused there too: the check fails closed. A standard
+// provider other than Vertex and Bedrock is never affected.
+func TestDefaultDenyOnCustomProvidersFailsClosedWhenTheBaseIsUnknown(t *testing.T) {
+	vk := buildVKForMCPStamping(nil)
+	vk.ProviderConfigs = append(vk.ProviderConfigs, buildProviderConfig("my-bedrock", []string{"*"}), buildProviderConfig("my-openai", []string{"*"}),
+		buildProviderConfig("unlisted-custom", []string{"*"}), buildProviderConfig("gemini", []string{"*"}))
+	plugin := newAccessTestPlugin(t, vk, nil)
+	chat := func(provider schemas.ModelProvider) *schemas.BifrostRequest {
+		return storageRequests(provider, "s3://shared-bucket/tenant-a/in/a.png")["chat file"]
+	}
+	run := func(provider schemas.ModelProvider) *schemas.LLMPluginShortCircuit {
+		t.Helper()
+		_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), chat(provider))
+		require.NoError(t, err)
+		return shortCircuit
+	}
+
+	plugin.inMemoryStore = nil
+	requireUnlistedRefusal(t, run("my-openai"), "storage_location", "no in-memory store: a custom provider's base is unknown")
+	assert.Nil(t, run(schemas.Gemini), "a standard provider needs no store to be known")
+
+	plugin.inMemoryStore = &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		"my-bedrock": {CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Bedrock}},
+		"my-openai":  {CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI}},
+	}}
+	requireUnlistedRefusal(t, run("my-bedrock"), "storage_location", "a custom provider built on Bedrock")
+	assert.Nil(t, run("my-openai"), "a custom provider built on OpenAI is not affected")
+	requireUnlistedRefusal(t, run("unlisted-custom"), "storage_location", "a provider the store does not hold")
+	assert.Nil(t, run(schemas.Gemini))
 }
 
 // cloneWithProvider returns a copy of req's request struct with its Provider set to provider.

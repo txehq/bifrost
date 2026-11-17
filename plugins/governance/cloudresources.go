@@ -490,9 +490,21 @@ var cloudIdentityProviders = map[schemas.ModelProvider]struct{}{
 	schemas.Bedrock: {},
 }
 
+// standardProviders is schemas.StandardProviders as a set: the built-in providers, whose
+// implementation is their own name.
+var standardProviders = func() map[schemas.ModelProvider]struct{} {
+	set := make(map[schemas.ModelProvider]struct{}, len(schemas.StandardProviders))
+	for _, provider := range schemas.StandardProviders {
+		set[provider] = struct{}{}
+	}
+	return set
+}()
+
 // actsWithOperatorCloudIdentity reports whether req runs on a cloud identity provider, directly
 // or as the base of a custom provider. Pre-hooks run again for each fallback, so the provider is
-// the one this attempt goes to.
+// the one this attempt goes to. A custom provider whose base cannot be read (no in-memory store,
+// as in a direct Go SDK deployment, or a provider the store does not hold) may be built on one,
+// so it is treated as one: the check fails closed.
 func (p *GovernancePlugin) actsWithOperatorCloudIdentity(req *schemas.BifrostRequest) bool {
 	provider, _, _ := req.GetRequestFields()
 	if provider == "" {
@@ -501,7 +513,17 @@ func (p *GovernancePlugin) actsWithOperatorCloudIdentity(req *schemas.BifrostReq
 	if _, ok := cloudIdentityProviders[provider]; ok {
 		return true
 	}
-	_, ok := cloudIdentityProviders[configuredBaseProvider(p.inMemoryStore, provider)]
+	if _, ok := standardProviders[provider]; ok {
+		return false
+	}
+	if p.inMemoryStore == nil {
+		return true
+	}
+	config, ok := configuredProvider(p.inMemoryStore, provider)
+	if !ok || config.CustomProviderConfig == nil || config.CustomProviderConfig.BaseProviderType == "" {
+		return true
+	}
+	_, ok = cloudIdentityProviders[config.CustomProviderConfig.BaseProviderType]
 	return ok
 }
 
