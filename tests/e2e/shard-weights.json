@@ -16,7 +16,7 @@
   "features/custom-pricing/custom-pricing-resolution-bands.spec.ts": 2,
   "features/dashboard/dashboard.spec.ts": 111,
   "features/governance/governance.spec.ts": 20,
-  "features/logs/logs.spec.ts": 450,
+  "features/logs/logs.spec.ts": 78,
   "features/mcp-auth-config/mcp-auth-config.spec.ts": 1,
   "features/mcp-auth-config/oauth-consent.spec.ts": 1,
   "features/mcp-logs/mcp-logs-detail.spec.ts": 1,
