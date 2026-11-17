@@ -534,6 +534,19 @@ const fixturePricing = {
 	// datasheet publishes it, one map of Bedrock guardrail unit to price, which the gateway's sync spreads into
 	// per-unit rates.
 	"bedrock/amazon.nova-lite-v1:0": { provider: "bedrock", mode: "chat", input_cost_per_token: 0.00000006, output_cost_per_token: 0.00000024 },
+	// Folder 633 (TXE-7688): two Databricks Gemini rows exactly as the upstream datasheet published them on 17 Nov 2026.
+	// 3-pro's input and output are the promotional 0.8x of its DBU rates, which the gateway corrects to the list rate;
+	// 3.6 Flash's DBU cache keys are wrong and its USD cache keys right, so the gateway leaves them.
+	"databricks/databricks-gemini-3-pro": {
+		provider: "databricks", mode: "chat",
+		input_cost_per_token: 2e-06, input_dbu_cost_per_token: 3.5714e-05, output_cost_per_token: 1.2e-05, output_dbu_cost_per_token: 0.000214286,
+		cache_read_input_token_cost: 2.4997e-07, cache_creation_input_token_cost: 2.49998e-06,
+	},
+	"databricks/databricks-gemini-3-6-flash": {
+		provider: "databricks", mode: "chat",
+		input_cost_per_token: 7.4998e-07, input_dbu_cost_per_token: 1.0714e-05, output_cost_per_token: 3.74997e-06, output_dbu_cost_per_token: 5.3571e-05,
+		cache_read_input_token_cost: 7.497e-08, cache_read_input_token_dbu_cost: 2.679e-06, cache_creation_input_token_cost: 7.4998e-07, cache_creation_input_token_dbu_cost: 2.6786e-05,
+	},
 	"bedrock/guardrails": {
 		provider: "bedrock", mode: "guardrail", base_model: "guardrails",
 		guardrail_cost_per_unit: { automatedReasoningPolicyUnits: 0.00017, contentPolicyImageUnits: 0.00075, contentPolicyUnits: 0.00015, contextualGroundingPolicyUnits: 0.0001, sensitiveInformationPolicyFreeUnits: 0, sensitiveInformationPolicyUnits: 0.0001, topicPolicyUnits: 0.00015, wordPolicyUnits: 0 },
