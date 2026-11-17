@@ -68,7 +68,9 @@ scripts/test-offline.sh node tests/e2e/scripts/run-e2e.mjs --offline --shard 1/2
 
 Tests that fail offline are listed in `quarantine.json`, each by its describe and test titles under the ticket that fixes it. In an offline run a listed test is expected to fail: it fails the run only when it passes, which means its fix landed and its entry must go. An entry whose test or spec file no longer exists also fails the run, and so does a spec that does not import `core/fixtures/base.fixture` (the fixture applies the quarantine). Add an entry only with a ticket, never to get a new test past the check, and never for a test that sometimes passes: that one fails the job at random. A test that cannot run offline by design skips itself when `E2E_OFFLINE=1`, naming its ticket.
 
-`node --test tests/e2e/scripts/*.test.mjs` pins the shard split (`scripts/e2e-plan.mjs`) and the quarantine rules (on the sample suite in `selftest/`); the CI job runs it before the suite.
+A skip hides a test as completely as a deleted one, so skips have a list too (TXE-7733). In an offline run a test that skips fails the run unless `offline-skips.json` lists it under the ticket that records why; a listed test that runs, or a listed test or file that no longer exists, also fails it (`skips.ts`, `reporters/skips.ts`). A test that may not apply skips on the page's state through `core/utils/availability.ts` (`skipUnlessVisible`, `skipUnlessEnabled`, `skipUnlessCount`, `skipIfShown`), which waits for the state first: `isVisible()` and `isEnabled()` answer at once, so a control that had not rendered yet used to skip the test with the run still green. `scripts/no-instant-skip.test.mjs` fails a runtime `test.skip()` right after such a probe, and any other runtime skip without `// skip-ok: <reason>`.
+
+`node --test tests/e2e/scripts/*.test.mjs` pins the shard split (`scripts/e2e-plan.mjs`), the quarantine rules and the offline skip rules (on the sample suites in `selftest/`), and the skip lint; the CI job runs it before the suite.
 
 ### Against a server you started yourself
 

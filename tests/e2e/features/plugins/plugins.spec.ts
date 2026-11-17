@@ -36,7 +36,7 @@ test.describe('Plugins', () => {
         const pluginData = createPluginData({ name: `e2e-display-table-${Date.now()}` })
         const created = await pluginsPage.createPlugin(pluginData)
         if (!created) {
-          test.skip(true, 'Backend rejected plugin creation (failed to load .so)')
+          test.skip(true, 'Backend rejected plugin creation (failed to load .so)') // skip-ok: createPlugin waited for the success or error toast; the backend refused the plugin
           return
         }
         createdPlugins.push(pluginData.name)
@@ -72,7 +72,7 @@ test.describe('Plugins', () => {
 
       const created = await pluginsPage.createPlugin(pluginData)
       if (!created) {
-        test.skip(true, 'Backend rejected plugin creation (failed to load .so)')
+        test.skip(true, 'Backend rejected plugin creation (failed to load .so)') // skip-ok: createPlugin waited for the success or error toast; the backend refused the plugin
         return
       }
 
@@ -89,7 +89,7 @@ test.describe('Plugins', () => {
 
       const created = await pluginsPage.createPlugin(pluginData)
       if (!created) {
-        test.skip(true, 'Backend rejected plugin creation (failed to load .so)')
+        test.skip(true, 'Backend rejected plugin creation (failed to load .so)') // skip-ok: createPlugin waited for the success or error toast; the backend refused the plugin
         return
       }
 
@@ -114,7 +114,7 @@ test.describe('Plugins', () => {
 
       const created = await pluginsPage.createPlugin(pluginData)
       if (!created) {
-        test.skip(true, 'Backend rejected plugin creation (failed to load .so)')
+        test.skip(true, 'Backend rejected plugin creation (failed to load .so)') // skip-ok: createPlugin waited for the success or error toast; the backend refused the plugin
         return
       }
 
@@ -137,7 +137,7 @@ test.describe('Plugins', () => {
 
       const created = await pluginsPage.createPlugin(pluginData)
       if (!created) {
-        test.skip(true, 'Backend rejected plugin creation (failed to load .so)')
+        test.skip(true, 'Backend rejected plugin creation (failed to load .so)') // skip-ok: createPlugin waited for the success or error toast; the backend refused the plugin
         return
       }
 
@@ -162,7 +162,7 @@ test.describe('Plugins', () => {
 
       const created = await pluginsPage.createPlugin(pluginData)
       if (!created) {
-        test.skip(true, 'Backend rejected plugin creation (failed to load .so)')
+        test.skip(true, 'Backend rejected plugin creation (failed to load .so)') // skip-ok: createPlugin waited for the success or error toast; the backend refused the plugin
         return
       }
 
@@ -231,7 +231,7 @@ test.describe('Plugins', () => {
       // Create first plugin
       const created = await pluginsPage.createPlugin(pluginData)
       if (!created) {
-        test.skip(true, 'Backend rejected plugin creation (failed to load .so)')
+        test.skip(true, 'Backend rejected plugin creation (failed to load .so)') // skip-ok: createPlugin waited for the success or error toast; the backend refused the plugin
         return
       }
       expect(await pluginsPage.pluginExists(pluginName)).toBe(true)
@@ -273,7 +273,7 @@ test.describe('Plugins', () => {
 
       const created = await pluginsPage.createPlugin(pluginData)
       if (!created) {
-        test.skip(true, 'Backend rejected plugin creation (failed to load .so)')
+        test.skip(true, 'Backend rejected plugin creation (failed to load .so)') // skip-ok: createPlugin waited for the success or error toast; the backend refused the plugin
         return
       }
 
@@ -294,7 +294,7 @@ test.describe('Plugins', () => {
 
       const created = await pluginsPage.createPlugin(pluginData)
       if (!created) {
-        test.skip(true, 'Backend rejected plugin creation (failed to load .so)')
+        test.skip(true, 'Backend rejected plugin creation (failed to load .so)') // skip-ok: createPlugin waited for the success or error toast; the backend refused the plugin
         return
       }
 

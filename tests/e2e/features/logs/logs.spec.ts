@@ -1,5 +1,6 @@
 import type { Locator } from "@playwright/test";
 import { expect, test } from "../../core/fixtures/base.fixture";
+import { skipUnlessCount, skipUnlessEnabled, skipUnlessVisible } from "../../core/utils/availability";
 import { nextFrames } from "../../core/utils/test-helpers";
 import {
   createLogSearchQuery,
@@ -93,11 +94,12 @@ test.describe("LLM Logs", () => {
       const figures = page
         .getByTestId("logs-metric-strip")
         .getByTestId("logs-metric-trailing");
-      const count = await figures.count();
-      test.skip(
-        count === 0,
+      await skipUnlessCount(
+        figures,
+        1,
         "No trend figures rendered: the strip needs traffic in the selected window",
       );
+      const count = await figures.count();
       for (let i = 0; i < count; i++) {
         const figure = figures.nth(i);
         await expect
@@ -159,12 +161,7 @@ test.describe("LLM Logs", () => {
     test("should filter logs by provider", async ({ logsPage }) => {
       // Try to filter by first available provider
       const providerFilter = logsPage.providerFilter;
-      const isVisible = await providerFilter.isVisible().catch(() => false);
-
-      if (!isVisible) {
-        test.skip(!isVisible, "Provider filter not visible");
-        return;
-      }
+      await skipUnlessVisible(providerFilter, "Provider filter not visible");
 
       // Get initial filter state
       const initialValue = await providerFilter.textContent().catch(() => "");
@@ -177,14 +174,12 @@ test.describe("LLM Logs", () => {
       expect(newValue || initialValue).toBeTruthy();
     });
 
-    test("should filter logs by model", async ({ logsPage }) => {
+    // TXE-7736: logsPage.modelFilter is stale. No [data-testid="filter-model"] renders, and its
+    // fallback (any button whose text matches /Model/) finds another button, so the test cannot pass
+    // as written. It used to skip silently on a strict-mode violation; offline-skips.json lists it.
+    test.fixme("should filter logs by model", async ({ logsPage }) => {
       const modelFilter = logsPage.modelFilter;
-      const isVisible = await modelFilter.isVisible().catch(() => false);
-
-      if (!isVisible) {
-        test.skip(!isVisible, "Model filter not visible");
-        return;
-      }
+      await skipUnlessVisible(modelFilter, "Model filter not visible");
 
       // Get initial filter state
       const initialValue = await modelFilter.textContent().catch(() => "");
@@ -198,13 +193,7 @@ test.describe("LLM Logs", () => {
     });
 
     test("should filter logs by status", async ({ logsPage, page }) => {
-      const filtersVisible = await logsPage.filtersButton
-        .isVisible()
-        .catch(() => false);
-      if (!filtersVisible) {
-        test.skip(true, "Filters button not visible");
-        return;
-      }
+      await skipUnlessVisible(logsPage.filtersButton, "Filters button not visible");
 
       await logsPage.filterByStatus("success");
 
@@ -215,13 +204,7 @@ test.describe("LLM Logs", () => {
     });
 
     test("should filter logs by tool call name", async ({ logsPage, page }) => {
-      const filtersVisible = await logsPage.filtersButton
-        .isVisible()
-        .catch(() => false);
-      if (!filtersVisible) {
-        test.skip(true, "Filters button not visible");
-        return;
-      }
+      await skipUnlessVisible(logsPage.filtersButton, "Filters button not visible");
 
       await logsPage.filterByToolCallName("get_weather");
 
@@ -233,12 +216,7 @@ test.describe("LLM Logs", () => {
 
     test("should search logs by content", async ({ logsPage }) => {
       const searchInput = logsPage.searchInput;
-      const isVisible = await searchInput.isVisible().catch(() => false);
-
-      if (!isVisible) {
-        test.skip(true, "Search input not visible");
-        return;
-      }
+      await skipUnlessVisible(searchInput, "Search input not visible");
 
       const query = createLogSearchQuery();
       await logsPage.searchLogs(query);
@@ -250,12 +228,7 @@ test.describe("LLM Logs", () => {
 
     test("should clear search", async ({ logsPage }) => {
       const searchInput = logsPage.searchInput;
-      const isVisible = await searchInput.isVisible().catch(() => false);
-
-      if (!isVisible) {
-        test.skip(true, "Search input not visible");
-        return;
-      }
+      await skipUnlessVisible(searchInput, "Search input not visible");
 
       await logsPage.searchLogs("test query");
       await logsPage.clearSearch();
@@ -267,12 +240,7 @@ test.describe("LLM Logs", () => {
 
     test("should filter by time period", async ({ logsPage }) => {
       const datePicker = logsPage.dateRangePicker;
-      const isVisible = await datePicker.isVisible().catch(() => false);
-
-      if (!isVisible) {
-        test.skip(true, "Date range picker not visible");
-        return;
-      }
+      await skipUnlessVisible(datePicker, "Date range picker not visible");
 
       // Get initial date picker value
       const initialValue = await datePicker.textContent().catch(() => "");
@@ -324,20 +292,9 @@ test.describe("LLM Logs", () => {
     test("should navigate to next page", async ({ logsPage }) => {
       // useTablePageSize may adjust the limit once the table has measured itself.
       await logsPage.waitForLogsListed();
-      const paginationVisible = await logsPage.paginationControls
-        .isVisible()
-        .catch(() => false);
-      if (!paginationVisible) {
-        test.skip(true, "Pagination controls not visible");
-        return;
-      }
+      await skipUnlessVisible(logsPage.paginationControls, "Pagination controls not visible");
       const nextBtn = logsPage.nextPageBtn.first();
-      const isEnabled = await nextBtn.isEnabled().catch(() => false);
-
-      if (!isEnabled) {
-        test.skip(true, "Only one page of results; skipping pagination test");
-        return;
-      }
+      await skipUnlessEnabled(nextBtn, "Only one page of results; skipping pagination test");
 
       const initialPage = logsPage.getCurrentPageNumber();
       expect(initialPage).toBe(1);
@@ -351,20 +308,9 @@ test.describe("LLM Logs", () => {
     test("should navigate to previous page", async ({ logsPage }) => {
       // useTablePageSize may adjust the limit once the table has measured itself.
       await logsPage.waitForLogsListed();
-      const paginationVisible = await logsPage.paginationControls
-        .isVisible()
-        .catch(() => false);
-      if (!paginationVisible) {
-        test.skip(true, "Pagination controls not visible");
-        return;
-      }
+      await skipUnlessVisible(logsPage.paginationControls, "Pagination controls not visible");
       const nextBtn = logsPage.nextPageBtn.first();
-      const nextEnabled = await nextBtn.isEnabled().catch(() => false);
-
-      if (!nextEnabled) {
-        test.skip(true, "Only one page of results; skipping pagination test");
-        return;
-      }
+      await skipUnlessEnabled(nextBtn, "Only one page of results; skipping pagination test");
 
       await logsPage.goToNextPage();
 
@@ -372,16 +318,8 @@ test.describe("LLM Logs", () => {
         .poll(() => logsPage.getCurrentPageNumber(), { timeout: 5000 })
         .toBe(2);
 
-      const prevBtn = logsPage.prevPageBtn.first();
-      const prevEnabled = await prevBtn.isEnabled().catch(() => false);
-
-      if (!prevEnabled) {
-        test.skip(
-          true,
-          "Only one page of results; skipping previous-page test",
-        );
-        return;
-      }
+      // On page 2, previous is always enabled: wait for it rather than skip.
+      await expect(logsPage.prevPageBtn.first()).toBeEnabled();
 
       await logsPage.goToPreviousPage();
 
@@ -427,13 +365,7 @@ test.describe("LLM Logs", () => {
 
   test.describe("Live Updates", () => {
     test("should toggle live updates", async ({ logsPage }) => {
-      const liveToggle = logsPage.liveToggle;
-      const isVisible = await liveToggle.isVisible().catch(() => false);
-
-      if (!isVisible) {
-        test.skip(true, "Live toggle not visible");
-        return;
-      }
+      await skipUnlessVisible(logsPage.liveToggle, "Live toggle not visible");
 
       // Default is live_enabled=true (but URL may not have it since it's the default)
       // Check for live_enabled=false to determine if currently disabled
@@ -458,13 +390,7 @@ test.describe("LLM Logs", () => {
   test.describe("Empty State", () => {
     test("should show empty state when no logs", async ({ logsPage }) => {
       // Try to filter by a non-existent provider
-      const searchInput = logsPage.searchInput;
-      const isVisible = await searchInput.isVisible().catch(() => false);
-
-      if (!isVisible) {
-        test.skip(true, "Search input not visible");
-        return;
-      }
+      await skipUnlessVisible(logsPage.searchInput, "Search input not visible");
 
       await logsPage.searchLogs(`nonexistent-query-${Date.now()}`);
 
@@ -478,17 +404,8 @@ test.describe("LLM Logs", () => {
   test.describe("Advanced Filtering", () => {
     test("should combine multiple filters", async ({ logsPage }) => {
       // Apply multiple filters if they're visible
-      const searchVisible = await logsPage.searchInput
-        .isVisible()
-        .catch(() => false);
-      const providerVisible = await logsPage.providerFilter
-        .isVisible()
-        .catch(() => false);
-
-      if (!searchVisible || !providerVisible) {
-        test.skip(true, "Search input or provider filter not visible");
-        return;
-      }
+      await skipUnlessVisible(logsPage.searchInput, "Search input not visible");
+      await skipUnlessVisible(logsPage.providerFilter, "Provider filter not visible");
 
       // Apply search filter
       await logsPage.searchLogs("test");
@@ -506,14 +423,7 @@ test.describe("LLM Logs", () => {
     });
 
     test("should clear all filters", async ({ logsPage }) => {
-      const searchVisible = await logsPage.searchInput
-        .isVisible()
-        .catch(() => false);
-
-      if (!searchVisible) {
-        test.skip(true, "Search input not visible");
-        return;
-      }
+      await skipUnlessVisible(logsPage.searchInput, "Search input not visible");
 
       // Apply a filter first
       await logsPage.searchLogs("test query to clear");
@@ -529,17 +439,8 @@ test.describe("LLM Logs", () => {
     });
 
     test("should search within filtered results", async ({ logsPage }) => {
-      const searchVisible = await logsPage.searchInput
-        .isVisible()
-        .catch(() => false);
-      const statusVisible = await logsPage.statusFilter
-        .isVisible()
-        .catch(() => false);
-
-      if (!searchVisible || !statusVisible) {
-        test.skip(true, "Search input or status filter not visible");
-        return;
-      }
+      await skipUnlessVisible(logsPage.searchInput, "Search input not visible");
+      await skipUnlessVisible(logsPage.statusFilter, "Status filter not visible");
 
       // Apply status filter first
       await logsPage.filterByStatus("success");

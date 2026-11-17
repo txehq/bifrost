@@ -1,5 +1,6 @@
 import { coreConfigApi } from "../../core/actions/api";
 import { expect, test } from "../../core/fixtures/base.fixture";
+import { skipUnlessVisible } from "../../core/utils/availability";
 import { ConfigSettingsState } from "./pages/config-settings.page";
 import { DefaultCoreConfig } from "../../../../ui/lib/types/config";
 import { storageStatePath } from "../../plan";
@@ -271,26 +272,20 @@ test.describe("Security Settings", () => {
   test("should display enforce auth on inference switch", async ({
     configSettingsPage,
   }) => {
-    const isVisible = await configSettingsPage.enforceAuthOnInferenceSwitch
-      .isVisible()
-      .catch(() => false);
-    if (!isVisible) {
-      test.skip(true, "Enforce auth on inference not available");
-      return;
-    }
+    await skipUnlessVisible(
+      configSettingsPage.enforceAuthOnInferenceSwitch,
+      "Enforce auth on inference not available",
+    );
     await expect(configSettingsPage.enforceAuthOnInferenceSwitch).toBeVisible();
   });
 
   test("should toggle enforce auth on inference", async ({
     configSettingsPage,
   }) => {
-    const isVisible = await configSettingsPage.enforceAuthOnInferenceSwitch
-      .isVisible()
-      .catch(() => false);
-    if (!isVisible) {
-      test.skip(true, "Enforce auth on inference not available");
-      return;
-    }
+    await skipUnlessVisible(
+      configSettingsPage.enforceAuthOnInferenceSwitch,
+      "Enforce auth on inference not available",
+    );
     const initialState = await configSettingsPage.getSwitchState(
       configSettingsPage.enforceAuthOnInferenceSwitch,
     );
@@ -332,13 +327,10 @@ test.describe("Security Settings", () => {
   test("should display required headers textarea", async ({
     configSettingsPage,
   }) => {
-    const isVisible = await configSettingsPage.requiredHeadersTextarea
-      .isVisible()
-      .catch(() => false);
-    if (!isVisible) {
-      test.skip(true, "Required headers control not available");
-      return;
-    }
+    await skipUnlessVisible(
+      configSettingsPage.requiredHeadersTextarea,
+      "Required headers control not available",
+    );
     await expect(configSettingsPage.requiredHeadersTextarea).toBeVisible();
   });
 
@@ -360,11 +352,13 @@ test.describe("Security Settings", () => {
     const adminPassword = process.env.BIFROST_ADMIN_PASSWORD;
 
     test.beforeEach(async ({ configSettingsPage, request }) => {
+      // skip-ok: an environment variable, not the page's state
       test.skip(
         !adminPassword,
         "BIFROST_ADMIN_PASSWORD is not set, so there is no stored admin password to confirm with",
       );
       const current = await coreConfigApi.get(request);
+      // skip-ok: read from the config API, not the page
       test.skip(
         current.auth_config?.is_enabled !== true,
         "Dashboard auth is not enabled with stored credentials on this instance",

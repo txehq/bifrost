@@ -1,0 +1,55 @@
+{
+  "TXE-7735": {
+    "reason": "offline has no MCP logs, so the page shows its getting-started guide instead of the table, stats, filters, pagination and live toggle",
+    "file": "features/mcp-logs/mcp-logs.spec.ts",
+    "tests": [
+      "MCP Logs › MCP Logs Display › should display stats cards",
+      "MCP Logs › MCP Logs Display › should display filters section",
+      "MCP Logs › MCP Log Filtering › should filter logs by tool name",
+      "MCP Logs › MCP Log Filtering › should filter logs by server label",
+      "MCP Logs › MCP Log Filtering › should filter logs by status",
+      "MCP Logs › Pagination › should navigate to next page",
+      "MCP Logs › Pagination › should navigate to previous page",
+      "MCP Logs › Table Sorting › should sort by timestamp",
+      "MCP Logs › Table Sorting › should sort by latency",
+      "MCP Logs › Live Updates › should toggle live updates"
+    ]
+  },
+  "TXE-7736": {
+    "reason": "stale page-object locators: the model filter's fallback finds another button (test.fixme), and no live-updates control renders",
+    "file": "features/logs/logs.spec.ts",
+    "tests": [
+      "LLM Logs › Log Filtering › should filter logs by model",
+      "LLM Logs › Live Updates › should toggle live updates"
+    ]
+  },
+  "TXE-7737": [
+    {
+      "reason": "the vLLM, Ollama and SGLang providers are not configured offline",
+      "file": "features/providers/providers-crud.spec.ts",
+      "tests": [
+        "Provider specific configuration › should display complete vLLM key configuration when adding a key",
+        "Provider specific configuration › should display Ollama-specific key fields when adding key to Ollama provider",
+        "Provider specific configuration › should display SGLang-specific key fields when adding key to SGLang provider"
+      ]
+    },
+    {
+      "reason": "no OTel or Prometheus connector is configured offline, and the Datadog toggle is disabled there",
+      "file": "features/observability/observability.spec.ts",
+      "tests": [
+        "Observability › OTel Connector › should display OTel delete button when connector is configured",
+        "Observability › OTel Connector › should configure OTel endpoint",
+        "Observability › Prometheus Connector › should display Prometheus delete button when connector is configured",
+        "Observability › Datadog Connector › should toggle Datadog connector if available"
+      ]
+    },
+    {
+      "reason": "the offline run sets no MCP_SSE_HEADERS for an authenticated SSE MCP endpoint",
+      "file": "features/mcp-registry/mcp-registry-crud.spec.ts",
+      "tests": [
+        "MCP Registry › MCP Client Creation › should create SSE client",
+        "MCP Registry › MCP Server Connection Validation › should connect to SSE server and list tools"
+      ]
+    }
+  ]
+}

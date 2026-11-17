@@ -1,4 +1,5 @@
 import { expect, test } from '../../core/fixtures/base.fixture'
+import { skipUnlessEnabled } from '../../core/utils/availability'
 import { ConfigSettingsState } from './pages/config-settings.page'
 
 test.describe('Pricing Config', () => {
@@ -52,11 +53,7 @@ test.describe('Pricing Config', () => {
     }
     await configSettingsPage.setPricingDatasheetUrl(testUrl)
 
-    const isSaveEnabled = await configSettingsPage.pricingSaveBtn.isDisabled().then((d) => !d)
-    if (!isSaveEnabled) {
-      test.skip(true, 'Save button disabled (no changes detected or RBAC)')
-      return
-    }
+    await skipUnlessEnabled(configSettingsPage.pricingSaveBtn, 'Save button disabled (no changes detected or RBAC)')
 
     await configSettingsPage.savePricingConfig()
     await configSettingsPage.dismissToasts()
@@ -67,11 +64,7 @@ test.describe('Pricing Config', () => {
   })
 
   test('should trigger force sync', async ({ configSettingsPage }) => {
-    const isForceSyncEnabled = await configSettingsPage.pricingForceSyncBtn.isDisabled().then((d) => !d)
-    if (!isForceSyncEnabled) {
-      test.skip(true, 'Force sync button disabled (RBAC or no datasheet URL)')
-      return
-    }
+    await skipUnlessEnabled(configSettingsPage.pricingForceSyncBtn, 'Force sync button disabled (RBAC or no datasheet URL)')
 
     await configSettingsPage.triggerForceSync()
     await configSettingsPage.dismissToasts()
@@ -79,11 +72,7 @@ test.describe('Pricing Config', () => {
 
   test('should validate URL format', async ({ configSettingsPage }) => {
     await configSettingsPage.pricingDatasheetUrlInput.fill('invalid-url-no-http')
-    const canSave = await configSettingsPage.pricingSaveBtn.isDisabled().then((d) => !d)
-    if (!canSave) {
-      test.skip(true, 'Save button disabled (RBAC)')
-      return
-    }
+    await skipUnlessEnabled(configSettingsPage.pricingSaveBtn, 'Save button disabled (RBAC)')
     await configSettingsPage.pricingSaveBtn.click()
 
     await expect(configSettingsPage.page.getByText(/URL must start with http|valid URL/i)).toBeVisible()

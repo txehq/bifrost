@@ -1,5 +1,6 @@
 import type { APIRequestContext } from "@playwright/test";
 import { expect, test } from "../../core/fixtures/base.fixture";
+import { skipUnlessVisible } from "../../core/utils/availability";
 import {
   createCustomProviderData,
   createProviderKeyData,
@@ -1099,11 +1100,10 @@ test.describe("Provider specific configuration", () => {
   test("should display complete vLLM key configuration when adding a key", async ({
     providersPage,
   }) => {
-    const vllmAvailable = await providersPage.providerExists("vllm");
-    if (!vllmAvailable) {
-      test.skip(true, "vLLM provider not in sidebar (add from dropdown first)");
-      return;
-    }
+    await skipUnlessVisible(
+      providersPage.getProviderItem("vllm"),
+      "vLLM provider not in sidebar (add from dropdown first)",
+    );
 
     await providersPage.selectProvider("vllm");
     await providersPage.addKeyBtn.click();
@@ -1113,16 +1113,10 @@ test.describe("Provider specific configuration", () => {
       "key-input-vllm-model-name",
     );
 
-    const urlVisible = await vllmUrlInput.isVisible().catch(() => false);
-    const modelVisible = await vllmModelInput.isVisible().catch(() => false);
-
-    if (!urlVisible && !modelVisible) {
-      test.skip(
-        true,
-        "vLLM key form fields not shown (provider may use standard key form)",
-      );
-      return;
-    }
+    await skipUnlessVisible(
+      vllmUrlInput.or(vllmModelInput),
+      "vLLM key form fields not shown (provider may use standard key form)",
+    );
     await expect(vllmUrlInput).toBeVisible();
     await expect(vllmModelInput).toBeVisible();
     await expect(
@@ -1147,52 +1141,32 @@ test.describe("Provider specific configuration", () => {
   test("should display Ollama-specific key fields when adding key to Ollama provider", async ({
     providersPage,
   }) => {
-    const available = await providersPage.providerExists("ollama");
-    if (!available) {
-      test.skip(
-        true,
-        "Ollama provider not in sidebar (add from dropdown first)",
-      );
-      return;
-    }
+    await skipUnlessVisible(
+      providersPage.getProviderItem("ollama"),
+      "Ollama provider not in sidebar (add from dropdown first)",
+    );
 
     await providersPage.selectProvider("ollama");
     await providersPage.addKeyBtn.click();
 
     const urlInput = providersPage.page.getByTestId("key-input-ollama-url");
-    const urlVisible = await urlInput.isVisible().catch(() => false);
-    if (!urlVisible) {
-      test.skip(true, "Ollama key form fields not shown");
-      return;
-    }
-
-    await expect(urlInput).toBeVisible();
+    await skipUnlessVisible(urlInput, "Ollama key form fields not shown");
     await providersPage.keyCancelBtn.click();
   });
 
   test("should display SGLang-specific key fields when adding key to SGLang provider", async ({
     providersPage,
   }) => {
-    const available = await providersPage.providerExists("sgl");
-    if (!available) {
-      test.skip(
-        true,
-        "SGLang provider not in sidebar (add from dropdown first)",
-      );
-      return;
-    }
+    await skipUnlessVisible(
+      providersPage.getProviderItem("sgl"),
+      "SGLang provider not in sidebar (add from dropdown first)",
+    );
 
     await providersPage.selectProvider("sgl");
     await providersPage.addKeyBtn.click();
 
     const urlInput = providersPage.page.getByTestId("key-input-sgl-url");
-    const urlVisible = await urlInput.isVisible().catch(() => false);
-    if (!urlVisible) {
-      test.skip(true, "SGLang key form fields not shown");
-      return;
-    }
-
-    await expect(urlInput).toBeVisible();
+    await skipUnlessVisible(urlInput, "SGLang key form fields not shown");
     await providersPage.keyCancelBtn.click();
   });
 });

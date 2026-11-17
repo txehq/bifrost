@@ -116,6 +116,8 @@ export class MCPLogsPage extends BasePage {
       has: this.page.getByText(groupHeading, { exact: true }),
     })
     const items = group.locator('[data-slot="command-item"]').or(group.getByRole('option'))
+    // The group's options load after the list opens; give them time, so "none" means none (TXE-7733).
+    await items.filter({ hasNotText: /loading/i }).first().waitFor({ state: 'visible', timeout: 5000 }).catch(() => {})
     const count = await items.count()
     for (let i = 0; i < count; i++) {
       const item = items.nth(i)
@@ -134,6 +136,8 @@ export class MCPLogsPage extends BasePage {
     await this.openFiltersPopover()
     const re = typeof optionText === 'string' ? new RegExp(optionText, 'i') : optionText
     const option = this.page.getByRole('option', { name: re })
+    // The options load after the list opens; give them time, so "none" means none (TXE-7733).
+    await option.first().waitFor({ state: 'visible', timeout: 5000 }).catch(() => {})
     const count = await option.count()
     if (count > 0) {
       await option.first().click()

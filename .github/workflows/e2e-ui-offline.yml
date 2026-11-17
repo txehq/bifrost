@@ -11,7 +11,9 @@ name: E2E UI offline
 # scripts/test-offline.sh refuses every non-loopback dial the gateway makes. Tests that fail
 # offline are listed in tests/e2e/quarantine.json, each under the ticket that fixes it. A listed
 # test that fails does not fail the run; one that starts passing does, and so does an entry whose
-# test no longer exists, so the list cannot go stale (tests/e2e/quarantine.ts).
+# test no longer exists, so the list cannot go stale (tests/e2e/quarantine.ts). A test that skips
+# fails the run unless tests/e2e/offline-skips.json lists it under its ticket (tests/e2e/skips.ts):
+# a skip decided by a probe that did not wait once hid 22 of 28 routing-rules tests (TXE-7733).
 #
 # Two shards, each with its own gateways and Postgres, split by run-e2e.mjs --shard. The required
 # check is the `E2E UI (offline)` job below, which fails unless both shards passed. No paths
