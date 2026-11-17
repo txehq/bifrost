@@ -1,5 +1,10 @@
 package minimax
 
+import (
+	"strconv"
+	"strings"
+)
+
 // MiniMaxBaseResp is the status envelope MiniMax attaches to most responses; a non-zero StatusCode is a failure even on HTTP 200.
 type MiniMaxBaseResp struct {
 	StatusCode int    `json:"status_code"`
@@ -96,13 +101,23 @@ type MiniMaxVideoTask struct {
 		URL    string `json:"url,omitempty"`
 		Prompt string `json:"prompt,omitempty"`
 	} `json:"content,omitempty"`
-	Resolution string `json:"resolution,omitempty"`
-	Duration   int    `json:"duration,omitempty"`
-	Ratio      string `json:"ratio,omitempty"`
-	Usage      *struct {
-		TotalSeconds  float64 `json:"total_seconds,omitempty"`
-		OutputSeconds float64 `json:"output_seconds,omitempty"`
-	} `json:"usage,omitempty"`
+	Resolution string                 `json:"resolution,omitempty"`
+	Duration   int                    `json:"duration,omitempty"`
+	Ratio      string                 `json:"ratio,omitempty"`
+	Usage      *MiniMaxVideoTaskUsage `json:"usage,omitempty"`
+}
+
+// MiniMaxVideoTaskUsage is the usage MiniMax reports on a succeeded v2 task. Each field is a pointer
+// so a quantity MiniMax did not report stays absent from the unified usage (contract C5).
+type MiniMaxVideoTaskUsage struct {
+	TotalSeconds      *float64 `json:"total_seconds,omitempty"`
+	InputSeconds      *float64 `json:"input_seconds,omitempty"`
+	OutputSeconds     *float64 `json:"output_seconds,omitempty"`
+	InputImageCount   *int     `json:"input_image_count,omitempty"`
+	InputAudioSeconds *float64 `json:"input_audio_seconds,omitempty"`
+	TotalTokens       *int     `json:"total_tokens,omitempty"`
+	PromptTokens      *int     `json:"prompt_tokens,omitempty"`
+	CompletionTokens  *int     `json:"completion_tokens,omitempty"`
 }
 
 // MiniMaxTaskError is the failure detail on a failed video task.
@@ -122,6 +137,73 @@ type MiniMaxVideoDeleteResponse struct {
 	TaskID string `json:"task_id"`
 	Action string `json:"action"` // "cancelled" or "deleted"
 	Status string `json:"status"`
+}
+
+// MiniMaxV1VideoGenerationRequest is the body for POST /v1/video_generation (the Hailuo models).
+// prompt_optimizer, fast_pretreatment and other vendor switches arrive through the extra-field
+// channel under MiniMax's own names.
+type MiniMaxV1VideoGenerationRequest struct {
+	Model           string                 `json:"model"`
+	Prompt          string                 `json:"prompt,omitempty"`
+	FirstFrameImage *string                `json:"first_frame_image,omitempty"`
+	LastFrameImage  *string                `json:"last_frame_image,omitempty"`
+	Duration        *int                   `json:"duration,omitempty"`
+	Resolution      *string                `json:"resolution,omitempty"`
+	CallbackURL     *string                `json:"callback_url,omitempty"`
+	ExtraParams     map[string]interface{} `json:"-"`
+}
+
+func (r *MiniMaxV1VideoGenerationRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
+}
+
+// MiniMaxV1VideoQueryResponse is returned by GET /v1/query/video_generation?task_id=.
+type MiniMaxV1VideoQueryResponse struct {
+	TaskID      string           `json:"task_id"`
+	Status      string           `json:"status"`
+	FileID      MiniMaxFileID    `json:"file_id"`
+	VideoWidth  int              `json:"video_width"`
+	VideoHeight int              `json:"video_height"`
+	BaseResp    *MiniMaxBaseResp `json:"base_resp,omitempty"`
+}
+
+// MiniMaxFileID is a MiniMax file id. The v1 query returns it as a string and /v1/files/retrieve as
+// a number, so it decodes either.
+type MiniMaxFileID string
+
+// UnmarshalJSON implements json.Unmarshaler; see MiniMaxFileID.
+func (id *MiniMaxFileID) UnmarshalJSON(data []byte) error {
+	raw := strings.TrimSpace(string(data))
+	if raw == "null" {
+		*id = ""
+		return nil
+	}
+	if unquoted, err := strconv.Unquote(raw); err == nil {
+		*id = MiniMaxFileID(unquoted)
+		return nil
+	}
+	*id = MiniMaxFileID(raw)
+	return nil
+}
+
+// MiniMaxFileRetrieveResponse is returned by GET /v1/files/retrieve?file_id=.
+type MiniMaxFileRetrieveResponse struct {
+	File *struct {
+		FileID      MiniMaxFileID `json:"file_id"`
+		Bytes       int64         `json:"bytes"`
+		CreatedAt   int64         `json:"created_at"`
+		Filename    string        `json:"filename"`
+		Purpose     string        `json:"purpose"`
+		DownloadURL string        `json:"download_url"`
+	} `json:"file"`
+	BaseResp *MiniMaxBaseResp `json:"base_resp,omitempty"`
+}
+
+// MiniMaxVideoTaskListResponse is returned by GET /v2/query/video_generation.
+type MiniMaxVideoTaskListResponse struct {
+	Items    []MiniMaxVideoTask `json:"items"`
+	Total    int                `json:"total"`
+	BaseResp *MiniMaxBaseResp   `json:"base_resp,omitempty"`
 }
 
 // MiniMaxSpeechRequest is the body for POST /v1/t2a_v2.

@@ -1455,11 +1455,14 @@ var videoDurationFixtures = map[schemas.ModelProvider]videoDurationFixture{
 		}
 		return 200, `{"data":[{"taskType":"getResponse","taskUUID":"` + runwareTaskUUID(body) + `","status":"success","videoURL":"https://example.invalid/v.mp4","cost":0.5}]}`
 	}},
+	// A Hailuo model runs on MiniMax's v1 API (TXE-6428): POST /v1/video_generation, then
+	// GET /v1/query/video_generation and, for a finished task, GET /v1/files/retrieve. The answer
+	// has no path, so one GET body serves both reads: each decoder takes its own fields.
 	schemas.MiniMax: {model: "MiniMax-Hailuo-02", answer: func(method, _ string) (int, string) {
 		if method == http.MethodPost {
 			return 200, `{"task_id":"t1","base_resp":{"status_code":0,"status_msg":"success"}}`
 		}
-		return 200, `{"task":{"id":"t1","model":"MiniMax-Hailuo-02","status":"succeeded","content":{"url":"https://example.invalid/v.mp4"},"resolution":"768P","ratio":"16:9","duration":6},"base_resp":{"status_code":0,"status_msg":"success"}}`
+		return 200, `{"task_id":"t1","status":"Success","file_id":"f1","video_width":1366,"video_height":768,"file":{"file_id":"f1","bytes":1024,"created_at":1762700000,"filename":"v.mp4","purpose":"video_generation","download_url":"https://example.invalid/v.mp4"},"base_resp":{"status_code":0,"status_msg":"success"}}`
 	}},
 	schemas.BytePlus: {model: "seedance-1-0-pro-250528", answer: func(method, _ string) (int, string) {
 		if method == http.MethodPost {
