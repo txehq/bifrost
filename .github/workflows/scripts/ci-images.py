@@ -56,6 +56,7 @@ HUB_REGISTRIES = {"docker.io", "index.docker.io", "registry-1.docker.io", "cr.we
 # Files under the scanned paths that name an image no job pulls, and why.
 EXEMPT = {
     ".github/workflows/scripts/validate-helm-templates.sh": "busybox appears in Helm values rendered to YAML, never pulled",
+    ".github/workflows/scripts/ci-images.py": "this lint: its references are self-test fixtures and messages",
 }
 
 DIGEST = r"sha256:[0-9a-f]{64}"
@@ -63,8 +64,9 @@ NAME = r"[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*"
 PATH_RE = rf"{NAME}(?:/{NAME})*"
 TAG = r"[\w][\w.-]{0,127}"
 # ${BIFROST_CI_REGISTRY:-docker.io}/path:tag@digest, or ${BIFROST_CI_REGISTRY}/... in a Dockerfile.
+# In a workflow, `${{ env.BIFROST_CI_REGISTRY }}/path:tag@digest` (e.g. buildx's driver image).
 MIRRORED_RE = re.compile(
-    r"\$\{" + VAR + r"(?::-(?P<default>[^}]*))?\}/(?P<path>" + PATH_RE + r")(?::(?P<tag>" + TAG + r"))?(?:@(?P<digest>" + DIGEST + r"))?"
+    r"(?:\$\{" + VAR + r"(?::-(?P<default>[^}]*))?\}|(?P<expr>\$\{\{\s*env\." + VAR + r"\s*\}\}))/(?P<path>" + PATH_RE + r")(?::(?P<tag>" + TAG + r"))?(?:@(?P<digest>" + DIGEST + r"))?"
 )
 REF_RE = re.compile(
     r"^(?:(?P<registry>[a-z0-9.-]+(?::\d+)?)/)?(?P<path>" + PATH_RE + r")(?::(?P<tag>" + TAG + r"))?(?:@(?P<digest>" + DIGEST + r"))?$"
@@ -73,6 +75,9 @@ IMAGE_KEY_RE = re.compile(r"^\s*-?\s*image:\s*[\"']?([^\"'\s#]+)")
 FROM_RE = re.compile(r"^\s*FROM\s+(?:--\S+\s+)*(\S+)(?:\s+AS\s+(\S+))?", re.IGNORECASE)
 ASSIGN_RE = re.compile(r"\b[A-Z_]*IMAGE[A-Z_]*=[\"']?([^\"'\s]+)")
 DOCKER_CMD_RE = re.compile(r"\bdocker\s+(?:pull|run|create)\b(.*)")
+# buildx driver options: `driver-opts: image=moby/buildkit:...` names the daemon image it pulls.
+IMAGE_OPT_RE = re.compile(r"\bimage=[\"']?((?:\$\{\{[^}]*\}\}|[^\"'\s,])+)")
+BUILDX = "setup-buildx-action"
 
 
 def tracked():
@@ -125,6 +130,7 @@ def candidates(path, text):
                 refs.append(m.group(1))
             # A NAME_IMAGE=value names an image only with a tag or digest: IMAGE_NAME="bifrost" does not.
             refs += [v for v in ASSIGN_RE.findall(line) if MIRRORED_RE.search(v) or re.search(r"[:@]", v)]
+            refs += IMAGE_OPT_RE.findall(line)
             m = DOCKER_CMD_RE.search(line)
             if m:
                 for token in m.group(1).split():
@@ -152,7 +158,7 @@ def analyse(files):
                 if is_dockerfile and default is None and not dockerfile_arg:
                     problems.append(f"{where}: {ref} needs `ARG {VAR}=docker.io` before the first FROM")
                     continue
-                if not is_dockerfile and default != "docker.io":
+                if not is_dockerfile and not m.group("expr") and default != "docker.io":
                     problems.append(f"{where}: {ref} must default to docker.io: ${{{VAR}:-docker.io}}/<path>")
                     continue
                 if not m.group("tag") or not m.group("digest"):
@@ -191,7 +197,24 @@ def workflow_problems(workflows):
             if not isinstance(job, dict):
                 continue
             steps = [s for s in job.get("steps") or [] if isinstance(s, dict)]
-            if not any((s.get("uses") or "") == ACTION for s in steps):
+            uses_action = False
+            for step in steps:
+                uses = step.get("uses") or ""
+                if uses == ACTION:
+                    uses_action = True
+                if BUILDX in uses:
+                    w = step.get("with") or {}
+                    opts = str(w.get("driver-opts") or "")
+                    mirrored = any(MIRRORED_RE.search(v) for v in IMAGE_OPT_RE.findall(opts))
+                    if str(w.get("driver") or "docker-container").strip() == "docker-container" and not mirrored:
+                        problems.append(
+                            f"{path} :: job '{job_name}' sets up buildx's docker-container driver without "
+                            "driver-opts: image=${{ env.BIFROST_CI_REGISTRY }}/moby/buildkit:<tag>@<digest>; "
+                            "it would pull moby/buildkit from Docker Hub"
+                        )
+                    elif mirrored and not uses_action:
+                        problems.append(f"{path} :: job '{job_name}' takes buildx's image from the mirror before {ACTION} sets {VAR}")
+            if not uses_action:
                 continue
             perms = job.get("permissions", top)
             level = perms.get("packages") if isinstance(perms, dict) else perms
@@ -350,6 +373,8 @@ def self_test():
         ("transports/Dockerfile", f"FROM alpine:3.23.5@{d}\n", 0, 1),
         ("transports/Dockerfile", f"FROM registry.access.redhat.com/ubi9/ubi-minimal@{d}\n", 0, 0),
         (".github/workflows/scripts/validate-helm-templates.sh", "    image: busybox:1.36\n", 0, 0),
+        (".github/workflows/x.yml", f"          driver-opts: image=${{{{ env.{VAR} }}}}/moby/buildkit:v0.34.2@{d}\n", 1, 0),
+        (".github/workflows/x.yml", f"          driver-opts: image=moby/buildkit:v0.34.2@{d}\n", 0, 1),
     ]
     failed = 0
     for path, text, want_images, want_problems in cases:
@@ -390,8 +415,13 @@ def self_test():
             },
         },
     }
+    mirrored_bk = f"image=${{{{ env.{VAR} }}}}/moby/buildkit:v0.34.2@{d}"
+    wf["ok.yml"]["jobs"]["a"]["steps"].append({"uses": "step-security/setup-buildx-action@x", "with": {"driver-opts": mirrored_bk}})
+    wf["bad.yml"]["jobs"]["c"] = {"steps": [{"uses": "docker/setup-buildx-action@x"}]}
+    wf["bad.yml"]["jobs"]["d"] = {"steps": [{"uses": "docker/setup-buildx-action@x", "with": {"driver-opts": mirrored_bk}}]}
+    wf["ok.yml"]["jobs"]["e"] = {"steps": [{"uses": "docker/setup-buildx-action@x", "with": {"driver": "docker"}}]}
     got = workflow_problems(wf)
-    if len(got) != 2 or not all(p.startswith("bad.yml") for p in got):
+    if len(got) != 4 or not all(p.startswith("bad.yml") for p in got):
         failed += 1
         print(f"FAIL self-test workflow rules: {got}", file=sys.stderr)
     if failed:

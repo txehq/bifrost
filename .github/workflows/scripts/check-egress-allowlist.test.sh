@@ -247,6 +247,7 @@ anon_case "ghcr-login-is-not-docker-hub" fail "without logging in to Docker Hub"
 anon_case "docker-hub-login-passes" pass "" ci.yml pull docker.io "${HUB_ALL[@]}"
 anon_case "mirror-job-may-pull-anonymously" pass "" ci-images-mirror.yml mirror none "${HUB_ALL[@]}"
 anon_case "mirror-exemption-is-per-job" fail "without logging in to Docker Hub" ci-images-mirror.yml other none "${HUB_ALL[@]}"
+anon_case "index-docker-io-is-docker-hub" fail "index.docker.io:443 without logging in" ci.yml pull none index.docker.io:443
 anon_case "cr-weaviate-fails" fail "cr.weaviate.io" ci.yml pull docker.io cr.weaviate.io:443
 anon_case "ghcr-mirror-only-passes" pass "" ci.yml pull none ghcr.io:443 pkg-containers.githubusercontent.com:443
 

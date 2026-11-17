@@ -2576,6 +2576,11 @@ jobs:
 
       - name: Setup Docker Buildx
         uses: step-security/setup-buildx-action@f931205d68723ad9589fd2a7e2ece238bf9de341 # v4.0.0
+        with:
+          # The docker-container driver pulls its BuildKit daemon image itself, from Docker Hub
+          # unless told otherwise; this job allows no Docker Hub host, so it comes from the GHCR
+          # mirror like every other image (TXE-7684; ci-images.py lint requires it).
+          driver-opts: image=${{ env.BIFROST_CI_REGISTRY }}/moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
 
       - name: Test Docker image (amd64)
         env:
@@ -2742,6 +2747,11 @@ jobs:
 
       - name: Setup Docker Buildx
         uses: step-security/setup-buildx-action@f931205d68723ad9589fd2a7e2ece238bf9de341 # v4.0.0
+        with:
+          # The docker-container driver pulls its BuildKit daemon image itself, from Docker Hub
+          # unless told otherwise; this job allows no Docker Hub host, so it comes from the GHCR
+          # mirror like every other image (TXE-7684; ci-images.py lint requires it).
+          driver-opts: image=${{ env.BIFROST_CI_REGISTRY }}/moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
 
       - name: Test Docker image (arm64)
         env:
@@ -3607,6 +3617,11 @@ jobs:
 
       - name: Setup Docker Buidx
         uses: step-security/setup-buildx-action@f931205d68723ad9589fd2a7e2ece238bf9de341 # v4.0.0
+        with:
+          # The docker-container driver pulls its BuildKit daemon image itself, from Docker Hub
+          # unless told otherwise; this job allows no Docker Hub host, so it comes from the GHCR
+          # mirror like every other image (TXE-7684; ci-images.py lint requires it).
+          driver-opts: image=${{ env.BIFROST_CI_REGISTRY }}/moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
 
       - name: Log in to GHCR
         uses: step-security/docker-login-action@870af644803bf9f204aed474adbad2958fec048b # v4.1.0
@@ -3757,6 +3772,11 @@ jobs:
 
       - name: Setup Docker Buidx
         uses: step-security/setup-buildx-action@f931205d68723ad9589fd2a7e2ece238bf9de341 # v4.0.0
+        with:
+          # The docker-container driver pulls its BuildKit daemon image itself, from Docker Hub
+          # unless told otherwise; this job allows no Docker Hub host, so it comes from the GHCR
+          # mirror like every other image (TXE-7684; ci-images.py lint requires it).
+          driver-opts: image=${{ env.BIFROST_CI_REGISTRY }}/moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
 
       - name: Log in to GHCR
         uses: step-security/docker-login-action@870af644803bf9f204aed474adbad2958fec048b # v4.1.0
@@ -3964,6 +3984,11 @@ jobs:
 
       - name: Setup Docker Buildx
         uses: step-security/setup-buildx-action@f931205d68723ad9589fd2a7e2ece238bf9de341 # v4.0.0
+        with:
+          # The docker-container driver pulls its BuildKit daemon image itself, from Docker Hub
+          # unless told otherwise; this job allows no Docker Hub host, so it comes from the GHCR
+          # mirror like every other image (TXE-7684; ci-images.py lint requires it).
+          driver-opts: image=${{ env.BIFROST_CI_REGISTRY }}/moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
 
       - name: Log in to GHCR
         uses: step-security/docker-login-action@870af644803bf9f204aed474adbad2958fec048b # v4.1.0
@@ -4118,6 +4143,11 @@ jobs:
 
       - name: Setup Docker Buildx
         uses: step-security/setup-buildx-action@f931205d68723ad9589fd2a7e2ece238bf9de341 # v4.0.0
+        with:
+          # The docker-container driver pulls its BuildKit daemon image itself, from Docker Hub
+          # unless told otherwise; this job allows no Docker Hub host, so it comes from the GHCR
+          # mirror like every other image (TXE-7684; ci-images.py lint requires it).
+          driver-opts: image=${{ env.BIFROST_CI_REGISTRY }}/moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
 
       - name: Log in to GHCR
         uses: step-security/docker-login-action@870af644803bf9f204aed474adbad2958fec048b # v4.1.0

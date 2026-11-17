@@ -689,11 +689,14 @@ import os
 import sys
 import yaml
 
-HUB = "registry-1.docker.io:443"
+# docker pulls Docker Hub as registry-1.docker.io; crane and other go-containerregistry
+# clients as index.docker.io.
+HUB = {"registry-1.docker.io:443", "index.docker.io:443"}
 WEAVIATE = "cr.weaviate.io:443"
 # (workflow file name, job) -> why the job may pull from Docker Hub without logging in.
 ANONYMOUS_OK = {
     ("ci-images-mirror.yml", "mirror"): "copies each pinned image into the GHCR mirror once (TXE-7684)",
+    ("scorecards.yml", "analysis"): "ossf/scorecard-action resolves the Dockerfiles' image digests on index.docker.io: manifest lookups on a schedule, no image pull",
 }
 
 failures = []
@@ -713,7 +716,8 @@ for path in sys.argv[1:]:
                     allowed |= set(str(w.get("allowed-endpoints") or "").split())
         if WEAVIATE in allowed:
             failures.append(f"FAIL {path} :: job '{job_name}' allows {WEAVIATE}, which fronts Docker Hub's anonymous rate limit; pull Weaviate through ./.github/actions/ci-images")
-        if HUB not in allowed:
+        hub = sorted(HUB & allowed)
+        if not hub:
             continue
         checked += 1
         logged_in = any(
@@ -723,7 +727,7 @@ for path in sys.argv[1:]:
         )
         if not logged_in and (os.path.basename(path), job_name) not in ANONYMOUS_OK:
             failures.append(
-                f"FAIL {path} :: job '{job_name}' allows {HUB} without logging in to Docker Hub; "
+                f"FAIL {path} :: job '{job_name}' allows {', '.join(hub)} without logging in to Docker Hub; "
                 "an anonymous pull hits its rate limit: pull through ./.github/actions/ci-images and drop the Docker Hub hosts"
             )
 
@@ -731,5 +735,5 @@ for line in failures:
     print(line, file=sys.stderr)
 if failures:
     sys.exit(1)
-print(f"OK: none of the {checked} job(s) that allow Docker Hub pulls from it anonymously, except the mirror job.")
+print(f"OK: none of the {checked} job(s) that allow Docker Hub pulls from it anonymously outside ANONYMOUS_OK.")
 PY
