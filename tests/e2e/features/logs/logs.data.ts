@@ -30,6 +30,12 @@ export const SAMPLE_PROVIDERS = ['openai', 'anthropic', 'gemini'] as const
 export const SAMPLE_MODELS = ['gpt-4', 'claude-3-opus', 'gemini-pro'] as const
 
 /**
+ * The model run-e2e.mjs seeds the logs with (seedLogs: SEED_MODEL, default openai/gpt-4o-mini), as
+ * the logs table shows it. The model filter test filters by it.
+ */
+export const SEED_MODEL = 'gpt-4o-mini'
+
+/**
  * Sample statuses for filtering
  */
 export const SAMPLE_STATUSES = ['success', 'error', 'pending'] as const

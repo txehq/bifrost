@@ -4,8 +4,8 @@ import { skipUnlessCount, skipUnlessEnabled, skipUnlessVisible } from "../../cor
 import { nextFrames } from "../../core/utils/test-helpers";
 import {
   createLogSearchQuery,
-  SAMPLE_MODELS,
   SAMPLE_PROVIDERS,
+  SEED_MODEL,
 } from "./logs.data";
 
 test.describe("LLM Logs", () => {
@@ -174,22 +174,18 @@ test.describe("LLM Logs", () => {
       expect(newValue || initialValue).toBeTruthy();
     });
 
-    // TXE-7736: logsPage.modelFilter is stale. No [data-testid="filter-model"] renders, and its
-    // fallback (any button whose text matches /Model/) finds another button, so the test cannot pass
-    // as written. It used to skip silently on a strict-mode violation; offline-skips.json lists it.
-    test.fixme("should filter logs by model", async ({ logsPage }) => {
-      const modelFilter = logsPage.modelFilter;
-      await skipUnlessVisible(modelFilter, "Model filter not visible");
+    test("should filter logs by model", async ({ logsPage, page }) => {
+      // The sidebar's Models section renders once the logs have a model: offline, the run's seed
+      // model (TXE-7736: the old locator looked for a filter-model control that no longer exists).
+      await skipUnlessVisible(logsPage.modelFilter, "Models filter not rendered: the logs have no model yet");
 
-      // Get initial filter state
-      const initialValue = await modelFilter.textContent().catch(() => "");
+      const model = SEED_MODEL;
+      await logsPage.filterByModel(model);
 
-      await logsPage.filterByModel(SAMPLE_MODELS[0]);
-
-      // Check that filter value changed (or verify filter is applied via DOM)
-      const newValue = await modelFilter.textContent().catch(() => "");
-      // Filter should have changed or show selected model
-      expect(newValue || initialValue).toBeTruthy();
+      // The sidebar keeps its filters in the URL, like the status and tool-call filters.
+      await expect
+        .poll(() => new URL(page.url()).searchParams.get("models") ?? "", { timeout: 5000, intervals: [200, 300, 500] })
+        .toContain(model);
     });
 
     test("should filter logs by status", async ({ logsPage, page }) => {
@@ -365,25 +361,18 @@ test.describe("LLM Logs", () => {
 
   test.describe("Live Updates", () => {
     test("should toggle live updates", async ({ logsPage }) => {
-      await skipUnlessVisible(logsPage.liveToggle, "Live toggle not visible");
-
-      // Default is live_enabled=true (but URL may not have it since it's the default)
-      // Check for live_enabled=false to determine if currently disabled
-      const initialUrl = logsPage.page.url();
-      const initialLiveDisabled = initialUrl.includes("live_enabled=false");
+      // The header's Live button keeps its state in the URL as polling, true by default (TXE-7736:
+      // the old locator looked for a live-toggle control and a live_enabled param that no longer exist).
+      await expect(logsPage.liveToggle).toBeVisible();
+      const polling = () => new URL(logsPage.page.url()).searchParams.get("polling") !== "false";
+      const before = polling();
 
       await logsPage.toggleLiveUpdates();
+      await expect.poll(polling, { timeout: 5000 }).toBe(!before);
 
-      // Wait for URL to reflect live_enabled toggle
-      await logsPage.page.waitForURL(/live_enabled=/, { timeout: 5000 });
-
-      const newUrl = logsPage.page.url();
-      const newLiveDisabled = newUrl.includes("live_enabled=false");
-
-      // Live enabled state should have toggled
-      // If initially enabled (not disabled), after toggle it should be disabled
-      // If initially disabled, after toggle it should be enabled (no live_enabled=false)
-      expect(newLiveDisabled).not.toBe(initialLiveDisabled);
+      // And back, so the next test starts live.
+      await logsPage.toggleLiveUpdates();
+      await expect.poll(polling, { timeout: 5000 }).toBe(before);
     });
   });
 

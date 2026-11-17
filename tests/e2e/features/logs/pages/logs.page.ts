@@ -46,9 +46,9 @@ export class LogsPage extends BasePage {
     this.providerFilter = page.locator('[data-testid="filter-provider"]').or(
       page.locator('button').filter({ hasText: /Provider/i })
     )
-    this.modelFilter = page.locator('[data-testid="filter-model"]').or(
-      page.locator('button').filter({ hasText: /Model/i })
-    )
+    // The Models section of the filter sidebar (logsFilterSidebar.tsx ModelsFilter): a collapsible
+    // whose rows are models-filter-checkbox-<model>. It renders once the logs have a model (TXE-7736).
+    this.modelFilter = page.getByTestId('models-filter-toggle')
     this.statusFilter = page.getByTestId('status-filter-toggle').or(page.getByTestId('status-filter-checkbox-success'))
     this.searchInput = page.locator('[data-testid="logs-search-input"]').or(
       page.locator('[data-testid="filter-search"]')
@@ -58,9 +58,8 @@ export class LogsPage extends BasePage {
     this.dateRangePicker = page.locator('[data-testid="filter-date-range"]').or(
       page.locator('button').filter({ hasText: /Last/i })
     )
-    this.liveToggle = page.locator('[data-testid="live-toggle"]').or(
-      page.getByRole('button', { name: /Live updates/i })
-    )
+    // The header's Live button (logsHeaderView.tsx); it keeps its state in the URL as polling=true|false (TXE-7736).
+    this.liveToggle = page.getByTestId('logs-live-btn')
 
     this.tableRows = page.getByTestId('log-table-row')
     // LLM logs pagination (data-testid added to logsTable.tsx)
@@ -130,20 +129,27 @@ export class LogsPage extends BasePage {
   /**
    * Filter by model
    */
+  /**
+   * Filter by model through the sidebar's Models section. The model is typed into the section's
+   * search: when the filter-data API lists it, its row is ticked; when it does not (offline the
+   * list can be empty while the table shows the seed model), the section's "Use <model>" option
+   * adds it. Either way the filter lands in the URL as models=<model>.
+   */
   async filterByModel(model: string): Promise<void> {
     await this.dismissToasts()
-    await this.modelFilter.first().waitFor({ state: 'visible' })
-    await this.modelFilter.first().click()
-    await this.page.waitForSelector('[role="listbox"]', { timeout: 5000 }).catch(() => {})
-
-    const option = this.page.getByRole('option', { name: new RegExp(model, 'i') })
-    if (await option.count() > 0) {
-      await option.first().click()
-    } else {
-      await this.page.keyboard.press('Escape')
+    await this.ensureFiltersSidebarExpanded()
+    await this.modelFilter.waitFor({ state: 'visible' })
+    // Open the Models section unless it already is (a Radix collapsible: data-state open|closed).
+    if ((await this.modelFilter.getAttribute('data-state')) !== 'open') {
+      await this.modelFilter.click()
     }
-
-    await this.page.waitForSelector('[role="listbox"]', { state: 'hidden', timeout: 5000 }).catch(() => {})
+    await this.page.getByTestId('models-filter-search').fill(model)
+    const choice = this.page
+      .getByTestId(`models-filter-checkbox-${model}`)
+      .or(this.page.getByTestId('models-filter-add-custom'))
+      .first()
+    await choice.waitFor({ state: 'visible' })
+    await choice.click()
     await waitForNetworkIdle(this.page)
   }
 
