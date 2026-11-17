@@ -4085,7 +4085,7 @@ func TestRecordVideoJobLifecycle_DefaultDurationPricesAVeoJobWithoutSeconds(t *t
 		}
 		plugin.recordVideoJobLifecycle(entry, &schemas.BifrostResponse{
 			VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{ID: "op-1", Status: schemas.VideoStatusInProgress, Seconds: tc.reported},
-		}, schemas.VideoGenerationRequest, nil)
+		}, schemas.VideoGenerationRequest, nil, modelcatalog.VideoInputs{}, "")
 		job, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindVideo, string(tc.provider), "op-1"))
 		if err != nil {
 			t.Fatalf("%s: expected a video job row: %v", tc.provider, err)
