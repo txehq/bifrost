@@ -14,6 +14,9 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"iter"
 	"maps"
@@ -22,6 +25,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -1841,16 +1846,31 @@ func TestCanceledInitializationWaiterDoesNotCancelSharedAttempt(t *testing.T) {
 	require.Equal(t, int64(1), state.calls.Load())
 }
 
-func TestLazyInitializationTimeoutAllowsRetry(t *testing.T) {
-	var calls atomic.Int64
-	var server *httptest.Server
+// withExpiringBuilds runs expire with a build timeout short enough to fire against an
+// upstream that never answers, then restores the production timeout. expire must not
+// return while a build it started is still running. Keeping the short deadline inside expire
+// means the success path a test runs next has the full budget, however loaded the run
+// is (TXE-7743). It is the only place a test may assign buildTimeout.
+func withExpiringBuilds(m *Manager, expire func()) {
+	m.buildTimeout = testtime.Scale(20 * time.Millisecond)
+	defer func() { m.buildTimeout = runtimeBuildTimeout }()
+	expire()
+}
+
+// hangingCardServer serves an agent card named name, except that while hang is set each
+// request blocks until its client gives up. It counts the cards it served.
+func hangingCardServer(t *testing.T, name string) (server *httptest.Server, hang *atomic.Bool, served *atomic.Int64) {
+	t.Helper()
+	hang, served = new(atomic.Bool), new(atomic.Int64)
+	hang.Store(true)
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if calls.Add(1) == 1 {
+		if hang.Load() {
 			<-r.Context().Done()
 			return
 		}
+		served.Add(1)
 		card := &a2a.AgentCard{
-			Name:                "fixture",
+			Name:                name,
 			Version:             "1",
 			SupportedInterfaces: []*a2a.AgentInterface{a2a.NewAgentInterface(server.URL+"/rpc", a2a.TransportProtocolJSONRPC)},
 			DefaultInputModes:   []string{"text/plain"},
@@ -1858,66 +1878,61 @@ func TestLazyInitializationTimeoutAllowsRetry(t *testing.T) {
 		}
 		a2asrv.NewStaticAgentCardHandler(card).ServeHTTP(w, r)
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close)
+	return server, hang, served
+}
+
+func TestLazyInitializationTimeoutAllowsRetry(t *testing.T) {
+	server, hang, served := hangingCardServer(t, "fixture")
 
 	store := &memoryStore{regs: map[string]schemas.AgentRegistration{"fixture": {Name: "fixture", AgentCardURL: server.URL, Enabled: true}}}
 	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 	require.NoError(t, err)
 	defer m.Close()
-	m.buildTimeout = testtime.Scale(20 * time.Millisecond)
 	runtime, _ := m.runtimes.load("fixture")
 
-	_, err = runtime.acquire(context.Background(), m)
+	withExpiringBuilds(m, func() {
+		_, err = runtime.acquire(context.Background(), m)
+	})
 	require.ErrorIs(t, err, context.DeadlineExceeded)
+	hang.Store(false)
 	lease, err := runtime.acquire(context.Background(), m)
 	require.NoError(t, err)
 	lease.release()
-	require.Equal(t, int64(2), calls.Load())
+	require.Equal(t, int64(1), served.Load())
 }
 
 func TestRefreshTimeoutAllowsRetry(t *testing.T) {
-	var calls atomic.Int64
-	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if calls.Add(1) == 1 {
-			<-r.Context().Done()
-			return
-		}
-		card := &a2a.AgentCard{
-			Name:                "refreshed",
-			Version:             "1",
-			SupportedInterfaces: []*a2a.AgentInterface{a2a.NewAgentInterface(server.URL+"/rpc", a2a.TransportProtocolJSONRPC)},
-			DefaultInputModes:   []string{"text/plain"},
-			DefaultOutputModes:  []string{"text/plain"},
-		}
-		a2asrv.NewStaticAgentCardHandler(card).ServeHTTP(w, r)
-	}))
-	defer server.Close()
+	server, hang, served := hangingCardServer(t, "refreshed")
 
 	m, err := NewManager(context.Background(), &memoryStore{regs: map[string]schemas.AgentRegistration{}}, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 	require.NoError(t, err)
 	defer m.Close()
-	m.buildTimeout = testtime.Scale(20 * time.Millisecond)
 	runtime := m.buildRuntime(schemas.AgentRegistration{Name: "fixture", AgentCardURL: server.URL, Enabled: true})
 	source := newClientGeneration(&a2a.AgentCard{Name: "stale"}, &fakeSDKClient{}, string(a2a.TransportProtocolJSONRPC))
 	require.NoError(t, runtime.replaceGeneration(source))
 
-	runtime.requestRefresh(m, source)
-	require.Eventually(t, func() bool {
-		runtime.mu.Lock()
-		defer runtime.mu.Unlock()
-		return calls.Load() == 1 && !runtime.refreshing
-	}, testtime.Scale(time.Second), testtime.Scale(time.Millisecond))
-
+	withExpiringBuilds(m, func() {
+		runtime.requestRefresh(m, source)
+		require.Eventually(t, func() bool {
+			runtime.mu.Lock()
+			defer runtime.mu.Unlock()
+			return !runtime.refreshing
+		}, testtime.Scale(time.Second), testtime.Scale(time.Millisecond))
+	})
 	runtime.mu.Lock()
+	require.Same(t, source, runtime.generation, "the timed-out refresh must keep the current generation")
 	runtime.lastRefresh = time.Time{}
 	runtime.mu.Unlock()
+
+	hang.Store(false)
 	runtime.requestRefresh(m, source)
 	require.Eventually(t, func() bool {
 		runtime.mu.Lock()
 		defer runtime.mu.Unlock()
-		return calls.Load() == 2 && runtime.generation != source && !runtime.refreshing
-	}, testtime.Scale(time.Second), testtime.Scale(time.Millisecond))
+		return runtime.generation != source && !runtime.refreshing
+	}, testtime.Scale(10*time.Second), testtime.Scale(time.Millisecond))
+	require.Equal(t, int64(1), served.Load())
 }
 
 func TestCloseDuringInitializationPreventsLatePublish(t *testing.T) {
@@ -2500,16 +2515,19 @@ func TestRegistrationDiscoveryUsesBuildTimeout(t *testing.T) {
 			m, err := NewManager(context.Background(), store, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 			require.NoError(t, err)
 			defer m.Close()
-			m.buildTimeout = testtime.Scale(20 * time.Millisecond)
 			cardURL := upstream.URL + agentCardPath
 
 			switch operation {
 			case "create":
-				_, err = m.Create(context.Background(), CreateRequest{Name: "fixture", AgentCardURL: cardURL})
+				withExpiringBuilds(m, func() {
+					_, err = m.Create(context.Background(), CreateRequest{Name: "fixture", AgentCardURL: cardURL})
+				})
 			case "update":
 				_, err = m.Create(context.Background(), CreateRequest{Name: "fixture", AgentCardURL: cardURL, Enabled: boolPtr(false)})
 				require.NoError(t, err)
-				_, err = m.Update(context.Background(), "fixture", UpdateRequest{AgentCardURL: &cardURL, Enabled: boolPtr(true)})
+				withExpiringBuilds(m, func() {
+					_, err = m.Update(context.Background(), "fixture", UpdateRequest{AgentCardURL: &cardURL, Enabled: boolPtr(true)})
+				})
 			}
 			require.ErrorIs(t, err, context.DeadlineExceeded)
 		})
@@ -3191,21 +3209,28 @@ func TestAgentOAuthInspectionCacheRetention(t *testing.T) {
 	const inspections = maxOAuthCacheEntries + 32
 	for _, success := range []bool{true, false} {
 		t.Run(fmt.Sprintf("success=%t", success), func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				if !success {
 					http.Error(w, "invalid credentials", http.StatusUnauthorized)
 					return
 				}
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write([]byte(`{"access_token":"inspection-token","expires_in":3600}`))
-			}))
-			defer server.Close()
+			})
+			// The token endpoint is served in memory. Over TCP each inspection dialed a
+			// new connection, about 10,000 per run left in TIME_WAIT, and a parallel
+			// -race run exhausted the ephemeral ports (TXE-7743). What this checks is the
+			// cache bound; TestSingleUseFetchesCloseTheirConnections covers the sockets.
 			m := &Manager{
 				privateAllowlistFn: func() []string { return []string{"127.0.0.1"} },
-				httpClient:         server.Client(),
+				httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+					recorder := httptest.NewRecorder()
+					handler.ServeHTTP(recorder, req)
+					return recorder.Result(), nil
+				})},
 			}
 			auth := &schemas.UpstreamAuth{Type: schemas.MCPAuthTypeOauth, OAuth: &schemas.UpstreamOAuthConfig{
-				TokenURL: server.URL, ClientID: schemas.NewSecretVar("client"), ClientSecret: schemas.NewSecretVar("secret"),
+				TokenURL: "http://127.0.0.1/token", ClientID: schemas.NewSecretVar("client"), ClientSecret: schemas.NewSecretVar("secret"),
 			}}
 			for i := range inspections {
 				// Inspect derives this key from the submitted card URL, not a registration.
@@ -3230,6 +3255,74 @@ func TestAgentOAuthInspectionCacheRetention(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestSingleUseFetchesCloseTheirConnections checks that agent-card, OAuth discovery
+// and OAuth token fetches leave no connection open once they return, whether they
+// succeed or fail. Each builds a transport for one request. Before TXE-7743 a refused
+// token request (credentialTransport turns a non-200 POST into an error) returned
+// before the pool was closed, so each one held a connection until the idle timeout;
+// TestAgentOAuthInspectionCacheRetention's failure case held about 7,700 at once.
+func TestSingleUseFetchesCloseTheirConnections(t *testing.T) {
+	var server *httptest.Server
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"token_endpoint":%q}`, server.URL+"/token")
+	})
+	mux.HandleFunc("/token", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"fetch-token","expires_in":3600}`))
+	})
+	mux.HandleFunc("/denied", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "invalid credentials", http.StatusUnauthorized)
+	})
+	mux.HandleFunc("/card", func(w http.ResponseWriter, r *http.Request) {
+		card := &a2a.AgentCard{
+			Name:                "fixture",
+			Version:             "1",
+			SupportedInterfaces: []*a2a.AgentInterface{a2a.NewAgentInterface(server.URL+"/rpc", a2a.TransportProtocolJSONRPC)},
+			DefaultInputModes:   []string{"text/plain"},
+			DefaultOutputModes:  []string{"text/plain"},
+		}
+		a2asrv.NewStaticAgentCardHandler(card).ServeHTTP(w, r)
+	})
+	var opened, closed atomic.Int64
+	server = httptest.NewUnstartedServer(mux)
+	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		switch state {
+		case http.StateNew:
+			opened.Add(1)
+		case http.StateClosed, http.StateHijacked:
+			closed.Add(1)
+		}
+	}
+	server.Start()
+	defer server.Close()
+
+	m, err := NewManager(context.Background(), &memoryStore{regs: map[string]schemas.AgentRegistration{}}, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
+	require.NoError(t, err)
+	defer m.Close()
+	auth := &schemas.UpstreamAuth{Type: schemas.MCPAuthTypeOauth, OAuth: &schemas.UpstreamOAuthConfig{
+		ProviderURL: server.URL, ClientID: schemas.NewSecretVar("client"), ClientSecret: schemas.NewSecretVar("secret"),
+	}}
+	const fetches = 10
+	for i := range fetches {
+		// A new credential id misses the token cache, so each round runs discovery,
+		// token and card fetches.
+		_, _, err := m.resolveCardForInspection(context.Background(), server.URL+"/card", auth, fmt.Sprintf("leak-check-%d", i))
+		require.NoError(t, err)
+	}
+	denied := &schemas.UpstreamAuth{Type: schemas.MCPAuthTypeOauth, OAuth: &schemas.UpstreamOAuthConfig{
+		TokenURL: server.URL + "/denied", ClientID: schemas.NewSecretVar("client"), ClientSecret: schemas.NewSecretVar("secret"),
+	}}
+	for i := range fetches {
+		_, err := m.oauthAccessToken(context.Background(), fmt.Sprintf("denied-%d", i), denied)
+		require.Error(t, err)
+	}
+	require.GreaterOrEqual(t, opened.Load(), int64(2*fetches), "each fetch should have dialed")
+	require.Eventually(t, func() bool { return opened.Load() == closed.Load() }, testtime.Scale(5*time.Second), testtime.Scale(10*time.Millisecond),
+		"single-use fetches left connections open")
 }
 
 // TestAgentOAuthCachePrefersExpiredEntries checks that cache pressure preserves
@@ -3733,4 +3826,189 @@ func TestCredentialTransportRefusesJSONStreamRepliesItCannotFrame(t *testing.T) 
 			require.ErrorContains(t, err, tc.reason, "the refusal must name its reason, not a side effect of the size limit")
 		})
 	}
+}
+
+// buildTimeoutSetter is the only function in this package's tests allowed to assign
+// Manager.buildTimeout.
+const buildTimeoutSetter = "withExpiringBuilds"
+
+// buildTimeoutAssignments returns "file:line" for every assignment to a buildTimeout field
+// outside buildTimeoutSetter in the given Go source.
+func buildTimeoutAssignments(fset *token.FileSet, file *ast.File) []string {
+	var found []string
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if ok && fn.Name.Name == buildTimeoutSetter && fn.Recv == nil {
+			continue
+		}
+		ast.Inspect(decl, func(n ast.Node) bool {
+			assign, ok := n.(*ast.AssignStmt)
+			if !ok {
+				return true
+			}
+			for _, lhs := range assign.Lhs {
+				if sel, ok := lhs.(*ast.SelectorExpr); ok && sel.Sel.Name == "buildTimeout" {
+					pos := fset.Position(assign.Pos())
+					found = append(found, filepath.Base(pos.Filename)+":"+strconv.Itoa(pos.Line))
+				}
+			}
+			return true
+		})
+	}
+	return found
+}
+
+// TestBuildTimeoutIsSetOnlyThroughWithExpiringBuilds keeps a short build timeout scoped
+// to the call that is meant to time out (TXE-7743). A test that set m.buildTimeout to
+// 20 ms for its whole body also ran its success path under that deadline, and failed
+// whenever a loaded -race run took longer than 20 ms to fetch a card.
+func TestBuildTimeoutIsSetOnlyThroughWithExpiringBuilds(t *testing.T) {
+	entries, err := os.ReadDir(".")
+	require.NoError(t, err)
+	fset := token.NewFileSet()
+	var found []string
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, e.Name(), nil, 0)
+		require.NoError(t, err)
+		found = append(found, buildTimeoutAssignments(fset, file)...)
+	}
+	require.Empty(t, found, "assign Manager.buildTimeout only through %s, which restores the production timeout when the expiring call returns", buildTimeoutSetter)
+}
+
+// TestBuildTimeoutLintReportsADirectAssignment proves the check above can fail.
+func TestBuildTimeoutLintReportsADirectAssignment(t *testing.T) {
+	src := `package agent
+func withExpiringBuilds(m *Manager, fn func()) { m.buildTimeout = 1; fn() }
+func TestX(m *Manager) {
+	m.buildTimeout = 1
+}
+`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "x_test.go", src, 0)
+	require.NoError(t, err)
+	require.Equal(t, []string{"x_test.go:4"}, buildTimeoutAssignments(fset, file))
+}
+
+// singleUseClientsWithoutEarlyClose returns "file:line: name" for every client a function
+// builds with clientForContext and calls Do on, without a `defer <name>.CloseIdleConnections()`
+// before the first Do. clientForContext clones the transport, so nothing else ever closes
+// that pool. A Do that returns an error returns before any later defer is registered,
+// and credentialTransport turns a refused POST into exactly that error.
+func singleUseClientsWithoutEarlyClose(fset *token.FileSet, file *ast.File) []string {
+	var found []string
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Body == nil {
+			continue
+		}
+		clients := map[string]token.Pos{} // name -> where it was built
+		firstDo := map[string]token.Pos{}
+		earlyClose := map[string]token.Pos{}
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			switch node := n.(type) {
+			case *ast.AssignStmt:
+				for i, rhs := range node.Rhs {
+					call, ok := rhs.(*ast.CallExpr)
+					if !ok {
+						continue
+					}
+					if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "clientForContext" && i < len(node.Lhs) {
+						if id, ok := node.Lhs[0].(*ast.Ident); ok {
+							clients[id.Name] = node.Pos()
+						}
+					}
+				}
+			case *ast.DeferStmt:
+				if name, method := selectorCall(node.Call); method == "CloseIdleConnections" {
+					if _, seen := earlyClose[name]; !seen {
+						earlyClose[name] = node.Pos()
+					}
+				}
+			case *ast.CallExpr:
+				if name, method := selectorCall(node); method == "Do" {
+					if _, seen := firstDo[name]; !seen {
+						firstDo[name] = node.Pos()
+					}
+				}
+			}
+			return true
+		})
+		for name, built := range clients {
+			do, calls := firstDo[name]
+			if !calls {
+				continue // a client that is stored, not called here, has another owner
+			}
+			if closed, ok := earlyClose[name]; !ok || closed > do {
+				pos := fset.Position(built)
+				found = append(found, filepath.Base(pos.Filename)+":"+strconv.Itoa(pos.Line)+": "+name)
+			}
+		}
+	}
+	return found
+}
+
+func selectorCall(call *ast.CallExpr) (receiver, method string) {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return "", ""
+	}
+	id, ok := sel.X.(*ast.Ident)
+	if !ok {
+		return "", sel.Sel.Name
+	}
+	return id.Name, sel.Sel.Name
+}
+
+// TestSingleUseClientsCloseBeforeDo holds every single-use client in this package to
+// closing its pool on every return path (TXE-7743).
+func TestSingleUseClientsCloseBeforeDo(t *testing.T) {
+	entries, err := os.ReadDir(".")
+	require.NoError(t, err)
+	fset := token.NewFileSet()
+	var found []string
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, e.Name(), nil, 0)
+		require.NoError(t, err)
+		found = append(found, singleUseClientsWithoutEarlyClose(fset, file)...)
+	}
+	require.Empty(t, found, "write `defer <client>.CloseIdleConnections()` right after clientForContext, before Do")
+}
+
+// TestSingleUseClientLintReportsALateClose proves the check above can fail, on the
+// order main had before TXE-7743 and on a client that never closes.
+func TestSingleUseClientLintReportsALateClose(t *testing.T) {
+	src := `package agent
+func late(m *Manager) {
+	client, _ := m.clientForContext(nil, nil, nil, false)
+	resp, err := client.Do(nil)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	defer client.CloseIdleConnections()
+}
+func never(m *Manager) {
+	client, _ := m.clientForContext(nil, nil, nil, false)
+	_, _ = client.Do(nil)
+}
+func early(m *Manager) {
+	client, _ := m.clientForContext(nil, nil, nil, false)
+	defer client.CloseIdleConnections()
+	_, _ = client.Do(nil)
+}
+func stored(m *Manager) {
+	client, _ := m.clientForContext(nil, nil, nil, false)
+	m.httpClient = client
+}
+`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "x.go", src, 0)
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"x.go:3: client", "x.go:12: client"}, singleUseClientsWithoutEarlyClose(fset, file))
 }
