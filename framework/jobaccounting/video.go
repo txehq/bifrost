@@ -532,7 +532,9 @@ func RenderedDurationRequired(resp *schemas.BifrostVideoGenerationResponse) bool
 	if resp == nil || resp.Status != schemas.VideoStatusCompleted {
 		return false
 	}
-	if resp.ContentFilter != nil && resp.ContentFilter.FilteredCount > 0 {
+	// A fully filtered task delivered nothing to measure. A partly filtered one (fork, TXE-6537:
+	// Veo reports both) is priced by the clips it delivered, so they are measured like any other.
+	if resp.ContentFilter != nil && resp.ContentFilter.FilteredCount > 0 && len(resp.Videos) == 0 {
 		return false
 	}
 	observed := modelcatalog.VideoDimensionsFromResponse(resp)
@@ -692,7 +694,11 @@ func (s *VideoSettler) Settle(ctx context.Context, pricing PricingManager, jobRe
 	dims.BaseProvider = s.baseProvider(jobReq.Provider)
 	settlement.ApplyDebug = videoDebugFor(jobReq.ProviderJobID, videoStatus, dims, jobReq.Provider, dims.TierOnlyResolution(jobReq.Provider), false)
 
-	if resp != nil && resp.ContentFilter != nil && resp.ContentFilter.FilteredCount > 0 {
+	// Parked only when the filter left nothing delivered. A task that delivered some videos
+	// and had others filtered (fork, TXE-6537: Veo reports both) is priced by the clips it
+	// delivered, below: those are owed whatever the policy on the filtered ones is, and
+	// parking the whole job would leave them uncharged.
+	if resp != nil && resp.ContentFilter != nil && resp.ContentFilter.FilteredCount > 0 && len(resp.Videos) == 0 {
 		settlement.UnpriceableReason = UnpriceableReasonContentFiltered
 		return settlement, nil
 	}

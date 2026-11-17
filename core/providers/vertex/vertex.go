@@ -366,6 +366,37 @@ func (provider *VertexProvider) GetProviderKey() schemas.ModelProvider {
 	return schemas.Vertex
 }
 
+// vertexVideoGenerationFields are the unified video create fields Veo on Vertex takes, each
+// converted by gemini.ToVertexVideoGenerationRequest. output_storage_uri is the one task control
+// field the vendor has (parameters.storageUri); it has no callback, external task id or deadline
+// parameter.
+var vertexVideoGenerationFields = []string{
+	"aspect_ratio",
+	"audio",
+	"last_frame",
+	schemas.TaskControlFieldOutputStorageURI,
+	"reference_images",
+	"resolution",
+	"seconds",
+	"size",
+}
+
+// SupportedUnifiedFields implements schemas.UnifiedFieldDeclarer: the unified fields speech and
+// video generation deliver, so core refuses any other with caller_unsupported_parameter before a
+// key is chosen (contract C4 BF4, C7 BF12). Speech takes what the Gemini generateContent
+// conversion delivers (TXE-6540). The video list also covers an Omni model on the Interactions
+// API (TXE-6538): its converter checks gemini.OmniVideoUnifiedFields itself, and Vertex documents
+// no webhook field, so callback_url and client_reference_id are refused on both paths.
+func (provider *VertexProvider) SupportedUnifiedFields(requestType schemas.RequestType) ([]string, bool) {
+	switch requestType {
+	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
+		return gemini.SpeechUnifiedFields, true
+	case schemas.VideoGenerationRequest:
+		return vertexVideoGenerationFields, true
+	}
+	return nil, false
+}
+
 // listModelsByKey performs a list models request for a single key.
 // Returns the response and latency, or an error if the request fails.
 //
@@ -2615,7 +2646,7 @@ func (provider *VertexProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 		ctx,
 		bifrostReq,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return gemini.ToGeminiVideoGenerationRequest(bifrostReq)
+			return gemini.ToVertexVideoGenerationRequest(bifrostReq)
 		},
 	)
 	if bifrostErr != nil {
@@ -2877,11 +2908,11 @@ func (provider *VertexProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 			return nil, providerUtils.NewBifrostOperationError("failed to decode base64 video data", err)
 		}
 		return providerUtils.NewVideoContentResponse(request, request.ID, decoded, video.ContentType, time.Since(startTime)), nil
-	case video.URL != nil && strings.HasPrefix(*video.URL, "gs://"):
+	case isGCSVideoOutput(video):
 		// Fork: Veo wrote the file to the caller's bucket (parameters.storageUri) and named it
 		// by a gs:// URI, which is not an HTTP address. It is read through the Cloud Storage
 		// JSON API with the key's own Google credentials (contract C9 / BF20).
-		return provider.downloadGCSVideo(ctx, key, request, *video.URL, video.ContentType)
+		return provider.downloadGCSVideo(ctx, key, request, video.ID, video.ContentType)
 	case video.Type == schemas.VideoOutputTypeURL && video.URL != nil:
 		// Regular URL - fetch from HTTP endpoint
 		req := fasthttp.AcquireRequest()
@@ -2927,6 +2958,13 @@ func (provider *VertexProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 	default:
 		return nil, providerUtils.NewBifrostOperationError("invalid video output type", nil)
 	}
+}
+
+// isGCSVideoOutput reports whether a task's output is a Cloud Storage object: a content entry
+// whose id is the object's gs:// URI, the form the Veo converter gives a video that Veo wrote
+// to a bucket (fork, TXE-6537, contract C9). Such an entry has no url.
+func isGCSVideoOutput(video schemas.VideoOutput) bool {
+	return video.Type == schemas.VideoOutputTypeContent && strings.HasPrefix(video.ID, "gs://")
 }
 
 // downloadGCSVideo reads a gs://bucket/object video through the Cloud Storage JSON API

@@ -94,7 +94,7 @@
       ]
     },
     {
-      "name": "519.3 replicate/google/veo-3 POST /v1/videos with seconds creates the prediction and the task carries the seconds (video without seconds)",
+      "name": "519.3 replicate/google/veo-3 POST /v1/videos with seconds creates the prediction; the task carries no seconds the vendor did not report (video without seconds)",
       "request": {
         "method": "POST",
         "header": [
@@ -139,7 +139,8 @@
               "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
               "  var j = pm.response.json();",
               "  pm.expect(j.id, pm.response.text()).to.include('pred_fixture_no_urls');",
-              "  pm.expect(j.seconds, pm.response.text()).to.eql('8');",
+              "  // TXE-6537 (contract C5): the task object never repeats the requested seconds; the job row records them for settlement.",
+              "  pm.expect(j.seconds, pm.response.text()).to.eql(undefined);",
               "});"
             ]
           }

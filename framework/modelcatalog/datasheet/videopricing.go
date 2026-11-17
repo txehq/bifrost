@@ -115,6 +115,21 @@ type VideoPricingDimensions struct {
 	Extra map[string]any `json:"extra,omitempty"`
 }
 
+// WithVendorDefaultSeconds fills a missing duration with the one provider renders when a create
+// names none (schemas.DefaultVideoSeconds: Veo's 8 seconds on Gemini and Vertex), read for
+// d.Model. It is for the accounting row of a create only: the vendor reports no duration back
+// and the task object never carries one (contract C5, TXE-6537), so without it the job has
+// nothing to price by and is never charged. A duration already known is kept.
+func (d VideoPricingDimensions) WithVendorDefaultSeconds(provider schemas.ModelProvider) VideoPricingDimensions {
+	if d.Seconds != nil {
+		return d
+	}
+	if seconds, ok := schemas.DefaultVideoSeconds(provider, d.Model); ok {
+		d.Seconds = &seconds
+	}
+	return d
+}
+
 // MergedWith layers observed dimensions over captured ones: whatever the argument
 // actually knows wins, and the receiver fills every remaining gap.
 //
