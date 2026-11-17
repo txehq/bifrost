@@ -1,0 +1,146 @@
+{
+  "name": "633. databricks-gemini-3-pro is billed at the list rate, not the promotional one upstream publishes (databricks pricing correction)",
+  "description": "TXE-7688. The upstream datasheet bills databricks/databricks-gemini-3-pro input and output at 2e-06 and 1.2e-05, the promotional 0.8x of its DBU rates; every other Databricks Gemini row bills the list rate. The gateway corrects the two rates as it parses the datasheet (upstreamRateCorrections in framework/modelcatalog/datasheet/sync.go). The fixture's pricing sheet carries both rows exactly as upstream published them on 17 Nov 2026, and the rows read the rates back from the model catalog. databricks-gemini-3-6-flash is the control: its DBU cache keys disagree with its USD cache keys too, but there the USD keys are right, so the gateway must leave them.",
+  "item": [
+    {
+      "name": "633.0 the catalog shows databricks-gemini-3-pro at 2.49998e-06 in and 1.500002e-05 out, not the promotional 2e-06 and 1.2e-05 (fixture) - databricks/databricks-gemini-3-pro",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the model catalog answers', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+              "});",
+              "var row = (pm.response.json().models || []).filter(function (m) { return m.provider === 'databricks' && m.name === 'databricks-gemini-3-pro'; })[0];",
+              "pm.test('the catalog lists databricks-gemini-3-pro from the fixture pricing sheet', function () {",
+              "  pm.expect(row, pm.response.text()).to.not.equal(undefined);",
+              "});",
+              "if (!row) { return; }",
+              "// Upstream publishes 2e-06 and 1.2e-05; the list rates are its DBU rates at $0.07, as databricks-gemini-3-1-pro publishes them.",
+              "pm.test('input and output are corrected to the list rate', function () {",
+              "  pm.expect(row.input_cost_per_token, JSON.stringify(row)).to.equal(2.49998e-06);",
+              "  pm.expect(row.output_cost_per_token, JSON.stringify(row)).to.equal(1.500002e-05);",
+              "});",
+              "pm.test('the cache rates, which upstream already states at the list rate, are unchanged', function () {",
+              "  pm.expect(row.cache_read_input_token_cost, JSON.stringify(row)).to.equal(2.4997e-07);",
+              "  pm.expect(row.cache_creation_input_token_cost, JSON.stringify(row)).to.equal(2.49998e-06);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/models/details?provider=databricks&query=databricks-gemini-3-pro&limit=50",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "models",
+            "details"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "databricks"
+            },
+            {
+              "key": "query",
+              "value": "databricks-gemini-3-pro"
+            },
+            {
+              "key": "limit",
+              "value": "50"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "633.1 the catalog keeps databricks-gemini-3-6-flash's cache rates at 7.497e-08 and 7.4998e-07, whatever its DBU cache keys say (fixture) - databricks/databricks-gemini-3-6-flash",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the model catalog answers', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+              "});",
+              "var row = (pm.response.json().models || []).filter(function (m) { return m.provider === 'databricks' && m.name === 'databricks-gemini-3-6-flash'; })[0];",
+              "pm.test('the catalog lists databricks-gemini-3-6-flash from the fixture pricing sheet', function () {",
+              "  pm.expect(row, pm.response.text()).to.not.equal(undefined);",
+              "});",
+              "if (!row) { return; }",
+              "// Databricks lists Gemini 3.6 Flash cache reads at 1.071 DBU per 1M, 7.497e-08 at $0.07: the USD key. The DBU keys (2.679e-06, 2.6786e-05) are Gemini 3.5 Flash's numbers, at $0.07 1.875e-07 and 1.875e-06.",
+              "pm.test('the cache rates are the USD keys, not the DBU keys at $0.07', function () {",
+              "  pm.expect(row.cache_read_input_token_cost, JSON.stringify(row)).to.equal(7.497e-08);",
+              "  pm.expect(row.cache_creation_input_token_cost, JSON.stringify(row)).to.equal(7.4998e-07);",
+              "});",
+              "pm.test('input and output are unchanged', function () {",
+              "  pm.expect(row.input_cost_per_token, JSON.stringify(row)).to.equal(7.4998e-07);",
+              "  pm.expect(row.output_cost_per_token, JSON.stringify(row)).to.equal(3.74997e-06);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/models/details?provider=databricks&query=databricks-gemini-3-6-flash&limit=50",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "models",
+            "details"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "databricks"
+            },
+            {
+              "key": "query",
+              "value": "databricks-gemini-3-6-flash"
+            },
+            {
+              "key": "limit",
+              "value": "50"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
