@@ -4,9 +4,15 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/txehq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.51 (prereleases 2.1.52-sync.11, 2.1.52-sync.10, 2.1.52-sync.9, 2.1.52-sync.8, 2.1.52-sync.7, 2.1.52-sync.6, 2.1.52-sync.5, 2.1.52-sync.4, 2.1.52-sync.3, 2.1.52-sync.2 and 2.1.52-sync.1 carry the changes below; install them with `--devel`)
+**Latest Version:** 2.1.51 (prereleases 2.1.52-sync.12, 2.1.52-sync.11, 2.1.52-sync.10, 2.1.52-sync.9, 2.1.52-sync.8, 2.1.52-sync.7, 2.1.52-sync.6, 2.1.52-sync.5, 2.1.52-sync.4, 2.1.52-sync.3, 2.1.52-sync.2 and 2.1.52-sync.1 carry the changes below; install them with `--devel`)
 
 ## Changelog
+
+### 2.1.52-sync.12 (prerelease)
+
+The prerelease chart for transport v2.4.0-sync.12. Its templates and values are unchanged from 2.1.52-sync.11, so a chart that renders today renders the same `config.json`:
+
+- `appVersion` is now `2.4.0-sync.12`, so an empty `image.tag` selects `v2.4.0-sync.12`. That transport closes a typed extra-param bypass of Bedrock guardrails, Vertex batch labels and Gemini safety settings, fixes a connection leak on refused Agent Gateway OAuth token fetches, fixes live billing errors (batch settlement, raw image bodies, image refusals, video jobs), gives every error core raises a C6 `error_type`, and has breaking changes listed in the transport changelog: read them before upgrading. It adds no migration.
 
 ### 2.1.52-sync.11 (prerelease)
 

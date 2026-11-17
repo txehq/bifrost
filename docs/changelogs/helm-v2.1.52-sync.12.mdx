@@ -1,0 +1,15 @@
+---
+title: "v2.1.52-sync.12"
+description: "Helm v2.1.52-sync.12 prerelease changelog - 2026-11-18"
+---
+
+<Update label="Bifrost Helm" description="v2.1.52-sync.12 (prerelease)">
+
+## Changelog
+
+Prerelease of the txehq fork for transport v2.4.0-sync.12; the stable chart stays 2.1.51 until a stable version supersedes it. Install this one with `helm install --devel` or `--version 2.1.52-sync.12`.
+
+- The chart's templates and values are unchanged from 2.1.52-sync.11, so a chart that renders today renders the same `config.json`.
+- `appVersion` is now `2.4.0-sync.12`, so an empty `image.tag` selects `v2.4.0-sync.12`. That transport closes a typed extra-param bypass of Bedrock guardrails, Vertex batch labels and Gemini safety settings (TXE-7525), fixes a connection leak on refused Agent Gateway OAuth token fetches (TXE-7743), fixes live billing errors, and gives every error core raises a C6 `error_type` (TXE-7634). It adds no migration. Its breaking changes are listed in the transport changelog; read them before upgrading.
+
+</Update>
