@@ -29,6 +29,9 @@ Subcommands:
   check-mirror [--wait S] fail unless the mirror holds every pinned digest; with --wait, retry for
                           up to S seconds (a PR that adds an image waits for its mirror job)
   mirror                  copy every pinned image the mirror lacks, then check-mirror
+  pull ENTRY...           pull from the mirror, with retries, the pinned images a job uses: each
+                          ENTRY is a scanned file (every image it pins) or <path>:<tag> (one
+                          image); `none` pulls nothing (TXE-7704)
   --self-test             the lint rules on fixture text
 
 The lint scans the files CI reads images from: .github/** (workflows, actions, scripts, configs),
@@ -78,6 +81,13 @@ DOCKER_CMD_RE = re.compile(r"\bdocker\s+(?:pull|run|create)\b(.*)")
 # buildx driver options: `driver-opts: image=moby/buildkit:...` names the daemon image it pulls.
 IMAGE_OPT_RE = re.compile(r"\bimage=[\"']?((?:\$\{\{[^}]*\}\}|[^\"'\s,])+)")
 BUILDX = "setup-buildx-action"
+# A refused GHCR check or pull is retried this many times, REFUSAL_BACKOFF seconds apart and
+# doubling, before it fails. On 17 Nov 2026 (PR #170, run 44020391347) GHCR refused two images it
+# had answered for seconds earlier, and a pull of one failed with `unknown blob`; ten minutes later
+# every manifest and blob served. One refusal failed the mirror job, an image-health check and five
+# Go shards (TXE-7704).
+REFUSAL_RETRIES = 3
+REFUSAL_BACKOFF = 10
 
 
 def tracked():
@@ -188,8 +198,9 @@ def analyse(files):
     return images, problems
 
 
-def workflow_problems(workflows):
-    """workflows maps a path to parsed YAML. A job using the action needs GHCR egress and packages:read."""
+def workflow_problems(workflows, images=None):
+    """workflows maps a path to parsed YAML. A job using the action needs GHCR egress and
+    packages:read, and names in `pull` the images it pulls (`none` when it pulls none itself)."""
     problems = []
     for path, doc in sorted(workflows.items()):
         top = (doc or {}).get("permissions")
@@ -202,6 +213,16 @@ def workflow_problems(workflows):
                 uses = step.get("uses") or ""
                 if uses == ACTION:
                     uses_action = True
+                    entries = str((step.get("with") or {}).get("pull") or "").split()
+                    if not entries:
+                        problems.append(
+                            f"{path} :: job '{job_name}' uses {ACTION} without `pull:`: name the files or "
+                            "<path>:<tag> images the job pulls, or `none`, so a transient GHCR refusal is retried (TXE-7704)"
+                        )
+                    elif images is not None:
+                        _, unknown = resolve_pull(entries, images)
+                        if unknown:
+                            problems.append(f"{path} :: job '{job_name}' pulls {', '.join(unknown)}, which pin no mirrored image")
                 if BUILDX in uses:
                     w = step.get("with") or {}
                     opts = str(w.get("driver-opts") or "")
@@ -306,16 +327,21 @@ def ghcr_has(image, token, actor):
     return True
 
 
-def check_mirror(images, wait):
+def check_mirror(images, wait, has=None, sleep=time.sleep):
+    """0 when the mirror serves every image. An image it refuses is asked again REFUSAL_RETRIES
+    times even with wait 0, so one transient refusal is not reported as a missing image; with
+    wait, asking continues for up to wait seconds (a pull request whose mirror job copies it)."""
     token = os.environ.get("GHCR_TOKEN") or os.environ.get("GITHUB_TOKEN", "")
     actor = os.environ.get("GITHUB_ACTOR", "ci")
+    has = has or (lambda image: ghcr_has(image, token, actor))
     deadline = time.monotonic() + wait
     missing = list(images)
+    retries = 0
     while True:
         still = []
         for image in missing:
             try:
-                ok = ghcr_has(image, token, actor)
+                ok = has(image)
             except (urllib.error.URLError, TimeoutError) as e:
                 print(f"retry: {image.mirror(owner())}: {e}", file=sys.stderr)
                 ok = False
@@ -324,10 +350,12 @@ def check_mirror(images, wait):
             else:
                 still.append(image)
         missing = still
-        if not missing or time.monotonic() >= deadline:
+        if not missing or (retries >= REFUSAL_RETRIES and time.monotonic() >= deadline):
             break
-        print(f"waiting for {len(missing)} image(s) the mirror job has not copied yet", file=sys.stderr)
-        time.sleep(30)
+        delay = REFUSAL_BACKOFF * 2**retries if retries < REFUSAL_RETRIES else 30
+        retries += 1
+        print(f"waiting {delay}s for {len(missing)} image(s) the mirror refused or has not copied yet", file=sys.stderr)
+        sleep(delay)
     for image in missing:
         print(
             f"FAIL: the mirror lacks {image.upstream()} ({image.where}); "
@@ -356,6 +384,41 @@ def mirror(images):
                 raise SystemExit(f"FAIL: crane copy {image.upstream()} failed 3 times")
             time.sleep(15 * attempt)
     return check_mirror(images, 0)
+
+
+def resolve_pull(entries, images):
+    """The unique images a job's `pull` entries name, and the entries that name none."""
+    chosen, unknown = [], []
+    for entry in entries:
+        if entry == "none":
+            continue
+        if ":" in entry:  # <path>:<tag>; a scanned file's path has no colon
+            path, tag = entry.rsplit(":", 1)
+            hits = [i for i in images if i.path == path and i.tag == tag]
+        else:
+            hits = [i for i in images if i.where.rsplit(":", 1)[0] == entry]
+        if not hits:
+            unknown.append(entry)
+        chosen += hits
+    return unique(chosen), unknown
+
+
+def pull(images, run=subprocess.run, sleep=time.sleep):
+    """docker pull each image from the mirror by digest, retrying a failed pull REFUSAL_RETRIES
+    times. A later `docker compose up`, `docker run` or `docker build` then finds it locally."""
+    for image in images:
+        ref = f"{image.mirror(owner())}@{image.digest}"
+        for attempt in range(REFUSAL_RETRIES + 1):
+            if run(["docker", "pull", "--quiet", ref]).returncode == 0:
+                print(f"ok - pulled {ref}")
+                break
+            if attempt == REFUSAL_RETRIES:
+                print(f"FAIL: docker pull {ref} failed {attempt + 1} times", file=sys.stderr)
+                return 1
+            delay = REFUSAL_BACKOFF * 2**attempt
+            print(f"retry: docker pull {ref} in {delay}s", file=sys.stderr)
+            sleep(delay)
+    return 0
 
 
 def self_test():
@@ -406,7 +469,7 @@ def self_test():
                     "permissions": {"contents": "read", "packages": "read"},
                     "steps": [
                         {"uses": "step-security/harden-runner@x", "with": {"egress-policy": "block", "allowed-endpoints": " ".join(MIRROR_HOSTS)}},
-                        {"uses": ACTION},
+                        {"uses": ACTION, "with": {"pull": "tests/a.yml library/redis:7"}},
                     ],
                 }
             }
@@ -428,10 +491,49 @@ def self_test():
     wf["bad.yml"]["jobs"]["c"] = {"steps": [{"uses": "docker/setup-buildx-action@x"}]}
     wf["bad.yml"]["jobs"]["d"] = {"steps": [{"uses": "docker/setup-buildx-action@x", "with": {"driver-opts": mirrored_bk}}]}
     wf["ok.yml"]["jobs"]["e"] = {"steps": [{"uses": "docker/setup-buildx-action@x", "with": {"driver": "docker"}}]}
-    got = workflow_problems(wf)
-    if len(got) != 4 or not all(p.startswith("bad.yml") for p in got):
+    wf["bad.yml"]["jobs"]["f"] = {
+        "permissions": {"packages": "read"},
+        "steps": [{"uses": ACTION, "with": {"pull": "tests/gone.yml"}}],
+    }
+    pinned = [Image("library/redis", "7", d, "tests/a.yml:1")]
+    got = workflow_problems(wf, pinned)
+    # b: packages, egress host, no pull; c: unmirrored buildx; d: buildx before the action; f: stale pull entry
+    if len(got) != 6 or not all(p.startswith("bad.yml") for p in got):
         failed += 1
         print(f"FAIL self-test workflow rules: {got}", file=sys.stderr)
+    # A refusal, then an answer: the check and the pull each retry instead of failing (TXE-7704).
+    answers = {"n": 0}
+
+    def refuse_once(image):
+        answers["n"] += 1
+        return answers["n"] > 1
+
+    if check_mirror(pinned, 0, has=refuse_once, sleep=lambda s: None) != 0 or answers["n"] != 2:
+        failed += 1
+        print(f"FAIL self-test: one refusal failed check-mirror ({answers['n']} asks)", file=sys.stderr)
+    if check_mirror(pinned, 0, has=lambda image: False, sleep=lambda s: None) != 1:
+        failed += 1
+        print("FAIL self-test: a refusal that persists passed check-mirror", file=sys.stderr)
+    pulls = []
+
+    class Done:
+        def __init__(self, code):
+            self.returncode = code
+
+    def pull_fails_once(cmd):
+        pulls.append(cmd)
+        return Done(1 if len(pulls) == 1 else 0)
+
+    if pull(pinned, run=pull_fails_once, sleep=lambda s: None) != 0 or len(pulls) != 2:
+        failed += 1
+        print(f"FAIL self-test: one failed pull failed the step ({len(pulls)} pulls)", file=sys.stderr)
+    if pull(pinned, run=lambda cmd: Done(1), sleep=lambda s: None) != 1:
+        failed += 1
+        print("FAIL self-test: a pull that keeps failing passed", file=sys.stderr)
+    chosen, unknown = resolve_pull(["tests/a.yml", "library/redis:7", "none", "tests/gone.yml"], pinned)
+    if len(chosen) != 1 or unknown != ["tests/gone.yml"]:
+        failed += 1
+        print(f"FAIL self-test: resolve_pull gave {chosen} {unknown}", file=sys.stderr)
     if failed:
         return 1
     print("self-test passed")
@@ -451,7 +553,7 @@ def main(argv):
             print(f"{image.upstream()} -> {image.mirror(owner())}")
         return 0
     if cmd == "lint":
-        problems += workflow_problems(load_workflows())
+        problems += workflow_problems(load_workflows(), images)
         stale = [p for p in EXEMPT if not (REPO / p).is_file()]
         problems += [f"EXEMPT names {p}, which no longer exists" for p in stale]
         for p in problems:
@@ -469,6 +571,12 @@ def main(argv):
         return check_mirror(unique(images), wait)
     if cmd == "mirror":
         return mirror(unique(images))
+    if cmd == "pull":
+        chosen, unknown = resolve_pull(argv[1:], images)
+        if unknown or not argv[1:]:
+            print(f"FAIL: pull names {', '.join(unknown) or 'nothing'}: give scanned files, <path>:<tag> images or none", file=sys.stderr)
+            return 1
+        return pull(chosen)
     print(f"unknown subcommand {cmd}", file=sys.stderr)
     return 2
 

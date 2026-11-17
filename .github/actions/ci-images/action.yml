@@ -12,9 +12,15 @@
 # request adds), and exports BIFROST_CI_REGISTRY=ghcr.io/<owner>/bifrost-ci for the steps after
 # it. docker compose, docker run and the Dockerfile builds then pull from the mirror.
 #
+# ⚠️ RETRIED. GHCR can refuse an image it served seconds earlier: on 17 Nov 2026 (PR #170) one
+# refusal and one `unknown blob` failed eight checks. The mirror check asks a refused image again,
+# and this action pulls the images named in `pull` itself, retrying each, so the job's own
+# compose/run/build finds them locally (TXE-7704). buildx's docker-container builds pull inside
+# BuildKit, which this cannot pre-pull; those jobs pull only moby/buildkit here.
+#
 # ⚠️ ENFORCED. ci-images.py lint (workflow-lint) fails on a direct Docker Hub or cr.weaviate.io
 # image in a CI file and on a job that uses this action without packages: read or the GHCR egress
-# hosts. A job that forgets the action pulls docker.io, which harden-runner refuses: only jobs that
+# hosts, without `pull:`, or with a `pull:` entry that pins no mirrored image. A job that forgets the action pulls docker.io, which harden-runner refuses: only jobs that
 # log in to Docker Hub, and the mirror job, may allow it (check-egress-allowlist.sh).
 #
 # Usage, after actions/checkout, in a job with `permissions: packages: read` that allows
@@ -22,9 +28,16 @@
 #
 #   - name: Use the GHCR image mirror
 #     uses: ./.github/actions/ci-images
+#     with:
+#       pull: tests/docker-compose.yml library/postgres:16-alpine   # or: none
 name: Use the GHCR image mirror
 description: Log in to GHCR, check the mirror holds every pinned CI image, and point BIFROST_CI_REGISTRY at it.
 inputs:
+  pull:
+    description: >
+      Space-separated: the scanned files whose pinned images this job pulls (every image a file
+      pins), <path>:<tag> images, or `none`. Each is pulled from the mirror with retries.
+    required: true
   wait-seconds:
     description: How long to wait for an image the mirror job has not copied yet.
     default: "1200"
@@ -38,6 +51,7 @@ runs:
         GITHUB_ACTOR: ${{ github.actor }}
         GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
         WAIT: ${{ inputs.wait-seconds }}
+        PULL: ${{ inputs.pull }}
       run: |
         set -euo pipefail
         printf '%s' "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin >/dev/null
@@ -45,3 +59,5 @@ runs:
         registry="ghcr.io/$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')/bifrost-ci"
         echo "BIFROST_CI_REGISTRY=$registry" >> "$GITHUB_ENV"
         echo "ci-images: BIFROST_CI_REGISTRY=$registry"
+        # shellcheck disable=SC2086 # PULL is a space-separated list of entries
+        python3 .github/workflows/scripts/ci-images.py pull $PULL
