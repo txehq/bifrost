@@ -848,7 +848,12 @@ export class RoutingRulesPage extends BasePage {
     const keySelect = this.sheet.getByTestId(
       `routing-fallback-${index}-apikey-select`,
     );
-    if (!(await keySelect.isVisible().catch(() => false))) {
+    // The key select renders once the chosen provider's keys have loaded. Wait for it: an instant
+    // probe read a slow load as "no keys configured", and the test skipped (TXE-7733).
+    const shown = await keySelect
+      .waitFor({ state: "visible", timeout: 10000 })
+      .then(() => true, () => false);
+    if (!shown) {
       return false;
     }
 

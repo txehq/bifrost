@@ -1,4 +1,11 @@
 import { expect, test } from '../../core/fixtures/base.fixture'
+import { skipIfShown, skipUnlessEnabled, skipUnlessVisible } from '../../core/utils/availability'
+import type { MCPLogsPage } from './pages/mcp-logs.page'
+
+// With no MCP logs the page shows a "Get Started" guide instead of the table, stats and filters.
+// Waits for the page to settle on one or the other, and skips only when it is the guide (TXE-7733).
+const skipIfNoLogs = (mcpLogsPage: MCPLogsPage, reason: string) =>
+  skipIfShown(mcpLogsPage.page.getByText(/Get Started/i), mcpLogsPage.logsTable, reason)
 
 test.describe('MCP Logs', () => {
   test.beforeEach(async ({ mcpLogsPage }) => {
@@ -8,80 +15,47 @@ test.describe('MCP Logs', () => {
   test.describe('MCP Logs Display', () => {
     test('should display MCP logs table or getting started guide', async ({ mcpLogsPage }) => {
       // When MCP logs exist the table is visible; otherwise a "Get Started" guide is shown
-      const tableExists = await mcpLogsPage.logsTable.isVisible().catch(() => false)
-      const gettingStarted = await mcpLogsPage.page.getByText(/Get Started/i).isVisible().catch(() => false)
-      expect(tableExists || gettingStarted).toBe(true)
+      await expect(mcpLogsPage.logsTable.or(mcpLogsPage.page.getByText(/Get Started/i)).first()).toBeVisible()
     })
 
     test('should display stats cards', async ({ mcpLogsPage }) => {
-      // Stats cards are only visible when MCP log data exists
-      const tableExists = await mcpLogsPage.logsTable.isVisible().catch(() => false)
-      if (!tableExists) {
-        test.skip(true, 'No MCP logs — stats cards not rendered in getting-started view')
-        return
-      }
-      const statsVisible = await mcpLogsPage.areStatsVisible()
-      expect(statsVisible).toBe(true)
+      await skipIfNoLogs(mcpLogsPage, 'No MCP logs — stats cards not rendered in getting-started view')
+      await expect(mcpLogsPage.page.locator('text=Total Executions')).toBeVisible()
     })
 
     test('should display filters section', async ({ mcpLogsPage }) => {
-      // Filters are only visible when MCP log data exists (not in getting-started view)
-      const tableExists = await mcpLogsPage.logsTable.isVisible().catch(() => false)
-      if (!tableExists) {
-        test.skip(true, 'No MCP logs — filters not rendered in getting-started view')
-        return
-      }
-      const searchVisible = await mcpLogsPage.searchInput.isVisible().catch(() => false)
-      const filtersButtonVisible = await mcpLogsPage.filtersButton.isVisible().catch(() => false)
-      expect(searchVisible || filtersButtonVisible).toBe(true)
+      await skipIfNoLogs(mcpLogsPage, 'No MCP logs — filters not rendered in getting-started view')
+      await expect(mcpLogsPage.searchInput.or(mcpLogsPage.filtersButton).first()).toBeVisible()
     })
   })
 
   test.describe('MCP Log Filtering', () => {
     test('should filter logs by tool name', async ({ mcpLogsPage, page }) => {
-      const filtersVisible = await mcpLogsPage.filtersButton.isVisible().catch(() => false)
-      if (!filtersVisible) {
-        test.skip(true, 'Filters button not visible')
-        return
-      }
+      await skipUnlessVisible(mcpLogsPage.filtersButton, 'Filters button not visible')
       const applied = await mcpLogsPage.filterByToolName()
-      if (!applied) {
-        test.skip(true, 'No tool name options in filter list')
-        return
-      }
+      // skip-ok: filterByToolName waits for the group's options; false means the group has none
+      test.skip(!applied, 'No tool name options in filter list')
       await expect
         .poll(() => page.url(), { timeout: 5000, intervals: [200, 300, 500] })
         .toMatch(/tool_names=/)
     })
 
     test('should filter logs by server label', async ({ mcpLogsPage, page }) => {
-      const filtersVisible = await mcpLogsPage.filtersButton.isVisible().catch(() => false)
-      if (!filtersVisible) {
-        test.skip(true, 'Filters button not visible')
-        return
-      }
+      await skipUnlessVisible(mcpLogsPage.filtersButton, 'Filters button not visible')
       const applied = await mcpLogsPage.filterByServerLabel()
-      if (!applied) {
-        test.skip(true, 'No server label options in filter list')
-        return
-      }
+      // skip-ok: filterByServerLabel waits for the group's options; false means the group has none
+      test.skip(!applied, 'No server label options in filter list')
       await expect
         .poll(() => page.url(), { timeout: 5000, intervals: [200, 300, 500] })
         .toMatch(/server_labels=/)
     })
 
     test('should filter logs by status', async ({ mcpLogsPage, page }) => {
-      const filtersVisible = await mcpLogsPage.filtersButton.isVisible().catch(() => false)
-      if (!filtersVisible) {
-        test.skip(true, 'Filters button not visible')
-        return
-      }
+      await skipUnlessVisible(mcpLogsPage.filtersButton, 'Filters button not visible')
 
       const applied = await mcpLogsPage.filterByStatus('success')
-      if (!applied) {
-        test.skip(true, 'No status options in filter list')
-        return
-      }
+      // skip-ok: filterByStatus waits for the options; false means there is no such option
+      test.skip(!applied, 'No status options in filter list')
 
       await expect
         .poll(() => page.url(), { timeout: 5000, intervals: [200, 300, 500] })
@@ -148,18 +122,9 @@ test.describe('MCP Logs', () => {
 
   test.describe('Pagination', () => {
     test('should navigate to next page', async ({ mcpLogsPage }) => {
-      const paginationVisible = await mcpLogsPage.paginationControls.isVisible().catch(() => false)
-      if (!paginationVisible) {
-        test.skip(true, 'No MCP logs — pagination not rendered')
-        return
-      }
-      const nextBtn = mcpLogsPage.nextPageBtn
-      const isEnabled = await nextBtn.isEnabled().catch(() => false)
-
-      if (!isEnabled) {
-        test.skip(true, 'Only one page of results; skipping pagination test')
-        return
-      }
+      await skipIfNoLogs(mcpLogsPage, 'No MCP logs — pagination not rendered')
+      await skipUnlessVisible(mcpLogsPage.paginationControls, 'No MCP logs — pagination not rendered')
+      await skipUnlessEnabled(mcpLogsPage.nextPageBtn, 'Only one page of results; skipping pagination test')
 
       const initialPage = mcpLogsPage.getCurrentPageNumber()
       await mcpLogsPage.goToNextPage()
@@ -170,18 +135,9 @@ test.describe('MCP Logs', () => {
     })
 
     test('should navigate to previous page', async ({ mcpLogsPage }) => {
-      const paginationVisible = await mcpLogsPage.paginationControls.isVisible().catch(() => false)
-      if (!paginationVisible) {
-        test.skip(true, 'No MCP logs — pagination not rendered')
-        return
-      }
-      const nextBtn = mcpLogsPage.nextPageBtn
-      const nextEnabled = await nextBtn.isEnabled().catch(() => false)
-
-      if (!nextEnabled) {
-        test.skip(true, 'Only one page of results; skipping pagination test')
-        return
-      }
+      await skipIfNoLogs(mcpLogsPage, 'No MCP logs — pagination not rendered')
+      await skipUnlessVisible(mcpLogsPage.paginationControls, 'No MCP logs — pagination not rendered')
+      await skipUnlessEnabled(mcpLogsPage.nextPageBtn, 'Only one page of results; skipping pagination test')
 
       await mcpLogsPage.goToNextPage()
 
@@ -189,13 +145,8 @@ test.describe('MCP Logs', () => {
         .poll(() => mcpLogsPage.getCurrentPageNumber(), { timeout: 5000 })
         .toBe(2)
 
-      const prevBtn = mcpLogsPage.prevPageBtn
-      const prevEnabled = await prevBtn.isEnabled().catch(() => false)
-
-      if (!prevEnabled) {
-        test.skip(true, 'Only one page of results; skipping previous-page test')
-        return
-      }
+      // On page 2, previous is always enabled: wait for it rather than skip.
+      await expect(mcpLogsPage.prevPageBtn).toBeEnabled()
 
       await mcpLogsPage.goToPreviousPage()
 
@@ -208,11 +159,7 @@ test.describe('MCP Logs', () => {
 
   test.describe('Table Sorting', () => {
     test('should sort by timestamp', async ({ mcpLogsPage }) => {
-      const tableExists = await mcpLogsPage.logsTable.isVisible().catch(() => false)
-      if (!tableExists) {
-        test.skip(true, 'No MCP logs — table not rendered')
-        return
-      }
+      await skipIfNoLogs(mcpLogsPage, 'No MCP logs — table not rendered')
       // Timestamp is the default sort column (desc), so clicking it toggles to asc
       const initialUrl = mcpLogsPage.page.url()
 
@@ -225,11 +172,7 @@ test.describe('MCP Logs', () => {
     })
 
     test('should sort by latency', async ({ mcpLogsPage }) => {
-      const tableExists = await mcpLogsPage.logsTable.isVisible().catch(() => false)
-      if (!tableExists) {
-        test.skip(true, 'No MCP logs — table not rendered')
-        return
-      }
+      await skipIfNoLogs(mcpLogsPage, 'No MCP logs — table not rendered')
       await mcpLogsPage.sortBy('latency')
 
       // Wait for URL to update
@@ -243,33 +186,26 @@ test.describe('MCP Logs', () => {
 
   test.describe('Live Updates', () => {
     test('should toggle live updates', async ({ mcpLogsPage }) => {
-      const tableExists = await mcpLogsPage.logsTable.isVisible().catch(() => false)
-      if (!tableExists) {
-        test.skip(true, 'No MCP logs — live toggle not rendered in getting-started view')
-        return
-      }
-      const liveToggle = mcpLogsPage.liveToggle
-      const isVisible = await liveToggle.isVisible().catch(() => false)
+      await skipIfNoLogs(mcpLogsPage, 'No MCP logs — live toggle not rendered in getting-started view')
+      await expect(mcpLogsPage.liveToggle).toBeVisible()
 
-      if (isVisible) {
-        // Default is live_enabled=true (but URL may not have it since it's the default)
-        // Check for live_enabled=false to determine if currently disabled
-        const initialUrl = mcpLogsPage.page.url()
-        const initialLiveDisabled = initialUrl.includes('live_enabled=false')
+      // Default is live_enabled=true (but URL may not have it since it's the default)
+      // Check for live_enabled=false to determine if currently disabled
+      const initialUrl = mcpLogsPage.page.url()
+      const initialLiveDisabled = initialUrl.includes('live_enabled=false')
 
-        await mcpLogsPage.toggleLiveUpdates()
+      await mcpLogsPage.toggleLiveUpdates()
 
-        // Wait for URL to reflect live_enabled toggle
-        await mcpLogsPage.page.waitForURL(/live_enabled=/, { timeout: 5000 })
+      // Wait for URL to reflect live_enabled toggle
+      await mcpLogsPage.page.waitForURL(/live_enabled=/, { timeout: 5000 })
 
-        const newUrl = mcpLogsPage.page.url()
-        const newLiveDisabled = newUrl.includes('live_enabled=false')
+      const newUrl = mcpLogsPage.page.url()
+      const newLiveDisabled = newUrl.includes('live_enabled=false')
 
-        // Live enabled state should have toggled
-        // If initially enabled (not disabled), after toggle it should be disabled
-        // If initially disabled, after toggle it should be enabled (no live_enabled=false)
-        expect(newLiveDisabled).not.toBe(initialLiveDisabled)
-      }
+      // Live enabled state should have toggled
+      // If initially enabled (not disabled), after toggle it should be disabled
+      // If initially disabled, after toggle it should be enabled (no live_enabled=false)
+      expect(newLiveDisabled).not.toBe(initialLiveDisabled)
     })
   })
 })

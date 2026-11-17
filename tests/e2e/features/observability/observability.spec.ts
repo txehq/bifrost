@@ -1,4 +1,5 @@
 import { expect, test } from '../../core/fixtures/base.fixture'
+import { skipUnlessVisible } from '../../core/utils/availability'
 import { ObservabilityState } from './pages/observability.page'
 
 test.describe('Observability', () => {
@@ -63,11 +64,8 @@ test.describe('Observability', () => {
 
       // Check if toggle is enabled (not disabled)
       const isToggleEnabled = await observabilityPage.isToggleEnabled('otel')
-
-      if (!isToggleEnabled) {
-        test.skip(true, 'OTel toggle is disabled (requires configuration)')
-        return
-      }
+      // skip-ok: isToggleEnabled waits for the toggle to render and enable
+      test.skip(!isToggleEnabled, 'OTel toggle is disabled (requires configuration)')
 
       const initialState = await observabilityPage.isConnectorEnabled('otel')
 
@@ -84,12 +82,7 @@ test.describe('Observability', () => {
       await observabilityPage.selectConnector('otel')
 
       const deleteBtn = observabilityPage.getConnectorDeleteBtn('otel')
-      const isVisible = await deleteBtn.isVisible().catch(() => false)
-
-      if (!isVisible) {
-        test.skip(true, 'OTel delete button not visible (connector may not be configured)')
-        return
-      }
+      await skipUnlessVisible(deleteBtn, 'OTel delete button not visible (connector may not be configured)')
 
       await expect(deleteBtn).toBeVisible()
     })
@@ -99,13 +92,7 @@ test.describe('Observability', () => {
 
       const endpointInput = observabilityPage.page.getByPlaceholder(/otel-collector/i)
 
-      const isVisible = await endpointInput.isVisible().catch(() => false)
-
-      if (!isVisible) {
-        // Skip if endpoint input not available
-        test.skip(true, 'OTel endpoint input not available')
-        return
-      }
+      await skipUnlessVisible(endpointInput, 'OTel endpoint input not available')
 
       const testEndpoint = 'http://test-otel-collector:4317'
       await endpointInput.clear()
@@ -130,11 +117,8 @@ test.describe('Observability', () => {
 
       // Check if toggle is enabled
       const isToggleEnabled = await observabilityPage.isToggleEnabled('maxim')
-
-      if (!isToggleEnabled) {
-        test.skip(true, 'Maxim toggle is disabled (requires configuration)')
-        return
-      }
+      // skip-ok: isToggleEnabled waits for the toggle to render and enable
+      test.skip(!isToggleEnabled, 'Maxim toggle is disabled (requires configuration)')
 
       const initialState = await observabilityPage.isConnectorEnabled('maxim')
 
@@ -167,10 +151,8 @@ test.describe('Observability', () => {
     test('should select Prometheus connector', async ({ observabilityPage }) => {
       const isAvailable = await observabilityPage.isConnectorAvailable('prometheus')
 
-      if (!isAvailable) {
-        test.skip(true, 'Prometheus connector not available')
-        return
-      }
+      // skip-ok: isConnectorAvailable waits for the tab to render and enable
+      test.skip(!isAvailable, 'Prometheus connector not available')
 
       await observabilityPage.selectConnector('prometheus')
 
@@ -181,34 +163,25 @@ test.describe('Observability', () => {
     test('should display Prometheus configuration when available', async ({ observabilityPage }) => {
       const isAvailable = await observabilityPage.isConnectorAvailable('prometheus')
 
-      if (!isAvailable) {
-        test.skip(true, 'Prometheus connector not available')
-        return
-      }
+      // skip-ok: isConnectorAvailable waits for the tab to render and enable
+      test.skip(!isAvailable, 'Prometheus connector not available')
 
       await observabilityPage.selectConnector('prometheus')
 
-      const toggle = observabilityPage.getConnectorToggle('prometheus')
-      const isVisible = await toggle.isVisible().catch(() => false)
-      expect(isVisible).toBe(true)
+      await expect(observabilityPage.getConnectorToggle('prometheus')).toBeVisible()
     })
 
     test('should toggle Prometheus connector when available', async ({ observabilityPage }) => {
       const isAvailable = await observabilityPage.isConnectorAvailable('prometheus')
 
-      if (!isAvailable) {
-        test.skip(true, 'Prometheus connector not available')
-        return
-      }
+      // skip-ok: isConnectorAvailable waits for the tab to render and enable
+      test.skip(!isAvailable, 'Prometheus connector not available')
 
       await observabilityPage.selectConnector('prometheus')
 
       const isToggleEnabled = await observabilityPage.isToggleEnabled('prometheus')
-
-      if (!isToggleEnabled) {
-        test.skip(true, 'Prometheus toggle is disabled')
-        return
-      }
+      // skip-ok: isToggleEnabled waits for the toggle to render and enable
+      test.skip(!isToggleEnabled, 'Prometheus toggle is disabled')
 
       const initialState = await observabilityPage.isConnectorEnabled('prometheus')
       const toggled = await observabilityPage.toggleConnector('prometheus')
@@ -221,20 +194,13 @@ test.describe('Observability', () => {
     test('should display Prometheus delete button when connector is configured', async ({ observabilityPage }) => {
       const isAvailable = await observabilityPage.isConnectorAvailable('prometheus')
 
-      if (!isAvailable) {
-        test.skip(true, 'Prometheus connector not available')
-        return
-      }
+      // skip-ok: isConnectorAvailable waits for the tab to render and enable
+      test.skip(!isAvailable, 'Prometheus connector not available')
 
       await observabilityPage.selectConnector('prometheus')
 
       const deleteBtn = observabilityPage.getConnectorDeleteBtn('prometheus')
-      const isVisible = await deleteBtn.isVisible().catch(() => false)
-
-      if (!isVisible) {
-        test.skip(true, 'Prometheus delete button not visible (connector may not be configured)')
-        return
-      }
+      await skipUnlessVisible(deleteBtn, 'Prometheus delete button not visible (connector may not be configured)')
 
       await expect(deleteBtn).toBeVisible()
     })
@@ -244,10 +210,8 @@ test.describe('Observability', () => {
     test('should select BigQuery connector', async ({ observabilityPage }) => {
       const isAvailable = await observabilityPage.isConnectorAvailable('bigquery')
 
-      if (!isAvailable) {
-        test.skip(true, 'BigQuery connector not available')
-        return
-      }
+      // skip-ok: isConnectorAvailable waits for the tab to render and enable
+      test.skip(!isAvailable, 'BigQuery connector not available')
 
       await observabilityPage.selectConnector('bigquery')
 
@@ -260,10 +224,8 @@ test.describe('Observability', () => {
     test('should select Datadog connector if available', async ({ observabilityPage }) => {
       const isAvailable = await observabilityPage.isConnectorAvailable('datadog')
 
-      if (!isAvailable) {
-        test.skip(true, 'Datadog connector not available (enterprise feature)')
-        return
-      }
+      // skip-ok: isConnectorAvailable waits for the tab to render and enable
+      test.skip(!isAvailable, 'Datadog connector not available (enterprise feature)')
 
       await observabilityPage.selectConnector('datadog')
 
@@ -275,27 +237,20 @@ test.describe('Observability', () => {
     test('should toggle Datadog connector if available', async ({ observabilityPage }) => {
       const isAvailable = await observabilityPage.isConnectorAvailable('datadog')
 
-      if (!isAvailable) {
-        test.skip(true, 'Datadog connector not available (enterprise feature)')
-        return
-      }
+      // skip-ok: isConnectorAvailable waits for the tab to render and enable
+      test.skip(!isAvailable, 'Datadog connector not available (enterprise feature)')
 
       await observabilityPage.selectConnector('datadog')
 
       const isToggleEnabled = await observabilityPage.isToggleEnabled('datadog')
-
-      if (!isToggleEnabled) {
-        test.skip(true, 'Datadog toggle is disabled')
-        return
-      }
+      // skip-ok: isToggleEnabled waits for the toggle to render and enable
+      test.skip(!isToggleEnabled, 'Datadog toggle is disabled')
 
       const initialState = await observabilityPage.isConnectorEnabled('datadog')
       const toggled = await observabilityPage.toggleConnector('datadog')
 
-      if (!toggled) {
-        test.skip(true, 'Datadog toggle could not be toggled')
-        return
-      }
+      // A toggle that isToggleEnabled found enabled must toggle: fail rather than skip if it does not.
+      expect(toggled, 'Datadog toggle could not be toggled').toBe(true)
 
       const newState = await observabilityPage.isConnectorEnabled('datadog')
       expect(newState).toBe(!initialState)

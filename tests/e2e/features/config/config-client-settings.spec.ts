@@ -1,4 +1,5 @@
 import { expect, test } from '../../core/fixtures/base.fixture'
+import { skipUnlessVisible } from '../../core/utils/availability'
 import { ConfigSettingsState } from './pages/config-settings.page'
 import { DefaultCoreConfig } from '../../../../ui/lib/types/config'
 
@@ -144,12 +145,8 @@ test.describe('Client Settings', () => {
   })
 
   test('should display async job result TTL input when available', async ({ configSettingsPage }) => {
-    const isVisible = await configSettingsPage.asyncJobResultTtlInput.isVisible().catch(() => false)
-    if (isVisible) {
-      await expect(configSettingsPage.asyncJobResultTtlInput).toBeVisible()
-    } else {
-      test.skip(true, 'Async job result TTL not available')
-    }
+    await skipUnlessVisible(configSettingsPage.asyncJobResultTtlInput, 'Async job result TTL not available')
+    await expect(configSettingsPage.asyncJobResultTtlInput).toBeVisible()
   })
 
   test('should toggle drop excess requests', async ({ configSettingsPage }) => {

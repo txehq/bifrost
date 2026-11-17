@@ -1,5 +1,6 @@
 import { expect, test } from '../../core/fixtures/base.fixture'
 import { coreConfigApi, virtualKeysApi } from '../../core/actions/api'
+import { skipIfShown } from '../../core/utils/availability'
 import type { VirtualKeysPage } from './pages/virtual-keys.page'
 import {
     createVirtualKeyData,
@@ -37,12 +38,12 @@ async function findVirtualKeyByName(request: Parameters<typeof virtualKeysApi.ge
 }
 
 async function skipIfConfigStoreMissing(virtualKeysPage: VirtualKeysPage): Promise<void> {
-  const missingConfigStore = await virtualKeysPage.page
-    .getByText('Config store setup is missing.')
-    .isVisible({ timeout: 1000 })
-    .catch(() => false)
-
-  test.skip(missingConfigStore, 'Config store setup is missing; virtual-key E2E tests require a configured config store.')
+  // Waits for the page to settle on its heading or on the missing-store notice (TXE-7733).
+  await skipIfShown(
+    virtualKeysPage.page.getByText('Config store setup is missing.'),
+    virtualKeysPage.page.getByRole('heading', { name: /Virtual Keys/i }),
+    'Config store setup is missing; virtual-key E2E tests require a configured config store.',
+  )
 }
 
 // Track created VKs for cleanup

@@ -100,11 +100,14 @@ export class ObservabilityPage extends BasePage {
    */
   async isConnectorAvailable(connector: ObservabilityConnector): Promise<boolean> {
     const tab = this.getConnectorTab(connector)
-    const isVisible = await tab.isVisible().catch(() => false)
-    if (!isVisible) return false
-
-    const isDisabled = (await tab.getAttribute('aria-disabled')) === 'true' || (await tab.isDisabled())
-    return !isDisabled
+    // Waits for the tab, then for it to be enabled: an instant probe read a tab that had not
+    // rendered, or not yet enabled, as "not available", and the test skipped (TXE-7733).
+    const shown = await tab.waitFor({ state: 'visible', timeout: 10000 }).then(() => true, () => false)
+    if (!shown) return false
+    return expect(tab).toBeEnabled({ timeout: 5000 }).then(
+      async () => (await tab.getAttribute('aria-disabled')) !== 'true',
+      () => false,
+    )
   }
 
   /**
@@ -134,10 +137,8 @@ export class ObservabilityPage extends BasePage {
    */
   async isToggleEnabled(connector: ObservabilityConnector): Promise<boolean> {
     const toggle = this.getConnectorToggle(connector)
-    const isVisible = await toggle.isVisible().catch(() => false)
-    if (!isVisible) return false
-    const isDisabled = await toggle.isDisabled()
-    return !isDisabled
+    // Waits for the toggle to render and enable before deciding (TXE-7733).
+    return expect(toggle).toBeEnabled({ timeout: 10000 }).then(() => true, () => false)
   }
 
   /**

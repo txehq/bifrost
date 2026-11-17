@@ -1,4 +1,5 @@
 import { expect, test } from '../../core/fixtures/base.fixture'
+import { skipUnlessVisible } from '../../core/utils/availability'
 import { ConfigSettingsState } from './pages/config-settings.page'
 
 test.describe('Logging Settings', () => {
@@ -54,54 +55,42 @@ test.describe('Logging Settings', () => {
   })
 
   test('should display workspace logging headers textarea when available', async ({ configSettingsPage }) => {
-    const isVisible = await configSettingsPage.workspaceLoggingHeadersTextarea.isVisible().catch(() => false)
-    if (isVisible) {
-      await expect(configSettingsPage.workspaceLoggingHeadersTextarea).toBeVisible()
-    } else {
-      test.skip(true, 'Workspace logging headers not available (depends on log connector)')
-    }
+    await skipUnlessVisible(
+      configSettingsPage.workspaceLoggingHeadersTextarea,
+      'Workspace logging headers not available (depends on log connector)',
+    )
+    await expect(configSettingsPage.workspaceLoggingHeadersTextarea).toBeVisible()
   })
 
   test('should toggle content logging when available', async ({ configSettingsPage }) => {
-    // Check if the switch is available (depends on logs being connected)
-    const disableContentLoggingVisible = await configSettingsPage.disableContentLoggingSwitch.isVisible().catch(() => false)
+    // The switch is available only when logs are connected
+    await skipUnlessVisible(configSettingsPage.disableContentLoggingSwitch, 'Content logging switch not available (depends on logs being connected)')
+    const initialState = await configSettingsPage.getSwitchState(configSettingsPage.disableContentLoggingSwitch)
 
-    if (disableContentLoggingVisible) {
-      const initialState = await configSettingsPage.getSwitchState(configSettingsPage.disableContentLoggingSwitch)
+    await configSettingsPage.toggleDisableContentLogging()
 
-      await configSettingsPage.toggleDisableContentLogging()
-
-      const newState = await configSettingsPage.getSwitchState(configSettingsPage.disableContentLoggingSwitch)
-      expect(newState).toBe(!initialState)
-    } else {
-      // Skip if logging not available
-      test.skip()
-    }
+    const newState = await configSettingsPage.getSwitchState(configSettingsPage.disableContentLoggingSwitch)
+    expect(newState).toBe(!initialState)
   })
 
   test('should save and persist content logging toggle when available', async ({ configSettingsPage }) => {
-    // Check if the switch is available (depends on logs being connected)
-    const disableContentLoggingVisible = await configSettingsPage.disableContentLoggingSwitch.isVisible().catch(() => false)
+    // The switch is available only when logs are connected
+    await skipUnlessVisible(configSettingsPage.disableContentLoggingSwitch, 'Content logging switch not available (depends on logs being connected)')
+    const initialState = await configSettingsPage.getSwitchState(configSettingsPage.disableContentLoggingSwitch)
 
-    if (disableContentLoggingVisible) {
-      const initialState = await configSettingsPage.getSwitchState(configSettingsPage.disableContentLoggingSwitch)
+    // Toggle
+    await configSettingsPage.toggleDisableContentLogging()
 
-      // Toggle
-      await configSettingsPage.toggleDisableContentLogging()
+    // Save
+    await configSettingsPage.saveSettings()
 
-      // Save
-      await configSettingsPage.saveSettings()
+    // Reload the page
+    await configSettingsPage.goto('logging')
 
-      // Reload the page
-      await configSettingsPage.goto('logging')
-
-      // Verify change persisted
-      const savedState = await configSettingsPage.getSwitchState(configSettingsPage.disableContentLoggingSwitch)
-      expect(savedState).toBe(!initialState)
-    } else {
-      // Skip if logging not available
-      test.skip()
-    }
+    // Verify change persisted
+    await expect(configSettingsPage.disableContentLoggingSwitch).toBeVisible()
+    const savedState = await configSettingsPage.getSwitchState(configSettingsPage.disableContentLoggingSwitch)
+    expect(savedState).toBe(!initialState)
   })
 
   test('should change log retention days', async ({ configSettingsPage }) => {

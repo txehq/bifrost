@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { expect, test } from "../../core/fixtures/base.fixture";
+import { skipUnlessEnabled } from "../../core/utils/availability";
 import { createRoutingRuleData } from "./routing-rules.data";
 
 // Track created rules for cleanup
@@ -8,11 +9,9 @@ const createdRules: string[] = [];
 test.describe("Routing Rules", () => {
   test.beforeEach(async ({ routingRulesPage }) => {
     await routingRulesPage.goto()
-    const createVisible = await routingRulesPage.createBtn.isVisible().catch(() => false)
-    const createEnabled = createVisible
-      ? await routingRulesPage.createBtn.isEnabled().catch(() => false)
-      : false
-    test.skip(!createEnabled, 'routing rules creation is unavailable in this environment')
+    // Waits for the create button: an instant probe read a slow render as "unavailable", and 22 of
+    // the 28 tests skipped on one offline run (TXE-7733).
+    await skipUnlessEnabled(routingRulesPage.createBtn, 'routing rules creation is unavailable in this environment')
   })
 
   test.afterEach(async ({ routingRulesPage }) => {
@@ -279,6 +278,7 @@ test.describe("Routing Rules", () => {
       const index = await routingRulesPage.addFallbackProvider("openai");
       const pinned = await routingRulesPage.pinFallbackKey(index);
       // The key select only renders once the chosen provider has keys configured.
+      // skip-ok: pinFallbackKey waits for the key select before it answers
       test.skip(!pinned, "no provider keys configured in this environment");
 
       const selectedKey = await routingRulesPage.getPinnedFallbackKey(index);

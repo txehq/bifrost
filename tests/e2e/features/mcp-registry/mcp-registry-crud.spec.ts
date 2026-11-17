@@ -79,7 +79,7 @@ test.describe("MCP Registry", () => {
     });
 
     test("should create SSE client", async ({ mcpRegistryPage }) => {
-      test.skip(
+      test.skip( // skip-ok: an environment variable, not the page's state
         !hasSSEHeaders,
         "Requires MCP_SSE_HEADERS for authenticated SSE MCP endpoint",
       );
@@ -177,7 +177,7 @@ test.describe("MCP Registry", () => {
     test("should connect to SSE server and list tools", async ({
       mcpRegistryPage,
     }) => {
-      test.skip(
+      test.skip( // skip-ok: an environment variable, not the page's state
         !hasSSEHeaders,
         "Requires MCP_SSE_HEADERS for authenticated SSE MCP endpoint",
       );
