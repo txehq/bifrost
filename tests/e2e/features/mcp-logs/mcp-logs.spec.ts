@@ -1,5 +1,6 @@
 import { expect, test } from '../../core/fixtures/base.fixture'
 import { skipIfShown, skipUnlessEnabled, skipUnlessVisible } from '../../core/utils/availability'
+import { MCP_SEED_COUNT, seedMCPLogs } from './mcp-logs.seed'
 import type { MCPLogsPage } from './pages/mcp-logs.page'
 
 // With no MCP logs the page shows a "Get Started" guide instead of the table, stats and filters.
@@ -8,7 +9,16 @@ const skipIfNoLogs = (mcpLogsPage: MCPLogsPage, reason: string) =>
   skipIfShown(mcpLogsPage.page.getByText(/Get Started/i), mcpLogsPage.logsTable, reason)
 
 test.describe('MCP Logs', () => {
-  test.beforeEach(async ({ mcpLogsPage }) => {
+  // Offline, give the page MCP logs to show: the run's gateway has none of its own (TXE-7735). Once
+  // per worker; seedMCPLogs tops up only what is missing. Online runs use whatever the instance has.
+  let seeded = false
+  test.beforeEach(async ({ mcpLogsPage, request }) => {
+    if (process.env.E2E_OFFLINE === '1' && !seeded) {
+      await seedMCPLogs(request, (read) =>
+        expect.poll(read, { timeout: 30_000, message: `the gateway logs ${MCP_SEED_COUNT} MCP tool calls` }).toBeGreaterThanOrEqual(MCP_SEED_COUNT),
+      )
+      seeded = true
+    }
     await mcpLogsPage.goto()
   })
 
@@ -20,7 +30,7 @@ test.describe('MCP Logs', () => {
 
     test('should display stats cards', async ({ mcpLogsPage }) => {
       await skipIfNoLogs(mcpLogsPage, 'No MCP logs — stats cards not rendered in getting-started view')
-      await expect(mcpLogsPage.page.locator('text=Total Executions')).toBeVisible()
+      await expect(mcpLogsPage.page.getByText('Total Records', { exact: true })).toBeVisible()
     })
 
     test('should display filters section', async ({ mcpLogsPage }) => {
@@ -189,23 +199,14 @@ test.describe('MCP Logs', () => {
       await skipIfNoLogs(mcpLogsPage, 'No MCP logs — live toggle not rendered in getting-started view')
       await expect(mcpLogsPage.liveToggle).toBeVisible()
 
-      // Default is live_enabled=true (but URL may not have it since it's the default)
-      // Check for live_enabled=false to determine if currently disabled
-      const initialUrl = mcpLogsPage.page.url()
-      const initialLiveDisabled = initialUrl.includes('live_enabled=false')
+      // The Live button keeps its state in the URL's `polling` parameter, which defaults to true
+      // (mcp-logs/page.tsx), so an absent parameter means live updates are on.
+      const polling = () => new URL(mcpLogsPage.page.url()).searchParams.get('polling') !== 'false'
+      const initiallyLive = polling()
 
       await mcpLogsPage.toggleLiveUpdates()
 
-      // Wait for URL to reflect live_enabled toggle
-      await mcpLogsPage.page.waitForURL(/live_enabled=/, { timeout: 5000 })
-
-      const newUrl = mcpLogsPage.page.url()
-      const newLiveDisabled = newUrl.includes('live_enabled=false')
-
-      // Live enabled state should have toggled
-      // If initially enabled (not disabled), after toggle it should be disabled
-      // If initially disabled, after toggle it should be enabled (no live_enabled=false)
-      expect(newLiveDisabled).not.toBe(initialLiveDisabled)
+      await expect.poll(polling, { timeout: 5000 }).toBe(!initiallyLive)
     })
   })
 })

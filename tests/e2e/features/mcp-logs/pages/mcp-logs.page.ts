@@ -37,30 +37,24 @@ export class MCPLogsPage extends BasePage {
     this.logsTable = page.locator('[data-testid="mcp-logs-table"]').or(page.locator('table'))
     // The filters section is the container with search input and filters button
     this.filtersSection = page.locator('input[placeholder="Search MCP logs"]').locator('..')
-    this.filtersButton = page.getByRole('button', { name: /Filters/i })
+    // The filters live in a sidebar (mcpFilterSidebar.tsx): "Hide filters" while it is open, "Show
+    // filters" on the rail when it is collapsed.
+    this.filtersButton = page.getByRole('button', { name: /^(Hide|Show) filters$/ }).first()
     this.statsCards = page.locator('[data-testid="mcp-stats-cards"]').or(
-      page.locator('text=Total Executions').locator('..').locator('..')
+      page.getByText('Total Records', { exact: true }).locator('..').locator('..')
     )
 
-    // Filter elements - filters are inside a popover opened by the Filters button
-    this.toolNameFilter = page.locator('[data-testid="filter-tool-name"]').or(
-      page.locator('button').filter({ hasText: /Tool Name/i })
-    )
-    this.serverLabelFilter = page.locator('[data-testid="filter-server-label"]').or(
-      page.locator('button').filter({ hasText: /Server/i })
-    )
-    this.statusFilter = page.locator('[data-testid="filter-status"]').or(
-      page.locator('button').filter({ hasText: /Status/i })
-    )
+    // Filter elements - each is a collapsible section of the sidebar, opened by its title button
+    this.toolNameFilter = page.getByRole('button', { name: 'Tool Names', exact: true })
+    this.serverLabelFilter = page.getByRole('button', { name: 'Servers', exact: true })
+    this.statusFilter = page.getByRole('button', { name: 'Status', exact: true })
     this.searchInput = page.locator('[data-testid="filter-search"]').or(
       page.getByPlaceholder('Search MCP logs')
     )
     this.dateRangePicker = page.locator('[data-testid="filter-date-range"]').or(
       page.locator('button').filter({ hasText: /Last/i })
     )
-    this.liveToggle = page.locator('[data-testid="live-toggle"]').or(
-      page.getByRole('button', { name: /Live updates/i })
-    )
+    this.liveToggle = page.getByTestId('mcp-logs-header-live-btn')
 
     // Table elements - exclude status message rows
     this.tableRows = this.logsTable.locator('tbody tr').filter({ hasNot: page.getByTestId('logs-table-status-row') }).filter({ hasNot: page.getByText(/Waiting for new/) }).filter({ hasNot: page.locator('text=Listening for') }).filter({ hasNot: page.locator('text=Live updates paused') }).filter({ hasNot: page.locator('text=Not connected') }).filter({ hasNot: page.locator('text=No results found') })
@@ -89,103 +83,66 @@ export class MCPLogsPage extends BasePage {
   }
 
   /**
-   * Open Filters popover and wait for the command list. Caller can then resolve group/option locators.
+   * Open the filters sidebar if it is collapsed (the collapsed state persists in localStorage).
    */
-  private async openFiltersPopover(): Promise<void> {
-    await this.filtersButton.first().waitFor({ state: 'visible' })
-    await this.filtersButton.first().click()
-    await this.page.waitForSelector('[role="listbox"], [data-slot="command-list"]', { timeout: 5000 })
+  private async openFiltersSidebar(): Promise<void> {
+    const show = this.page.getByRole('button', { name: 'Show filters' }).first()
+    if (await show.isVisible()) await show.click()
+    await expect(this.page.getByRole('button', { name: 'Hide filters' })).toBeVisible()
   }
 
   /**
-   * Close Filters popover (Escape) and wait for network idle.
+   * Open a sidebar section by its title button and return its checkboxes. Tool Names and Servers
+   * fetch their options when they open; the caller waits for them.
    */
-  private async closeFiltersPopover(): Promise<void> {
-    await this.page.keyboard.press('Escape')
-    await this.page.waitForSelector('[role="listbox"]', { state: 'hidden', timeout: 5000 }).catch(() => {})
-    await waitForNetworkIdle(this.page)
+  private async openFilterSection(title: Locator): Promise<Locator> {
+    await this.openFiltersSidebar()
+    await title.waitFor({ state: 'visible' })
+    if ((await title.getAttribute('aria-expanded')) !== 'true') await title.click()
+    await expect(title).toHaveAttribute('aria-expanded', 'true')
+    // The section is the Collapsible root that holds the title button and its content.
+    return title.locator('xpath=..').getByRole('checkbox')
   }
 
   /**
-   * Get the first selectable option in a filter group by heading (e.g. "Tool Names", "Servers").
-   * Skips "Loading..." so we only click real options.
+   * Check the first option of a section that loads its options (Tool Names, Servers).
+   * @returns false when the section has no options once they have loaded
    */
-  private async getFirstOptionInGroup(groupHeading: string): Promise<Locator | null> {
-    const list = this.page.locator('[data-slot="command-list"]').or(this.page.locator('[role="listbox"]'))
-    const group = list.locator('[data-slot="command-group"]').filter({
-      has: this.page.getByText(groupHeading, { exact: true }),
-    })
-    const items = group.locator('[data-slot="command-item"]').or(group.getByRole('option'))
-    // The group's options load after the list opens; give them time, so "none" means none (TXE-7733).
-    await items.filter({ hasNotText: /loading/i }).first().waitFor({ state: 'visible', timeout: 5000 }).catch(() => {})
-    const count = await items.count()
-    for (let i = 0; i < count; i++) {
-      const item = items.nth(i)
-      const text = await item.textContent().catch(() => '')
-      if (text && !/loading/i.test(text)) {
-        return item
-      }
-    }
-    return null
+  private async checkFirstOption(title: Locator): Promise<boolean> {
+    const options = await this.openFilterSection(title)
+    // The options load after the section opens; give them time, so "none" means none (TXE-7733).
+    await options.first().waitFor({ state: 'visible', timeout: 10000 }).catch(() => {})
+    if ((await options.count()) === 0) return false
+    await options.first().check()
+    return true
   }
 
   /**
-   * Open Filters popover and click an option by name. Returns true if the option was found and clicked.
-   */
-  private async openFiltersAndSelectOption(optionText: string | RegExp): Promise<boolean> {
-    await this.openFiltersPopover()
-    const re = typeof optionText === 'string' ? new RegExp(optionText, 'i') : optionText
-    const option = this.page.getByRole('option', { name: re })
-    // The options load after the list opens; give them time, so "none" means none (TXE-7733).
-    await option.first().waitFor({ state: 'visible', timeout: 5000 }).catch(() => {})
-    const count = await option.count()
-    if (count > 0) {
-      await option.first().click()
-      await this.closeFiltersPopover()
-      return true
-    }
-    await this.closeFiltersPopover()
-    return false
-  }
-
-  /**
-   * Filter by tool name: open Filters and select the first available tool name option.
-   * @returns true if at least one tool name option was found and selected
+   * Filter by tool name: check the first option in the Tool Names section.
+   * @returns true if at least one tool name option was found and checked
    */
   async filterByToolName(): Promise<boolean> {
-    await this.openFiltersPopover()
-    const first = await this.getFirstOptionInGroup('Tool Names')
-    if (!first) {
-      await this.closeFiltersPopover()
-      return false
-    }
-    await first.click()
-    await this.closeFiltersPopover()
-    return true
+    return this.checkFirstOption(this.toolNameFilter)
   }
 
   /**
-   * Filter by server label: open Filters and select the first available server label option.
-   * @returns true if at least one server label option was found and selected
+   * Filter by server label: check the first option in the Servers section.
+   * @returns true if at least one server label option was found and checked
    */
   async filterByServerLabel(): Promise<boolean> {
-    await this.openFiltersPopover()
-    const first = await this.getFirstOptionInGroup('Servers')
-    if (!first) {
-      await this.closeFiltersPopover()
-      return false
-    }
-    await first.click()
-    await this.closeFiltersPopover()
-    return true
+    return this.checkFirstOption(this.serverLabelFilter)
   }
 
   /**
-   * Filter by status. Opens Filters popover and toggles the given status option (e.g. success, error).
-   * @returns true if the option was found and clicked
+   * Filter by status: check the given option in the Status section.
+   * @returns true if the option was found and checked
    */
-  async filterByStatus(status: 'success' | 'error' | 'pending'): Promise<boolean> {
-    return this.openFiltersAndSelectOption(status)
+  async filterByStatus(status: 'success' | 'error' | 'processing' | 'cancelled'): Promise<boolean> {
+    const options = await this.openFilterSection(this.statusFilter)
+    const option = options.and(this.page.getByRole('checkbox', { name: status, exact: true }))
+    if ((await option.count()) === 0) return false
+    await option.check()
+    return true
   }
 
   /**
@@ -361,8 +318,7 @@ export class MCPLogsPage extends BasePage {
    * Check if stats cards are visible
    */
   async areStatsVisible(): Promise<boolean> {
-    // MCP logs page shows "Total Executions" not "Total Requests"
-    const statsText = this.page.locator('text=Total Executions')
+    const statsText = this.page.getByText('Total Records', { exact: true })
     return await statsText.isVisible().catch(() => false)
   }
 
