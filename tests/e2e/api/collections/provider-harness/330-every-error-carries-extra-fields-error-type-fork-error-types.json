@@ -1,6 +1,6 @@
 {
   "name": "330. Every error carries extra_fields.error_type (fork error types)",
-  "description": "Contract C6 (Bifrost-Tokun, BF8/BF9): every error response carries extra_fields.error_type from the closed vocabulary, so a client classifies a failure by one field and never by its text. A governance refusal is policy_*, never provider_auth_failed although it is a 401/403. A route that answers in a vendor-native error envelope (/anthropic/v1/messages) has no extra_fields, so the x-bifrost-error-type header carries the same value on every error. A vendor 403 content block is caller_content_filtered and is not a key failure: it reaches the upstream once (no same-key retry, no rotation). A speech 200 with no audio and no error object is 502 provider_empty_result, with the vendor headers kept. The fixture cases run only against the provider error fixture.",
+  "description": "Contract C6 (Bifrost-Tokun, BF8/BF9): every error response carries extra_fields.error_type from the closed vocabulary, so a client classifies a failure by one field and never by its text. A governance refusal is policy_*, never provider_auth_failed although it is a 401/403. A route that answers in a vendor-native error envelope (/anthropic/v1/messages) has no extra_fields, so the x-bifrost-error-type header carries the same value on every error. A vendor 403 content block is caller_content_filtered and is not a key failure: it reaches the upstream once (no same-key retry, no rotation). A speech 200 with no audio and no error object is 502 provider_empty_result, with the vendor headers kept. The fixture cases run only against the provider error fixture. A vendor-call error carries upstream_sent from the shared HTTP client (TXE-6746): false when the connection was refused before any byte was written, true once the vendor answered, and true for the call when any fallback attempt was sent.",
   "item": [
     {
       "name": "330.1 [EXPECT-401] openai/gpt-4o-mini an unknown virtual key is policy_access_denied, not provider_auth_failed (fork error types)",
@@ -520,6 +520,174 @@
           }
         }
       ]
+    },
+    {
+      "name": "330.11 [EXPECT-502] openai-compatible refused_dial: a vendor connection refused before any byte was written is upstream_sent false (fork error types)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "// Fixture runs only: refused_dial points at a loopback port nothing listens on, and the",
+              "// fixture answers upstream-500; a live gateway has neither.",
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ],
+            "type": "text/javascript"
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "var text = pm.response.text();",
+              "pm.test('a refused vendor connection says the request was never sent', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + text).to.eql(502);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.upstream_sent, 'upstream_sent: ' + text).to.equal(false);",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"refused_dial/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"ping\"\n    }\n  ],\n  \"max_tokens\": 1\n}"
+        }
+      }
+    },
+    {
+      "name": "330.12 [EXPECT-500] openai upstream 500: a vendor that answered with an error received the request, upstream_sent true (fork error types)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "// Fixture runs only: refused_dial points at a loopback port nothing listens on, and the",
+              "// fixture answers upstream-500; a live gateway has neither.",
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ],
+            "type": "text/javascript"
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "var text = pm.response.text();",
+              "pm.test('an error the vendor answered says the request was sent', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + text).to.eql(500);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.upstream_sent, 'upstream_sent: ' + text).to.equal(true);",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"openai/upstream-500~upstream-sent\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"ping\"\n    }\n  ],\n  \"max_tokens\": 1\n}"
+        }
+      }
+    },
+    {
+      "name": "330.13 [EXPECT-502] openai-compatible refused_dial with an openai upstream 500 fallback: upstream_sent is true for the call once any attempt was sent (fork error types)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "// Fixture runs only: refused_dial points at a loopback port nothing listens on, and the",
+              "// fixture answers upstream-500; a live gateway has neither.",
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ],
+            "type": "text/javascript"
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "var text = pm.response.text();",
+              "pm.test('the primary error comes back, and upstream_sent sums every attempt', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + text).to.eql(502);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.upstream_sent, 'the fallback reached the vendor: ' + text).to.equal(true);",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"refused_dial/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"ping\"\n    }\n  ],\n  \"max_tokens\": 1,\n  \"fallbacks\": [\n    \"openai/upstream-500~upstream-sent\"\n  ]\n}"
+        }
+      }
     }
   ]
 }

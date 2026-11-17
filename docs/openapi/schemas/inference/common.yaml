@@ -193,9 +193,12 @@ BifrostErrorExtraFields:
       type: boolean
       description: >-
         Whether any attempt of the call wrote the request to a provider
-        (contract C6). false on a refusal Bifrost raises before dispatch: a
-        caller_ error (but caller_cancelled) or bifrost_dropped. Absent when
-        Bifrost cannot tell, which counts as sent.
+        (contract C6). false on a refusal Bifrost raises before dispatch (a
+        caller_ error but caller_cancelled, or bifrost_dropped) and when every
+        provider exchange failed before any byte was written (a dial, DNS or
+        TLS failure, no free connection, a refused egress target). true once an
+        exchange wrote, or may have written, the request. Absent when Bifrost
+        cannot tell, which counts as sent.
     raw_request:
       description: Raw provider request, when raw request capture is enabled
     raw_response:

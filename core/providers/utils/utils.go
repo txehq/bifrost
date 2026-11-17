@@ -573,8 +573,10 @@ func DoHTTPRequest(client *http.Client, req *http.Request) (*http.Response, erro
 		}()
 		req = req.WithContext(attemptCtx)
 	}
+	req, recordWrite := traceUpstreamWrite(client, req)
 	startTime := time.Now()
 	resp, err := client.Do(req)
+	recordWrite(err)
 	schemas.AddUpstreamLatency(req.Context(), time.Since(startTime))
 	if err == nil && resp != nil && resp.Body != nil {
 		resp.Body = &upstreamTimingBody{inner: resp.Body, ctx: req.Context()}
@@ -1318,7 +1320,12 @@ func (rt *fasthttpRoundTripper) RoundTrip(req *http.Request) (*http.Response, er
 		freq.SetBody(body)
 	}
 
-	ctx := req.Context()
+	// This bridge serves only libraries that take an *http.Client (OAuth and Entra token
+	// exchanges through NewProviderHTTPClient) and the media fetcher, never the inference
+	// request, so its exchanges must not record on the call's upstream attempt: a token
+	// fetched before a refused inference dial would otherwise read as a request the vendor
+	// received (TXE-6746).
+	ctx := withoutUpstreamAttempt(req.Context())
 	unbind := bindRequestContext(freq, ctx)
 	done := make(chan error, 1)
 	go func() {

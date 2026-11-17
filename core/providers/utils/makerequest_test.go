@@ -5,9 +5,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync/atomic"
@@ -1588,4 +1595,268 @@ func TestContextTransport_StreamedErrorBodyIsBoundedButSuccessIsNot(t *testing.T
 		require.NoError(t, err)
 		require.Equal(t, len(big), len(body))
 	})
+}
+
+// The shared client records each exchange on the call's upstream attempt (TXE-6746), in
+// contextTransport: a refused dial wrote nothing; an answered request, and one the server dropped
+// after reading it, wrote.
+func TestSharedClientRecordsWhetherTheRequestWasWritten(t *testing.T) {
+	closed, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	refusedAddr := closed.Addr().String()
+	require.NoError(t, closed.Close())
+
+	answered, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer answered.Close()
+	go func() { _ = fasthttp.Serve(answered, func(ctx *fasthttp.RequestCtx) { ctx.SetStatusCode(500) }) }()
+
+	dropped, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer dropped.Close()
+	go func() {
+		for {
+			conn, err := dropped.Accept()
+			if err != nil {
+				return
+			}
+			_, _ = bufio.NewReader(conn).ReadString('\n') // read the request line, then hang up
+			_ = conn.Close()
+		}
+	}()
+
+	client := ConfigureDialer(&fasthttp.Client{MaxIdemponentCallAttempts: 1, ReadTimeout: testtime.Scale(2 * time.Second)}, true)
+	for _, c := range []struct {
+		name string
+		addr string
+		want bool
+	}{
+		{"refused dial", refusedAddr, false},
+		{"answered 500", answered.Addr().String(), true},
+		{"dropped after the request was read", dropped.Addr().String(), true},
+	} {
+		if got := upstreamSentAfter(t, client, c.addr); got == nil || *got != c.want {
+			t.Errorf("%s: upstream_sent %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// fasthttp retries a request whose reused connection died after the write on a new connection
+// (network.StaleConnectionRetryIfErr). When that retry's dial is refused, client.Do returns only
+// the dial error, but the first exchange may have reached the vendor: upstream_sent stays true.
+func TestARetriedWriteStaysSentWhenTheRetryCannotConnect(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	addr := ln.Addr().String()
+	secondRead := make(chan struct{})
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		br := bufio.NewReader(conn)
+		first, err := http.ReadRequest(br) // the request that pools the connection
+		if err != nil {
+			return
+		}
+		_, _ = io.Copy(io.Discard, first.Body)
+		_, _ = conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"))
+		if second, err := http.ReadRequest(br); err == nil { // the vendor reads the request...
+			_, _ = io.Copy(io.Discard, second.Body)
+		}
+		close(secondRead) // ...and the connection dies before it answers
+	}()
+
+	client := ConfigureDialer(&fasthttp.Client{ReadTimeout: testtime.Scale(2 * time.Second)}, true)
+	warm := upstreamSentAfter(t, client, addr)
+	require.True(t, warm != nil && *warm, "the first request must be answered")
+	require.NoError(t, ln.Close()) // the retry's dial is refused
+
+	got := upstreamSentAfter(t, client, addr)
+	select {
+	case <-secondRead:
+	default:
+		t.Fatal("the second request never reached the server")
+	}
+	if got == nil || !*got {
+		t.Errorf("upstream_sent %v, want true: the first exchange wrote the request", got)
+	}
+}
+
+// upstreamSentAfter sends one POST to addr through the shared client with a fresh upstream
+// attempt on the context, and returns what the attempt makes of upstream_sent.
+func upstreamSentAfter(t *testing.T, client *fasthttp.Client, addr string) *bool {
+	t.Helper()
+	attempt := &schemas.UpstreamAttempt{}
+	ctx, cancel := context.WithTimeout(context.WithValue(context.Background(), schemas.BifrostContextKeyUpstreamAttempt, attempt), testtime.Scale(5*time.Second))
+	defer cancel()
+	req, resp := fasthttp.AcquireRequest(), fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+	req.SetRequestURI("http://" + addr + "/v1/chat/completions")
+	req.Header.SetMethod(http.MethodPost)
+	req.SetBodyString(`{}`)
+	_, _, wait := MakeRequestWithContext(ctx, client, req, resp)
+	wait()
+	probe := &schemas.BifrostError{}
+	attempt.Apply(probe)
+	return probe.ExtraFields.UpstreamSent
+}
+
+// DoHTTPRequest (net/http: Bedrock, the media fetcher) records the same way, from its client
+// trace: no connection means nothing was written.
+func TestDoHTTPRequestRecordsWhetherTheRequestWasWritten(t *testing.T) {
+	closed, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	refusedAddr := closed.Addr().String()
+	require.NoError(t, closed.Close())
+	answered, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer answered.Close()
+	go func() {
+		_ = http.Serve(answered, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusBadRequest) }))
+	}()
+
+	for _, c := range []struct {
+		name string
+		addr string
+		want bool
+	}{{"refused dial", refusedAddr, false}, {"answered 400", answered.Addr().String(), true}} {
+		attempt := &schemas.UpstreamAttempt{}
+		ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyUpstreamAttempt, attempt)
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+c.addr+"/model/x/invoke", strings.NewReader(`{}`))
+		require.NoError(t, err)
+		if resp, err := DoHTTPRequest(&http.Client{Timeout: testtime.Scale(2 * time.Second)}, req); err == nil {
+			_ = resp.Body.Close()
+		}
+		probe := &schemas.BifrostError{}
+		attempt.Apply(probe)
+		if got := probe.ExtraFields.UpstreamSent; got == nil || *got != c.want {
+			t.Errorf("%s: upstream_sent %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// NewProviderHTTPClient's token exchanges (azidentity, golang.org/x/oauth2) run on the inference
+// call's context but are not the inference request: an exchange that succeeds records nothing, so
+// a refused inference dial after it still reads as unsent (TXE-6746).
+func TestTokenExchangeDoesNotRecordOnTheVendorAttempt(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer ln.Close()
+	go func() {
+		_ = http.Serve(ln, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"access_token":"t","token_type":"Bearer","expires_in":3600}`))
+		}))
+	}()
+	attempt := &schemas.UpstreamAttempt{}
+	ctx, cancel := context.WithTimeout(context.WithValue(context.Background(), schemas.BifrostContextKeyUpstreamAttempt, attempt), testtime.Scale(5*time.Second))
+	defer cancel()
+	client := NewProviderHTTPClient(nil, schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 5}, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+ln.Addr().String()+"/oauth2/token", strings.NewReader("grant_type=client_credentials"))
+	require.NoError(t, err)
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	attempt.MarkConnectFailed() // the inference dial that follows is refused
+	probe := &schemas.BifrostError{}
+	attempt.Apply(probe)
+	if got := probe.ExtraFields.UpstreamSent; got == nil || *got {
+		t.Errorf("upstream_sent %v after a token exchange and a refused inference dial, want false", got)
+	}
+}
+
+// Every provider sends through the shared client (MakeRequestWithContext, DoStreamingRequest,
+// DoHTTPRequest, the fasthttp RoundTripper), which records whether the request was written
+// (TXE-6746). A provider that calls an HTTP client itself would leave its attempts unrecorded:
+// this fails on one. bypassAllowed lists the calls that never carry the request, with the reason.
+var bypassAllowed = map[string]string{
+	"githubcopilot/token.go:doRequest": "exchanges the GitHub token before the request; the request itself goes through MakeRequestWithContext",
+}
+
+func TestProvidersSendThroughTheSharedClient(t *testing.T) {
+	direct := regexp.MustCompile(`\.(Do|DoTimeout|DoDeadline|DoRedirects|RoundTrip)\(|\bhttp\.(Get|Post|Head|PostForm)\(|\bhttp\.DefaultClient\b`)
+	var files []string
+	require.NoError(t, filepath.WalkDir("..", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() && path == "../utils" {
+			return filepath.SkipDir
+		}
+		if !d.IsDir() && strings.HasSuffix(path, ".go") && !strings.HasSuffix(path, "_test.go") {
+			files = append(files, path)
+		}
+		return nil
+	}))
+	seen := 0
+	used := map[string]bool{}
+	for _, path := range files {
+		seen++
+		fset := token.NewFileSet()
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		require.NoError(t, err)
+		rel := strings.TrimPrefix(path, "../")
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			start, end := fset.Position(fn.Body.Pos()).Offset, fset.Position(fn.Body.End()).Offset
+			src, err := os.ReadFile(path)
+			require.NoError(t, err)
+			for _, line := range strings.Split(string(src[start:end]), "\n") {
+				if trimmed := strings.TrimSpace(line); strings.HasPrefix(trimmed, "//") || !direct.MatchString(line) {
+					continue
+				}
+				if _, ok := bypassAllowed[rel+":"+fn.Name.Name]; ok {
+					used[rel+":"+fn.Name.Name] = true
+					continue
+				}
+				t.Errorf("%s %s calls an HTTP client directly (%q): send through MakeRequestWithContext, DoStreamingRequest or DoHTTPRequest, or add it to bypassAllowed with why it never carries the request", rel, fn.Name.Name, strings.TrimSpace(line))
+			}
+		}
+	}
+	if seen < 50 {
+		t.Fatalf("scanned %d provider files; expected the providers' (>=50)", seen)
+	}
+	for entry := range bypassAllowed {
+		if !used[entry] {
+			t.Errorf("bypassAllowed %s calls no HTTP client any more: remove it", entry)
+		}
+	}
+}
+
+// BenchmarkMakeRequestWithContext measures one exchange through the shared client with the
+// call's upstream attempt on the context, as a provider call runs it: TXE-6746 adds a context
+// lookup and an atomic store per exchange.
+func BenchmarkMakeRequestWithContext(b *testing.B) {
+	ln := fasthttputil.NewInmemoryListener()
+	defer ln.Close()
+	go func() { _ = fasthttp.Serve(ln, func(ctx *fasthttp.RequestCtx) { ctx.SetStatusCode(200) }) }()
+	client := ConfigureDialer(&fasthttp.Client{}, true)
+	client.Dial = func(string) (net.Conn, error) { return ln.Dial() }
+	// Cancellable, as every BifrostContext is, so the request is bound to it with or without
+	// the attempt.
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), schemas.BifrostContextKeyUpstreamAttempt, &schemas.UpstreamAttempt{}))
+	defer cancel()
+	req, resp := fasthttp.AcquireRequest(), fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+	req.SetRequestURI("http://vendor.test/v1/chat/completions")
+	req.Header.SetMethod(http.MethodPost)
+	req.SetBodyString(`{}`)
+	b.ReportAllocs()
+	for b.Loop() {
+		_, bifrostErr, wait := MakeRequestWithContext(ctx, client, req, resp)
+		wait()
+		if bifrostErr != nil {
+			b.Fatal(bifrostErr.Error.Message)
+		}
+	}
 }
