@@ -83,6 +83,14 @@ RUNNERS = [
             ("tests/e2e/selftest/playwright.skips.config.ts", 'testDir: "./skips"', True),
         ],
     ),
+    # The sample suite that pins the skip helpers' waits on a real page (TXE-7733).
+    (
+        r"^tests/e2e/selftest/availability/[^/]+\.spec\.ts$",
+        [
+            ("tests/e2e/scripts/availability.test.mjs", "selftest/playwright.availability.config.ts", True),
+            ("tests/e2e/selftest/playwright.availability.config.ts", 'testDir: "./availability"', True),
+        ],
+    ),
 ]
 
 # Directories whose test files deliberately run in no CI job, and why.
