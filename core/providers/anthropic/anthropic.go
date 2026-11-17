@@ -580,13 +580,8 @@ func (provider *AnthropicProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 		provider.client,
 		provider.buildRequestURL(ctx, "/v1/messages", schemas.ChatCompletionRequest),
 		request,
-		AnthropicRequestBuildConfig{
-			Provider:                  schemas.Anthropic,
-			IsStreaming:               false,
-			BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
-			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
-			ShouldSendBackRawResponse: provider.sendBackRawResponse,
-		},
+		// The batch route converts OpenAI chat lines with this same config.
+		provider.chatRequestBuildConfig(),
 		provider.anthropicRequestHeaders(ctx, key),
 		provider.networkConfig.ExtraHeaders,
 		nil,
@@ -1963,8 +1958,23 @@ func (provider *AnthropicProvider) BatchCreate(ctx *schemas.BifrostContext, key 
 
 	providerName := provider.GetProviderKey()
 
+	// Anthropic's Message Batches API takes its requests inline and has no file input
+	// (contract C4): a file is refused before any upstream call, not dropped.
+	if strings.TrimSpace(request.InputFileID) != "" {
+		return nil, schemas.NewUnsupportedParameterError("input_file_id", "Anthropic batches take inline requests only: send the lines in requests, not input_file_id")
+	}
+	if request.InputBlob != nil && strings.TrimSpace(*request.InputBlob) != "" {
+		return nil, schemas.NewUnsupportedParameterError("input_blob", "Anthropic batches take inline requests only: send the lines in requests, not input_blob")
+	}
 	if len(request.Requests) == 0 {
 		return nil, providerUtils.NewBifrostOperationError("requests array is required for Anthropic batch API", nil)
+	}
+
+	// Build the request body before anything is sent: a line the caller got wrong is a 400
+	// naming the line, with no upstream call.
+	anthropicReq, converted, lineErr := provider.anthropicBatchCreateRequest(ctx, key, request)
+	if lineErr != nil {
+		return nil, lineErr
 	}
 
 	// Create request
@@ -1983,20 +1993,15 @@ func (provider *AnthropicProvider) BatchCreate(ctx *schemas.BifrostContext, key 
 		req.Header.Set("x-api-key", key.Value.GetValue())
 	}
 	req.Header.Set("anthropic-version", provider.apiVersion)
-
-	// Build request body
-	anthropicReq := &AnthropicBatchCreateRequest{
-		Requests: make([]AnthropicBatchRequestItem, len(request.Requests)),
-	}
-
-	for i, r := range request.Requests {
-		anthropicReq.Requests[i] = AnthropicBatchRequestItem{
-			CustomID: r.CustomID,
-			Params:   r.Params,
-		}
-		// Use Body if Params is empty
-		if anthropicReq.Requests[i].Params == nil && r.Body != nil {
-			anthropicReq.Requests[i].Params = r.Body
+	if converted {
+		// A converted line needs the beta headers its body needs on the sync route; the
+		// conversion added them to ctx. A batch carries one header for all its lines, set
+		// exactly as the sync route sets it.
+		extraHeaders, betaHeaderOverrides := provider.networkConfig.ExtraHeaders, provider.networkConfig.BetaHeaderOverrides
+		if betaHeaders := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, extraHeaders), providerName, betaHeaderOverrides); len(betaHeaders) > 0 {
+			req.Header.Set(AnthropicBetaHeader, strings.Join(betaHeaders, ","))
+		} else {
+			req.Header.Del(AnthropicBetaHeader)
 		}
 	}
 
@@ -2373,7 +2378,11 @@ func (provider *AnthropicProvider) BatchDelete(ctx *schemas.BifrostContext, keys
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchDeleteRequest, provider.GetProviderKey())
 }
 
-// BatchResults retrieves batch results by trying each key until found.
+// BatchResults retrieves batch results by trying each key until found. The results file
+// is read as a stream, one page at a time when the caller sets a limit. On the unified
+// routes each line comes back in the OpenAI shape of contract C8 (a succeeded Message as
+// the sync route's chat.completion with unified usage, every line with its status); the
+// Anthropic-native route gets the Messages results unchanged.
 func (provider *AnthropicProvider) BatchResults(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostBatchResultsRequest) (*schemas.BifrostBatchResultsResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.BatchResultsRequest); err != nil {
 		return nil, err
@@ -2391,107 +2400,92 @@ func (provider *AnthropicProvider) BatchResults(ctx *schemas.BifrostContext, key
 		return nil, urlErr
 	}
 
-	providerName := provider.GetProviderKey()
+	native := isAnthropicNativeBatchRoute(ctx)
+	includeRaw := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+	endpoint := schemas.BatchEndpointChatCompletions
+	if native {
+		endpoint = schemas.BatchEndpointMessages
+	}
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
 		if providerUtils.StopKeyWalk(lastErr) {
 			break
 		}
-		// Create request
-		req := fasthttp.AcquireRequest()
-		resp := fasthttp.AcquireResponse()
-
-		// Set headers
-		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(requestURL)
-		req.Header.SetMethod(http.MethodGet)
-
-		if key.Value.GetValue() != "" {
-			req.Header.Set("x-api-key", key.Value.GetValue())
-		}
-		req.Header.Set("anthropic-version", provider.apiVersion)
-
-		// Make request
-		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
-		if bifrostErr != nil {
-			wait()
-			fasthttp.ReleaseRequest(req)
-			fasthttp.ReleaseResponse(resp)
-			lastErr = bifrostErr
-			continue
+		source := func(offset int64) (*providerUtils.ResultStream, *schemas.BifrostError) {
+			return providerUtils.OpenResultStream(ctx, provider.streamingClient, offset, func(req *fasthttp.Request) {
+				providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+				req.SetRequestURI(requestURL)
+				req.Header.SetMethod(http.MethodGet)
+				if key.Value.GetValue() != "" {
+					req.Header.Set("x-api-key", key.Value.GetValue())
+				}
+				req.Header.Set("anthropic-version", provider.apiVersion)
+			}, ParseAnthropicError)
 		}
 
-		// Handle error response
-		if resp.StatusCode() != fasthttp.StatusOK {
-			provider.logger.Debug("error from %s provider: status %d", providerName, resp.StatusCode())
-			lastErr = ParseAnthropicError(resp)
-			wait()
-			fasthttp.ReleaseRequest(req)
-			fasthttp.ReleaseResponse(resp)
-			continue
-		}
-
-		body, err := providerUtils.CheckAndDecodeBody(resp)
-		if err != nil {
-			wait()
-			fasthttp.ReleaseRequest(req)
-			fasthttp.ReleaseResponse(resp)
-			lastErr = providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
-			continue
-		}
-
-		wait()
-		fasthttp.ReleaseRequest(req)
-		fasthttp.ReleaseResponse(resp)
-
-		// Parse JSONL content - each line is a separate result
 		var results []schemas.BatchResultItem
-
-		parseResult := providerUtils.ParseJSONL(body, func(line []byte) error {
+		var parseErrors []schemas.BatchError
+		// readLine converts one results line; truncation is set when the line is the slim
+		// copy of a line too large for any page.
+		readLine := func(line []byte, truncation *schemas.BatchResultTruncation) error {
 			var anthropicResult AnthropicBatchResultItem
 			if err := sonic.Unmarshal(line, &anthropicResult); err != nil {
-				provider.logger.Warn("failed to parse batch result line: %v", err)
 				return err
 			}
-
-			// Convert to Bifrost format
-			resultItem := schemas.BatchResultItem{
-				CustomID: anthropicResult.CustomID,
-				Result: &schemas.BatchResultData{
-					Type:    anthropicResult.Result.Type,
-					Message: anthropicResult.Result.Message,
-				},
+			var item schemas.BatchResultItem
+			if native {
+				item = BatchResultLineToNative(anthropicResult)
+			} else {
+				item = BatchResultLineToOpenAI(ctx, anthropicResult, includeRaw)
 			}
-
-			if anthropicResult.Result.Error != nil {
-				resultItem.Error = &schemas.BatchResultError{
-					Code:    anthropicResult.Result.Error.Type,
-					Message: anthropicResult.Result.Error.Message,
-				}
-			}
-
-			results = append(results, resultItem)
+			item.Truncated = truncation
+			results = append(results, item)
 			return nil
+		}
+		page, pageErr := providerUtils.ReadBatchResultsPage([]providerUtils.BatchResultsSource{source}, request, func(_ int, line []byte) {
+			if err := readLine(line, nil); err != nil {
+				provider.logger.Warn("failed to parse batch result line: %v", err)
+				parseErrors = append(parseErrors, schemas.BatchError{Code: "parse_error", Message: err.Error()})
+			}
+		}, func(_ int, big providerUtils.BatchOversizedLine) {
+			// A line too large for any page is read from its slim copy, so it is still billed
+			// from its usage (TXE-7526).
+			if big.Slim != nil && readLine(big.Slim, big.Truncation()) == nil {
+				return
+			}
+			provider.logger.Warn("batch result line not read: %s", big.Error().Message)
+			parseErrors = append(parseErrors, big.Error())
 		})
+		if pageErr != nil {
+			if pageErr.StatusCode != nil && *pageErr.StatusCode == fasthttp.StatusBadRequest && pageErr.Error != nil && (pageErr.Error.Param == "after" || pageErr.Error.Param == "limit") {
+				// A cursor the caller got wrong, or an unpaged read of a results file past the
+				// response limit, is the same for every key.
+				return nil, pageErr
+			}
+			lastErr = pageErr
+			continue
+		}
 
+		if results == nil {
+			results = []schemas.BatchResultItem{}
+		}
 		batchResultsResp := &schemas.BifrostBatchResultsResponse{
-			BatchID:  request.BatchID,
-			Endpoint: schemas.BatchEndpointMessages,
-			Results:  results,
+			BatchID:    request.BatchID,
+			Endpoint:   endpoint,
+			Results:    results,
+			HasMore:    page.HasMore,
+			NextCursor: page.NextCursor,
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				Latency: latency.Milliseconds(),
+				Latency: page.Latency.Milliseconds(),
 			},
 		}
-
-		if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		if includeRaw {
 			batchResultsResp.ExtraFields.RawResponse = results
 		}
-
-		if len(parseResult.Errors) > 0 {
-			batchResultsResp.ExtraFields.ParseErrors = parseResult.Errors
+		if len(parseErrors) > 0 {
+			batchResultsResp.ExtraFields.ParseErrors = parseErrors
 		}
-
 		return batchResultsResp, nil
 	}
 
