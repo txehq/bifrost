@@ -2,6 +2,7 @@ package xai
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
@@ -920,6 +922,83 @@ func BenchmarkXAIResourceURL(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
 			_ = batchRequestsURL("https://vendor.example.com/api/v2/batches?team=t1", "batch_9")
+		}
+	})
+}
+
+// A batch one line over xAI's 100,000-line limit is a 400 on requests with no line converted
+// and no upstream call; a batch at the limit is converted and sent (TXE-7696).
+func TestBatchCreateRefusesMoreLinesThanTheLimit(t *testing.T) {
+	limit, ok := providerUtils.BatchLineLimit(schemas.XAI)
+	if !ok || limit != 100_000 {
+		t.Fatalf("xai batch line limit = %d (set %v), want 100000", limit, ok)
+	}
+	lines := func(n int) []schemas.BatchRequestItem {
+		body := map[string]any{"model": "grok-4.3", "messages": []any{map[string]any{"role": "user", "content": "hi"}}}
+		items := make([]schemas.BatchRequestItem, n)
+		for i := range items {
+			items[i] = schemas.BatchRequestItem{CustomID: fmt.Sprintf("line-%d", i), Method: "POST", URL: "/v1/chat/completions", Body: body}
+		}
+		return items
+	}
+	newStub := func() (*batchStub, *httptest.Server) {
+		stub := &batchStub{}
+		stub.handler = func(w http.ResponseWriter, r *http.Request, _ string) {
+			switch r.URL.Path {
+			case "/v1/batches":
+				_, _ = io.WriteString(w, `{"batch_id":"batch_7f3a","name":"b","create_time":"2026-11-10T04:00:00Z","expire_time":"2026-11-11T04:00:00Z","state":{"num_requests":0,"num_pending":0,"num_success":0,"num_error":0,"num_cancelled":0}}`)
+			case "/v1/batches/batch_7f3a/requests":
+				_, _ = io.WriteString(w, `{}`)
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}
+		return stub, stub.serve(t)
+	}
+	create := func(srv *httptest.Server, requests []schemas.BatchRequestItem) *schemas.BifrostError {
+		_, bErr := newBatchTestProvider(srv.URL).BatchCreate(batchTestCtx(), batchKey("xai-a", "sk-xai-a"), &schemas.BifrostBatchCreateRequest{
+			Provider: schemas.XAI, Model: schemas.Ptr("xai/grok-4.3"), Endpoint: schemas.BatchEndpointChatCompletions, CompletionWindow: "24h", Requests: requests,
+		})
+		return bErr
+	}
+
+	t.Run("one over the limit", func(t *testing.T) {
+		stub, srv := newStub()
+		requests := lines(limit + 1)
+		// A last line no converter accepts: reaching it would be a line error, not the limit.
+		requests[limit] = schemas.BatchRequestItem{CustomID: "bad"}
+		bErr := create(srv, requests)
+		if bErr == nil || bErr.StatusCode == nil || *bErr.StatusCode != http.StatusBadRequest {
+			t.Fatalf("got %+v, want a 400", bErr)
+		}
+		if bErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerInvalidRequest || bErr.Error.Param != "requests" {
+			t.Errorf("error_type %q param %q, want caller_invalid_request on requests", bErr.ExtraFields.ErrorType, bErr.Error.Param)
+		}
+		if !strings.Contains(bErr.Error.Message, "at most 100000 requests") {
+			t.Errorf("message %q does not name the limit", bErr.Error.Message)
+		}
+		if len(stub.requests) != 0 {
+			t.Errorf("upstream calls = %d, want none", len(stub.requests))
+		}
+	})
+
+	t.Run("at the limit", func(t *testing.T) {
+		stub, srv := newStub()
+		if bErr := create(srv, lines(limit)); bErr != nil {
+			t.Fatalf("at the limit: %+v", bErr.Error)
+		}
+		var sent struct {
+			BatchRequests []map[string]any `json:"batch_requests"`
+		}
+		for _, r := range stub.requests {
+			if r.Path == "/v1/batches/batch_7f3a/requests" {
+				if err := sonic.UnmarshalString(r.Body, &sent); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		if len(sent.BatchRequests) != limit {
+			t.Errorf("sent %d lines, want every one of %d", len(sent.BatchRequests), limit)
 		}
 	})
 }

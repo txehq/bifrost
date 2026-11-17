@@ -2091,6 +2091,9 @@ func (provider *AzureProvider) FileContent(ctx *schemas.BifrostContext, keys []s
 // BatchCreate creates a new batch job on Azure OpenAI.
 // Azure Batch API uses the same format as OpenAI but with Azure-specific URL patterns.
 func (provider *AzureProvider) BatchCreate(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostBatchCreateRequest) (*schemas.BifrostBatchCreateResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckBatchLineLimit(schemas.Azure, len(request.Requests)); err != nil {
+		return nil, err
+	}
 	endpoint := resolveAzureEndpoint(ctx, key)
 	if endpoint == "" {
 		return nil, providerUtils.NewConfigurationError("endpoint not set")

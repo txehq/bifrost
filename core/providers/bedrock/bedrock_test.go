@@ -9217,3 +9217,51 @@ func BenchmarkBedrockChatResponseGuardrailUnits(b *testing.B) {
 		})
 	}
 }
+
+// A batch one line over Bedrock's 100,000-record default quota is a 400 on requests before
+// anything else is read: the key carries no Bedrock config, so a check placed after the key's
+// use would fail on it instead. A batch at the quota converts every line and reaches the S3
+// upload, which the cancelled context stops before anything is sent (TXE-7696).
+func TestBedrockBatchCreateRefusesMoreLinesThanTheVendorTakes(t *testing.T) {
+	limit, ok := providerUtils.BatchLineLimit(schemas.Bedrock)
+	require.True(t, ok)
+	require.Equal(t, 100_000, limit)
+	provider, err := bedrock.NewBedrockProvider(&schemas.ProviderConfig{NetworkConfig: schemas.DefaultNetworkConfig}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	require.NoError(t, err)
+	lines := func(n int) []schemas.BatchRequestItem {
+		body := map[string]any{"anthropic_version": "bedrock-2023-05-31", "max_tokens": 8, "messages": []any{map[string]any{"role": "user", "content": "hi"}}}
+		items := make([]schemas.BatchRequestItem, n)
+		for i := range items {
+			items[i] = schemas.BatchRequestItem{CustomID: fmt.Sprintf("line-%d", i), Body: body}
+		}
+		return items
+	}
+	request := func(n int) *schemas.BifrostBatchCreateRequest {
+		return &schemas.BifrostBatchCreateRequest{
+			Provider: schemas.Bedrock, Model: schemas.Ptr("anthropic.claude-3-haiku-20240307-v1:0"), Requests: lines(n),
+			ExtraParams: map[string]any{"role_arn": "arn:aws:iam::123456789012:role/batch", "output_s3_uri": "s3://bucket/out/"},
+		}
+	}
+
+	t.Run("one over the limit", func(t *testing.T) {
+		_, bifrostErr := provider.BatchCreate(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), schemas.Key{}, request(limit+1))
+		require.NotNil(t, bifrostErr)
+		require.NotNil(t, bifrostErr.StatusCode)
+		assert.Equal(t, http.StatusBadRequest, *bifrostErr.StatusCode)
+		assert.Equal(t, schemas.ErrorTypeCallerInvalidRequest, bifrostErr.ExtraFields.ErrorType)
+		assert.Equal(t, "requests", bifrostErr.Error.Param)
+		assert.Contains(t, bifrostErr.Error.Message, "at most 100000 requests")
+	})
+
+	t.Run("at the limit", func(t *testing.T) {
+		cancelled, cancel := context.WithCancel(context.Background())
+		cancel()
+		key := schemas.Key{BedrockKeyConfig: &schemas.BedrockKeyConfig{
+			AccessKey: *schemas.NewSecretVar("AKIATEST"), SecretKey: *schemas.NewSecretVar("secret"), Region: schemas.NewSecretVar("us-east-1"),
+		}}
+		_, bifrostErr := provider.BatchCreate(schemas.NewBifrostContext(cancelled, schemas.NoDeadline), key, request(limit))
+		require.NotNil(t, bifrostErr, "the cancelled upload fails")
+		assert.NotEqual(t, "requests", bifrostErr.Error.Param, "the limit let the batch through")
+		assert.Contains(t, bifrostErr.Error.Message, "failed to upload to s3", "every line converted, then the upload was reached")
+	})
+}

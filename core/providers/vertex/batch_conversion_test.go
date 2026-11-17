@@ -1317,3 +1317,46 @@ func BenchmarkVertexBatchLineLabels(b *testing.B) {
 		})
 	}
 }
+
+// A batch one line over Vertex's 200,000-request maximum is a 400 on requests before anything
+// else is read: the key carries no Vertex config, so a check placed after the key's use would
+// answer a configuration error instead, and the provider has no client to send with. A batch
+// at the maximum converts every line: its last line, malformed, is the error (TXE-7696).
+func TestVertexBatchCreateRefusesMoreLinesThanTheVendorTakes(t *testing.T) {
+	limit, ok := providerUtils.BatchLineLimit(schemas.Vertex)
+	require.True(t, ok)
+	require.Equal(t, 200_000, limit)
+	lines := func(n int) []schemas.BatchRequestItem {
+		body := map[string]any{"model": "gemini-2.5-flash", "messages": []any{map[string]any{"role": "user", "content": "hi"}}}
+		items := make([]schemas.BatchRequestItem, n)
+		for i := range items {
+			items[i] = schemas.BatchRequestItem{CustomID: "line", Method: "POST", URL: "/v1/chat/completions", Body: body}
+		}
+		return items
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	t.Run("one over the limit", func(t *testing.T) {
+		_, bifrostErr := (&VertexProvider{}).BatchCreate(ctx, schemas.Key{}, &schemas.BifrostBatchCreateRequest{
+			Provider: schemas.Vertex, Model: schemas.Ptr("gemini-2.5-flash"), Endpoint: schemas.BatchEndpointChatCompletions, Requests: lines(limit + 1),
+		})
+		require.NotNil(t, bifrostErr)
+		require.NotNil(t, bifrostErr.StatusCode)
+		assert.Equal(t, http.StatusBadRequest, *bifrostErr.StatusCode)
+		assert.Equal(t, schemas.ErrorTypeCallerInvalidRequest, bifrostErr.ExtraFields.ErrorType)
+		assert.Equal(t, "requests", bifrostErr.Error.Param)
+		assert.Contains(t, bifrostErr.Error.Message, "at most 200000 requests")
+	})
+
+	t.Run("at the limit", func(t *testing.T) {
+		requests := lines(limit)
+		requests[limit-1] = schemas.BatchRequestItem{CustomID: "last"}
+		key := schemas.Key{VertexKeyConfig: &schemas.VertexKeyConfig{ProjectID: *schemas.NewSecretVar("my-project"), Region: *schemas.NewSecretVar("us-central1")}}
+		_, bifrostErr := (&VertexProvider{}).BatchCreate(ctx, key, &schemas.BifrostBatchCreateRequest{
+			Provider: schemas.Vertex, Model: schemas.Ptr("gemini-2.5-flash"), Endpoint: schemas.BatchEndpointChatCompletions,
+			OutputFolder: &schemas.BatchOutputFolder{URL: "gs://bucket/out/"}, Requests: requests,
+		})
+		require.NotNil(t, bifrostErr)
+		assert.Equal(t, "requests[199999].body", bifrostErr.Error.Param, "every line before the last was converted")
+	})
+}

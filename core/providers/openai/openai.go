@@ -6979,6 +6979,9 @@ func (provider *OpenAIProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.BatchCreateRequest); err != nil {
 		return nil, err
 	}
+	if err := providerUtils.CheckBatchLineLimit(schemas.OpenAI, len(request.Requests)); err != nil {
+		return nil, err
+	}
 	key, keyErr := provider.resolveKey(ctx, key)
 	if keyErr != nil {
 		return nil, keyErr

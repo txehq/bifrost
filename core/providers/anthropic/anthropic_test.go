@@ -3,6 +3,7 @@ package anthropic_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,8 +17,10 @@ import (
 	"github.com/capsohq/bifrost/core/livetest"
 	"github.com/capsohq/bifrost/core/network"
 	"github.com/capsohq/bifrost/core/providers/anthropic"
+	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 
 	"github.com/capsohq/bifrost/core/schemas"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -539,5 +542,54 @@ func BenchmarkAnthropicBatchLineConversion(b *testing.B) {
 			}
 			_ = anthropic.BatchResultLineToOpenAI(ctx, line, false)
 		}
+	})
+}
+
+// repeatBatchLine returns n copies of one inline chat line, each with its own custom_id.
+func repeatBatchLine(n int) []schemas.BatchRequestItem {
+	body := map[string]any{"model": "claude-haiku-4-5", "max_tokens": float64(8), "messages": []any{map[string]any{"role": "user", "content": "hi"}}}
+	items := make([]schemas.BatchRequestItem, n)
+	for i := range items {
+		items[i] = schemas.BatchRequestItem{CustomID: fmt.Sprintf("line-%d", i), Method: "POST", URL: "/v1/chat/completions", Body: body}
+	}
+	return items
+}
+
+// A batch one line over Anthropic's 100,000-request maximum is a 400 on requests with no
+// line converted and no upstream call; a batch at the maximum is converted and sent (TXE-7696).
+func TestAnthropicBatchCreateRefusesMoreLinesThanTheVendorTakes(t *testing.T) {
+	limit, ok := providerUtils.BatchLineLimit(schemas.Anthropic)
+	require.True(t, ok)
+	require.Equal(t, 100_000, limit)
+
+	t.Run("one over the limit", func(t *testing.T) {
+		vendor := newAnthropicBatchVendor(t, "")
+		requests := repeatBatchLine(limit + 1)
+		// A last line no converter accepts: reaching it would be a line error, not the limit.
+		requests[limit] = schemas.BatchRequestItem{CustomID: "bad"}
+		_, bifrostErr := vendor.provider().BatchCreate(batchTestContext(), batchTestKey, &schemas.BifrostBatchCreateRequest{
+			Provider: schemas.Anthropic, Model: schemas.Ptr("claude-haiku-4-5"), Endpoint: schemas.BatchEndpointChatCompletions, Requests: requests,
+		})
+		require.NotNil(t, bifrostErr)
+		require.NotNil(t, bifrostErr.StatusCode)
+		assert.Equal(t, http.StatusBadRequest, *bifrostErr.StatusCode)
+		assert.Equal(t, schemas.ErrorTypeCallerInvalidRequest, bifrostErr.ExtraFields.ErrorType)
+		assert.Equal(t, "requests", bifrostErr.Error.Param)
+		assert.Contains(t, bifrostErr.Error.Message, "at most 100000 requests")
+		assert.Empty(t, vendor.calls, "no upstream call")
+	})
+
+	t.Run("at the limit", func(t *testing.T) {
+		vendor := newAnthropicBatchVendor(t, "")
+		resp, bifrostErr := vendor.provider().BatchCreate(batchTestContext(), batchTestKey, &schemas.BifrostBatchCreateRequest{
+			Provider: schemas.Anthropic, Model: schemas.Ptr("claude-haiku-4-5"), Endpoint: schemas.BatchEndpointChatCompletions, Requests: repeatBatchLine(limit),
+		})
+		require.Nil(t, bifrostErr)
+		assert.Equal(t, "msgbatch_1", resp.ID)
+		var sent struct {
+			Requests []json.RawMessage `json:"requests"`
+		}
+		require.NoError(t, json.Unmarshal(vendor.body("/v1/messages/batches"), &sent))
+		assert.Len(t, sent.Requests, limit, "every line converted and sent")
 	})
 }
