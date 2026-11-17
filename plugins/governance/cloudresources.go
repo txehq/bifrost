@@ -512,7 +512,7 @@ func (p *GovernancePlugin) actsWithOperatorCloudIdentity(req *schemas.BifrostReq
 func refuseUnlistedCloudResource(ctx *schemas.BifrostContext, provider schemas.ModelProvider, param, list, what string) *schemas.LLMPluginShortCircuit {
 	ctx.SetValue(governanceRejectedContextKey, true)
 	return &schemas.LLMPluginShortCircuit{Error: schemas.NewUnsupportedParameterError(param, fmt.Sprintf(
-		"this virtual key has no %s, and %s acts on %s with the gateway's own cloud credentials: a key without that list may not name %s on this provider; give the key a %s list that covers it",
+		"this virtual key has no %s, and %s acts on %s with the gateway's own cloud credentials: a key without that list may not name %s on this provider; give the key an %s list that covers it",
 		list, provider, what, what, list))}
 }
 
