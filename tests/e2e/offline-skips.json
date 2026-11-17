@@ -1,20 +1,4 @@
 {
-  "TXE-7735": {
-    "reason": "offline has no MCP logs, so the page shows its getting-started guide instead of the table, stats, filters, pagination and live toggle",
-    "file": "features/mcp-logs/mcp-logs.spec.ts",
-    "tests": [
-      "MCP Logs › MCP Logs Display › should display stats cards",
-      "MCP Logs › MCP Logs Display › should display filters section",
-      "MCP Logs › MCP Log Filtering › should filter logs by tool name",
-      "MCP Logs › MCP Log Filtering › should filter logs by server label",
-      "MCP Logs › MCP Log Filtering › should filter logs by status",
-      "MCP Logs › Pagination › should navigate to next page",
-      "MCP Logs › Pagination › should navigate to previous page",
-      "MCP Logs › Table Sorting › should sort by timestamp",
-      "MCP Logs › Table Sorting › should sort by latency",
-      "MCP Logs › Live Updates › should toggle live updates"
-    ]
-  },
   "TXE-7737": [
     {
       "reason": "the vLLM, Ollama and SGLang providers are not configured offline",
