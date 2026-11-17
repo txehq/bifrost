@@ -269,8 +269,9 @@ func (l *generationLease) release() {
 // and build a client; instead every waiter observes the same attempt's outcome
 // through done and err.
 type initializationAttempt struct {
-	done chan struct{}
-	err  error
+	done    chan struct{}
+	err     error
+	waiters int // callers that joined this attempt; guarded by runtimeAgent.mu, read by tests
 }
 
 // runtimeConfig is the immutable serving configuration copied from a durable
@@ -1390,6 +1391,7 @@ func (r *runtimeAgent) acquire(ctx context.Context, manager *Manager) (*generati
 			r.initializing = attempt
 			go r.initialize(manager, attempt)
 		}
+		attempt.waiters++
 		r.mu.Unlock()
 		select {
 		case <-ctx.Done():
