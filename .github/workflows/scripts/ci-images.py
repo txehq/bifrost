@@ -345,8 +345,16 @@ def mirror(images):
         if ghcr_has(image, token, actor):
             print(f"ok - {image.mirror(owner())}@{image.digest} already mirrored")
             continue
-        print(f"copy {image.upstream()} -> {image.mirror(owner())}")
-        subprocess.run([crane, "copy", image.upstream(), image.mirror(owner())], check=True)
+        # GHCR answered 403 to a parallel blob HEAD while the first push was still creating a new
+        # package (run 43991441792); the package existed moments later. A copy resumes where the
+        # last attempt stopped: crane skips blobs and manifests the mirror already has.
+        for attempt in range(1, 4):
+            print(f"copy {image.upstream()} -> {image.mirror(owner())} (attempt {attempt})")
+            if subprocess.run([crane, "copy", image.upstream(), image.mirror(owner())]).returncode == 0:
+                break
+            if attempt == 3:
+                raise SystemExit(f"FAIL: crane copy {image.upstream()} failed 3 times")
+            time.sleep(15 * attempt)
     return check_mirror(images, 0)
 
 
