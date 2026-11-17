@@ -1,0 +1,274 @@
+{
+  "source": "https://getbifrost.ai/datasheet",
+  "fetched": "2026-11-18",
+  "rows": {
+    "databricks/databricks-gemini-2-5-flash-lite": {
+      "cache_creation_input_token_cost": 1.2502e-7,
+      "cache_read_input_audio_token_cost": 3.752e-8,
+      "cache_read_input_token_cost": 1.253e-8,
+      "input_cost_per_audio_token": 3.7499e-7,
+      "input_cost_per_image_token": 1.2502e-7,
+      "input_cost_per_token": 1.2502e-7,
+      "output_cost_per_token": 5.0001e-7
+    },
+    "databricks/databricks-gemini-3-1-flash-image": {
+      "cache_creation_input_token_cost": 6.2503e-7,
+      "cache_read_input_token_cost": 6.2503e-7,
+      "input_cost_per_image_token": 6.2503e-7,
+      "input_cost_per_token": 6.2503e-7,
+      "output_cost_per_image_token": 0.0000750001,
+      "output_cost_per_token": 0.00000374997
+    },
+    "databricks/databricks-gemini-3-1-flash-lite": {
+      "cache_creation_input_token_cost": 3.1248e-7,
+      "cache_creation_input_token_cost_priority": 5.6252e-7,
+      "cache_read_input_audio_token_cost": 6.251e-8,
+      "cache_read_input_audio_token_cost_priority": 1.1249e-7,
+      "cache_read_input_token_cost": 3.122e-8,
+      "cache_read_input_token_cost_priority": 5.628e-8,
+      "input_cost_per_audio_token": 6.2503e-7,
+      "input_cost_per_audio_token_priority": 0.00000112497,
+      "input_cost_per_image_token": 3.1248e-7,
+      "input_cost_per_token": 3.1248e-7,
+      "input_cost_per_token_priority": 5.6252e-7,
+      "output_cost_per_token": 0.00000187502,
+      "output_cost_per_token_priority": 0.00000337498
+    },
+    "databricks/databricks-gemini-3-1-flash-lite-image": {
+      "cache_creation_input_token_cost": 3.1248e-7,
+      "cache_read_input_token_cost": 3.1248e-7,
+      "input_cost_per_image_token": 3.1248e-7,
+      "input_cost_per_token": 3.1248e-7,
+      "output_cost_per_image_token": 0.00003749998,
+      "output_cost_per_token": 0.00000187502
+    },
+    "databricks/databricks-gemini-3-1-pro": {
+      "cache_creation_input_token_cost": 0.00000249998,
+      "cache_creation_input_token_cost_priority": 0.00000450002,
+      "cache_read_input_token_cost": 2.4997e-7,
+      "cache_read_input_token_cost_above_200k_tokens": 5.0001e-7,
+      "cache_read_input_token_cost_above_200k_tokens_priority": 8.9999e-7,
+      "cache_read_input_token_cost_priority": 4.5003e-7,
+      "input_cost_per_token": 0.00000249998,
+      "input_cost_per_token_above_200k_tokens": 0.00000500003,
+      "input_cost_per_token_above_200k_tokens_priority": 0.00000899997,
+      "input_cost_per_token_priority": 0.00000450002,
+      "output_cost_per_token": 0.00001500002,
+      "output_cost_per_token_above_200k_tokens": 0.0000225,
+      "output_cost_per_token_above_200k_tokens_priority": 0.00004049997,
+      "output_cost_per_token_priority": 0.00002699998
+    },
+    "databricks/databricks-gemini-3-5-flash": {
+      "cache_creation_input_token_cost": 0.00000187502,
+      "cache_creation_input_token_cost_priority": 0.00000337498,
+      "cache_read_input_token_cost": 1.8753e-7,
+      "cache_read_input_token_cost_priority": 3.3747e-7,
+      "input_cost_per_token": 0.00000187502,
+      "input_cost_per_token_priority": 0.00000337498,
+      "output_cost_per_token": 0.00001124998,
+      "output_cost_per_token_priority": 0.00002025002
+    },
+    "databricks/databricks-gemini-3-5-flash-lite": {
+      "cache_creation_input_token_cost": 3.7499e-7,
+      "cache_creation_input_token_cost_priority": 6.7501e-7,
+      "cache_read_input_token_cost": 3.752e-8,
+      "cache_read_input_token_cost_priority": 6.748e-8,
+      "input_cost_per_token": 3.7499e-7,
+      "input_cost_per_token_priority": 6.7501e-7,
+      "output_cost_per_token": 0.00000312501,
+      "output_cost_per_token_priority": 0.00000562499
+    },
+    "databricks/databricks-gemini-3-6-flash": {
+      "cache_creation_input_token_cost": 7.4998e-7,
+      "cache_creation_input_token_cost_priority": 0.00000135002,
+      "cache_read_input_token_cost": 7.497e-8,
+      "cache_read_input_token_cost_priority": 1.3503e-7,
+      "input_cost_per_token": 7.4998e-7,
+      "input_cost_per_token_priority": 0.00000135002,
+      "output_cost_per_token": 0.00000374997,
+      "output_cost_per_token_priority": 0.00000675003
+    },
+    "databricks/databricks-gemini-3-7-flash": {
+      "cache_creation_input_token_cost": 7.4998e-7,
+      "cache_creation_input_token_cost_priority": 0.00000135002,
+      "cache_read_input_token_cost": 7.497e-8,
+      "cache_read_input_token_cost_priority": 1.3503e-7,
+      "input_cost_per_token": 7.4998e-7,
+      "input_cost_per_token_priority": 0.00000135002,
+      "output_cost_per_token": 0.00000374997,
+      "output_cost_per_token_priority": 0.00000675003
+    },
+    "databricks/databricks-gemini-3-8-flash": {
+      "cache_creation_input_token_cost": 7.4998e-7,
+      "cache_creation_input_token_cost_priority": 0.00000135002,
+      "cache_read_input_token_cost": 7.497e-8,
+      "cache_read_input_token_cost_priority": 1.3503e-7,
+      "input_cost_per_token": 7.4998e-7,
+      "input_cost_per_token_priority": 0.00000135002,
+      "output_cost_per_token": 0.00000374997,
+      "output_cost_per_token_priority": 0.00000675003
+    },
+    "databricks/databricks-gemini-3-flash": {
+      "cache_creation_input_token_cost": 6.2503e-7,
+      "cache_creation_input_token_cost_priority": 0.00000112497,
+      "cache_read_input_audio_token_cost": 1.2502e-7,
+      "cache_read_input_audio_token_cost_priority": 2.2498e-7,
+      "cache_read_input_token_cost": 6.251e-8,
+      "cache_read_input_token_cost_priority": 1.1249e-7,
+      "input_cost_per_audio_token": 0.00000124999,
+      "input_cost_per_audio_token_priority": 0.00000225001,
+      "input_cost_per_image_token": 6.2503e-7,
+      "input_cost_per_token": 6.2503e-7,
+      "input_cost_per_token_priority": 0.00000112497,
+      "output_cost_per_token": 0.00000374997,
+      "output_cost_per_token_priority": 0.00000675003
+    },
+    "databricks/databricks-gemini-3-pro-image": {
+      "cache_creation_input_token_cost": 0.00000249998,
+      "cache_read_input_token_cost": 0.00000249998,
+      "input_cost_per_image_token": 0.00000249998,
+      "input_cost_per_token": 0.00000249998,
+      "output_cost_per_image_token": 0.0001500002,
+      "output_cost_per_token": 0.00001500002
+    },
+    "databricks/databricks-gemini-4-argon": {
+      "cache_creation_input_token_cost": 0.00000249998,
+      "cache_creation_input_token_cost_priority": 0.00000450002,
+      "cache_read_input_token_cost": 1.2502e-7,
+      "cache_read_input_token_cost_priority": 2.2498e-7,
+      "input_cost_per_token": 0.00000249998,
+      "input_cost_per_token_priority": 0.00000450002,
+      "output_cost_per_token": 0.00001249997,
+      "output_cost_per_token_priority": 0.00002250003
+    },
+    "databricks/databricks-gpt-5-6-sol": {
+      "cache_creation_input_token_cost": 0.00000625002,
+      "cache_creation_input_token_cost_above_272k_tokens": 0.00000999999,
+      "cache_creation_input_token_cost_above_272k_tokens_priority": 0.00001999998,
+      "cache_creation_input_token_cost_priority": 0.00000999999,
+      "cache_read_input_token_cost": 5.0001e-7,
+      "cache_read_input_token_cost_above_272k_tokens": 8.0003e-7,
+      "cache_read_input_token_cost_above_272k_tokens_priority": 0.00000159999,
+      "cache_read_input_token_cost_priority": 8.0003e-7,
+      "input_cost_per_token": 0.00000500003,
+      "input_cost_per_token_above_272k_tokens": 0.00000800002,
+      "input_cost_per_token_above_272k_tokens_priority": 0.00001599997,
+      "input_cost_per_token_priority": 0.00000800002,
+      "output_cost_per_token": 0.00002999997,
+      "output_cost_per_token_above_272k_tokens": 0.00003,
+      "output_cost_per_token_above_272k_tokens_priority": 0.00006000001,
+      "output_cost_per_token_priority": 0.00004000003
+    },
+    "databricks/databricks-grok-4-6": {
+      "cache_creation_input_token_cost": 0.00000249998,
+      "cache_read_input_token_cost": 6.2503e-7,
+      "input_cost_per_token": 0.00000249998,
+      "output_cost_per_token": 0.00000750001
+    },
+    "databricks/databricks-grok-4-7": {
+      "cache_creation_input_token_cost": 0.00000249998,
+      "cache_read_input_token_cost": 6.2503e-7,
+      "input_cost_per_token": 0.00000249998,
+      "output_cost_per_token": 0.00000750001
+    },
+    "databricks/system.ai.gemini-3-1-flash-image": {
+      "input_cost_per_token": 6.2503e-7,
+      "output_cost_per_token": 0.00000374997
+    },
+    "databricks/system.ai.gemini-3-1-flash-lite": {
+      "cache_read_input_token_cost": 3.122e-8,
+      "cache_read_input_token_cost_priority": 5.628e-8,
+      "input_cost_per_token": 3.1248e-7,
+      "input_cost_per_token_priority": 5.6252e-7,
+      "output_cost_per_token": 0.00000187502,
+      "output_cost_per_token_priority": 0.00000337498
+    },
+    "databricks/system.ai.gemini-3-1-pro": {
+      "cache_read_input_token_cost": 2.4997e-7,
+      "cache_read_input_token_cost_priority": 4.5003e-7,
+      "input_cost_per_token": 0.00000249998,
+      "input_cost_per_token_priority": 0.00000450002,
+      "output_cost_per_token": 0.00001500002,
+      "output_cost_per_token_priority": 0.00002699998
+    },
+    "databricks/system.ai.gemini-3-5-flash": {
+      "cache_read_input_token_cost": 1.8753e-7,
+      "cache_read_input_token_cost_priority": 3.3747e-7,
+      "input_cost_per_token": 0.00000187502,
+      "input_cost_per_token_priority": 0.00000337498,
+      "output_cost_per_token": 0.00001124998,
+      "output_cost_per_token_priority": 0.00002025002
+    },
+    "databricks/system.ai.gemini-3-5-flash-lite": {
+      "cache_read_input_token_cost": 3.752e-8,
+      "cache_read_input_token_cost_priority": 6.748e-8,
+      "input_cost_per_token": 3.7499e-7,
+      "input_cost_per_token_priority": 6.7501e-7,
+      "output_cost_per_token": 0.00000312501,
+      "output_cost_per_token_priority": 0.00000562499
+    },
+    "databricks/system.ai.gemini-3-6-flash": {
+      "cache_read_input_token_cost": 7.497e-8,
+      "cache_read_input_token_cost_priority": 1.3503e-7,
+      "input_cost_per_token": 7.4998e-7,
+      "input_cost_per_token_priority": 0.00000135002,
+      "output_cost_per_token": 0.00000374997,
+      "output_cost_per_token_priority": 0.00000675003
+    },
+    "databricks/system.ai.gemini-3-7-flash": {
+      "cache_read_input_token_cost": 7.497e-8,
+      "cache_read_input_token_cost_priority": 1.3503e-7,
+      "input_cost_per_token": 7.4998e-7,
+      "input_cost_per_token_priority": 0.00000135002,
+      "output_cost_per_token": 0.00000374997,
+      "output_cost_per_token_priority": 0.00000675003
+    },
+    "databricks/system.ai.gemini-3-8-flash": {
+      "cache_read_input_token_cost": 7.497e-8,
+      "cache_read_input_token_cost_priority": 1.3503e-7,
+      "input_cost_per_token": 7.4998e-7,
+      "input_cost_per_token_priority": 0.00000135002,
+      "output_cost_per_token": 0.00000374997,
+      "output_cost_per_token_priority": 0.00000675003
+    },
+    "databricks/system.ai.gemini-3-flash": {
+      "cache_read_input_token_cost": 6.251e-8,
+      "cache_read_input_token_cost_priority": 1.1249e-7,
+      "input_cost_per_token": 6.2503e-7,
+      "input_cost_per_token_priority": 0.00000112497,
+      "output_cost_per_token": 0.00000374997,
+      "output_cost_per_token_priority": 0.00000675003
+    },
+    "databricks/system.ai.gemini-3-pro-image": {
+      "input_cost_per_token": 0.00000249998,
+      "output_cost_per_token": 0.00001500002
+    },
+    "databricks/system.ai.gemini-4-argon": {
+      "cache_read_input_token_cost": 1.2502e-7,
+      "cache_read_input_token_cost_priority": 2.2498e-7,
+      "input_cost_per_token": 0.00000249998,
+      "input_cost_per_token_priority": 0.00000450002,
+      "output_cost_per_token": 0.00001249997,
+      "output_cost_per_token_priority": 0.00002250003
+    },
+    "databricks/system.ai.gpt-5-6-sol": {
+      "cache_creation_input_token_cost": 0.00000500003,
+      "cache_read_input_token_cost": 3.9998e-7,
+      "cache_read_input_token_cost_priority": 8.0003e-7,
+      "input_cost_per_token": 0.00000400001,
+      "input_cost_per_token_priority": 0.00000800002,
+      "output_cost_per_token": 0.00001999998,
+      "output_cost_per_token_priority": 0.00004000003
+    },
+    "databricks/system.ai.grok-4-6": {
+      "cache_read_input_token_cost": 6.2503e-7,
+      "input_cost_per_token": 0.00000249998,
+      "output_cost_per_token": 0.00000750001
+    },
+    "databricks/system.ai.grok-4-7": {
+      "cache_read_input_token_cost": 6.2503e-7,
+      "input_cost_per_token": 0.00000249998,
+      "output_cost_per_token": 0.00000750001
+    }
+  }
+}
