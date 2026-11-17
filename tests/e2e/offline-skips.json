@@ -15,14 +15,6 @@
       "MCP Logs › Live Updates › should toggle live updates"
     ]
   },
-  "TXE-7736": {
-    "reason": "stale page-object locators: the model filter's fallback finds another button (test.fixme), and no live-updates control renders",
-    "file": "features/logs/logs.spec.ts",
-    "tests": [
-      "LLM Logs › Log Filtering › should filter logs by model",
-      "LLM Logs › Live Updates › should toggle live updates"
-    ]
-  },
   "TXE-7737": [
     {
       "reason": "the vLLM, Ollama and SGLang providers are not configured offline",
