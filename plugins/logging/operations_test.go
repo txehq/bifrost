@@ -4531,7 +4531,7 @@ func TestRecordVideoJobLifecycle_AzureSoraCreateThenContentIsSettledByTheSweeper
 	}
 	plugin.recordVideoJobLifecycle(entry, &schemas.BifrostResponse{
 		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{ID: taskID, Model: "sora", Status: schemas.VideoStatusQueued},
-	}, schemas.VideoGenerationRequest)
+	}, schemas.VideoGenerationRequest, nil, modelcatalog.VideoInputs{}, "")
 
 	rowID := cstables.ProviderJobID(cstables.ProviderJobKindVideo, string(schemas.Azure), taskID)
 	job, err := bs.GetProviderJob(context.Background(), rowID)

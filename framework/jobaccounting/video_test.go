@@ -1489,6 +1489,15 @@ var videoDurationFixtures = map[schemas.ModelProvider]videoDurationFixture{
 		}
 		return 200, `{"status":"done","model":"grok-imagine-video","video":{"url":"https://example.invalid/v.mp4","duration":6},"usage":{"cost_in_usd_ticks":3000000000}}`
 	}},
+	// Azure's first-generation sora, on the video generation jobs API (TXE-7054). A create naming
+	// no seconds sends no n_seconds; the job then reports the length it renders (n_seconds, the
+	// vendor's default). Azure's Sora 2 answers as OpenAI's video API does, the openai row's shape.
+	schemas.Azure: {model: "sora", answer: func(method, _ string) (int, string) {
+		if method == http.MethodPost {
+			return 200, azureVideoJob("queued")
+		}
+		return 200, azureVideoJob("succeeded")
+	}},
 	// BFL's get_result reports no duration, only its settled cost in credits (TXE-7297).
 	schemas.BFL: {model: "flux-3-video", answer: func(method, _ string) (int, string) {
 		if method == http.MethodPost {
@@ -1527,8 +1536,13 @@ func (a *videoDurationAccount) GetConfiguredProviders() ([]schemas.ModelProvider
 	return providers, nil
 }
 
-func (a *videoDurationAccount) GetKeysForProvider(_ context.Context, _ schemas.ModelProvider) ([]schemas.Key, error) {
-	return []schemas.Key{{ID: "k", Name: "k", Value: *schemas.NewSecretVar("test-key"), Weight: 1, Models: schemas.WhiteList{"*"}}}, nil
+func (a *videoDurationAccount) GetKeysForProvider(_ context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+	key := schemas.Key{ID: "k", Name: "k", Value: *schemas.NewSecretVar("test-key"), Weight: 1, Models: schemas.WhiteList{"*"}}
+	if provider == schemas.Azure {
+		// Azure reads the resource endpoint from the key, not from the network base URL.
+		key.AzureKeyConfig = &schemas.AzureKeyConfig{Endpoint: *schemas.NewSecretVar(a.base + "/" + string(provider))}
+	}
+	return []schemas.Key{key}, nil
 }
 
 func (a *videoDurationAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
