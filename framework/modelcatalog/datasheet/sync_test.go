@@ -395,7 +395,7 @@ var ignoredUpstreamCostKeys = map[string]string{
 	"ocr_cost_per_page_batches":                            "TXE-7354: deliberately ignored: the fork has no Mistral batch API, so an OCR batch cannot be created and these rates price nothing",
 	// Flex, priority, fast, ultrafast, decisions and balanced tiers.
 	"cache_read_input_token_cost_balanced":                  "TXE-7353: deliberately ignored: upstream publishes _balanced rates only for sail/*, which is not a fork provider, so no request the fork serves can reach them",
-	"input_cost_per_audio_token_above_200k_tokens_flex": "TXE-7355: deliberately ignored: every row publishing a 200k audio tier repeats its non-200k audio rate, except gemini-2.5-flash standard (3e-07 against Google flat 1e-06), an upstream error that would underbill",
+	"input_cost_per_audio_token_above_200k_tokens_flex":     "TXE-7355: deliberately ignored: every row publishing a 200k audio tier repeats its non-200k audio rate, except gemini-2.5-flash standard (3e-07 against Google flat 1e-06), an upstream error that would underbill",
 	"input_cost_per_audio_token_above_200k_tokens_priority": "TXE-7355: deliberately ignored: every row publishing a 200k audio tier repeats its non-200k audio rate, except gemini-2.5-flash standard (3e-07 against Google flat 1e-06), an upstream error that would underbill",
 	"input_cost_per_token_balanced":                         "TXE-7353: deliberately ignored: upstream publishes _balanced rates only for sail/*, which is not a fork provider, so no request the fork serves can reach them",
 	"output_cost_per_token_balanced":                        "TXE-7353: deliberately ignored: upstream publishes _balanced rates only for sail/*, which is not a fork provider, so no request the fork serves can reach them",
@@ -410,17 +410,17 @@ var ignoredUpstreamCostKeys = map[string]string{
 	"output_dbu_cost_per_token":           dbuRestatesUSD,
 	// Long-context thresholds the fork has no tier for.
 	"input_cost_per_audio_token_above_200k_tokens": "TXE-7355: deliberately ignored: every row publishing a 200k audio tier repeats its non-200k audio rate, except gemini-2.5-flash standard (3e-07 against Google flat 1e-06), an upstream error that would underbill",
-	"input_cost_per_character_above_128k_tokens": "TXE-7355: deliberately ignored: published only for two free Gemini models (gemma-3-27b-it, learnlm-1.5-pro-experimental), priced 0",
-	"output_cost_per_character_above_128k_tokens": "TXE-7355: deliberately ignored: published only for two free Gemini models (gemma-3-27b-it, learnlm-1.5-pro-experimental), priced 0",
+	"input_cost_per_character_above_128k_tokens":   "TXE-7355: deliberately ignored: published only for two free Gemini models (gemma-3-27b-it, learnlm-1.5-pro-experimental), priced 0",
+	"output_cost_per_character_above_128k_tokens":  "TXE-7355: deliberately ignored: published only for two free Gemini models (gemma-3-27b-it, learnlm-1.5-pro-experimental), priced 0",
 	// Everything else.
-	"citation_cost_per_token": "TXE-7358: deliberately ignored: only perplexity/sonar-deep-research publishes it, and Perplexity reports the request's own cost (citation_tokens_cost included), which the fork bills as the provider-computed cost",
-	"cost_per_second": "TXE-7358: deliberately ignored: all 28 rows are Bedrock provisioned-throughput commitments, billed per model-unit hour whether or not they serve traffic, not per request",
+	"citation_cost_per_token":              "TXE-7358: deliberately ignored: only perplexity/sonar-deep-research publishes it, and Perplexity reports the request's own cost (citation_tokens_cost included), which the fork bills as the provider-computed cost",
+	"cost_per_second":                      "TXE-7358: deliberately ignored: all 28 rows are Bedrock provisioned-throughput commitments, billed per model-unit hour whether or not they serve traffic, not per request",
 	"explicit_cache_read_input_token_cost": "TXE-7358: deliberately ignored: published only for Qwen explicit-cache reads on dashscope, qwencloud, qwen_ai_platform and streamlake rows; DashScope chat is unsupported and the other three match no fork provider",
-	"ocr_cost_per_credit": "TXE-7358: deliberately ignored: only reducto rows publish it, and the fork has no Reducto provider",
-	"output_cost_per_billable_unit": "TXE-7358: deliberately ignored: only fal_ai nano-banana-2.1 rows publish it, and the fork has no fal provider",
-	"output_cost_per_character": "TXE-7358: deliberately ignored: the two Gemini rows are 0, and medlm-large and medlm-medium are PaLM-era Vertex models served on the :predict text API, which the fork's Vertex chat does not call",
-	"output_cost_per_reasoning_token": "TXE-7358: deliberately ignored: equal to output_cost_per_token on every reachable row; it differs only on DashScope, qwencloud and qwen_ai_platform Qwen rows (no fork chat route), perplexity/sonar-deep-research (provider-computed cost), cerebras/qwen-3-235b-a22b-instruct-2507 (0; an instruct model that emits no reasoning tokens), and claude-opus-4-8 and openai/gpt-5.4-pro, whose values (5e-07 and 0) are upstream errors: both vendors bill reasoning as output tokens",
-	"output_cost_per_unit": "TXE-7358: deliberately ignored: only replicate/tencent/hunyuan-3d-3.1 publishes it, in mode 3d, which no fork request type resolves",
+	"ocr_cost_per_credit":                  "TXE-7358: deliberately ignored: only reducto rows publish it, and the fork has no Reducto provider",
+	"output_cost_per_billable_unit":        "TXE-7358: deliberately ignored: only fal_ai nano-banana-2.1 rows publish it, and the fork has no fal provider",
+	"output_cost_per_character":            "TXE-7358: deliberately ignored: the two Gemini rows are 0, and medlm-large and medlm-medium are PaLM-era Vertex models served on the :predict text API, which the fork's Vertex chat does not call",
+	"output_cost_per_reasoning_token":      "TXE-7358: deliberately ignored: equal to output_cost_per_token on every reachable row; it differs only on DashScope, qwencloud and qwen_ai_platform Qwen rows (no fork chat route), perplexity/sonar-deep-research (provider-computed cost), cerebras/qwen-3-235b-a22b-instruct-2507 (0; an instruct model that emits no reasoning tokens), and claude-opus-4-8 and openai/gpt-5.4-pro, whose values (5e-07 and 0) are upstream errors: both vendors bill reasoning as output tokens",
+	"output_cost_per_unit":                 "TXE-7358: deliberately ignored: only replicate/tencent/hunyuan-3d-3.1 publishes it, in mode 3d, which no fork request type resolves",
 }
 
 // dbuToUSD pairs each Databricks DBU cost key with the USD key that states the same rate. The fork
@@ -438,15 +438,24 @@ var dbuToUSD = map[string]string{
 // 0.00014286 DBU per input token is its 1e-05 USD), Databricks' published pay-per-token rate.
 const usdPerDBU = 0.07
 
-// dbuUSDDisagreements are the rates whose USD key disagrees with DBU x usdPerDBU in the snapshot,
-// keyed "row|dbu key", each with what was found. The fork bills the USD key, so each is a
-// candidate misprice until it is resolved (TXE-7688); a new disagreement fails the test, and one
-// that agrees again must leave the list.
+// dbuUSDDisagreements are the rates whose USD key, after upstreamRateCorrections, disagrees with
+// DBU x usdPerDBU in the snapshot, keyed "row|dbu key", each with what was found. The fork bills
+// the USD key. A new disagreement fails the test, and one that agrees again must leave the list.
+// A USD rate that is wrong is corrected in upstreamRateCorrections, and then agrees.
 var dbuUSDDisagreements = map[string]string{
-	"databricks/databricks-gemini-3-pro|input_dbu_cost_per_token":                "35.714 DBU per 1M ($2.50 at $0.07, Databricks' current list rate) against 2e-06 USD ($2.00): the USD rate carries the 20% Gemini promotion Databricks ended on 30 Jun 2026 (TXE-7688)",
-	"databricks/databricks-gemini-3-pro|output_dbu_cost_per_token":               "214.286 DBU per 1M ($15.00 at $0.07) against 1.2e-05 USD ($12.00): the same ended 20% promotion (TXE-7688)",
-	"databricks/databricks-gemini-3-6-flash|cache_read_input_token_dbu_cost":     "2.679e-06 DBU (1.875e-07 USD at $0.07) against 7.497e-08 USD, 0.4x: no published source explains the gap (TXE-7688)",
-	"databricks/databricks-gemini-3-6-flash|cache_creation_input_token_dbu_cost": "2.6786e-05 DBU (1.875e-06 USD at $0.07) against 7.4998e-07 USD, 0.4x: no published source explains the gap (TXE-7688)",
+	"databricks/databricks-gemini-3-6-flash|cache_read_input_token_dbu_cost":     "the DBU key is wrong and the USD key is right (TXE-7688). https://www.databricks.com/product/pricing/proprietary-foundation-model-serving, read 18 Nov 2026, lists Gemini 3.6 Flash cache reads at 1.071 DBU per 1M, 7.497e-08 USD at $0.07, which is the USD key. The DBU key's 2.679e-06 is Gemini 3.5 Flash's cache-read rate",
+	"databricks/databricks-gemini-3-6-flash|cache_creation_input_token_dbu_cost": "the DBU key is wrong and the USD key is right (TXE-7688). The USD key is 1.0x the row's input rate, as on every other Databricks Gemini row. The DBU key's 2.6786e-05 is Gemini 3.5 Flash's input rate (26.786 DBU per 1M on the same page, read 18 Nov 2026)",
+}
+
+// correctedUSD is the USD rate the fork bills for row's usdKey when upstream publishes usd: the
+// correction's value while upstreamRateCorrections applies to it, otherwise usd.
+func correctedUSD(row, usdKey string, usd float64) float64 {
+	for _, c := range upstreamRateCorrections {
+		if c.row == row && c.key == usdKey && c.upstream == usd {
+			return c.corrected
+		}
+	}
+	return usd
 }
 
 // upstreamDBURowsSnapshot is testdata/upstream_dbu_rows.json: for every upstream row that carries a
@@ -497,11 +506,12 @@ func TestEveryDBURateHasItsUSDRate(t *testing.T) {
 			}
 			id := row + "|" + dbuKey
 			want := *dbu * usdPerDBU
-			agrees := math.Abs(*usd-want) <= 0.01*math.Max(math.Abs(want), math.Abs(*usd))
+			billed := correctedUSD(row, usdKey, *usd)
+			agrees := dbuAgrees(*dbu, billed)
 			reason, known := dbuUSDDisagreements[id]
 			switch {
 			case !agrees && !known:
-				t.Errorf("%s: %s is %g, but %s is %g DBU, %g USD at $%g/DBU. The fork bills the USD rate; find which is right and record it in dbuUSDDisagreements with the evidence, or fix the row", row, usdKey, *usd, dbuKey, *dbu, want, usdPerDBU)
+				t.Errorf("%s: the fork bills %s at %g (upstream publishes %g), but %s is %g DBU, %g USD at $%g/DBU. Find which is right: a wrong USD rate goes in upstreamRateCorrections, a wrong DBU rate in dbuUSDDisagreements, each with the evidence", row, usdKey, billed, *usd, dbuKey, *dbu, want, usdPerDBU)
 			case !agrees && strings.TrimSpace(reason) == "":
 				t.Errorf("%s is in dbuUSDDisagreements without a reason", id)
 			case agrees && known:
@@ -519,6 +529,129 @@ func TestEveryDBURateHasItsUSDRate(t *testing.T) {
 			}
 		}
 	}
+}
+
+// dbuAgrees reports whether a USD rate equals a DBU rate at usdPerDBU, within 1% (the datasheet
+// rounds DBU rates to five significant figures).
+func dbuAgrees(dbu, usd float64) bool {
+	want := dbu * usdPerDBU
+	return math.Abs(usd-want) <= 0.01*math.Max(math.Abs(want), math.Abs(usd))
+}
+
+// TestUpstreamRateCorrectionsStillMatchUpstream is the check that takes a correction out once
+// upstream fixes its row (TXE-7688). It reads the same committed snapshot as
+// TestEveryDBURateHasItsUSDRate and fails when a correction's row is gone or no longer publishes
+// the value the correction replaces: the correction then does nothing at runtime, so it must be
+// removed. It also fails when a correction's key does not name the field it rewrites, when it has
+// no evidence, or, for a Databricks row with a DBU rate, when the corrected value disagrees with it.
+func TestUpstreamRateCorrectionsStillMatchUpstream(t *testing.T) {
+	raw, err := os.ReadFile(upstreamDBURowsSnapshotPath)
+	require.NoError(t, err)
+	var snapshot upstreamDBURowsSnapshot
+	require.NoError(t, json.Unmarshal(raw, &snapshot))
+	usdToDBU := map[string]string{}
+	for dbuKey, usdKey := range dbuToUSD {
+		usdToDBU[usdKey] = dbuKey
+	}
+
+	seen := map[string]bool{}
+	for _, c := range upstreamRateCorrections {
+		id := c.row + " " + c.key
+		if seen[id] {
+			t.Errorf("%s is corrected twice in upstreamRateCorrections", id)
+		}
+		seen[id] = true
+		if strings.TrimSpace(c.evidence) == "" {
+			t.Errorf("%s has no evidence in upstreamRateCorrections", id)
+		}
+
+		// The key must be the JSON name of the field the correction rewrites.
+		var entry Entry
+		value := c.upstream
+		*c.field(&entry) = &value
+		encoded, err := json.Marshal(entry)
+		require.NoError(t, err)
+		var fields map[string]any
+		require.NoError(t, json.Unmarshal(encoded, &fields))
+		if _, ok := fields[c.key]; !ok {
+			t.Errorf("%s: field does not decode %s (the Entry it sets encodes as %s)", id, c.key, encoded)
+		}
+
+		row, published := snapshot.Rows[c.row]
+		if !published {
+			t.Errorf("%s: upstream no longer publishes %s (snapshot fetched %s): remove the correction", id, c.row, snapshot.Fetched)
+			continue
+		}
+		got, has := row[c.key]
+		switch {
+		case !has || got == nil:
+			t.Errorf("%s: upstream no longer publishes %s on the row (snapshot fetched %s): remove the correction", id, c.key, snapshot.Fetched)
+		case *got != c.upstream:
+			t.Errorf("%s: upstream now publishes %g, not the %g this corrects (snapshot fetched %s), so the correction no longer applies: remove it, and check %g against its evidence", id, *got, c.upstream, snapshot.Fetched, *got)
+		}
+		if dbu := row[usdToDBU[c.key]]; dbu != nil && !dbuAgrees(*dbu, c.corrected) {
+			t.Errorf("%s: the corrected %g disagrees with the row's %s of %g DBU (%g USD at $%g/DBU)", id, c.corrected, usdToDBU[c.key], *dbu, *dbu*usdPerDBU, usdPerDBU)
+		}
+	}
+}
+
+// TestUpstreamRateCorrectionsApplyOnlyToTheValueTheyCorrect loads a datasheet the way a sync does
+// and reads the rates back from the store (TXE-7688). The two databricks-gemini-3-pro rates bill at
+// the corrected list price while upstream publishes the promotional value. A row that publishes
+// any other value, as upstream will once it fixes the row or as a hand-written file:// datasheet
+// may, is billed at that value. The row's other rates, and other rows, are untouched.
+func TestUpstreamRateCorrectionsApplyOnlyToTheValueTheyCorrect(t *testing.T) {
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelWarn)
+	load := func(t *testing.T, rows map[string]any) *Store {
+		t.Helper()
+		raw, err := json.Marshal(rows)
+		require.NoError(t, err)
+		path := filepath.Join(t.TempDir(), "pricing.json")
+		require.NoError(t, os.WriteFile(path, raw, 0o600))
+		store := New(nil, logger, Config{URL: "file://" + path})
+		require.NoError(t, store.LoadFromURLIntoMemory(context.Background()))
+		return store
+	}
+	// databricks/databricks-gemini-3-pro as the datasheet published it on 17 Nov 2026.
+	upstreamRow := func(input, output float64) map[string]any {
+		return map[string]any{
+			"provider": "databricks", "mode": "chat",
+			"input_cost_per_token": input, "output_cost_per_token": output,
+			"input_dbu_cost_per_token": 3.5714e-05, "output_dbu_cost_per_token": 0.000214286,
+			"cache_read_input_token_cost": 2.4997e-07, "cache_creation_input_token_cost": 2.49998e-06,
+		}
+	}
+	rate := func(t *testing.T, store *Store, model string, provider schemas.ModelProvider) (input, output, cacheRead float64) {
+		t.Helper()
+		row := store.Get(model, provider, schemas.ChatCompletionRequest)
+		require.NotNil(t, row, "%s/%s has no chat pricing row", provider, model)
+		require.NotNil(t, row.InputCostPerToken)
+		require.NotNil(t, row.OutputCostPerToken)
+		require.NotNil(t, row.CacheReadInputTokenCost)
+		return *row.InputCostPerToken, *row.OutputCostPerToken, *row.CacheReadInputTokenCost
+	}
+
+	t.Run("the upstream promotional rates are corrected to the list rates", func(t *testing.T) {
+		store := load(t, map[string]any{
+			"databricks/databricks-gemini-3-pro": upstreamRow(2e-06, 1.2e-05),
+			// Another provider's row with the same model name and the same rates is not Databricks'.
+			"vertex/databricks-gemini-3-pro": map[string]any{"provider": "vertex", "mode": "chat", "input_cost_per_token": 2e-06, "output_cost_per_token": 1.2e-05, "cache_read_input_token_cost": 2e-07},
+		})
+		input, output, cacheRead := rate(t, store, "databricks-gemini-3-pro", schemas.Databricks)
+		require.Equal(t, 2.49998e-06, input)
+		require.Equal(t, 1.500002e-05, output)
+		require.Equal(t, 2.4997e-07, cacheRead, "the row's cache rate is not corrected")
+		input, output, _ = rate(t, store, "databricks-gemini-3-pro", schemas.Vertex)
+		require.Equal(t, 2e-06, input)
+		require.Equal(t, 1.2e-05, output)
+	})
+
+	t.Run("a row that publishes any other value keeps it", func(t *testing.T) {
+		store := load(t, map[string]any{"databricks/databricks-gemini-3-pro": upstreamRow(2.5e-06, 1.3e-05)})
+		input, output, _ := rate(t, store, "databricks-gemini-3-pro", schemas.Databricks)
+		require.Equal(t, 2.5e-06, input)
+		require.Equal(t, 1.3e-05, output)
+	})
 }
 
 func writeUpstreamDBURowsSnapshot(t *testing.T, source string) {
