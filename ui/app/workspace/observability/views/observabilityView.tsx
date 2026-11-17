@@ -2,12 +2,14 @@ import FullPageLoader from "@/components/fullPageLoader";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useIsMobile } from "@/hooks/use-mobile";
-import { setSelectedPlugin, useAppDispatch, useGetPluginsQuery } from "@/lib/store";
+import { getErrorMessage, setSelectedPlugin, useAppDispatch, useDeletePluginMutation, useGetPluginsQuery } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { useTheme } from "next-themes";
 import { ArrowLeft } from "lucide-react";
 import { useQueryState } from "nuqs";
 import { useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
+import ConfirmDeleteConnectorDialog from "../dialogs/confirmDeleteConnectorDialog";
 import BigQueryView from "./plugins/bigqueryView";
 import DatadogView from "./plugins/datadogView";
 import KafkaView from "./plugins/kafkaView";
@@ -103,7 +105,9 @@ const supportedPlatformsList = (resolvedTheme: string): SupportedPlatform[] => [
 export default function ObservabilityView() {
 	const isMobile = useIsMobile();
 	const dispatch = useAppDispatch();
-	const { data: plugins, isLoading } = useGetPluginsQuery();
+	const { data: plugins, isLoading, refetch } = useGetPluginsQuery();
+	const [deletePlugin, { isLoading: isDeleting }] = useDeletePluginMutation();
+	const [pendingDelete, setPendingDelete] = useState<"otel" | "prometheus" | null>(null);
 	const [selectedPluginId, setSelectedPluginId] = useQueryState("plugin");
 	const { resolvedTheme } = useTheme();
 	const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
@@ -146,6 +150,23 @@ export default function ObservabilityView() {
 			setSelectedPluginId(supportedPlatforms[0].id);
 		}
 	}, [selectedPluginId]);
+
+	// A connector can be deleted only when it has a stored plugin row.
+	const isConfigured = (tabId: string) => !!plugins?.some((plugin) => plugin.name === getPluginNameForTab(tabId));
+
+	const handleConfirmDelete = async () => {
+		if (!pendingDelete) return;
+		const label = pendingDelete === "prometheus" ? "Prometheus" : "OpenTelemetry";
+		try {
+			await deletePlugin(getPluginNameForTab(pendingDelete)).unwrap();
+			toast.success(`${label} connector deleted`);
+			setPendingDelete(null);
+			// Read the list back from the server so the form shows what is actually stored.
+			refetch();
+		} catch (err) {
+			toast.error(`Failed to delete ${label} connector`, { description: getErrorMessage(err) });
+		}
+	};
 
 	if (isLoading) {
 		return <FullPageLoader />;
@@ -206,8 +227,15 @@ export default function ObservabilityView() {
 					<ArrowLeft className="size-4" />
 					Providers
 				</Button>
-				{selectedPluginId === "prometheus" && <PrometheusView />}
-				{selectedPluginId === "otel" && <OtelView />}
+				{selectedPluginId === "prometheus" && (
+					<PrometheusView
+						onDelete={isConfigured("prometheus") ? () => setPendingDelete("prometheus") : undefined}
+						isDeleting={isDeleting}
+					/>
+				)}
+				{selectedPluginId === "otel" && (
+					<OtelView onDelete={isConfigured("otel") ? () => setPendingDelete("otel") : undefined} isDeleting={isDeleting} />
+				)}
 				{selectedPluginId === "maxim" && <MaximView />}
 				{selectedPluginId === "kafka" && <KafkaView />}
 				{selectedPluginId === "datadog" && <DatadogView />}
@@ -216,6 +244,12 @@ export default function ObservabilityView() {
 				{selectedPluginId === "splunk" && <SplunkView />}
 				{selectedPluginId === "newrelic" && <NewrelicView />}
 			</div>
+			<ConfirmDeleteConnectorDialog
+				connector={pendingDelete}
+				isDeleting={isDeleting}
+				onCancel={() => setPendingDelete(null)}
+				onConfirm={handleConfirmDelete}
+			/>
 		</div>
 	);
 }

@@ -24,7 +24,12 @@ interface TelemetryConfig {
 	push_gateway?: PushGatewayConfig;
 }
 
-export default function PrometheusView() {
+interface PrometheusViewProps {
+	onDelete?: () => void;
+	isDeleting?: boolean;
+}
+
+export default function PrometheusView({ onDelete, isDeleting }: PrometheusViewProps) {
 	const selectedPlugin = useAppSelector((state) => state.plugin.selectedPlugin);
 	const currentConfig = useMemo(() => {
 		const telemetryConfig = (selectedPlugin?.config as TelemetryConfig) ?? {};
@@ -98,6 +103,8 @@ export default function PrometheusView() {
 					onSave={handlePrometheusConfigSave}
 					currentConfig={currentConfig}
 					metricsEndpoint={metricsEndpoint}
+					onDelete={onDelete}
+					isDeleting={isDeleting}
 				/>
 			</div>
 		</div>

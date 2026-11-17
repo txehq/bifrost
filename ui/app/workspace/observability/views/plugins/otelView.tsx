@@ -9,7 +9,12 @@ import { toast } from "sonner";
 import { OtelFormFragment } from "../../fragments/otelFormFragment";
 import PluginTracingSheet from "../../sheets/pluginTracingSheet";
 
-export default function OtelView() {
+interface OtelViewProps {
+	onDelete?: () => void;
+	isDeleting?: boolean;
+}
+
+export default function OtelView({ onDelete, isDeleting }: OtelViewProps) {
 	const selectedPlugin = useAppSelector((state) => state.plugin.selectedPlugin);
 	const currentConfig = useMemo(() => ({ config: selectedPlugin?.config, enabled: selectedPlugin?.enabled }), [selectedPlugin]);
 	const [updatePlugin] = useUpdatePluginMutation();
@@ -65,7 +70,7 @@ export default function OtelView() {
 						</Button>
 					</div>
 				)}
-				<OtelFormFragment onSave={handleOtelConfigSave} currentConfig={currentConfig} />
+				<OtelFormFragment onSave={handleOtelConfigSave} currentConfig={currentConfig} onDelete={onDelete} isDeleting={isDeleting} />
 			</div>
 			<PluginTracingSheet
 				open={isTracingSheetOpen}

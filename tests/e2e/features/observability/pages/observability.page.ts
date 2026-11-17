@@ -34,6 +34,24 @@ export class ObservabilityPage extends BasePage {
     prometheus: 'prometheus-metrics-enable-toggle',
   }
 
+  /** Map of connector -> data-testid for delete button (only otel/prometheus can be deleted) */
+  private static readonly CONNECTOR_DELETE_TESTIDS: Partial<Record<ObservabilityConnector, string>> = {
+    otel: 'otel-connector-delete-btn',
+    prometheus: 'prometheus-connector-delete-btn',
+  }
+
+  /**
+   * Get connector delete button locator (otel/prometheus only).
+   */
+  getConnectorDeleteBtn(connector: 'otel' | 'prometheus'): Locator {
+    return this.page.getByTestId(ObservabilityPage.CONNECTOR_DELETE_TESTIDS[connector]!)
+  }
+
+  /** The confirm dialog shown before a connector is deleted. */
+  get deleteDialog(): Locator {
+    return this.page.getByTestId('observability-connector-delete-dialog')
+  }
+
   /**
    * Get connector tab locator by data-testid
    */

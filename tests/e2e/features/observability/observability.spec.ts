@@ -1,5 +1,36 @@
 import { expect, test } from '../../core/fixtures/base.fixture'
+import type { APIRequestContext } from '@playwright/test'
 import { ObservabilityState } from './pages/observability.page'
+
+// Delete wiring (TXE-7746). The Prometheus tab is backed by the "telemetry" plugin.
+type DeletableConnector = 'otel' | 'prometheus'
+const PLUGIN_NAME: Record<DeletableConnector, string> = { otel: 'otel', prometheus: 'telemetry' }
+// Configs that dial nothing: OTel is stored disabled, and telemetry has no push gateway.
+const CONNECTOR_CONFIG: Record<DeletableConnector, { enabled: boolean; config: Record<string, unknown> }> = {
+  otel: {
+    enabled: false,
+    config: {
+      profiles: [
+        {
+          enabled: true,
+          traces_enabled: true,
+          service_name: 'bifrost-e2e-delete',
+          collector_url: 'http://127.0.0.1:4318',
+          trace_type: 'genai_extension',
+          protocol: 'http',
+        },
+      ],
+    },
+  },
+  prometheus: { enabled: true, config: { metrics_enabled: true, push_gateway: { enabled: false } } },
+}
+
+async function storedPluginNames(request: APIRequestContext): Promise<string[]> {
+  const res = await request.get('/api/plugins')
+  expect(res.ok()).toBe(true)
+  const body = (await res.json()) as { plugins?: { name: string }[] }
+  return (body.plugins ?? []).map((p) => p.name)
+}
 
 test.describe('Observability', () => {
   let originalState: ObservabilityState
@@ -180,6 +211,59 @@ test.describe('Observability', () => {
 
       const newState = await observabilityPage.isConnectorEnabled('prometheus')
       expect(newState).toBe(!initialState)
+    })
+  })
+
+  test.describe('Connector delete', () => {
+    for (const connector of ['otel', 'prometheus'] as const) {
+      test(`should delete a configured ${connector} connector`, async ({ observabilityPage, page }) => {
+        const pluginName = PLUGIN_NAME[connector]
+        // Configure the connector through the API, then load the page so it reads the stored row.
+        const put = await page.request.put(`/api/plugins/${pluginName}`, { data: CONNECTOR_CONFIG[connector] })
+        expect(put.ok(), await put.text()).toBe(true)
+        expect(await storedPluginNames(page.request)).toContain(pluginName)
+
+        await observabilityPage.goto()
+        await observabilityPage.selectConnector(connector)
+        const deleteBtn = observabilityPage.getConnectorDeleteBtn(connector)
+        await expect(deleteBtn).toBeVisible()
+        await deleteBtn.click()
+
+        const dialog = observabilityPage.deleteDialog
+        await expect(dialog).toBeVisible()
+        if (connector === 'prometheus') {
+          // Deleting Prometheus deletes the telemetry plugin, which also serves /metrics.
+          await expect(dialog).toContainText('/metrics')
+        }
+
+        // Cancel leaves the connector in place.
+        await dialog.getByTestId('observability-connector-delete-cancel').click()
+        await expect(dialog).toBeHidden()
+        expect(await storedPluginNames(page.request)).toContain(pluginName)
+
+        await deleteBtn.click()
+        const deleted = page.waitForResponse(
+          (r) => r.request().method() === 'DELETE' && new URL(r.url()).pathname === `/api/plugins/${pluginName}`,
+        )
+        await observabilityPage.deleteDialog.getByTestId('observability-connector-delete-confirm').click()
+        expect((await deleted).ok()).toBe(true)
+        await expect(observabilityPage.deleteDialog).toBeHidden()
+
+        // Gone from the server, and the page no longer offers a delete for it.
+        expect(await storedPluginNames(page.request)).not.toContain(pluginName)
+        await expect(deleteBtn).toBeHidden()
+      })
+    }
+
+    test('should not offer delete for an unconfigured otel connector', async ({ observabilityPage, page }) => {
+      if ((await storedPluginNames(page.request)).includes('otel')) {
+        const res = await page.request.delete('/api/plugins/otel')
+        expect(res.ok(), await res.text()).toBe(true)
+      }
+      await observabilityPage.goto()
+      await observabilityPage.selectConnector('otel')
+      await expect(observabilityPage.page.getByTestId('otel-connector-enable-toggle')).toBeVisible()
+      await expect(observabilityPage.getConnectorDeleteBtn('otel')).toHaveCount(0)
     })
   })
 
