@@ -1,99 +1,96 @@
 #!/usr/bin/env python3
-"""Compares a release's load-test overhead with the releases before it (TXE-7762).
+"""Compares a release's load-test overhead with an earlier release's, on the same runner (TXE-7762).
 
 The load test's absolute limits (mean 5 ms, p99 100 ms) only fail once the overhead is
 already bad, and the release recorded one sample with nothing comparing one release to the
-next. Its non-streaming mean read 0.71 ms (sync.10), 1.21 ms (sync.11) and 2.31 ms
-(sync.12), and nobody could tell a creep from noise. This script is that comparison.
+next. Its non-streaming mean read 0.71, 1.21 and 2.31 ms at sync.10, sync.11 and sync.12,
+and nobody could tell a creep from noise.
 
-Each release records its result as the release asset load-performance.json: the
-load-test-results.json that load-test.sh writes, whose latency_us is the median over
-OVERHEAD_SAMPLES runs. The next release's load job fetches the assets of the last
-BASELINE_RELEASES releases that have a complete one and compares:
+TXE-7762 measured it. 11 builds across sync.10..sync.12, 12 runs each, interleaved on 6
+hosted runners, showed no code regression: sync.12 minus sync.10, paired on one runner, was
++36 µs (95% CI -91 to +92 µs). What moved the numbers was the runner. One runner put every
+build, sync.10 included, at a 2.4-2.9 ms mean and a 73-108 ms p99; another put them all at
+0.65-0.94 ms and 2-6 ms. Numbers recorded by different releases' runs therefore cannot be
+compared with each other, however many samples each takes.
 
-    baseline  = median of those releases' recorded values, per mode and metric
-    regressed = current > max(baseline * ratio, baseline + floor)
+So the release job also builds an earlier release (the control, CONTROL_DEPTH releases back,
+so a creep over several releases shows) and load-test.sh measures both on the same runner,
+alternating, OVERHEAD_SAMPLES times each. This script compares the medians:
 
-Both sides are over more than one sample: the current value is a median of
-OVERHEAD_SAMPLES runs in this job, the baseline a median over releases. The floor stops a
-ratio of two sub-millisecond numbers firing on runner noise. BOUNDS holds the bounds and the
-measured noise they were set from.
+    ratio     = candidate / control, per mode and metric
+    regressed = candidate > max(control * ratio bound, control + floor)
+
+Each release's result is recorded as the release asset load-performance.json. The release
+that later uses it as a control shows those recorded numbers next to the control's numbers
+measured on its own runner, so the runner's effect is visible on every report.
 
 Usage:
-  load-trend.py fetch --repo OWNER/NAME --exclude-tag TAG --out DIR
-  load-trend.py compare --current FILE [--baseline FILE ...] [--summary FILE] [--out FILE] [--warn-only]
-  load-trend.py check-result FILE      # exit 0 when FILE has every mode and metric compared
+  load-trend.py pick-control --repo OWNER/NAME --exclude-tag TAG [--depth N] [--recorded-out FILE]
+  load-trend.py compare --current FILE [--control-recorded FILE] [--summary FILE] [--out FILE] [--warn-only]
+  load-trend.py check-result FILE      # exit 0 when FILE has every candidate mode and metric
   load-trend.py --self-test
-Exit codes: 0 within bounds (or nothing to compare against, or --warn-only), 1 regressed,
-2 usage/input.
+Exit codes: 0 within bounds (or no control, or --warn-only), 1 regressed, 2 usage/input.
 """
 import argparse
 import json
-import statistics
 import subprocess
 import sys
 from pathlib import Path
 
 ASSET = "load-performance.json"
 TAG_PREFIX = "transports/v"
-BASELINE_RELEASES = 3
+CONTROL_DEPTH = 3
 MODES = ("non_streaming", "streaming")
 METRICS = ("mean", "p50", "p95", "p99")
-# (ratio, floor in µs) per mode and metric. Set from the TXE-7762 bisect: 11 builds of
-# sync.10..sync.12 x 12 runs each on ubuntu-24.04 hosted runners, 132 single samples per
-# mode, with no code difference between the builds that the runs could separate. Simulating
-# "median of 3 this run" against "median of 3 releases' medians" from those samples:
-#   mean x1.4/+0.3 ms: 0.5% false alarms (non-streaming), detects +50% 72%, +100% 100%
-#   p50, p95 x1.3/+0.15 ms: under 0.05% false alarms, detects +50% over 95%
-#   non-streaming p99 x3/+30 ms: 0.1% false alarms. Its single samples ran 3.7-110 ms, so
-#     only a large tail regression shows (x2/+20 ms would false-alarm 5.7%)
-#   streaming p99 x1.5/+1 ms: its single samples ran 1.2-3.0 ms
-# Those rates hold within one day's runners. Release runs on other days were noisier
-# (sync.12's two release runs had non-streaming p99 74 and 127 ms), which is why the
-# release job runs this with --warn-only.
+# (ratio, floor in µs) per mode and metric, for candidate / control on one runner. Set from
+# TXE-7762's second run: 4 binaries with no code difference the runs could separate (sync.10,
+# sync.11 and sync.12 builds, and sync.12's release binary), each measured as a median of 3
+# on 6 runners x 2 rounds, giving 144 same-runner pairs. The largest pair seen, as ratio and
+# as difference:
+#   non-streaming mean 1.45 / +408 µs   p50 1.38 / +132 µs   p95 1.18 / +86 µs   p99 5.04 / +26 ms
+#   streaming     mean 1.20 / +88 µs    p50 1.27 / +105 µs   p95 1.20 / +258 µs  p99 2.10 / +1.3 ms
+# Each bound sits above both, so none of those 144 pairs fires. The non-streaming p99 is the
+# first phase after a cold start and is mostly runner noise; its bound only catches a gross
+# tail regression, and the absolute 100 ms limit in load-test.sh still applies to it.
 BOUNDS = {
-    ("non_streaming", "mean"): (1.4, 300.0),
-    ("non_streaming", "p50"): (1.3, 150.0),
-    ("non_streaming", "p95"): (1.3, 150.0),
-    ("non_streaming", "p99"): (3.0, 30000.0),
-    ("streaming", "mean"): (1.4, 300.0),
-    ("streaming", "p50"): (1.3, 150.0),
-    ("streaming", "p95"): (1.3, 150.0),
-    ("streaming", "p99"): (1.5, 1000.0),
+    ("non_streaming", "mean"): (1.5, 450.0),
+    ("non_streaming", "p50"): (1.4, 150.0),
+    ("non_streaming", "p95"): (1.25, 100.0),
+    ("non_streaming", "p99"): (6.0, 30000.0),
+    ("streaming", "mean"): (1.25, 100.0),
+    ("streaming", "p50"): (1.3, 120.0),
+    ("streaming", "p95"): (1.3, 300.0),
+    ("streaming", "p99"): (2.5, 1500.0),
 }
 
 
-def metric(result, mode, name):
-    value = (((result.get("overhead") or {}).get(mode) or {}).get("latency_us") or {}).get(name)
+def metric(result, root, mode, name):
+    value = (((result.get(root) or {}).get(mode) or {}).get("latency_us") or {}).get(name)
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return float(value)
 
 
-def complete(result):
-    return isinstance(result, dict) and all(metric(result, m, k) is not None for m in MODES for k in METRICS)
+def complete(result, root="overhead"):
+    return isinstance(result, dict) and all(metric(result, root, m, k) is not None for m in MODES for k in METRICS)
 
 
-def compare(current, baselines):
-    """Returns (rows, regressions). Each row: mode, metric, current, baseline, limit, verdict."""
+def compare(current):
+    """Returns (rows, regressions). Each row: mode, metric, candidate, control, limit, verdict."""
     rows, regressions = [], []
     for mode in MODES:
         for name in METRICS:
-            cur = metric(current, mode, name)
-            past = [v for v in (metric(b, mode, name) for b in baselines) if v is not None]
-            if cur is None:
-                rows.append((mode, name, None, None, None, "missing in this run"))
+            cand = metric(current, "overhead", mode, name)
+            ctrl = metric(current, "control_overhead", mode, name)
+            if cand is None or ctrl is None:
+                rows.append((mode, name, cand, ctrl, None, "not measured"))
                 continue
-            if not past:
-                rows.append((mode, name, cur, None, None, "no baseline"))
-                continue
-            base = statistics.median(past)
             ratio, floor = BOUNDS[(mode, name)]
-            limit = max(base * ratio, base + floor)
-            verdict = "REGRESSED" if cur > limit else "ok"
-            rows.append((mode, name, cur, base, limit, verdict))
+            limit = max(ctrl * ratio, ctrl + floor)
+            verdict = "REGRESSED" if cand > limit else "ok"
+            rows.append((mode, name, cand, ctrl, limit, verdict))
             if verdict == "REGRESSED":
-                regressions.append((mode, name, cur, base, limit))
+                regressions.append((mode, name, cand, ctrl, limit))
     return rows, regressions
 
 
@@ -101,56 +98,52 @@ def fmt(v):
     return "-" if v is None else f"{v / 1000:.2f} ms"
 
 
-def render(rows, labels):
+def render(current, rows, recorded):
+    label = current.get("control_label") or "the control"
     out = [
-        f"Baseline: median of {', '.join(labels) if labels else 'no recorded release'}",
+        f"Candidate against {label}, both measured on this runner (median of each build's samples).",
         "",
-        "| Mode | Metric | This run | Baseline | Limit | Verdict |",
-        "|------|--------|----------|----------|-------|---------|",
+        "| Mode | Metric | Candidate | Control | Ratio | Limit | Verdict | Control as recorded on its release |",
+        "|------|--------|-----------|---------|-------|-------|---------|------------------------------------|",
     ]
-    for mode, name, cur, base, limit, verdict in rows:
-        out.append(f"| {mode} | {name} | {fmt(cur)} | {fmt(base)} | {fmt(limit)} | {verdict} |")
+    for mode, name, cand, ctrl, limit, verdict in rows:
+        ratio = f"{cand / ctrl:.2f}" if cand is not None and ctrl else "-"
+        rec = metric(recorded, "overhead", mode, name) if recorded else None
+        out.append(f"| {mode} | {name} | {fmt(cand)} | {fmt(ctrl)} | {ratio} | {fmt(limit)} | {verdict} | {fmt(rec)} |")
     out.append("")
-    out.append("Regressed when this run > max(baseline x ratio, baseline + floor): "
+    out.append("Regressed when candidate > max(control x ratio, control + floor): "
                + ", ".join(f"{m} {k} x{r}/+{f / 1000:g} ms" for (m, k), (r, f) in BOUNDS.items()) + ".")
+    if recorded:
+        out.append("The last column is the control release's own run, on a different runner; "
+                   "its gap to the Control column is the runner, not the code.")
     return "\n".join(out)
 
 
-def fetch(repo, exclude_tag, out_dir, count=BASELINE_RELEASES, scan=15):
-    """Downloads the asset of the newest `count` published transports releases that have a
-    complete one. A listing failure warns and fetches nothing: the comparison then reports
-    no baseline, and the release still records this run's result."""
-    out_dir.mkdir(parents=True, exist_ok=True)
+def pick_control(repo, exclude_tag, depth, recorded_out):
+    """Prints the tag of the release `depth` back (or the oldest there is), and downloads its
+    recorded result to recorded_out when it has one."""
     try:
         listing = subprocess.run(["gh", "release", "list", "-R", repo, "--limit", "100",
                                   "--json", "tagName,isDraft,createdAt"],
                                  check=True, capture_output=True, text=True)
         releases = json.loads(listing.stdout)
     except (subprocess.CalledProcessError, ValueError, OSError) as err:
-        print(f"::warning::cannot list the releases of {repo}: {err}")
-        return []
+        print(f"::warning::cannot list the releases of {repo}: {err}", file=sys.stderr)
+        return 1
     tags = [r["tagName"] for r in sorted(releases, key=lambda r: r["createdAt"], reverse=True)
             if r["tagName"].startswith(TAG_PREFIX) and not r["isDraft"] and r["tagName"] != exclude_tag]
-    got = []
-    for tag in tags[:scan]:
-        dest = out_dir / (tag.replace("/", "_") + ".json")
+    if not tags:
+        print(f"::warning::{repo} has no earlier {TAG_PREFIX}* release to use as the control", file=sys.stderr)
+        return 1
+    tag = tags[min(depth, len(tags)) - 1]
+    if recorded_out:
         proc = subprocess.run(["gh", "release", "download", tag, "-R", repo, "-p", ASSET,
-                               "-O", str(dest), "--clobber"], capture_output=True, text=True)
-        if proc.returncode != 0 or not dest.exists():
-            continue
-        try:
-            ok = complete(json.loads(dest.read_text()))
-        except ValueError:
-            ok = False
-        if not ok:
-            print(f"skipping {tag}: its {ASSET} is incomplete")
-            dest.unlink()
-            continue
-        got.append(tag)
-        if len(got) == count:
-            break
-    print(f"fetched {len(got)} recorded result(s): {', '.join(got) or 'none'}")
-    return got
+                               "-O", recorded_out, "--clobber"], capture_output=True, text=True)
+        if proc.returncode != 0:
+            print(f"{tag} has no recorded {ASSET}", file=sys.stderr)
+            Path(recorded_out).unlink(missing_ok=True)
+    print(tag)
+    return 0
 
 
 def load(path):
@@ -166,13 +159,14 @@ def main(argv):
         return self_test()
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="cmd", required=True)
-    f = sub.add_parser("fetch")
-    f.add_argument("--repo", required=True)
-    f.add_argument("--exclude-tag", default="")
-    f.add_argument("--out", required=True, type=Path)
+    p = sub.add_parser("pick-control")
+    p.add_argument("--repo", required=True)
+    p.add_argument("--exclude-tag", default="")
+    p.add_argument("--depth", type=int, default=CONTROL_DEPTH)
+    p.add_argument("--recorded-out")
     c = sub.add_parser("compare")
     c.add_argument("--current", required=True)
-    c.add_argument("--baseline", action="append", default=[])
+    c.add_argument("--control-recorded")
     c.add_argument("--summary")
     c.add_argument("--out")
     c.add_argument("--warn-only", action="store_true")
@@ -180,9 +174,10 @@ def main(argv):
     r.add_argument("file")
     args = parser.parse_args(argv)
 
-    if args.cmd == "fetch":
-        fetch(args.repo, args.exclude_tag, args.out)
-        return 0
+    if args.cmd == "pick-control":
+        if args.depth < 1:
+            parser.error("--depth must be at least 1")
+        return pick_control(args.repo, args.exclude_tag, args.depth, args.recorded_out)
     if args.cmd == "check-result":
         try:
             return 0 if complete(json.loads(Path(args.file).read_text())) else 1
@@ -190,134 +185,107 @@ def main(argv):
             return 1
 
     current = load(args.current)
-    baselines = [load(p) for p in args.baseline]
-    rows, regressions = compare(current, baselines)
-    text = render(rows, [Path(p).stem for p in args.baseline])
+    recorded = None
+    if args.control_recorded and Path(args.control_recorded).is_file():
+        recorded = load(args.control_recorded)
+    rows, regressions = compare(current)
+    text = render(current, rows, recorded)
     print(text)
     if args.out:
         Path(args.out).write_text(text + "\n")
     if args.summary:
         with open(args.summary, "a") as fh:
-            fh.write("## Load overhead against recorded releases\n\n" + text + "\n")
-    if not baselines:
-        print("::warning::no recorded release result to compare against; this run's result becomes the first")
+            fh.write("## Load overhead against an earlier release\n\n" + text + "\n")
+    if not complete(current, "control_overhead"):
+        print("::warning::no control build was measured, so nothing was compared")
         return 0
     level = "warning" if args.warn_only else "error"
-    for mode, name, cur, base, limit in regressions:
-        print(f"::{level}::{mode} {name} overhead {fmt(cur)} is past its trend bound {fmt(limit)} "
-              f"(baseline {fmt(base)}, median of the recorded releases)")
+    for mode, name, cand, ctrl, limit in regressions:
+        print(f"::{level}::{mode} {name} overhead {fmt(cand)} is past its bound {fmt(limit)} "
+              f"against {current.get('control_label') or 'the control'} at {fmt(ctrl)} on the same runner")
     return 1 if regressions and not args.warn_only else 0
 
 
-# Recorded results: the release / test-load-performance artifacts of runs 43597428233
-# (sync.10), 43772530151 (sync.11) and 44144252869 attempt 2 (sync.12). One sample each,
-# calibration-subtracted µs.
-RECORDED = {
-    "sync.10": {"non_streaming": {"mean": 713.67, "p50": 425.08, "p95": 515.90, "p99": 2033.15},
-                "streaming": {"mean": 608.18, "p50": 601.39, "p95": 707.60, "p99": 1984.59}},
-    "sync.11": {"non_streaming": {"mean": 1214.73, "p50": 590.12, "p95": 710.55, "p99": 12178.25},
-                "streaming": {"mean": 724.96, "p50": 691.20, "p95": 902.21, "p99": 2253.72}},
-    "sync.12": {"non_streaming": {"mean": 2314.84, "p50": 675.95, "p95": 1067.66, "p99": 74469.34},
-                "streaming": {"mean": 907.39, "p50": 788.37, "p95": 1341.10, "p99": 3261.92}},
-}
-
-
-def as_result(modes):
-    return {"overhead": {m: {"latency_us": v} for m, v in modes.items()}}
+# Recorded results, from load-test.sh runs with a control on hosted runners (TXE-7762 scratch
+# run RECORDED_RUN, medians of 3 samples per build, µs). Filled from that run's artifacts.
+RECORDED = {}
 
 
 def self_test():
+    import os
     import tempfile
     import unittest
 
     script = str(Path(__file__).resolve())
 
-    def run_cli(*args, stdin=None):
-        return subprocess.run([sys.executable, script, *args], input=stdin, capture_output=True, text=True)
+    def run_cli(*args, stdin=None, env=None):
+        return subprocess.run([sys.executable, script, *args], input=stdin, capture_output=True,
+                              text=True, env=env)
+
+    def result(cand, ctrl, label="transports/v2.4.0-sync.10"):
+        out: dict = {"overhead": {m: {"latency_us": v} for m, v in cand.items()}}
+        if ctrl is not None:
+            out["control_overhead"] = {m: {"latency_us": v} for m, v in ctrl.items()}
+            out["control_label"] = label
+        return out
+
+    flat = {"non_streaming": {"mean": 1000.0, "p50": 550.0, "p95": 650.0, "p99": 8000.0},
+            "streaming": {"mean": 560.0, "p50": 560.0, "p95": 610.0, "p99": 1700.0}}
 
     class LoadTrendTest(unittest.TestCase):
-        def test_sync12_against_sync10_and_sync11_fires_on_the_non_streaming_mean(self):
-            # The ticket's numbers: every one under the absolute limits, sync.12 past the trend bound.
-            _, regressions = compare(as_result(RECORDED["sync.12"]),
-                                     [as_result(RECORDED["sync.10"]), as_result(RECORDED["sync.11"])])
-            fired = {(m, n) for m, n, *_ in regressions}
-            self.assertIn(("non_streaming", "mean"), fired)
-            self.assertIn(("non_streaming", "p99"), fired)
-
-        def test_a_release_against_itself_is_within_bounds(self):
-            for name, modes in RECORDED.items():
-                with self.subTest(release=name):
-                    _, regressions = compare(as_result(modes), [as_result(modes)])
-                    self.assertEqual(regressions, [])
-
-        def test_the_floor_stops_sub_millisecond_ratios_firing(self):
-            base = as_result({"non_streaming": {"mean": 100.0, "p50": 50.0, "p95": 100.0, "p99": 500.0}})
-            cur = as_result({"non_streaming": {"mean": 390.0, "p50": 190.0, "p95": 240.0, "p99": 25000.0}})
-            _, regressions = compare(cur, [base])
+        def test_the_same_build_on_both_sides_is_within_bounds(self):
+            _, regressions = compare(result(flat, flat))
             self.assertEqual(regressions, [])
 
-        def test_baseline_is_the_median_so_one_noisy_release_does_not_move_it(self):
-            quiet = as_result({"non_streaming": {"mean": 700.0}})
-            noisy = as_result({"non_streaming": {"mean": 5000.0}})
-            rows, regressions = compare(as_result({"non_streaming": {"mean": 1100.0}}), [quiet, quiet, noisy])
-            row = next(r for r in rows if r[0] == "non_streaming" and r[1] == "mean")
-            self.assertEqual(row[3], 700.0)
-            self.assertEqual([(m, n) for m, n, *_ in regressions], [("non_streaming", "mean")])
-
-        def test_a_missing_metric_is_reported_not_compared(self):
-            rows, regressions = compare(as_result({"streaming": RECORDED["sync.10"]["streaming"]}),
-                                        [as_result(RECORDED["sync.10"])])
+        def test_the_largest_same_runner_noise_measured_does_not_fire(self):
+            # Each metric at its largest measured ratio and difference at once.
+            noisy = {"non_streaming": {"mean": 1408.0, "p50": 682.0, "p95": 736.0, "p99": 34000.0},
+                     "streaming": {"mean": 648.0, "p50": 665.0, "p95": 732.0, "p99": 3000.0}}
+            _, regressions = compare(result(noisy, flat))
             self.assertEqual(regressions, [])
-            self.assertIn("missing in this run", {r[5] for r in rows if r[0] == "non_streaming"})
 
-        def test_check_result_accepts_only_a_complete_result(self):
+        def test_both_the_ratio_and_the_floor_must_be_passed(self):
+            tiny = {"non_streaming": {"mean": 100.0, "p50": 50.0, "p95": 60.0, "p99": 500.0},
+                    "streaming": {"mean": 100.0, "p50": 50.0, "p95": 60.0, "p99": 500.0}}
+            double = {m: {k: v * 2 for k, v in d.items()} for m, d in tiny.items()}
+            _, regressions = compare(result(double, tiny))
+            self.assertEqual(regressions, [])  # x2 on sub-floor numbers: under every floor
+
+        def test_a_body_regression_fires_on_p50_and_p95(self):
+            slower = {m: dict(d) for m, d in flat.items()}
+            slower["non_streaming"]["p50"] = 550.0 * 1.6
+            slower["non_streaming"]["p95"] = 650.0 * 1.6
+            _, regressions = compare(result(slower, flat))
+            self.assertEqual({(m, n) for m, n, *_ in regressions},
+                             {("non_streaming", "p50"), ("non_streaming", "p95")})
+
+        def test_no_control_is_reported_and_passes(self):
+            rows, regressions = compare(result(flat, None))
+            self.assertEqual(regressions, [])
+            self.assertEqual({r[5] for r in rows}, {"not measured"})
+            proc = run_cli("compare", "--current", "/dev/stdin", stdin=json.dumps(result(flat, None)))
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("::warning::no control build was measured", proc.stdout)
+
+        def test_check_result_accepts_only_a_complete_candidate(self):
             with tempfile.TemporaryDirectory() as d:
                 full, part = Path(d) / "full.json", Path(d) / "part.json"
-                full.write_text(json.dumps(as_result(RECORDED["sync.12"])))
-                part.write_text(json.dumps(as_result({"streaming": RECORDED["sync.12"]["streaming"]})))
+                full.write_text(json.dumps(result(flat, None)))
+                part.write_text(json.dumps(result({"streaming": flat["streaming"]}, None)))
                 self.assertEqual(run_cli("check-result", str(full)).returncode, 0)
                 self.assertEqual(run_cli("check-result", str(part)).returncode, 1)
                 self.assertEqual(run_cli("check-result", str(Path(d) / "absent.json")).returncode, 1)
 
-        def test_no_baseline_passes_with_a_warning(self):
-            proc = run_cli("compare", "--current", "/dev/stdin", stdin=json.dumps(as_result(RECORDED["sync.12"])))
-            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-            self.assertIn("::warning::no recorded release result", proc.stdout)
-
-        def test_cli_fires_on_the_recorded_sync12_result(self):
+        def test_pick_control_takes_the_release_depth_back_and_its_recording(self):
             with tempfile.TemporaryDirectory() as d:
-                paths = {}
-                for name, modes in RECORDED.items():
-                    paths[name] = Path(d) / f"{name}.json"
-                    paths[name].write_text(json.dumps(as_result(modes)))
-                args = ["compare", "--current", str(paths["sync.12"]),
-                        "--baseline", str(paths["sync.10"]), "--baseline", str(paths["sync.11"])]
-                gating = run_cli(*args)
-                warning = run_cli(*args, "--warn-only", "--out", str(Path(d) / "trend.md"))
-                table = (Path(d) / "trend.md").read_text()
-            self.assertEqual(gating.returncode, 1, gating.stdout + gating.stderr)
-            self.assertIn("::error::non_streaming mean overhead 2.31 ms is past its trend bound 1.35 ms",
-                          gating.stdout)
-            self.assertEqual(warning.returncode, 0, warning.stdout + warning.stderr)
-            self.assertIn("::warning::non_streaming mean overhead 2.31 ms", warning.stdout)
-            self.assertNotIn("::error::", warning.stdout)
-            self.assertIn("| non_streaming | mean | 2.31 ms | 0.96 ms | 1.35 ms | REGRESSED |", table)
-
-        def test_fetch_takes_the_newest_complete_results_but_not_this_release(self):
-            import os
-            with tempfile.TemporaryDirectory() as d:
-                assets = Path(d) / "assets"
-                assets.mkdir()
                 listing = [{"tagName": f"transports/v2.4.0-sync.{n}", "isDraft": False,
-                            "createdAt": f"2026-11-{n:02d}T00:00:00Z"} for n in range(7, 14)]
+                            "createdAt": f"2026-11-{n:02d}T00:00:00Z"} for n in range(8, 14)]
                 listing += [{"tagName": "helm-chart-v2.1.52-sync.13", "isDraft": False,
                              "createdAt": "2026-11-30T00:00:00Z"},
                             {"tagName": "transports/v2.4.0-sync.14", "isDraft": True,
                              "createdAt": "2026-11-29T00:00:00Z"}]
                 (Path(d) / "listing.json").write_text(json.dumps(listing))
-                for n in (8, 9, 10, 12, 13):
-                    (assets / f"transports_v2.4.0-sync.{n}").write_text(json.dumps(as_result(RECORDED["sync.10"])))
-                (assets / "transports_v2.4.0-sync.11").write_text(json.dumps({"overhead": {}}))  # incomplete
+                (Path(d) / "transports_v2.4.0-sync.10").write_text(json.dumps(result(flat, None)))
                 gh = Path(d) / "gh"
                 gh.write_text(f"""#!/usr/bin/env python3
 import shutil, sys
@@ -325,9 +293,8 @@ a = sys.argv[1:]
 if a[:2] == ["release", "list"]:
     print(open({str(Path(d) / "listing.json")!r}).read()); sys.exit(0)
 if a[:2] == ["release", "download"]:
-    src = {str(assets)!r} + "/" + a[2].replace("/", "_")
     try:
-        shutil.copy(src, a[a.index("-O") + 1])
+        shutil.copy({str(d)!r} + "/" + a[2].replace("/", "_"), a[a.index("-O") + 1])
     except FileNotFoundError:
         sys.exit(1)
     sys.exit(0)
@@ -335,49 +302,54 @@ sys.exit(2)
 """)
                 gh.chmod(0o755)
                 env = dict(os.environ, PATH=f"{d}:{os.environ['PATH']}")
-                out = Path(d) / "out"
-                proc = subprocess.run([sys.executable, script, "fetch", "--repo", "o/r",
-                                       "--exclude-tag", "transports/v2.4.0-sync.13", "--out", str(out)],
-                                      env=env, capture_output=True, text=True)
+                rec = Path(d) / "recorded.json"
+                # sync.13 is the release being made: the control is three before it.
+                proc = run_cli("pick-control", "--repo", "o/r", "--exclude-tag", "transports/v2.4.0-sync.13",
+                               "--recorded-out", str(rec), env=env)
                 self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-                self.assertEqual(sorted(p.name for p in out.iterdir()),
-                                 ["transports_v2.4.0-sync.10.json", "transports_v2.4.0-sync.12.json",
-                                  "transports_v2.4.0-sync.9.json"])
-                self.assertIn("skipping transports/v2.4.0-sync.11", proc.stdout)
-
+                self.assertEqual(proc.stdout.strip(), "transports/v2.4.0-sync.10")
+                self.assertTrue(complete(json.loads(rec.read_text())))
+                # One back has no recording: the tag is still the control, with nothing recorded.
+                proc = run_cli("pick-control", "--repo", "o/r", "--exclude-tag", "transports/v2.4.0-sync.13",
+                               "--depth", "1", "--recorded-out", str(rec), env=env)
+                self.assertEqual(proc.stdout.strip(), "transports/v2.4.0-sync.12")
+                self.assertFalse(rec.exists())
+                # Fewer releases than the depth: the oldest one.
+                proc = run_cli("pick-control", "--repo", "o/r", "--depth", "99", env=env)
+                self.assertEqual(proc.stdout.strip(), "transports/v2.4.0-sync.8")
                 (Path(d) / "listing.json").write_text("not json")
-                proc = subprocess.run([sys.executable, script, "fetch", "--repo", "o/r", "--out", str(Path(d) / "o2")],
-                                      env=env, capture_output=True, text=True)
-                self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-                self.assertIn("::warning::cannot list the releases", proc.stdout)
+                proc = run_cli("pick-control", "--repo", "o/r", env=env)
+                self.assertEqual(proc.returncode, 1)
+                self.assertIn("::warning::cannot list the releases", proc.stderr)
 
-        def test_the_release_pipeline_records_and_compares(self):
+        def test_the_release_pipeline_records_and_compares_without_gating(self):
             import yaml
             jobs = yaml.safe_load((Path(script).parent.parent / "release-pipeline.yml").read_text())["jobs"]
             load_job = jobs["test-load-performance"]
-            run_step = next(s for s in load_job["steps"] if s.get("name") == "Run load performance test")
+            steps = load_job["steps"]
+            run_step = next(s for s in steps if s.get("name") == "Run load performance test")
             self.assertGreaterEqual(int(run_step["env"]["OVERHEAD_SAMPLES"]), 3)
-            trend = next(s for s in load_job["steps"] if "load-trend.py compare" in s.get("run", ""))
-            self.assertIn("load-trend.py fetch", trend["run"])
+            self.assertIn("CONTROL_BIFROST_BIN", run_step["env"])
+            control = next(s for s in steps if "load-control.sh" in s.get("run", ""))
+            self.assertIn("load-trend.py pick-control", control["run"])
+            trend = next(s for s in steps if "load-trend.py compare" in s.get("run", ""))
             self.assertIn("--warn-only", trend["run"])
+            self.assertTrue(load_job.get("continue-on-error"))
             release = jobs["bifrost-http-release"]
             self.assertIn("test-load-performance", release["needs"])
-            # Here for its result only: the release's own condition never reads it.
             self.assertNotIn("test-load-performance", release["if"])
             record = next(s for s in release["steps"] if "gh release upload" in s.get("run", ""))
             self.assertIn(ASSET, record["run"])
             self.assertIn("load-trend.py check-result", record["run"])
             self.assertTrue(record.get("continue-on-error"))
-            egress = release["steps"][0]["with"]["allowed-endpoints"]
-            self.assertIn("uploads.github.com:443", egress)
-            # No publishing job admits on the load result.
+            self.assertIn("uploads.github.com:443", release["steps"][0]["with"]["allowed-endpoints"])
             for name, job in jobs.items():
                 with self.subTest(job=name):
                     self.assertNotIn("needs.test-load-performance", job.get("if", "") or "")
 
-    result = unittest.TextTestRunner(verbosity=2).run(
+    result_ = unittest.TextTestRunner(verbosity=2).run(
         unittest.defaultTestLoader.loadTestsFromTestCase(LoadTrendTest))
-    return 0 if result.wasSuccessful() else 1
+    return 0 if result_.wasSuccessful() else 1
 
 
 if __name__ == "__main__":
