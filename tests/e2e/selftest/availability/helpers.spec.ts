@@ -1,4 +1,5 @@
-import { expect, test, type Page } from "@playwright/test";
+import type { Page } from "@playwright/test";
+import { expect, test } from "../../core/fixtures/base.fixture";
 import { skipIfShown, skipUnlessCount, skipUnlessEnabled, skipUnlessVisible } from "../../core/utils/availability";
 
 // The sample suite scripts/availability.test.mjs runs, to pin what the skip helpers in

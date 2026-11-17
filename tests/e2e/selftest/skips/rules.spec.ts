@@ -1,8 +1,8 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../../core/fixtures/base.fixture";
 
 // The sample suite scripts/skips.test.mjs runs against generated offline skip lists, to pin the
-// offline skip rules (skips.ts, TXE-7733). It lives outside features/, so the UI suite never runs it,
-// and it opens no page, so it needs no browser.
+// offline skip rules (skips.ts, TXE-7733). It lives outside features/, so the UI suite never runs it.
+// It uses the suite's base fixture, as every spec does, so it needs Playwright's Chromium.
 test.describe("Skip rules", () => {
 	test("a test that skips at run time", () => {
 		test.skip(true, "the sample skips on purpose"); // skip-ok: the selftest's subject

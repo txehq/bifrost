@@ -6,7 +6,7 @@
 //   - an entry for a renamed test or a removed file fails the run;
 //   - a test serial mode skipped after a failure is not reported as a skip;
 //   - outside an offline run the list does nothing.
-// Opens no page, so it needs no browser. Run:
+// Needs Playwright's Chromium (the base fixture opens a page). Run:
 //   node --test tests/e2e/scripts/skips.test.mjs
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
