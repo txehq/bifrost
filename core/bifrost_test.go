@@ -15348,10 +15348,10 @@ func TestVendorCallReportsWhetherTheRequestWasWritten(t *testing.T) {
 	}
 }
 
-// One request context is one call for upstream_sent (TXE-6746): an MCP agent run sends each turn
-// on the caller's context, so a turn refused at connect after an earlier turn reached the vendor
-// must still report the call as sent.
-func TestUpstreamSentSumsEveryRequestOnOneContext(t *testing.T) {
+// upstream_sent belongs to one call (TXE-6746): a call on a context an earlier call used starts
+// with nothing written, and a call on the client's shared default context (a nil ctx) records
+// nothing, so it never inherits another call's write.
+func TestUpstreamSentIsScopedToOneCall(t *testing.T) {
 	vendor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
@@ -15365,8 +15365,6 @@ func TestUpstreamSentSumsEveryRequestOnOneContext(t *testing.T) {
 	refusedURL := "http://" + closed.Addr().String()
 	_ = closed.Close()
 
-	// The first turn goes to a vendor that answers; the next goes to a provider whose endpoint
-	// refuses the connection, so that turn alone writes nothing.
 	account := NewMockAccount()
 	for provider, baseURL := range map[schemas.ModelProvider]string{schemas.OpenAI: vendor.URL, schemas.Groq: refusedURL} {
 		account.AddProviderWithBaseURL(provider, 1, 10, baseURL)
@@ -15381,7 +15379,7 @@ func TestUpstreamSentSumsEveryRequestOnOneContext(t *testing.T) {
 	}
 	defer client.Shutdown()
 	text := "ping"
-	chat := func(ctx *schemas.BifrostContext, provider schemas.ModelProvider) *schemas.BifrostError {
+	chat := func(ctx *schemas.BifrostContext, provider schemas.ModelProvider) *bool {
 		_, bifrostErr := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
 			Provider: provider,
 			Model:    "gpt-4o-mini",
@@ -15390,22 +15388,98 @@ func TestUpstreamSentSumsEveryRequestOnOneContext(t *testing.T) {
 		if bifrostErr == nil {
 			t.Fatalf("%s: the call must fail", provider)
 		}
-		return bifrostErr
+		return bifrostErr.ExtraFields.UpstreamSent
 	}
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	if first := chat(ctx, schemas.OpenAI); first.ExtraFields.UpstreamSent == nil || !*first.ExtraFields.UpstreamSent {
-		t.Fatalf("first turn: want an answered error with upstream_sent true, got %v (%s: %v)", first.ExtraFields.UpstreamSent, first.Error.Message, first.Error.Error)
+	if got := chat(ctx, schemas.OpenAI); got == nil || !*got {
+		t.Fatalf("a vendor that answered: upstream_sent %v, want true", got)
 	}
-	second := chat(ctx, schemas.Groq)
-	if s := second.ExtraFields.UpstreamSent; s == nil || !*s {
-		t.Errorf("second turn on the same context: upstream_sent %v, want true (the first turn reached the vendor); error_type %q, message %q", s, second.ResolveErrorType(), second.Error.Message)
+	if got := chat(ctx, schemas.Groq); got == nil || *got {
+		t.Errorf("the next call on the same context, refused at connect: upstream_sent %v, want false (the earlier call's write is not this call's)", got)
 	}
 
-	// The same refused dial on a context of its own reports false: the true above came from the
-	// earlier turn, not from the refused provider.
-	if fresh := chat(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), schemas.Groq); fresh.ExtraFields.UpstreamSent == nil || *fresh.ExtraFields.UpstreamSent {
-		t.Errorf("a refused dial on a new context: want upstream_sent false, got %v (%s)", fresh.ExtraFields.UpstreamSent, fresh.Error.Message)
+	// Calls with a nil ctx share the client's default context. While one of them is at a vendor
+	// (it holds the vendor until the other has finished), another refused at connect must not
+	// report the first one's write as its own.
+	reached, release := make(chan struct{}), make(chan struct{})
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(reached)
+		<-release
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"bad request from the vendor","type":"invalid_request_error"}}`))
+	}))
+	defer slow.Close()
+	account.mu.Lock()
+	account.configs[schemas.OpenAI].NetworkConfig.BaseURL = slow.URL
+	account.mu.Unlock()
+	if err := client.UpdateProvider(schemas.OpenAI); err != nil {
+		t.Fatalf("UpdateProvider: %v", err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = client.ChatCompletionRequest(nil, &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o-mini",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &text}}},
+		})
+	}()
+	<-reached
+	got := chat(nil, schemas.Groq)
+	close(release)
+	<-done
+	if got != nil && *got {
+		t.Errorf("nil ctx, refused at connect while another nil-ctx call was at a vendor: upstream_sent true, want untold or false")
+	}
+}
+
+// An MCP agent run is one call (TXE-6746): when turn 1 reached the vendor and turn 2 is refused
+// at connect, the error the run returns reports upstream_sent true.
+func TestAgentTurnRefusedAfterAVendorTurnReportsSent(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var turns atomic.Int32
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		turns.Add(1)
+		// Turn 1 asks for the echo tool, then the vendor goes away: nothing listens for turn 2.
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Connection", "close")
+		fmt.Fprint(w, `{"id":"chatcmpl-1","object":"chat.completion","created":1,"model":"m",`+
+			`"choices":[{"index":0,"message":{"role":"assistant","content":"","tool_calls":[{"id":"call-1","type":"function",`+
+			`"function":{"name":"bifrostInternal-echo","arguments":"{\"message\":\"hi\"}"}}]},"finish_reason":"tool_calls"}],`+
+			`"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+		_ = ln.Close()
+	})}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, "http://"+ln.Addr().String())
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "openai-key", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+	client := newAgentLoopClient(t, account)
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+	defer ctx.Cancel()
+	_, bifrostErr := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("echo hi")}}},
+	})
+	if bifrostErr == nil {
+		t.Fatal("turn 2 is refused at connect, so the run must fail")
+	}
+	if n := turns.Load(); n != 1 {
+		t.Fatalf("the vendor answered %d turns, want 1", n)
+	}
+	if s := bifrostErr.ExtraFields.UpstreamSent; s == nil || !*s {
+		t.Errorf("upstream_sent %v, want true: turn 1 reached the vendor (error_type %q, message %q)", s, bifrostErr.ResolveErrorType(), bifrostErr.Error.Message)
 	}
 }
 

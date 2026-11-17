@@ -1090,12 +1090,35 @@ func (bifrost *Bifrost) makeChatCompletionRequest(ctx *schemas.BifrostContext, r
 	return response.ChatResponse, nil
 }
 
+// beginUpstreamCall gives the call starting on ctx its upstream record (contract C6
+// upstream_sent, TXE-6746) and holds it until the returned release is called. A call that starts
+// inside one already holding the context's record (an MCP agent turn, a fallback) adds to that
+// record; any other gets a fresh one, so nothing one call wrote carries into the next. A call on
+// the client's shared default context (a nil ctx) records nothing: concurrent callers share that
+// context, and an untold upstream_sent counts as sent.
+func (bifrost *Bifrost) beginUpstreamCall(ctx *schemas.BifrostContext) (release func()) {
+	if ctx == nil || ctx == bifrost.ctx {
+		return func() {}
+	}
+	attempt := schemas.UpstreamAttemptFrom(ctx)
+	if !attempt.Held() {
+		attempt = &schemas.UpstreamAttempt{}
+		ctx.SetValue(schemas.BifrostContextKeyUpstreamAttempt, attempt)
+		if schemas.UpstreamAttemptFrom(ctx) != attempt {
+			return func() {} // the write was refused: record nothing rather than reuse a stale record
+		}
+	}
+	return attempt.Hold()
+}
+
 // ChatCompletionRequest sends a chat completion request to the specified provider.
 func (bifrost *Bifrost) ChatCompletionRequest(ctx *schemas.BifrostContext, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	// If ctx is nil, use the bifrost context (defensive check for mcp agent mode)
 	if ctx == nil {
 		ctx = bifrost.ctx
 	}
+	// One upstream record for the call, MCP agent turns included (TXE-6746).
+	defer bifrost.beginUpstreamCall(ctx)()
 
 	response, err := bifrost.makeChatCompletionRequest(ctx, req)
 	if err != nil {
@@ -1198,6 +1221,8 @@ func (bifrost *Bifrost) ResponsesRequest(ctx *schemas.BifrostContext, req *schem
 	if ctx == nil {
 		ctx = bifrost.ctx
 	}
+	// One upstream record for the call, MCP agent turns included (TXE-6746).
+	defer bifrost.beginUpstreamCall(ctx)()
 
 	response, err := bifrost.makeResponsesRequest(ctx, req)
 	if err != nil {
@@ -6253,6 +6278,8 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	if ctx == nil {
 		ctx = bifrost.ctx
 	}
+	// The call's upstream record, held across its fallbacks (TXE-6746).
+	defer bifrost.beginUpstreamCall(ctx)()
 	// Before any provider runs: a provider that forces the extra-params merge leaves it on.
 	callerPassthrough := callerExtraParamsPassthrough(ctx)
 	defer callerPassthrough.restoreIfChanged(ctx)
@@ -6510,6 +6537,8 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	if ctx == nil {
 		ctx = bifrost.ctx
 	}
+	// The call's upstream record, held across its fallbacks (TXE-6746).
+	defer bifrost.beginUpstreamCall(ctx)()
 	// Before any provider runs: a provider that forces the extra-params merge leaves it on.
 	// Restored on return too: the stream's request body is already built by then.
 	callerPassthrough := callerExtraParamsPassthrough(ctx)
@@ -8796,15 +8825,13 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		// Set while a failed stream attempt's error is withheld from plugins and no post-hook has ended the request.
 		var heldBackError atomic.Bool
 
-		// The shared HTTP client records on this whether the call's exchanges wrote the request
-		// (TXE-6746); it is applied to the error the retries end with, below. One record serves
-		// the whole call: a fallback, and each turn of an MCP agent run, re-enters this worker
-		// on the same context and adds to the record already there, so a turn that fails to
-		// connect after an earlier turn reached the vendor still reports upstream_sent true.
+		// The shared HTTP client records on the call's upstream record whether its exchanges
+		// wrote the request (TXE-6746); it is applied to the error the retries end with, below.
+		// beginUpstreamCall made the record when the call started and holds it for the call,
+		// fallbacks and MCP agent turns included. A record no running call holds is left alone.
 		upstreamAttempt := schemas.UpstreamAttemptFrom(req.Context)
-		if upstreamAttempt == nil {
-			upstreamAttempt = &schemas.UpstreamAttempt{}
-			req.Context.SetValue(schemas.BifrostContextKeyUpstreamAttempt, upstreamAttempt)
+		if !upstreamAttempt.Held() {
+			upstreamAttempt = nil
 		}
 
 		// Execute request with retries. For streaming, the plugin pipeline,
