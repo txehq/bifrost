@@ -42,6 +42,9 @@ const MEDIA_PUBLIC_HOST = "203.0.113.10";
 // the create asked for. It is TXE-6774's 12-second ffmpeg MP4, the reader's own test file.
 const VIDEODURATION_TESTDATA = join(dirname(fileURLToPath(import.meta.url)), "../../../../framework/videoduration/testdata");
 const RENDERED_LONGER_MP4 = readFileSync(join(VIDEODURATION_TESTDATA, "twelve-seconds.mp4"));
+// TXE-7706 (folder 631): a 4-second Veo output, shorter than Veo's 8-second default. The settler charges the
+// larger of the measured length and the seconds on the job row, so it shows whether the default reached the row.
+const VEO_SHORT_MP4 = readFileSync(join(VIDEODURATION_TESTDATA, "four-seconds-silent.mp4"));
 // TXE-7334: the same clip with 2 MiB more media in its mdat, past video-settlement.config.json's 1 MB body
 // limit, so only a streamed measurement reads it; and a 12-second clip with reordered frames, which the
 // reader once read as 14 seconds (twelve-seconds-reordered.mp4, written by TestReorderedFixture).
@@ -542,6 +545,10 @@ const fixturePricing = {
 	// Folder 520 (TXE-7329): $0.10 a second, so the 12 rendered seconds settle at $1.20 and the 5 asked for at $0.50.
 	// The sheet's key drops its first segment, as for every provider-prefixed key, leaving the Replicate model name.
 	"replicate/fixture/rendered-longer": { provider: "replicate", mode: "video_generation", output_cost_per_video_per_second: 0.1 },
+	// Folder 631 (TXE-7706): $0.10 a second on gemini and on the custom provider over it, so Veo's 8-second default
+	// settles at $0.80 and the 4 seconds the fixture's clip measures at $0.40.
+	"gemini/fixture-veo-short": { provider: "gemini", mode: "video_generation", output_cost_per_video_per_second: 0.1 },
+	"veo_custom/fixture-veo-short": { provider: "veo_custom", mode: "video_generation", output_cost_per_video_per_second: 0.1 },
 	"replicate/fixture/rendered-oversized": { provider: "replicate", mode: "video_generation", output_cost_per_video_per_second: 0.1 },
 	"replicate/fixture/rendered-reordered": { provider: "replicate", mode: "video_generation", output_cost_per_video_per_second: 0.1 },
 	"replicate/fixture/rendered-foreign": { provider: "replicate", mode: "video_generation", output_cost_per_video_per_second: 0.1 },
@@ -2803,6 +2810,22 @@ const handleRequest = (req, res) => {
 			res.end(VIDEO_HALF);
 		}, VIDEO_GAP_MS);
 		return undefined;
+	}
+	// Folder 631 (TXE-7706): a fixture-veo-short Veo operation is done, with its 4-second video on the provider's
+	// own origin, as Gemini names a generated sample by a file URI. Each read is counted.
+	const veoShortPoll = /^\/pp\/gemini\/models\/fixture-veo-short\/operations\/fixture-video-op$/.exec(path);
+	if (req.method === "GET" && veoShortPoll) {
+		countHit("gemini.veo-short.poll");
+		return send(200, {}, JSON.stringify({
+			name: "models/fixture-veo-short/operations/fixture-video-op",
+			done: true,
+			response: { "@type": "type.googleapis.com/google.ai.generativelanguage.v1beta.PredictLongRunningResponse", generateVideoResponse: { generatedSamples: [{ video: { uri: `http://127.0.0.1:${port}/pp/gemini/files/veo-short.mp4` } }] } },
+		}));
+	}
+	if (req.method === "GET" && path === "/pp/gemini/files/veo-short.mp4") {
+		countHit("gemini.veo-short.download");
+		res.writeHead(200, { "Content-Type": "video/mp4", "Content-Length": VEO_SHORT_MP4.length });
+		return res.end(VEO_SHORT_MP4);
 	}
 	// Folder 520 (TXE-7329): the fixture/rendered-longer prediction has succeeded, with its video on the
 	// provider's own origin, so the gateway downloads it with the provider's client. Each read is counted.
