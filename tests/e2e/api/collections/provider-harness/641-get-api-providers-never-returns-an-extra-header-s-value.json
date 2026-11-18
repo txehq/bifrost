@@ -1,0 +1,270 @@
+{
+  "name": "641. GET /api/providers never returns an extra header's value (TXE-7780)",
+  "description": "Regression for TXE-7780. A production smoke read reported network_config.extra_headers_secret_vars.<header>.value as unredacted on GET /api/providers. The rows run in order on the provider error fixture's gateway: create a custom provider (base_url 127.0.0.1:9, where nothing listens) with one literal header value and one header that references the gateway's PATH variable, then read it from GET /api/providers/{provider} and from GET /api/providers. On both reads, extra_headers shows <REDACTED> for the literal and the reference for the env header, extra_headers_secret_vars shows <REDACTED> as the value of both and keeps the reference, and the literal appears nowhere in the response. Gated on providerErrorFixture; the last row deletes the provider.",
+  "item": [
+    {
+      "name": "secret-headers setup: no provider is left from an earlier run - secret-headers",
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/providers/txe7780-secret-headers",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "providers",
+            "txe7780-secret-headers"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('cleanup before the run answers 200 or 404', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.be.oneOf([200, 404]);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "secret-headers create a provider with a literal header and an env reference header - secret-headers",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/providers",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "providers"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"provider\": \"txe7780-secret-headers\", \"custom_provider_config\": {\"base_provider_type\": \"openai\"}, \"network_config\": {\"base_url\": \"http://127.0.0.1:9/v1\", \"allow_private_network\": true, \"extra_headers\": {\"X-App\": \"txe7780-literal-header-canary\", \"User-Agent\": \"env.PATH\"}}, \"concurrency_and_buffer_size\": {\"concurrency\": 1, \"buffer_size\": 4}}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('provider create exact response status', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "});",
+              "pm.test('the create response does not echo the literal value', function () {",
+              "  pm.expect(pm.response.text()).to.not.include('txe7780-literal-header-canary');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "secret-headers GET /api/providers/{provider} masks every extra header value - secret-headers",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/providers/txe7780-secret-headers",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "providers",
+            "txe7780-secret-headers"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('provider read exact response status', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "});",
+              "var nc = (pm.response.json() || {}).network_config || {};",
+              "// nc is network_config as the read returned it.",
+              "pm.test('the literal header value is masked in extra_headers', function () {",
+              "  pm.expect((nc.extra_headers || {})['X-App'], JSON.stringify(nc)).to.equal('<REDACTED>');",
+              "});",
+              "pm.test('the env header shows its reference in extra_headers, not the resolved value', function () {",
+              "  pm.expect((nc.extra_headers || {})['User-Agent'], JSON.stringify(nc)).to.equal('env.PATH');",
+              "});",
+              "pm.test('extra_headers_secret_vars masks the literal value', function () {",
+              "  var sv = (nc.extra_headers_secret_vars || {})['X-App'] || {};",
+              "  pm.expect(sv.value, JSON.stringify(nc)).to.equal('<REDACTED>');",
+              "});",
+              "pm.test('extra_headers_secret_vars masks the resolved env value and keeps the reference', function () {",
+              "  var sv = (nc.extra_headers_secret_vars || {})['User-Agent'] || {};",
+              "  pm.expect(sv.value, JSON.stringify(nc)).to.equal('<REDACTED>');",
+              "  pm.expect(sv.ref).to.equal('env.PATH');",
+              "});",
+              "pm.test('no part of the literal value appears anywhere in the response', function () {",
+              "  pm.expect(pm.response.text()).to.not.include('txe7780-literal-header-canary');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "secret-headers GET /api/providers masks every extra header value - secret-headers",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/providers",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "providers"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('provider list exact response status', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "});",
+              "var listed = ((pm.response.json() || {}).providers || []).filter(function (p) { return p && p.name === 'txe7780-secret-headers'; });",
+              "pm.test('the list carries the provider this folder created', function () {",
+              "  pm.expect(listed.length, pm.response.text().slice(0, 300)).to.equal(1);",
+              "});",
+              "var nc = (listed[0] || {}).network_config || {};",
+              "// nc is network_config as the read returned it.",
+              "pm.test('the literal header value is masked in extra_headers', function () {",
+              "  pm.expect((nc.extra_headers || {})['X-App'], JSON.stringify(nc)).to.equal('<REDACTED>');",
+              "});",
+              "pm.test('the env header shows its reference in extra_headers, not the resolved value', function () {",
+              "  pm.expect((nc.extra_headers || {})['User-Agent'], JSON.stringify(nc)).to.equal('env.PATH');",
+              "});",
+              "pm.test('extra_headers_secret_vars masks the literal value', function () {",
+              "  var sv = (nc.extra_headers_secret_vars || {})['X-App'] || {};",
+              "  pm.expect(sv.value, JSON.stringify(nc)).to.equal('<REDACTED>');",
+              "});",
+              "pm.test('extra_headers_secret_vars masks the resolved env value and keeps the reference', function () {",
+              "  var sv = (nc.extra_headers_secret_vars || {})['User-Agent'] || {};",
+              "  pm.expect(sv.value, JSON.stringify(nc)).to.equal('<REDACTED>');",
+              "  pm.expect(sv.ref).to.equal('env.PATH');",
+              "});",
+              "pm.test('no part of the literal value appears anywhere in the response', function () {",
+              "  pm.expect(pm.response.text()).to.not.include('txe7780-literal-header-canary');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "secret-headers cleanup deletes the provider - secret-headers",
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/providers/txe7780-secret-headers",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "providers",
+            "txe7780-secret-headers"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('cleanup exact response status', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

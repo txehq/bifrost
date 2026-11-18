@@ -186,22 +186,7 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 		// Getting username and password from auth config
 		// This username password is for the dashboard authentication
 		if authConfig != nil {
-			// For password, return SecretVar structure with redacted value
-			// If from env, preserve env_var reference but clear value
-			// If not from env, show <redacted> as the value
-			var passwordSecretVar *schemas.SecretVar
-			if authConfig.AdminPassword != nil && authConfig.AdminPassword.IsFromSecret() {
-				passwordSecretVar = authConfig.AdminPassword.FullyRedacted()
-			} else {
-				passwordSecretVar = &schemas.SecretVar{
-					Val: "<redacted>",
-				}
-			}
-			mapConfig["auth_config"] = map[string]any{
-				"admin_username": authConfig.AdminUserName,
-				"admin_password": passwordSecretVar,
-				"is_enabled":     authConfig.IsEnabled,
-			}
+			mapConfig["auth_config"] = redactedAuthConfigView(authConfig)
 		}
 		// When authConfig is nil, no admin account has been created yet: leave
 		// auth_config unset (rather than a placeholder object) so the UI's
@@ -236,11 +221,7 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 		if err != nil {
 			logger.Warn("failed to get proxy config from store: %v", err)
 		} else if proxyConfig != nil {
-			// Redact password if present
-			if proxyConfig.Password != "" {
-				proxyConfig.Password = "<redacted>"
-			}
-			mapConfig["proxy_config"] = proxyConfig
+			mapConfig["proxy_config"] = redactedGlobalProxyConfig(proxyConfig)
 		}
 		// Fetching restart required config
 		restartConfig, err := h.store.ConfigStore.GetRestartRequiredConfig(ctx)
@@ -1329,11 +1310,36 @@ func (h *ConfigHandler) getProxyConfig(ctx *fasthttp.RequestCtx) {
 		})
 		return
 	}
-	// Redact password if present
-	if proxyConfig.Password != "" {
-		proxyConfig.Password = "<redacted>"
+	SendJSON(ctx, redactedGlobalProxyConfig(proxyConfig))
+}
+
+// redactedAuthConfigView is the dashboard auth block GET /api/config returns. The
+// password is never returned: an env or vault reference keeps its reference with the
+// value masked, and a literal becomes <redacted>.
+func redactedAuthConfigView(authConfig *configstore.AuthConfig) map[string]any {
+	var passwordSecretVar *schemas.SecretVar
+	if authConfig.AdminPassword != nil && authConfig.AdminPassword.IsFromSecret() {
+		passwordSecretVar = authConfig.AdminPassword.FullyRedacted()
+	} else {
+		passwordSecretVar = &schemas.SecretVar{
+			Val: "<redacted>",
+		}
 	}
-	SendJSON(ctx, proxyConfig)
+	return map[string]any{
+		"admin_username": authConfig.AdminUserName,
+		"admin_password": passwordSecretVar,
+		"is_enabled":     authConfig.IsEnabled,
+	}
+}
+
+// redactedGlobalProxyConfig is the global proxy config as GET /api/config and GET
+// /api/proxy-config return it: a copy with the password replaced by <redacted>.
+func redactedGlobalProxyConfig(proxyConfig *configstoreTables.GlobalProxyConfig) *configstoreTables.GlobalProxyConfig {
+	redacted := *proxyConfig
+	if redacted.Password != "" {
+		redacted.Password = "<redacted>"
+	}
+	return &redacted
 }
 
 // updateProxyConfig handles PUT /api/proxy-config - Update the proxy configuration
