@@ -1,0 +1,332 @@
+{
+  "name": "637. Deleting the Prometheus connector keeps telemetry off (TXE-7746)",
+  "description": "The Prometheus connector on the observability page is the telemetry plugin, which also serves /metrics. The server loads telemetry at startup when it has no stored row (default-on, so upgraders keep /metrics), so DELETE /api/plugins/telemetry used to remove the row and stop /metrics only until the next restart. The delete now leaves a disabled row with an empty config. The rows run in order on the provider error fixture's gateway: check the gateway stores no telemetry row, store an enabled one (/metrics served), delete it, read back a disabled empty row (red before the fix: no row), check /metrics answers 404, then turn telemetry back on and check /metrics is served again. A restart cannot be driven from the harness; the disabled row is what loadBuiltinPlugins reads to keep telemetry off.",
+  "item": [
+    {
+      "name": "telemetry-delete precondition: the gateway stores no telemetry row - telemetry-delete",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/plugins",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "plugins"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Only a listing that succeeded can show the row is absent.",
+              "var j = null; try { j = pm.response.json(); } catch (e) { j = null; }",
+              "var listed = pm.response.code === 200 && !!j && Array.isArray(j.plugins);",
+              "var found = listed && j.plugins.some(function (p) { return p && p.name === 'telemetry'; });",
+              "pm.collectionVariables.set('h637Ready', listed && !found ? 'true' : 'false');",
+              "pm.test('the plugin listing succeeded', function () {",
+              "  pm.expect(listed, pm.response.text().slice(0, 300)).to.equal(true);",
+              "});",
+              "pm.test('the gateway has no telemetry row for this folder to replace', function () {",
+              "  pm.expect(found, 'this gateway stores a telemetry row; the folder does not overwrite and delete a row it did not create').to.equal(false);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-200] telemetry-delete seed an enabled telemetry row - telemetry-delete",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/plugins/telemetry",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "plugins",
+            "telemetry"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"enabled\": true,\n  \"config\": {\n    \"metrics_enabled\": true\n  }\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "// The rows below change the telemetry row, so they run only after row 1 found none to clobber.",
+              "if (pm.collectionVariables.get('h637Ready') !== 'true') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the telemetry row was stored enabled', function () {",
+              "  pm.expect(pm.response.code, pm.response.text().slice(0, 300)).to.equal(200);",
+              "});",
+              "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/metrics', method: 'GET', header: { 'X-Bifrost-Setup-Token': pm.variables.get('setupToken') || 'bifrost-e2e-setup-token' } }, function (err, res) {",
+              "  pm.test('/metrics is served while telemetry runs', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code, res.text().slice(0, 300)).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-200] telemetry-delete delete the telemetry plugin - telemetry-delete",
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/plugins/telemetry",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "plugins",
+            "telemetry"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "// The rows below change the telemetry row, so they run only after row 1 found none to clobber.",
+              "if (pm.collectionVariables.get('h637Ready') !== 'true') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the delete succeeded', function () {",
+              "  pm.expect(pm.response.code, pm.response.text().slice(0, 300)).to.equal(200);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "telemetry-delete a disabled empty telemetry row remains - telemetry-delete",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/plugins",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "plugins"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "// The rows below change the telemetry row, so they run only after row 1 found none to clobber.",
+              "if (pm.collectionVariables.get('h637Ready') !== 'true') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// The server loads telemetry at startup when it has no row, so a delete must leave a row with",
+              "// enabled=false or the next restart serves /metrics again (TXE-7746). Before the fix the row was gone.",
+              "var j = null; try { j = pm.response.json(); } catch (e) { j = null; }",
+              "var row = j && Array.isArray(j.plugins) ? j.plugins.filter(function (p) { return p && p.name === 'telemetry'; })[0] : undefined;",
+              "pm.test('the listing still holds a telemetry row', function () {",
+              "  pm.expect(pm.response.code, pm.response.text().slice(0, 300)).to.equal(200);",
+              "  pm.expect(row, 'no telemetry row after the delete, so a restart loads telemetry again: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+              "});",
+              "pm.test('the telemetry row is disabled with an empty config', function () {",
+              "  pm.expect(row && row.enabled, JSON.stringify(row)).to.equal(false);",
+              "  pm.expect(Object.keys((row && row.config) || {}), JSON.stringify(row)).to.have.lengthOf(0);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-404] telemetry-delete /metrics is no longer served - telemetry-delete",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/metrics",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "metrics"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "// The rows below change the telemetry row, so they run only after row 1 found none to clobber.",
+              "if (pm.collectionVariables.get('h637Ready') !== 'true') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('/metrics answers 404 once telemetry is deleted', function () {",
+              "  pm.expect(pm.response.code, pm.response.text().slice(0, 300)).to.equal(404);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-200] telemetry-delete restore telemetry - telemetry-delete",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/plugins/telemetry",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "plugins",
+            "telemetry"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"enabled\": true,\n  \"config\": {}\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "// The rows below change the telemetry row, so they run only after row 1 found none to clobber.",
+              "if (pm.collectionVariables.get('h637Ready') !== 'true') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Leaves an enabled row with an empty config, which runs telemetry as a gateway with no row does.",
+              "pm.test('telemetry was turned back on', function () {",
+              "  pm.expect(pm.response.code, pm.response.text().slice(0, 300)).to.equal(200);",
+              "});",
+              "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/metrics', method: 'GET', header: { 'X-Bifrost-Setup-Token': pm.variables.get('setupToken') || 'bifrost-e2e-setup-token' } }, function (err, res) {",
+              "  pm.test('/metrics is served again', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code, res.text().slice(0, 300)).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

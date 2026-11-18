@@ -12,7 +12,7 @@ import { prometheusFormSchema, type SecretVar, type PrometheusFormSchema } from 
 import { emptySecretVar, toSecretVarFormValue } from "@/lib/utils/secretVarForm";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { AlertTriangle, Copy, Info, Plus, Trash } from "lucide-react";
+import { AlertTriangle, Copy, Info, Plus, Trash, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useForm, type Resolver } from "react-hook-form";
 
@@ -32,6 +32,8 @@ interface PrometheusFormFragmentProps {
 		};
 	};
 	onSave: (config: PrometheusFormSchema) => Promise<void>;
+	onDelete?: () => void;
+	isDeleting?: boolean;
 	isLoading?: boolean;
 	metricsEndpoint?: string;
 }
@@ -57,6 +59,8 @@ const buildDefaults = (initialConfig?: PrometheusFormFragmentProps["currentConfi
 export function PrometheusFormFragment({
 	currentConfig: initialConfig,
 	onSave,
+	onDelete,
+	isDeleting = false,
 	isLoading = false,
 	metricsEndpoint,
 }: PrometheusFormFragmentProps) {
@@ -137,6 +141,19 @@ export function PrometheusFormFragment({
 	const renderFormActions = () => (
 		<div className="flex w-full flex-row items-center border-t pt-4">
 			<div className="ml-auto flex justify-end space-x-2 py-2">
+				{onDelete && (
+					<Button
+						type="button"
+						variant="outline"
+						onClick={onDelete}
+						disabled={isDeleting || !hasPrometheusAccess}
+						data-testid="prometheus-connector-delete-btn"
+						title="Delete connector"
+						aria-label="Delete connector"
+					>
+						<Trash2 className="size-4" />
+					</Button>
+				)}
 				<Button
 					type="button"
 					variant="outline"

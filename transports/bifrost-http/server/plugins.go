@@ -251,6 +251,7 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 	// 1. Telemetry (always first - tracks everything).
 	// Default-on: absent PluginConfig entry is treated as enabled, matching pre-#3269 behavior
 	// so upgraders don't silently lose /metrics. Only an explicit Enabled=false disables it.
+	// lib.PluginLoadsWhenRowAbsent names this plugin, so deleting it stores a disabled row (TXE-7746).
 	telemetryPluginConfig := s.getPluginConfig(telemetry.PluginName)
 	var pluginConfig any
 	if telemetryPluginConfig != nil {
