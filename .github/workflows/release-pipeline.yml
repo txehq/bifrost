@@ -2388,7 +2388,22 @@ jobs:
           path: tmp/cost-accuracy/
           retention-days: 30
 
-  # Non-blocking load performance test - runs streaming and non-streaming load flows
+  # Load performance test - runs streaming and non-streaming load flows. It gates nothing:
+  # continue-on-error, and no publishing job admits on its result. TXE-7762 measured why a
+  # gate would block on the runner rather than the code: one hosted runner put sync.10's own
+  # build at a 2.7 ms non-streaming mean and 108 ms p99, another at 0.85 ms and 4 ms, and
+  # sync.12's release runs (2.31 ms, p99 74-127 ms) were that first kind of runner, not a
+  # regression (sync.12 - sync.10 paired on one runner: +36 µs, 95% CI -91 to +92 µs).
+  # What it does instead:
+  #   1. builds the release CONTROL_DEPTH back (load-control.sh) and measures it alongside
+  #      the candidate on this runner, alternating, OVERHEAD_SAMPLES times each; the absolute
+  #      limits in load-test.sh apply to the candidate's medians;
+  #   2. compares candidate / control per metric (load-trend.py, where the bounds and the
+  #      measured noise they sit above are) and warns on a regression, in the job summary
+  #      and as an annotation on the run;
+  #   3. hands its result to bifrost-http-release, which records it on the GitHub release as
+  #      load-performance.json; a later release that builds this one as its control shows
+  #      those numbers beside its own measurement of it.
   test-load-performance:
     needs: [check-skip, detect-changes, build-gateway]
     if: |
@@ -2403,7 +2418,8 @@ jobs:
       )
     runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     continue-on-error: true
-    timeout-minutes: 30
+    # The control build and its samples add about 10 minutes to the ~10 the test took alone.
+    timeout-minutes: 45
     permissions:
       contents: read
     steps:
@@ -2462,6 +2478,27 @@ jobs:
       - name: Make bifrost-http executable
         run: chmod +x tmp/bifrost-http
 
+      - name: Restore the Go build cache
+        uses: ./.github/actions/go-cache
+        with:
+          purpose: bifrost-http-build
+
+      # No control (no earlier release, or its build failed) warns and runs the load test alone.
+      - name: Build the control release
+        id: control
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: transports/v${{ needs.detect-changes.outputs.transport-version }}
+        run: |
+          if tag="$(python3 .github/workflows/scripts/load-trend.py pick-control --repo "$GITHUB_REPOSITORY" \
+                --exclude-tag "$RELEASE_TAG" --recorded-out tmp/control-recorded.json)" \
+             && ./.github/workflows/scripts/load-control.sh "$tag" tmp/bifrost-http-control; then
+            echo "bin=$GITHUB_WORKSPACE/tmp/bifrost-http-control" >> "$GITHUB_OUTPUT"
+            echo "label=$tag" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::no control build; the load test runs without a comparison"
+          fi
+
       - name: Run load performance test
         env:
           BENCHMARK_DIR: ${{ github.workspace }}/bifrost-benchmarking
@@ -2470,12 +2507,24 @@ jobs:
           STREAMING_RATE: "1000"
           MAX_WORKERS: "12000"
           OVERHEAD_DURATION: "10"
+          OVERHEAD_SAMPLES: "3"
+          CONTROL_BIFROST_BIN: ${{ steps.control.outputs.bin }}
+          CONTROL_LABEL: ${{ steps.control.outputs.label }}
           STRESS_DURATION: "10"
           OVERHEAD_MOCKER_LATENCY_MS: "500"
           STRESS_MOCKER_LATENCY_MS: "500"
         run: |
           chmod +x ./.github/workflows/scripts/load-test.sh
           ./.github/workflows/scripts/load-test.sh
+
+      # Warns, never fails the job: see the comment on this job.
+      - name: Compare with the control release
+        if: ${{ !cancelled() && hashFiles('.github/workflows/scripts/load-test-results.json') != '' }}
+        run: |
+          python3 .github/workflows/scripts/load-trend.py compare --warn-only \
+            --current .github/workflows/scripts/load-test-results.json \
+            --control-recorded tmp/control-recorded.json \
+            --summary "$GITHUB_STEP_SUMMARY" --out .github/workflows/scripts/load-trend.md
 
       - name: Upload load test artifacts
         if: ${{ !cancelled() }}
@@ -2485,6 +2534,7 @@ jobs:
           path: |
             .github/workflows/scripts/load-test-results.md
             .github/workflows/scripts/load-test-results.json
+            .github/workflows/scripts/load-trend.md
           retention-days: 30
 
   # Docker image test - amd64
@@ -3497,7 +3547,9 @@ jobs:
 
   # Finalize: changelog, tagging, GitHub release, R2 latest copy
   bifrost-http-release:
-    needs: [build-binaries-x86, build-binaries-arm64, detect-changes, bifrost-http-prep]
+    # test-load-performance is here for its result, not as a gate: this job's `if` does not
+    # read it, so a failed or skipped load test never holds the release (TXE-7762).
+    needs: [build-binaries-x86, build-binaries-arm64, detect-changes, bifrost-http-prep, test-load-performance]
     if: "always() && needs.build-binaries-x86.result == 'success' && needs.build-binaries-arm64.result == 'success'"
     runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     permissions:
@@ -3521,6 +3573,7 @@ jobs:
             pypi.org:443
             release-assets.githubusercontent.com:443
             storage.googleapis.com:443
+            uploads.github.com:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -3553,6 +3606,32 @@ jobs:
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
         run: ./.github/workflows/scripts/release-bifrost-http-finalize.sh "${{ needs.detect-changes.outputs.transport-version }}"
+
+      # The next release's load job compares against this asset (load-trend.py, TXE-7762).
+      # A missing result warns and records nothing; it never fails the release.
+      - name: Download the load test result
+        if: ${{ steps.release.outputs.success == 'true' && needs.test-load-performance.result != 'skipped' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: load-performance-results
+          path: tmp/load-performance
+
+      - name: Record the load test result on the release
+        if: ${{ steps.release.outputs.success == 'true' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN || github.token }}
+          RELEASE_TAG: transports/v${{ needs.detect-changes.outputs.transport-version }}
+          LOAD_RESULT: ${{ needs.test-load-performance.result }}
+        run: |
+          result=tmp/load-performance/load-test-results.json
+          if ! python3 .github/workflows/scripts/load-trend.py check-result "$result"; then
+            echo "::warning::no complete load test result to record on $RELEASE_TAG (test-load-performance: $LOAD_RESULT); the next release compares against the releases before this one"
+            exit 0
+          fi
+          cp "$result" tmp/load-performance.json
+          gh release upload "$RELEASE_TAG" tmp/load-performance.json --clobber
 
   # Docker build amd64
   docker-build-amd64:

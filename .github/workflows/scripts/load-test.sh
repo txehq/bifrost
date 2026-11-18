@@ -41,6 +41,21 @@ RATE="${RATE:-1000}"
 STREAMING_RATE="${STREAMING_RATE:-${RATE}}"
 MAX_WORKERS="${MAX_WORKERS:-12000}"
 OVERHEAD_DURATION="${OVERHEAD_DURATION:-30}"                       # overhead measurement duration (seconds)
+# Overhead samples per mode, each on a freshly started bifrost-http with its own calibration.
+# The recorded value and the limits below use the median, so one noisy runner moment neither
+# fails the release nor becomes the baseline the next release is compared with (TXE-7762).
+OVERHEAD_SAMPLES="${OVERHEAD_SAMPLES:-1}"
+# A control build of an earlier release (TXE-7762). When set, every overhead sample also runs
+# this binary on the same runner, alternating which goes first, and the JSON gets its medians
+# under control_overhead. Hosted runners differ by 3-4x in this measurement; the ratio of two
+# builds on one runner does not, so load-trend.py compares that ratio. Only the candidate is
+# held to the absolute thresholds below, and only the candidate runs the stress phase.
+CONTROL_BIFROST_BIN="${CONTROL_BIFROST_BIN:-}"
+CONTROL_LABEL="${CONTROL_LABEL:-control}"
+CANDIDATE_BIFROST_BIN="${REPO_ROOT}/tmp/bifrost-http"
+BIFROST_BIN="${CANDIDATE_BIFROST_BIN}"
+# Top-level JSON key the overhead functions write: overhead (candidate) or control_overhead.
+OVERHEAD_KEY="overhead"
 STRESS_DURATION="${STRESS_DURATION:-30}"                           # stress test duration per mode (seconds)
 OVERHEAD_MOCKER_LATENCY_MS="${OVERHEAD_MOCKER_LATENCY_MS:-1000}"   # 1 second latency for overhead measurement
 STRESS_MOCKER_LATENCY_MS="${STRESS_MOCKER_LATENCY_MS:-1000}"       # 1 second latency for stress test
@@ -684,7 +699,7 @@ start_bifrost() {
 
   cd "${WORK_DIR}"
   local bifrost_log="${WORK_DIR}/bifrost.log"
-  "${REPO_ROOT}/tmp/bifrost-http" -app-dir "${WORK_DIR}" -port "${BIFROST_PORT}" -host "0.0.0.0" -log-level "${BIFROST_LOG_LEVEL}" > "${bifrost_log}" 2>&1 &
+  "${BIFROST_BIN}" -app-dir "${WORK_DIR}" -port "${BIFROST_PORT}" -host "0.0.0.0" -log-level "${BIFROST_LOG_LEVEL}" > "${bifrost_log}" 2>&1 &
   BIFROST_PID=$!
 
   # Wait for bifrost to be ready. /health is skipped by the access log middleware,
@@ -791,6 +806,7 @@ append_overhead_json() {
   fi
 
   jq \
+    --arg root "${OVERHEAD_KEY}" \
     --arg mode_key "${mode_key}" \
     --arg timestamp "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
     --arg configured_rate "${configured_rate}" \
@@ -803,11 +819,11 @@ append_overhead_json() {
     --arg us_90 "${us_90}" \
     --arg us_95 "${us_95}" \
     --arg us_99 "${us_99}" \
-    '.overhead[$mode_key] = {
-      configured_rate: ($configured_rate | tonumber),
+    '.[$root][$mode_key].configured_rate = ($configured_rate | tonumber)
+    | .[$root][$mode_key].duration = ($duration | tonumber)
+    | .[$root][$mode_key].concurrent = ($concurrent | tonumber)
+    | .[$root][$mode_key].samples += [{
       actual_rate: ($actual_rate | tonumber),
-      duration: ($duration | tonumber),
-      concurrent: ($concurrent | tonumber),
       success_rate: ($success_rate | tonumber),
       latency_us: {
         mean: ($us_mean | tonumber),
@@ -816,7 +832,7 @@ append_overhead_json() {
         p95: ($us_95 | tonumber),
         p99: ($us_99 | tonumber)
       }
-    } | .timestamp = (.timestamp // $timestamp)' \
+    }] | .timestamp = (.timestamp // $timestamp)' \
     "${RESULTS_JSON}" > "${tmp_json}"
   mv "${tmp_json}" "${RESULTS_JSON}"
 }
@@ -996,41 +1012,82 @@ EOF
 
   local actual_rps=$(printf "%.0f" $EXTRACTED_RATE)
 
-  # Write results
+  append_overhead_json "${CURRENT_MODE_KEY}" "${test_rate}" "${test_concurrency}" "${actual_rps}" "${success_pct}" "${us_mean}" "${us_50}" "${us_90}" "${us_95}" "${us_99}"
+}
+
+# After every sample of a mode: record the median of each metric as the mode's result, write
+# its table row, and check the tiered thresholds against the median. A single sample's spike
+# no longer fails the run, and it is still in the JSON's samples list for anyone reading it.
+summarize_overhead_mode() {
+  CURRENT_PHASE="overhead summary (${CURRENT_MODE_LABEL})"
+  local tmp_json
+  tmp_json=$(mktemp)
+  jq --arg root "${OVERHEAD_KEY}" --arg mode_key "${CURRENT_MODE_KEY}" '
+    def median: sort | if length % 2 == 1 then .[length / 2 | floor] else (.[length / 2 - 1] + .[length / 2]) / 2 end;
+    def r2: (. * 100 | round) / 100;
+    .[$root][$mode_key] as $m
+    | .[$root][$mode_key].sample_count = ($m.samples | length)
+    | .[$root][$mode_key].actual_rate = ([$m.samples[].actual_rate] | median | round)
+    | .[$root][$mode_key].success_rate = ([$m.samples[].success_rate] | min)
+    | .[$root][$mode_key].latency_us = (reduce ("mean", "p50", "p90", "p95", "p99") as $k
+        ({}; .[$k] = ([$m.samples[].latency_us[$k]] | median | r2)))' \
+    "${RESULTS_JSON}" > "${tmp_json}"
+  mv "${tmp_json}" "${RESULTS_JSON}"
+
+  local mode
+  mode=$(jq -c --arg root "${OVERHEAD_KEY}" --arg mode_key "${CURRENT_MODE_KEY}" '.[$root][$mode_key]' "${RESULTS_JSON}")
+  local n us_mean us_50 us_90 us_95 us_99 actual_rps success_pct test_concurrency
+  n=$(jq -r '.sample_count' <<< "${mode}")
+  actual_rps=$(jq -r '.actual_rate' <<< "${mode}")
+  success_pct=$(jq -r '.success_rate' <<< "${mode}")
+  test_concurrency=$(jq -r '.concurrent' <<< "${mode}")
+  us_mean=$(jq -r '.latency_us.mean' <<< "${mode}")
+  us_50=$(jq -r '.latency_us.p50' <<< "${mode}")
+  us_90=$(jq -r '.latency_us.p90' <<< "${mode}")
+  us_95=$(jq -r '.latency_us.p95' <<< "${mode}")
+  us_99=$(jq -r '.latency_us.p99' <<< "${mode}")
+
+  local row_label="${CURRENT_MODE_LABEL}"
+  if [ "${OVERHEAD_KEY}" != "overhead" ]; then
+    row_label="${CURRENT_MODE_LABEL}, ${CONTROL_LABEL}"
+  fi
+
+  echo ""
+  log_success "${row_label} overhead, median of ${n} sample(s): mean=${us_mean}µs p50=${us_50}µs p90=${us_90}µs p95=${us_95}µs p99=${us_99}µs"
+
   if [ "$RESULTS_FILE_INITIALIZED" -eq 0 ]; then
     cat > "${RESULTS_FILE}" << EOF
 # Bifrost Load Test Results (single instance)
 
 ## Bifrost Processing Overhead
 
-| Metric | Actual RPS | Duration | Concurrent | Success Rate | Mean | P50 | P90 | P95 | P99 |
-|--------|-----------|----------|------------|--------------|------|-----|-----|-----|-----|
+| Metric | Actual RPS | Duration | Concurrent | Samples | Success Rate | Mean | P50 | P90 | P95 | P99 |
+|--------|-----------|----------|------------|---------|--------------|------|-----|-----|-----|-----|
 EOF
     RESULTS_FILE_INITIALIZED=1
   fi
-  echo "| Overhead (${CURRENT_MODE_LABEL}) | ${actual_rps} | ${OVERHEAD_DURATION}s | ~${test_concurrency} | ${success_pct}% | ${us_mean}µs | ${us_50}µs | ${us_90}µs | ${us_95}µs | ${us_99}µs |" >> "${RESULTS_FILE}"
+  echo "| Overhead (${row_label}) | ${actual_rps} | ${OVERHEAD_DURATION}s | ~${test_concurrency} | ${n} (median) | ${success_pct}% | ${us_mean}µs | ${us_50}µs | ${us_90}µs | ${us_95}µs | ${us_99}µs |" >> "${RESULTS_FILE}"
 
-  append_overhead_json "${CURRENT_MODE_KEY}" "${test_rate}" "${test_concurrency}" "${actual_rps}" "${success_pct}" "${us_mean}" "${us_50}" "${us_90}" "${us_95}" "${us_99}"
+  # The control is an earlier release measured for comparison; the limits are the candidate's.
+  if [ "${OVERHEAD_KEY}" != "overhead" ]; then
+    return 0
+  fi
 
   # Check tiered thresholds (skip Min/Max — single-point extremes are too noisy)
-  local failed=0
   local labels=("Mean" "P50" "P90" "P95" "P99")
-  local real_values=($EXTRACTED_MEAN_NS $EXTRACTED_50_NS $EXTRACTED_90_NS $EXTRACTED_95_NS $EXTRACTED_99_NS)
-  local cal_values=($CAL_MEAN_NS $CAL_50_NS $CAL_90_NS $CAL_95_NS $CAL_99_NS)
+  local values=("${us_mean}" "${us_50}" "${us_90}" "${us_95}" "${us_99}")
   local thresholds=($MAX_OVERHEAD_MEAN_US $MAX_OVERHEAD_P50_US $MAX_OVERHEAD_P90_US $MAX_OVERHEAD_P95_US $MAX_OVERHEAD_P99_US)
   local extras=()
 
-  for i in "${!real_values[@]}"; do
-    local overhead_us=$(( (real_values[i] - cal_values[i]) / 1000 ))
-    if [ "$overhead_us" -gt "${thresholds[i]}" ]; then
-      extras+=("${labels[i]}:${overhead_us}:${thresholds[i]}")
-      failed=1
+  for i in "${!values[@]}"; do
+    if awk -v v="${values[i]}" -v t="${thresholds[i]}" 'BEGIN { exit !(v > t) }'; then
+      extras+=("${labels[i]}:${values[i]}:${thresholds[i]}")
     fi
   done
 
-  if [ "$failed" -eq 1 ]; then
+  if [ "${#extras[@]}" -gt 0 ]; then
     echo ""
-    log_error "FAILED: Bifrost overhead exceeded tiered thresholds"
+    log_error "FAILED: ${CURRENT_MODE_LABEL} Bifrost overhead (median of ${n}) exceeded tiered thresholds"
     log_error "Overhead  consists of: vegetta overhead and mocker timeout jitter. In real-world the P99 overhead will be approximately 100 microseconds."
     echo ""
     echo -e "${RED}| Bucket | Overhead (µs) | Threshold (µs) |${NC}"
@@ -1040,11 +1097,10 @@ EOF
       echo -e "${RED}| ${bucket} | ${overhead}µs | ${threshold}µs |${NC}"
     done
     echo ""
-    stop_stats_monitor
-    exit 1
+    return 1
   fi
 
-  log_success "All overhead buckets within tiered thresholds (mean<${MAX_OVERHEAD_MEAN_US}µs, p50<${MAX_OVERHEAD_P50_US}µs, p90<${MAX_OVERHEAD_P90_US}µs, p95<${MAX_OVERHEAD_P95_US}µs, p99<${MAX_OVERHEAD_P99_US}µs)"
+  log_success "${CURRENT_MODE_LABEL}: all overhead buckets within tiered thresholds (mean<${MAX_OVERHEAD_MEAN_US}µs, p50<${MAX_OVERHEAD_P50_US}µs, p90<${MAX_OVERHEAD_P90_US}µs, p95<${MAX_OVERHEAD_P95_US}µs, p99<${MAX_OVERHEAD_P99_US}µs)"
 }
 
 # ============================================================
@@ -1233,6 +1289,10 @@ main() {
   check_dependencies
   install_vegeta
   build_bifrost_http
+  if [ -n "${CONTROL_BIFROST_BIN}" ] && [ ! -x "${CONTROL_BIFROST_BIN}" ]; then
+    log_error "CONTROL_BIFROST_BIN is not an executable file: ${CONTROL_BIFROST_BIN}"
+    exit 1
+  fi
   setup_mocker
   patch_mocker_for_load_test
   build_mocker
@@ -1241,20 +1301,64 @@ main() {
   cleanup_ports
 
   # ── Phase 1: Overhead measurement with ${OVERHEAD_MOCKER_LATENCY_MS}ms mocker ──
+  # Each sample starts a fresh bifrost-http, so every sample sees the same cold start the
+  # release's single sample always did. Process stats are the last sample's.
   start_mocker ${OVERHEAD_MOCKER_LATENCY_MS}
-  start_bifrost
-  start_stats_monitor
+  local sample order which
+  for sample in $(seq 1 "${OVERHEAD_SAMPLES}"); do
+    order="candidate"
+    if [ -n "${CONTROL_BIFROST_BIN}" ]; then
+      # Alternate which build goes first, so neither always meets a runner that has just warmed up.
+      if [ $((sample % 2)) -eq 1 ]; then order="candidate control"; else order="control candidate"; fi
+    fi
+    for which in ${order}; do
+      if [ "${which}" = "control" ]; then
+        BIFROST_BIN="${CONTROL_BIFROST_BIN}"; OVERHEAD_KEY="control_overhead"
+      else
+        BIFROST_BIN="${CANDIDATE_BIFROST_BIN}"; OVERHEAD_KEY="overhead"
+      fi
+      log_info "Overhead sample ${sample} of ${OVERHEAD_SAMPLES} (${which})"
+      stop_bifrost
+      start_bifrost
+      if [ "${which}" = "candidate" ]; then start_stats_monitor; fi
 
+      set_test_mode "Non-streaming" "non_streaming" "false"
+      run_calibration
+      run_overhead_test
+
+      set_test_mode "Streaming" "streaming" "true"
+      run_calibration
+      run_overhead_test
+
+      if [ "${which}" = "candidate" ]; then stop_stats_monitor; fi
+    done
+  done
+
+  # Both modes are summarised before either can fail, so a non-streaming failure still
+  # records the streaming result.
+  local overhead_failed=0
+  BIFROST_BIN="${CANDIDATE_BIFROST_BIN}"; OVERHEAD_KEY="overhead"
   set_test_mode "Non-streaming" "non_streaming" "false"
-  run_calibration
-  run_overhead_test
-
+  summarize_overhead_mode || overhead_failed=1
   set_test_mode "Streaming" "streaming" "true"
-  run_calibration
-  run_overhead_test
+  summarize_overhead_mode || overhead_failed=1
+  if [ -n "${CONTROL_BIFROST_BIN}" ]; then
+    OVERHEAD_KEY="control_overhead"
+    set_test_mode "Non-streaming" "non_streaming" "false"
+    summarize_overhead_mode
+    set_test_mode "Streaming" "streaming" "true"
+    summarize_overhead_mode
+    OVERHEAD_KEY="overhead"
+    local tmp_json
+    tmp_json=$(mktemp)
+    jq --arg label "${CONTROL_LABEL}" '.control_label = $label' "${RESULTS_JSON}" > "${tmp_json}"
+    mv "${tmp_json}" "${RESULTS_JSON}"
+  fi
+  if [ "${overhead_failed}" -eq 1 ]; then
+    exit 1
+  fi
 
   # ── Collect process stats from overhead phase ──
-  stop_stats_monitor
   OVERHEAD_STATS_CPU_AVG="${STATS_CPU_AVG}"
   OVERHEAD_STATS_CPU_PEAK="${STATS_CPU_PEAK}"
   OVERHEAD_STATS_RSS_AVG="${STATS_RSS_AVG}"
