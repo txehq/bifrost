@@ -573,3 +573,13 @@ func TestWebhookHandlerPrivateEndpointRegistrationRequiresAuth(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, due)
 }
+
+// TestRedactedWebhookEndpointMasksURLCredentials: a webhook URL's userinfo is masked on
+// read even when the endpoint has no custom headers (TXE-7783).
+func TestRedactedWebhookEndpointMasksURLCredentials(t *testing.T) {
+	endpoint := &configstoreTables.TableWebhookEndpoint{URL: "https://user:fake-pass@hooks.example.com/in"}
+	got := redactedWebhookEndpoint(endpoint)
+	assert.Equal(t, "https://redacted:redacted@hooks.example.com/in", got.URL)
+	assert.Equal(t, "https://user:fake-pass@hooks.example.com/in", endpoint.URL, "the stored endpoint is not mutated")
+	assert.Nil(t, redactedWebhookEndpoint(nil))
+}

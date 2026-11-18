@@ -3034,3 +3034,82 @@ func SameBaseModel(a, b string) bool {
 	// Compare normalized base names.
 	return BaseModelName(a) == BaseModelName(b)
 }
+
+// urlUserinfoMask replaces both parts of a URL's userinfo in management reads.
+const urlUserinfoMask = "redacted"
+
+// urlUnparseableMask replaces a whole URL that holds an "@" but cannot be parsed, since
+// its credentials cannot be told apart from the rest.
+const urlUnparseableMask = "<redacted>"
+
+// RedactURLUserinfo returns raw with any credential in its userinfo masked for a
+// management read: "https://user:pass@host/p" becomes "https://redacted:redacted@host/p",
+// and a username alone becomes "redacted". A URL with no userinfo is returned unchanged,
+// and one with an "@" that does not parse is replaced whole. The masked form is stable,
+// so RestoreRedactedURL can recognise a save that echoes it back.
+func RedactURLUserinfo(raw string) string {
+	if !strings.Contains(raw, "@") {
+		return raw
+	}
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return urlUnparseableMask
+	}
+	if u.User == nil {
+		return raw
+	}
+	if _, hasPassword := u.User.Password(); hasPassword {
+		u.User = url.UserPassword(urlUserinfoMask, urlUserinfoMask)
+	} else {
+		u.User = url.User(urlUserinfoMask)
+	}
+	return u.String()
+}
+
+// hasMaskedUserinfo reports whether raw carries the mask RedactURLUserinfo writes.
+func hasMaskedUserinfo(raw string) bool {
+	if raw == urlUnparseableMask {
+		return true
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.User == nil || u.User.Username() != urlUserinfoMask {
+		return false
+	}
+	password, hasPassword := u.User.Password()
+	return !hasPassword || password == urlUserinfoMask
+}
+
+// RestoreRedactedURL resolves a URL sent to a write endpoint against the stored one. A
+// URL that is exactly the masked read form of stored returns stored, so saving a form
+// that echoed a read keeps the real credentials. A URL that still carries the mask but
+// matches no stored value is an error: saving it would replace the credentials with the
+// mask. Anything else is returned as sent. field names the field in the error.
+func RestoreRedactedURL(field, incoming, stored string) (string, error) {
+	trimmed := strings.TrimSpace(incoming)
+	if trimmed == "" || incoming == stored {
+		return incoming, nil
+	}
+	if stored != "" && RedactURLUserinfo(stored) == trimmed {
+		return stored, nil
+	}
+	if hasMaskedUserinfo(trimmed) {
+		return "", fmt.Errorf("%s carries masked credentials that cannot be restored, because it does not match the stored URL; re-enter the URL with its credentials", field)
+	}
+	return incoming, nil
+}
+
+// RestoreRedactedURLPtr is RestoreRedactedURL for an optional URL. A nil incoming stays nil.
+func RestoreRedactedURLPtr(field string, incoming, stored *string) (*string, error) {
+	if incoming == nil {
+		return nil, nil
+	}
+	storedValue := ""
+	if stored != nil {
+		storedValue = *stored
+	}
+	restored, err := RestoreRedactedURL(field, *incoming, storedValue)
+	if err != nil {
+		return nil, err
+	}
+	return &restored, nil
+}

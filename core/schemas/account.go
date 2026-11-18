@@ -276,7 +276,8 @@ func (ac AliasConfig) Redacted() AliasConfig {
 	ac.ProjectID = ac.ProjectID.RedactedIfSecret()
 	if ac.AzureAliasCfg != nil {
 		azure := *ac.AzureAliasCfg
-		azure.Endpoint = azure.Endpoint.RedactedIfSecret()
+		// An address is shown, but never a credential in its userinfo or query.
+		azure.Endpoint = azure.Endpoint.RedactedServiceURL()
 		ac.AzureAliasCfg = &azure
 	}
 	if ac.VertexAliasCfg != nil {
@@ -1136,7 +1137,7 @@ func (c *OAuthKeyConfig) Redacted() *OAuthKeyConfig {
 		return nil
 	}
 	cfg := *c
-	cfg.TokenURL = *cfg.TokenURL.RedactedIfSecret()
+	cfg.TokenURL = *cfg.TokenURL.RedactedServiceURL()
 	cfg.ClientID = cfg.ClientID.Redacted()
 	cfg.ClientSecret = cfg.ClientSecret.Redacted()
 	cfg.PrivateKey = cfg.PrivateKey.Redacted()

@@ -9547,6 +9547,11 @@ func (c *Config) RedactMCPClientConfig(config *schemas.MCPClientConfig) *schemas
 		}
 	}
 
+	// The OAuth endpoint addresses are shown, never a credential in their userinfo.
+	configCopy.OauthAuthorizeURL = schemas.RedactURLUserinfo(config.OauthAuthorizeURL)
+	configCopy.OauthTokenURL = schemas.RedactURLUserinfo(config.OauthTokenURL)
+	configCopy.OauthRegistrationURL = schemas.RedactURLUserinfo(config.OauthRegistrationURL)
+
 	// Redact OAuth client credentials
 	if config.OauthClientID != nil {
 		configCopy.OauthClientID = config.OauthClientID.Redacted()
@@ -9563,6 +9568,10 @@ func (c *Config) RedactMCPClientConfig(config *schemas.MCPClientConfig) *schemas
 		exchangeCopy := *config.TokenExchange
 		exchangeCopy.ClientID = exchangeCopy.ClientID.Redacted()
 		exchangeCopy.ClientSecret = exchangeCopy.ClientSecret.Redacted()
+		if exchangeCopy.AuthorizationServerURL != nil {
+			masked := schemas.RedactURLUserinfo(*exchangeCopy.AuthorizationServerURL)
+			exchangeCopy.AuthorizationServerURL = &masked
+		}
 		configCopy.TokenExchange = &exchangeCopy
 	}
 
@@ -9574,6 +9583,14 @@ func (c *Config) RedactMCPClientConfig(config *schemas.MCPClientConfig) *schemas
 		pendingCopy := *config.PendingOAuthConfig
 		pendingCopy.ClientID = pendingCopy.ClientID.Redacted()
 		pendingCopy.ClientSecret = pendingCopy.ClientSecret.Redacted()
+		pendingCopy.AuthorizeURL = schemas.RedactURLUserinfo(pendingCopy.AuthorizeURL)
+		pendingCopy.TokenURL = schemas.RedactURLUserinfo(pendingCopy.TokenURL)
+		pendingCopy.RedirectURI = schemas.RedactURLUserinfo(pendingCopy.RedirectURI)
+		pendingCopy.ServerURL = schemas.RedactURLUserinfo(pendingCopy.ServerURL)
+		if pendingCopy.RegistrationURL != nil {
+			masked := schemas.RedactURLUserinfo(*pendingCopy.RegistrationURL)
+			pendingCopy.RegistrationURL = &masked
+		}
 		configCopy.PendingOAuthConfig = &pendingCopy
 	}
 

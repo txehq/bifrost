@@ -1333,12 +1333,14 @@ func redactedAuthConfigView(authConfig *configstore.AuthConfig) map[string]any {
 }
 
 // redactedGlobalProxyConfig is the global proxy config as GET /api/config and GET
-// /api/proxy-config return it: a copy with the password replaced by <redacted>.
+// /api/proxy-config return it: a copy with the password replaced by <redacted> and a
+// credential in the URL's userinfo masked.
 func redactedGlobalProxyConfig(proxyConfig *configstoreTables.GlobalProxyConfig) *configstoreTables.GlobalProxyConfig {
 	redacted := *proxyConfig
 	if redacted.Password != "" {
 		redacted.Password = "<redacted>"
 	}
+	redacted.URL = schemas.RedactURLUserinfo(redacted.URL)
 	return &redacted
 }
 
@@ -1353,6 +1355,27 @@ func (h *ConfigHandler) updateProxyConfig(ctx *fasthttp.RequestCtx) {
 	if err := json.Unmarshal(ctx.PostBody(), &payload); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
+	}
+
+	// A URL echoed in its masked read form keeps the stored URL, the way <redacted> keeps
+	// the password. It is restored before the bypass check, so an unchanged URL is not
+	// seen as a new proxy; a mask that matches nothing stored is refused.
+	if strings.Contains(payload.URL, "@") || strings.Contains(payload.URL, "<redacted>") {
+		existingConfig, err := h.store.ConfigStore.GetProxyConfig(ctx)
+		if err != nil && !errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get existing proxy config: %v", err))
+			return
+		}
+		storedURL := ""
+		if existingConfig != nil {
+			storedURL = existingConfig.URL
+		}
+		restoredURL, err := schemas.RestoreRedactedURL("url", payload.URL, storedURL)
+		if err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
+		payload.URL = restoredURL
 	}
 
 	// Under the fail-open bypass (dashboard auth disabled/unconfigured), refuse to point the

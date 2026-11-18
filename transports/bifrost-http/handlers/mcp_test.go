@@ -17,6 +17,7 @@ import (
 	"github.com/capsohq/bifrost/core/mcp"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/configstore"
+	configstoreTables "github.com/capsohq/bifrost/framework/configstore/tables"
 	configtables "github.com/capsohq/bifrost/framework/configstore/tables"
 	"github.com/capsohq/bifrost/framework/oauth2"
 	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
@@ -709,4 +710,41 @@ func TestSanitizeMCPLibraryServerName(t *testing.T) {
 	for in, want := range cases {
 		assert.Equal(t, want, sanitizeMCPLibraryServerName(in), in)
 	}
+}
+
+// TestRestoreMaskedMCPRequestURLs: OAuth and token-exchange URLs echoed in their masked
+// read form keep the stored URLs; on create, or with nothing to match, a mask is refused
+// (TXE-7783).
+func TestRestoreMaskedMCPRequestURLs(t *testing.T) {
+	registration := "https://user:fake-pass@idp.example.com/register"
+	storedOauth := &configstoreTables.TableOauthConfig{
+		AuthorizeURL:    "https://user:fake-pass@idp.example.com/authorize",
+		TokenURL:        "https://idp.example.com/token",
+		RegistrationURL: &registration,
+	}
+	exchangeURL := "https://user:fake-pass@sts.example.com"
+	storedExchange := &schemas.MCPTokenExchangeConfig{AuthorizationServerURL: &exchangeURL}
+
+	req := &OAuthConfigRequest{
+		AuthorizeURL:    schemas.RedactURLUserinfo(storedOauth.AuthorizeURL),
+		TokenURL:        storedOauth.TokenURL,
+		RegistrationURL: schemas.RedactURLUserinfo(registration),
+	}
+	maskedExchange := schemas.RedactURLUserinfo(exchangeURL)
+	exchange := &schemas.MCPTokenExchangeConfig{AuthorizationServerURL: &maskedExchange}
+	require.NoError(t, restoreMaskedMCPRequestURLs(req, exchange, storedOauth, storedExchange))
+	assert.Equal(t, storedOauth.AuthorizeURL, req.AuthorizeURL)
+	assert.Equal(t, storedOauth.TokenURL, req.TokenURL)
+	assert.Equal(t, registration, req.RegistrationURL)
+	assert.Equal(t, exchangeURL, *exchange.AuthorizationServerURL)
+
+	createReq := &OAuthConfigRequest{AuthorizeURL: schemas.RedactURLUserinfo(storedOauth.AuthorizeURL)}
+	err := restoreMaskedMCPRequestURLs(createReq, nil, nil, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "oauth_config.authorize_url")
+
+	createExchange := &schemas.MCPTokenExchangeConfig{AuthorizationServerURL: &maskedExchange}
+	err = restoreMaskedMCPRequestURLs(nil, createExchange, nil, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "token_exchange.authorization_server_url")
 }

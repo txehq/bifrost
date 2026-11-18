@@ -457,6 +457,10 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 			return
 		}
+		if err := payload.NetworkConfig.RestoreRedactedBaseURLs(nil); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
 		if err := validateRetryBackoff(payload.NetworkConfig); err != nil {
 			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid retry backoff: %v", err))
 			return
@@ -698,6 +702,12 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	}
 
 	nc := payload.NetworkConfig
+	// A base URL echoed in its masked read form keeps the stored URL. It is restored
+	// before the checks below, so an unchanged URL is not seen as a new dial target.
+	if err := nc.RestoreRedactedBaseURLs(oldConfigRaw.NetworkConfig); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
 
 	// Validate retry backoff values
 	if err := validateRetryBackoff(&nc); err != nil {

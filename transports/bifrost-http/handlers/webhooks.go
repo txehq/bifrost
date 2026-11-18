@@ -112,16 +112,20 @@ func (r *webhookEndpointRequest) toTable(id string) *configstoreTables.TableWebh
 }
 
 // redactedWebhookEndpoint returns a copy safe for API responses: custom
-// header values are replaced with placeholders, preserving env references
-// (the signing secret is already excluded from JSON).
+// header values are replaced with placeholders, preserving env references, and
+// a credential in the URL's userinfo is masked (the signing secret is already
+// excluded from JSON).
 func redactedWebhookEndpoint(endpoint *configstoreTables.TableWebhookEndpoint) *configstoreTables.TableWebhookEndpoint {
-	if endpoint == nil || len(endpoint.Headers) == 0 {
-		return endpoint
+	if endpoint == nil {
+		return nil
 	}
 	copied := *endpoint
-	copied.Headers = make(map[string]schemas.SecretVar, len(endpoint.Headers))
-	for name, value := range endpoint.Headers {
-		copied.Headers[name] = *value.FullyRedacted()
+	copied.URL = schemas.RedactURLUserinfo(endpoint.URL)
+	if len(endpoint.Headers) > 0 {
+		copied.Headers = make(map[string]schemas.SecretVar, len(endpoint.Headers))
+		for name, value := range endpoint.Headers {
+			copied.Headers[name] = *value.FullyRedacted()
+		}
 	}
 	return &copied
 }
@@ -266,6 +270,11 @@ func (h *WebhookHandler) createWebhookEndpoint(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
+	// Nothing is stored yet, so a URL still carrying a read's mask is refused.
+	if _, err := schemas.RestoreRedactedURL("url", req.URL, ""); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
 	endpoint := req.toTable(uuid.NewString())
 	if err := endpoint.Validate(); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
@@ -325,6 +334,17 @@ func (h *WebhookHandler) updateWebhookEndpoint(ctx *fasthttp.RequestCtx) {
 			}
 		}
 	}
+	// A URL echoed in its masked read form keeps the stored URL.
+	storedURL := ""
+	if hasExisting && existing != nil {
+		storedURL = existing.URL
+	}
+	restoredURL, err := schemas.RestoreRedactedURL("url", req.URL, storedURL)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	req.URL = restoredURL
 	endpoint := req.toTable(id)
 	if err := endpoint.Validate(); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())

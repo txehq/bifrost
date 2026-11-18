@@ -552,3 +552,86 @@ func TestListExtraParamsAreNotReadWithAStringAssertion(t *testing.T) {
 	require.NoError(t, err)
 	require.NotZero(t, functions, "the scan found no function taking a query-fed request; it is looking in the wrong place")
 }
+
+// TestRedactURLUserinfo: a management read shows an address but never the credential in
+// its userinfo (TXE-7783).
+func TestRedactURLUserinfo(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"", ""},
+		{"https://api.example.com/v1", "https://api.example.com/v1"},
+		{"https://user:fake-pass@proxy.example.com:8080/p", "https://redacted:redacted@proxy.example.com:8080/p"},
+		{"https://fake-token@api.example.com", "https://redacted@api.example.com"},
+		{"https://api.example.com/v1?key=x", "https://api.example.com/v1?key=x"},
+		{"http://us er:p@ss@host", "<redacted>"},
+	} {
+		got := RedactURLUserinfo(tc.in)
+		assert.Equal(t, tc.want, got, tc.in)
+		assert.NotContains(t, got, "fake-pass")
+		assert.NotContains(t, got, "fake-token")
+	}
+}
+
+// TestRestoreRedactedURL replays the save flow: a URL echoed in its masked read form
+// keeps the stored URL, a new URL is taken as sent, and a mask that matches nothing
+// stored is refused rather than saved over the credentials (TXE-7783).
+func TestRestoreRedactedURL(t *testing.T) {
+	const stored = "https://user:fake-pass@proxy.example.com:8080"
+	echoed := RedactURLUserinfo(stored)
+
+	got, err := RestoreRedactedURL("url", echoed, stored)
+	require.NoError(t, err)
+	assert.Equal(t, stored, got, "an echoed mask keeps the stored URL")
+
+	got, err = RestoreRedactedURL("url", "https://other:new-pass@proxy.example.com:8080", stored)
+	require.NoError(t, err)
+	assert.Equal(t, "https://other:new-pass@proxy.example.com:8080", got, "new credentials are taken as sent")
+
+	got, err = RestoreRedactedURL("url", "https://proxy.example.com:8080", stored)
+	require.NoError(t, err)
+	assert.Equal(t, "https://proxy.example.com:8080", got, "removing the credentials is taken as sent")
+
+	_, err = RestoreRedactedURL("url", "https://redacted:redacted@elsewhere.example.com", stored)
+	require.Error(t, err, "a mask on a different host cannot be restored")
+	assert.Contains(t, err.Error(), "url")
+
+	_, err = RestoreRedactedURL("url", echoed, "")
+	require.Error(t, err, "a mask with nothing stored is refused")
+
+	_, err = RestoreRedactedURL("url", "<redacted>", "")
+	require.Error(t, err, "the unparseable mask is refused too")
+
+	got, err = RestoreRedactedURL("url", "", stored)
+	require.NoError(t, err)
+	assert.Equal(t, "", got, "clearing is taken as sent")
+
+	ptr, err := RestoreRedactedURLPtr("url", &echoed, new(stored))
+	require.NoError(t, err)
+	require.NotNil(t, ptr)
+	assert.Equal(t, stored, *ptr)
+	ptr, err = RestoreRedactedURLPtr("url", nil, new(stored))
+	require.NoError(t, err)
+	assert.Nil(t, ptr)
+}
+
+// TestNetworkConfigBaseURLsMaskedAndRestored: the redacted network config masks both
+// base URLs, and an echo of that config restores them; on create a mask is refused.
+func TestNetworkConfigBaseURLsMaskedAndRestored(t *testing.T) {
+	stored := &NetworkConfig{
+		BaseURL:          "https://user:fake-pass@api.example.com/v1",
+		WorkspaceBaseURL: "https://fake-token@ws.example.com",
+	}
+	redacted := stored.Redacted()
+	assert.NotContains(t, redacted.BaseURL, "fake-pass")
+	assert.NotContains(t, redacted.WorkspaceBaseURL, "fake-token")
+	assert.Equal(t, "https://user:fake-pass@api.example.com/v1", stored.BaseURL, "the live config is not mutated")
+
+	echo := *redacted
+	require.NoError(t, echo.RestoreRedactedBaseURLs(stored))
+	assert.Equal(t, stored.BaseURL, echo.BaseURL)
+	assert.Equal(t, stored.WorkspaceBaseURL, echo.WorkspaceBaseURL)
+
+	create := *redacted
+	err := create.RestoreRedactedBaseURLs(nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "network_config.base_url")
+}
