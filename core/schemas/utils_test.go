@@ -563,6 +563,10 @@ func TestRedactURLUserinfo(t *testing.T) {
 		{"https://fake-token@api.example.com", "https://redacted@api.example.com"},
 		{"https://api.example.com/v1?key=x", "https://api.example.com/v1?key=x"},
 		{"http://us er:p@ss@host", "<redacted>"},
+		{"user:fake-pass@proxy.example.com:3128", "<redacted>"},
+		{"fake-token@api.example.com", "<redacted>"},
+		{"/relative/fake-pass@x", "<redacted>"},
+		{"https://api.example.com/users/a@b.example?to=c@d.example", "https://api.example.com/users/a@b.example?to=c@d.example"},
 	} {
 		got := RedactURLUserinfo(tc.in)
 		assert.Equal(t, tc.want, got, tc.in)
@@ -599,6 +603,11 @@ func TestRestoreRedactedURL(t *testing.T) {
 
 	_, err = RestoreRedactedURL("url", "<redacted>", "")
 	require.Error(t, err, "the unparseable mask is refused too")
+
+	const schemeless = "user:fake-pass@proxy.example.com:3128"
+	got, err = RestoreRedactedURL("url", RedactURLUserinfo(schemeless), schemeless)
+	require.NoError(t, err)
+	assert.Equal(t, schemeless, got, "a scheme-less value masked whole is restored from its echo")
 
 	got, err = RestoreRedactedURL("url", "", stored)
 	require.NoError(t, err)

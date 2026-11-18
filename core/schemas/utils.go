@@ -3045,8 +3045,8 @@ const urlUnparseableMask = "<redacted>"
 // RedactURLUserinfo returns raw with any credential in its userinfo masked for a
 // management read: "https://user:pass@host/p" becomes "https://redacted:redacted@host/p",
 // and a username alone becomes "redacted". A URL with no userinfo is returned unchanged,
-// and one with an "@" that does not parse is replaced whole. The masked form is stable,
-// so RestoreRedactedURL can recognise a save that echoes it back.
+// and one with an "@" that does not parse into a host and userinfo is replaced whole.
+// The masked form is stable, so RestoreRedactedURL can recognise a save that echoes it.
 func RedactURLUserinfo(raw string) string {
 	if !strings.Contains(raw, "@") {
 		return raw
@@ -3056,6 +3056,13 @@ func RedactURLUserinfo(raw string) string {
 		return urlUnparseableMask
 	}
 	if u.User == nil {
+		// An "@" with no userinfo is safe to show only in a URL that parsed into a host,
+		// where the "@" sits in the path, query or fragment. A scheme-less value such as
+		// "user:pass@proxy:3128" parses as scheme "user" with an opaque rest, and a value
+		// with no host has no authority to tell apart: both fail closed.
+		if u.Opaque != "" || u.Host == "" {
+			return urlUnparseableMask
+		}
 		return raw
 	}
 	if _, hasPassword := u.User.Password(); hasPassword {
