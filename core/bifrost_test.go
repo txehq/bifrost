@@ -12794,7 +12794,7 @@ var unmappedVendorPriceNames = map[string]string{
 var notPriceFieldNames = map[string]bool{
 	"gemini/personGeneration": true, "gemini/maskClasses": true, "gemini/maskMode": true, "gemini/resizeMode": true,
 	"gemini/language":   true,
-	"bedrock/grow_mask": true, "bedrock/mask_prompt": true, "bedrock/return_mask": true,
+	"bedrock/grow_mask": true, "bedrock/mask_prompt": true, "bedrock/return_mask": true, "byteplus/omni_reference_task_type": true,
 	"elevenlabs/file_format": true, "elevenlabs/tag_audio_events": true, "elevenlabs/use_speaker_boost": true,
 	"elevenlabs/apply_language_text_normalization": true, "elevenlabs/cloud_storage_url": true,
 	"huggingface/acceleration": true, "huggingface/do_sample": true, "huggingface/use_image_urls": true, "huggingface/return_timestamps": true,
