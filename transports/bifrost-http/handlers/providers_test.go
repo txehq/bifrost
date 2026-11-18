@@ -1,10 +1,14 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -3662,5 +3666,381 @@ func TestAddProvider_RejectsHeaderSecretReferenceWhenAuthBypassed(t *testing.T) 
 	}
 	if _, exists := h.inMemoryStore.Providers["mock-openai"]; exists {
 		t.Fatalf("expected provider not to be persisted")
+	}
+}
+
+// --- Secret redaction class check (TXE-7780) ---------------------------------------------
+//
+// Management read paths redact field by field, so a secret-bearing field added later is
+// returned in plain text until someone remembers to list it. These tests do not list
+// fields. secretCanaryFill sets every field of a read path's source type by reflection:
+// every SecretVar and every string whose name marks it secret gets a unique canary. The read path renders the value the way its
+// handler does, and the test fails when a canary reaches the JSON, naming the field. A
+// new secret field is then caught the day it is added, on every path that carries it.
+//
+// A second pass sets every SecretVar to an env reference whose resolved value is the
+// canary. The reference may show; its resolved value never may, even for fields that
+// are deliberately shown as literals.
+
+// secretFieldName matches field names that mark a plain string field as secret. The
+// names are JSON names, or the Go field name for a field JSON never emits.
+var secretFieldName = regexp.MustCompile(`(^|_)(secret|secrets|password|passwd|token|api_key|apikey|private_key|credential|credentials|credentials_json|hmac_key|secret_vars|access_key|secret_key|access_key_id|secret_access_key|session_token|auth_token|bearer)($|_)`)
+
+// secretFieldNameNotSecret lists names the pattern matches that hold no secret.
+var secretFieldNameNotSecret = map[string]string{
+	"token_max_limit":                   "a rate limit",
+	"token_reset_duration":              "a duration",
+	"token_current_usage":               "a counter",
+	"token_last_reset":                  "a timestamp",
+	"secret_type":                       "an enum",
+	"password_command":                  "a command name, not its output",
+	"mcp_enable_temp_token_auth":        "a flag",
+	"dual_credential_conflict_behavior": "an enum",
+	"credential_origins":                "origin hosts a credential may come from",
+}
+
+// plaintextSecretVarFields are SecretVar fields deliberately shown as literals:
+// identifiers and addresses, rendered with RedactedIfSecret or RedactedServiceURL. Every
+// other SecretVar is a secret by default, so a new one must be hidden unless it is
+// added here with a reason. Their env references are still checked.
+var plaintextSecretVarFields = map[string]string{
+	"AliasConfig.ProjectID":                               "a cloud project identifier",
+	"AliasConfig.Region":                                  "a cloud region",
+	"AzureAliasCfg.Endpoint":                              "a service address (RedactedServiceURL)",
+	"AzureKeyConfig.Endpoint":                             "a service address (RedactedServiceURL)",
+	"BedrockAliasCfg.InferenceProfileARN":                 "a resource identifier",
+	"BedrockEndpoints.AgentRuntime":                       "a service address",
+	"BedrockEndpoints.ControlPlane":                       "a service address",
+	"BedrockEndpoints.Mantle":                             "a service address",
+	"BedrockEndpoints.Runtime":                            "a service address",
+	"BedrockEndpoints.S3":                                 "a service address",
+	"BedrockKeyConfig.ProjectID":                          "a project identifier",
+	"BedrockKeyConfig.Region":                             "a cloud region",
+	"BedrockMantleKeyConfig.ProjectID":                    "a project identifier",
+	"BedrockMantleKeyConfig.Region":                       "a cloud region",
+	"ClientConfig.A2AExternalClientURL":                   "the gateway's own public address",
+	"ClientConfig.MCPExternalClientURL":                   "the gateway's own public address",
+	"ClientConfig.SkillsExternalClientURL":                "the gateway's own public address",
+	"CloudflareKeyConfig.AccountID":                       "an account identifier",
+	"DatabricksKeyConfig.WorkspaceURL":                    "a service address (RedactedServiceURL)",
+	"OAuth2ServerConfig.IssuerURL":                        "the issuer address the gateway publishes in its discovery document",
+	"OAuthKeyConfig.TokenURL":                             "a service address (RedactedServiceURL)",
+	"OllamaKeyConfig.URL":                                 "a service address (RedactedServiceURL)",
+	"SGLKeyConfig.URL":                                    "a service address (RedactedServiceURL)",
+	"VLLMKeyConfig.URL":                                   "a service address (RedactedServiceURL)",
+	"VertexAliasCfg.ProjectNumber":                        "a project identifier",
+	"VertexAWSWorkloadIdentityConfig.AWSRegion":           "a cloud region",
+	"VertexAWSWorkloadIdentityConfig.Audience":            "a federation audience identifier",
+	"VertexAWSWorkloadIdentityConfig.ServiceAccountEmail": "a service account identifier",
+	"VertexKeyConfig.Region":                              "a cloud region",
+	"MCPClientConfig.ConnectionString":                    "a server address (RedactedServiceURL)",
+}
+
+// shownFromEnvSecretVarFields are shown even when they come from an env reference.
+var shownFromEnvSecretVarFields = map[string]string{
+	"OAuth2ServerConfig.IssuerURL": "served unauthenticated at /.well-known/oauth-authorization-server",
+	"AuthConfig.AdminUserName":     "the settings form shows the login name; the password stays hidden",
+}
+
+type secretCanaryFill struct {
+	t        *testing.T
+	envMode  bool
+	n        int
+	canaries map[string]string // canary -> field path
+}
+
+func newSecretCanaryFill(t *testing.T, envMode bool) *secretCanaryFill {
+	return &secretCanaryFill{t: t, envMode: envMode, canaries: map[string]string{}}
+}
+
+func (f *secretCanaryFill) next(path string) string {
+	f.n++
+	canary := fmt.Sprintf("LEAKCANARY%04dX", f.n)
+	f.canaries[canary] = path
+	return canary
+}
+
+var secretVarType = reflect.TypeOf(schemas.SecretVar{})
+
+// fieldName is the JSON name a field serialises under, or its snake-cased Go name for a
+// field JSON skips: a skipped field is still filled, so a tag change cannot leak it.
+func fieldName(field reflect.StructField) string {
+	name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+	if name != "" && name != "-" {
+		return strings.ToLower(name)
+	}
+	return strings.ToLower(regexp.MustCompile(`([a-z0-9])([A-Z])`).ReplaceAllString(field.Name, "${1}_${2}"))
+}
+
+// notSecretSuffix marks names that describe a secret rather than hold one: where it is
+// fetched from, where it is kept, or how long it lives.
+var notSecretSuffix = regexp.MustCompile(`_(url|uri|path|ttl)$`)
+
+func isSecretFieldName(name string) bool {
+	if _, ok := secretFieldNameNotSecret[name]; ok || notSecretSuffix.MatchString(name) {
+		return false
+	}
+	return secretFieldName.MatchString(name)
+}
+
+// fill sets v and everything under it. name is the field name v sits in; map values and
+// slice elements inherit it. typePath ("Type.Field") names the Go field for exemptions.
+func (f *secretCanaryFill) fill(v reflect.Value, name, typePath string, depth int) {
+	if depth > 12 || !v.CanSet() {
+		return
+	}
+	if v.Type() == secretVarType {
+		f.fillSecretVar(v, name, typePath)
+		return
+	}
+	switch v.Kind() {
+	case reflect.Pointer:
+		elem := v.Type().Elem()
+		if elem.Kind() == reflect.Struct || elem.Kind() == reflect.String {
+			v.Set(reflect.New(elem))
+			f.fill(v.Elem(), name, typePath, depth+1)
+		}
+	case reflect.Struct:
+		if v.Type().PkgPath() == "time" {
+			return
+		}
+		for i := 0; i < v.NumField(); i++ {
+			field := v.Type().Field(i)
+			if !field.IsExported() {
+				continue
+			}
+			if field.Anonymous {
+				f.fill(v.Field(i), name, typePath, depth+1)
+				continue
+			}
+			f.fill(v.Field(i), fieldName(field), v.Type().Name()+"."+field.Name, depth+1)
+		}
+	case reflect.Map:
+		if v.Type().Key().Kind() != reflect.String {
+			return
+		}
+		m := reflect.MakeMap(v.Type())
+		elem := reflect.New(v.Type().Elem()).Elem()
+		f.fill(elem, name, typePath, depth+1)
+		m.SetMapIndex(reflect.ValueOf("k").Convert(v.Type().Key()), elem)
+		v.Set(m)
+	case reflect.Slice:
+		if v.Type().Elem().Kind() == reflect.Uint8 {
+			return
+		}
+		s := reflect.MakeSlice(v.Type(), 1, 1)
+		f.fill(s.Index(0), name, typePath, depth+1)
+		v.Set(s)
+	case reflect.String:
+		if isSecretFieldName(name) {
+			v.SetString(f.next(typePath))
+		}
+	}
+}
+
+func (f *secretCanaryFill) fillSecretVar(v reflect.Value, name, typePath string) {
+	_, public := shownFromEnvSecretVarFields[typePath]
+	_, plaintext := plaintextSecretVarFields[typePath]
+	var value string
+	switch {
+	case f.envMode && !public:
+		// The variable's name is visible by design (the reference shows); only its
+		// resolved value is the secret, so the name must not contain the canary.
+		env := fmt.Sprintf("BF_TXE7780_REF_%d", f.n+1)
+		f.t.Setenv(env, f.next(typePath))
+		value = "env." + env
+	case plaintext || public:
+		value = "plain-identifier"
+	default:
+		value = f.next(typePath)
+	}
+	v.Set(reflect.ValueOf(*schemas.NewSecretVar(value)))
+}
+
+// assertNoCanary fails for every canary rendered into out, naming the source field.
+func (f *secretCanaryFill) assertNoCanary(readPath string, out []byte) {
+	f.t.Helper()
+	if len(f.canaries) == 0 {
+		// Every SecretVar gets an env canary, so an empty env pass means the walker no
+		// longer reaches the type. A literal pass may be empty: all its SecretVars can be
+		// listed identifiers.
+		if f.envMode {
+			f.t.Fatalf("%s: the fill planted no canaries; the walker no longer reaches this type", readPath)
+		}
+		return
+	}
+	var leaked []string
+	for canary, path := range f.canaries {
+		if bytes.Contains(out, []byte(canary)) {
+			leaked = append(leaked, path)
+		}
+	}
+	slices.Sort(leaked)
+	mode := "literal"
+	if f.envMode {
+		mode = "resolved env reference"
+	}
+	for _, path := range slices.Compact(leaked) {
+		f.t.Errorf("%s returns secret field %s unredacted (%s value)", readPath, path, mode)
+	}
+}
+
+func fillCanaries[T any](f *secretCanaryFill) *T {
+	var v T
+	f.fill(reflect.ValueOf(&v).Elem(), "", reflect.TypeOf(v).Name(), 0)
+	return &v
+}
+
+// managementReadPaths renders each management read path from a fully populated source
+// value, through the same function its handler calls before SendJSON.
+var managementReadPaths = []struct {
+	routes string
+	render func(f *secretCanaryFill) any
+}{
+	{"GET /api/providers, GET /api/providers/{provider}", func(f *secretCanaryFill) any {
+		cfg := fillCanaries[configstore.ProviderConfig](f)
+		return ListProvidersResponse{Providers: []ProviderResponse{(&ProviderHandler{}).getProviderResponseFromConfig("openai", *cfg.Redacted(), ProviderStatusActive)}}
+	}},
+	{"GET /api/providers/{provider}/keys, GET /api/providers/{provider}/keys/{key_id}, GET /api/keys", func(f *secretCanaryFill) any {
+		return fillCanaries[configstore.ProviderConfig](f).Redacted().Keys
+	}},
+	{"GET /api/config client_config", func(f *secretCanaryFill) any {
+		return fillCanaries[configstore.ClientConfig](f).Redacted()
+	}},
+	{"GET /api/config auth_config", func(f *secretCanaryFill) any {
+		return redactedAuthConfigView(fillCanaries[configstore.AuthConfig](f))
+	}},
+	{"GET /api/config proxy_config, GET /api/proxy-config", func(f *secretCanaryFill) any {
+		return redactedGlobalProxyConfig(fillCanaries[configstoreTables.GlobalProxyConfig](f))
+	}},
+	{"GET /api/mcp/clients", func(f *secretCanaryFill) any {
+		return (&lib.Config{}).RedactMCPClientConfig(fillCanaries[schemas.MCPClientConfig](f))
+	}},
+	{"GET /api/webhooks, GET /api/webhooks/{id}", func(f *secretCanaryFill) any {
+		return redactedWebhookEndpoint(fillCanaries[configstoreTables.TableWebhookEndpoint](f))
+	}},
+	{"GET /api/agents, GET /api/agents/{name}", func(f *secretCanaryFill) any {
+		return fillCanaries[schemas.AgentRegistration](f).Redacted()
+	}},
+}
+
+// TestManagementReadPathsRedactEverySecretField is the class check for TXE-7780: every
+// secret-bearing field on every listed read path comes back redacted.
+func TestManagementReadPathsRedactEverySecretField(t *testing.T) {
+	for _, envMode := range []bool{false, true} {
+		for _, path := range managementReadPaths {
+			name := path.routes
+			if envMode {
+				name += " (env references)"
+			}
+			t.Run(name, func(t *testing.T) {
+				f := newSecretCanaryFill(t, envMode)
+				out, err := sonic.Marshal(path.render(f))
+				if err != nil {
+					t.Fatalf("marshal: %v", err)
+				}
+				f.assertNoCanary(path.routes, out)
+			})
+		}
+	}
+}
+
+// TestSecretCanaryFillCatchesAnUnredactedField proves the walker fails on the leak it is
+// for: a read path that forgets one field.
+func TestSecretCanaryFillCatchesAnUnredactedField(t *testing.T) {
+	for _, envMode := range []bool{false, true} {
+		f := newSecretCanaryFill(t, envMode)
+		cfg := fillCanaries[configstore.ProviderConfig](f)
+		redacted := cfg.Redacted()
+		redacted.NetworkConfig.ExtraHeaders = cfg.NetworkConfig.ExtraHeaders // the forgotten field
+		out, err := sonic.Marshal((&ProviderHandler{}).getProviderResponseFromConfig("openai", *redacted, ProviderStatusActive))
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var leaked bool
+		for canary, path := range f.canaries {
+			if path == "NetworkConfig.ExtraHeaders" && bytes.Contains(out, []byte(canary)) {
+				leaked = true
+			}
+		}
+		if !leaked {
+			t.Fatalf("envMode=%v: an unredacted extra header did not reach the JSON, so the walker cannot see it", envMode)
+		}
+	}
+}
+
+// managementGETRouteCoverage classifies every GET route under /api by prefix: either a
+// managementReadPaths entry covers it, or it returns no stored configuration secret, for
+// the reason given. A new GET route matches no prefix and fails
+// TestEveryManagementGETRouteIsClassified until someone decides which it is.
+var managementGETRouteCoverage = map[string]string{
+	"/api/providers":               "covered: managementReadPaths",
+	"/api/keys":                    "covered: managementReadPaths",
+	"/api/config":                  "covered: managementReadPaths",
+	"/api/proxy-config":            "covered: managementReadPaths",
+	"/api/mcp/clients":             "covered: managementReadPaths",
+	"/api/webhooks":                "covered: managementReadPaths (deliveries carry status, not headers; the signing secret never serialises)",
+	"/api/agents":                  "covered: managementReadPaths (history and push configs: push secrets are write-only, the ingress credential is a hash)",
+	"/api/models":                  "model catalog: names, capabilities and prices",
+	"/api/logs":                    "request logs: content redaction is the logging plugin's, not a stored config secret",
+	"/api/mcp-logs":                "tool-call logs: as /api/logs",
+	"/api/mcp/client/":             "the OpenAPI spec document, which carries no credentials (they live in security_credentials)",
+	"/api/mcp/library":             "public MCP server catalog",
+	"/api/mcp/sessions":            "session metadata",
+	"/api/mcp/virtual-mcps":        "tool groupings, no credentials",
+	"/api/mcp/per-user-headers":    "flow status; header values are write-only",
+	"/api/oauth":                   "flow status; tokens are never returned",
+	"/api/oauth2":                  "consent flow and session metadata; tokens are never returned",
+	"/api/governance":              "budgets, rate limits, teams and virtual keys; a virtual key's value is returned by design, since the dashboard shows and copies it",
+	"/api/plugins":                 "plugin config is free-form JSON, redacted by each plugin's RedactConfig (expandPluginConfigForAPI), so it has no type to walk",
+	"/api/feature-flags":           "flags",
+	"/api/dev/pprof":               "profiles, development only",
+	"/api/internal/health":         "health",
+	"/api/notifications":           "notices",
+	"/api/prompt-repo":             "prompts",
+	"/api/rss":                     "public feeds and a flag",
+	"/api/session/is-auth-enabled": "a flag",
+	"/api/sidekiq":                 "job status",
+	"/api/skills":                  "skill files",
+	"/api/version":                 "the version",
+	"/api/warp":                    "Warp config view holds no credential fields (framework/warp ConfigView), conversations are user content",
+}
+
+func TestEveryManagementGETRouteIsClassified(t *testing.T) {
+	sources, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	route := regexp.MustCompile(`r\.GET\("(/api/[^"]*)"`)
+	var unclassified []string
+	seen := 0
+	for _, source := range sources {
+		if strings.HasSuffix(source, "_test.go") {
+			continue
+		}
+		data, err := os.ReadFile(source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range route.FindAllSubmatch(data, -1) {
+			seen++
+			path := string(m[1])
+			classified := false
+			for prefix := range managementGETRouteCoverage {
+				if path == prefix || strings.HasPrefix(path, strings.TrimSuffix(prefix, "/")+"/") || (strings.HasSuffix(prefix, "/") && strings.HasPrefix(path, prefix)) {
+					classified = true
+					break
+				}
+			}
+			if !classified {
+				unclassified = append(unclassified, source+": GET "+path)
+			}
+		}
+	}
+	if seen == 0 {
+		t.Fatal("found no GET /api routes; the route pattern no longer matches how handlers register them")
+	}
+	for _, r := range unclassified {
+		t.Errorf("%s is not classified in managementGETRouteCoverage: add a managementReadPaths entry that renders it, or a prefix with the reason it returns no stored secret", r)
 	}
 }
