@@ -2,6 +2,7 @@ package byteplus_test
 
 import (
 	"net/http"
+	"strconv"
 	"testing"
 
 	"github.com/capsohq/bifrost/core/providers/byteplus"
@@ -100,13 +101,70 @@ func TestSeedanceCreateSendsUnifiedFieldsAsArkFields(t *testing.T) {
 
 // seconds is whole seconds or "-1" (the model chooses); "5.0" is a whole number.
 func TestSeedanceDurationForms(t *testing.T) {
-	for seconds, want := range map[string]int64{"5": 5, "5.0": 5, "-1": -1, "2": 2, "15": 15} {
+	for seconds, want := range map[string]int64{"5": 5, "5.0": 5, "-1": -1, "4": 4, "15": 15} {
 		req, err := byteplus.ToBytePlusVideoGenerationRequest(seedanceRequest(&schemas.VideoGenerationParameters{Seconds: schemas.Ptr(seconds)}))
 		if err != nil {
 			t.Fatalf("seconds %q: %v", seconds, err)
 		}
 		if req.Duration == nil || int64(*req.Duration) != want {
 			t.Errorf("seconds %q: duration = %v, want %d", seconds, req.Duration, want)
+		}
+	}
+}
+
+// The duration range is the model's Seedance series (TXE-7809): the 2.5 series takes 4 to 30 and the
+// 2.0 series 4 to 15, each with -1; a model in neither keeps 2 to 15. A value inside the range
+// reaches Ark as its duration; one outside it is refused with caller_unsupported_parameter naming
+// seconds, and never reaches Ark.
+func TestSeedanceDurationRangeIsTheModelsSeries(t *testing.T) {
+	cases := []struct {
+		model    string
+		accepted []int
+		refused  []int
+	}{
+		{"dreamina-seedance-2-5-260628", []int{-1, 4, 15, 16, 30}, []int{0, 3, 31}},
+		{"dreamina-seedance-2-5-flash-261115", []int{-1, 4, 15, 16, 30}, []int{0, 3, 31}},
+		{"dreamina-seedance-2-0-260128", []int{-1, 4, 15}, []int{3, 16, 30}},
+		{"dreamina-seedance-2-0-fast-260128", []int{-1, 4, 15}, []int{3, 16, 30}},
+		{"dreamina-seedance-2-0-mini-260615", []int{-1, 4, 15}, []int{3, 16, 30}},
+		{"seedance-1-0-pro-250528", []int{-1, 2, 15}, []int{1, 16, 30}},
+		{"ep-20261118000000-abcde", []int{-1, 2, 15}, []int{1, 16, 30}},
+	}
+	for _, tc := range cases {
+		provider, captured, _ := newMockBytePlus(t, map[string]func(http.ResponseWriter, *http.Request){
+			"POST " + seedanceTasksPath: jsonResponse(http.StatusOK, `{"id":"cgt-1"}`),
+		})
+		request := func(seconds int) *schemas.BifrostVideoGenerationRequest {
+			req := seedanceRequest(&schemas.VideoGenerationParameters{Seconds: schemas.Ptr(strconv.Itoa(seconds))})
+			req.Model = tc.model
+			return req
+		}
+		for _, seconds := range tc.refused {
+			_, bifrostErr := provider.VideoGeneration(testContext(t), testKey(), request(seconds))
+			if bifrostErr == nil {
+				t.Errorf("%s seconds %d: accepted", tc.model, seconds)
+				continue
+			}
+			if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter || bifrostErr.Error == nil || bifrostErr.Error.Param != "seconds" {
+				t.Errorf("%s seconds %d: status=%v error_type=%q error=%+v, want 400 caller_unsupported_parameter param seconds", tc.model, seconds, bifrostErr.StatusCode, bifrostErr.ExtraFields.ErrorType, bifrostErr.Error)
+			}
+		}
+		if calls := captured(); len(calls) != 0 {
+			t.Errorf("%s: refused durations made %d upstream calls", tc.model, len(calls))
+		}
+		for _, seconds := range tc.accepted {
+			if _, bifrostErr := provider.VideoGeneration(testContext(t), testKey(), request(seconds)); bifrostErr != nil {
+				t.Errorf("%s seconds %d: refused: %+v", tc.model, seconds, bifrostErr.Error)
+			}
+		}
+		calls := captured()
+		if len(calls) != len(tc.accepted) {
+			t.Fatalf("%s: %d upstream calls, want %d", tc.model, len(calls), len(tc.accepted))
+		}
+		for i, seconds := range tc.accepted {
+			if got := gjson.GetBytes(calls[i].body, "duration"); !got.Exists() || got.Int() != int64(seconds) {
+				t.Errorf("%s seconds %d: Ark got duration %s, want %d", tc.model, seconds, got.Raw, seconds)
+			}
 		}
 	}
 }
