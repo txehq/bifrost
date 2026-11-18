@@ -169,6 +169,43 @@ func TestSeedanceDurationRangeIsTheModelsSeries(t *testing.T) {
 	}
 }
 
+// Ark takes only -1 as the duration of a 2.5 video edit (omni_reference_task_type "edit"), so an
+// edit with a fixed length is refused before Ark; "-1" or no seconds reaches it, and so does a
+// fixed length on a reference task (TXE-7809).
+func TestSeedanceEditTakesOnlyTheModelChosenLength(t *testing.T) {
+	provider, captured, _ := newMockBytePlus(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST " + seedanceTasksPath: jsonResponse(http.StatusOK, `{"id":"cgt-1"}`),
+	})
+	request := func(taskType string, seconds *string) *schemas.BifrostVideoGenerationRequest {
+		req := seedanceRequest(&schemas.VideoGenerationParameters{
+			Seconds:     seconds,
+			ExtraParams: map[string]interface{}{"omni_reference_task_type": taskType, "reference_videos": []string{"https://example.test/source.mp4"}},
+		})
+		req.Model = "dreamina-seedance-2-5-260628"
+		return req
+	}
+	for _, seconds := range []string{"20", "30", "4"} {
+		_, bifrostErr := provider.VideoGeneration(testContext(t), testKey(), request("edit", schemas.Ptr(seconds)))
+		if bifrostErr == nil || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter || bifrostErr.Error == nil || bifrostErr.Error.Param != "seconds" {
+			t.Errorf("edit seconds %s: err=%+v, want caller_unsupported_parameter param seconds", seconds, bifrostErr)
+		}
+	}
+	if calls := captured(); len(calls) != 0 {
+		t.Fatalf("refused edits made %d upstream calls", len(calls))
+	}
+	for _, tc := range []struct {
+		taskType string
+		seconds  *string
+	}{{"edit", schemas.Ptr("-1")}, {"edit", nil}, {"reference", schemas.Ptr("30")}} {
+		if _, bifrostErr := provider.VideoGeneration(testContext(t), testKey(), request(tc.taskType, tc.seconds)); bifrostErr != nil {
+			t.Errorf("%s seconds %v: refused: %+v", tc.taskType, tc.seconds, bifrostErr.Error)
+		}
+	}
+	if calls := captured(); len(calls) != 3 {
+		t.Errorf("%d upstream calls, want 3", len(calls))
+	}
+}
+
 // A value Ark cannot take as given is refused with caller_unsupported_parameter naming the field,
 // before any upstream call: nothing is rounded, clamped or replaced by a nearest value.
 func TestSeedanceCreateRefusesWhatArkCannotTakeAsGiven(t *testing.T) {

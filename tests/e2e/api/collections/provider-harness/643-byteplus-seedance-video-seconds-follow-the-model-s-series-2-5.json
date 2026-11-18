@@ -1,6 +1,6 @@
 {
   "name": "643. BytePlus Seedance video: seconds follow the model's series, 2.5 takes 4 to 30 and 2.0 keeps 4 to 15 (byteplus seedance duration series)",
-  "description": "Pins TXE-7809 for the byteplus provider on POST /v1/videos. Local fixture regression, no live provider calls: start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json and run with providerErrorFixture=1; every case is skipped otherwise. Ark documents the Seedance 2.5 series as [4, 30] or -1 and the 2.0 series as [4, 15] or -1. Rows 2 to 4: 31 seconds on dreamina-seedance-2-5-260628 and on dreamina-seedance-2-5-flash-261115, and 16 seconds on dreamina-seedance-2-0-260128, are each refused with 400 caller_unsupported_parameter naming seconds; row 5 proves none reached Ark. Rows 6 and 7: 30 seconds on each 2.5 model returns a queued task; before the change both were refused, because every Seedance model was held to 15. Row 8 proves both creates reached Ark with duration 30.",
+  "description": "Pins TXE-7809 for the byteplus provider on POST /v1/videos. Local fixture regression, no live provider calls: start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json and run with providerErrorFixture=1; every case is skipped otherwise. Ark documents the Seedance 2.5 series as [4, 30] or -1 and the 2.0 series as [4, 15] or -1. Rows 2 to 4: 31 seconds on dreamina-seedance-2-5-260628 and on dreamina-seedance-2-5-flash-261115, and 16 seconds on dreamina-seedance-2-0-260128, are each refused with 400 caller_unsupported_parameter naming seconds; row 5 proves none reached Ark. Rows 6 and 7: 30 seconds on each 2.5 model returns a queued task; before the change both were refused, because every Seedance model was held to 15. Row 8 proves both creates reached Ark with duration 30. Rows 9 and 10: a 2.5 edit (omni_reference_task_type edit) with 20 seconds is refused the same way, because Ark takes only -1 for an edit, and never reaches Ark.",
   "item": [
     {
       "name": "643.1 reset the fixture's counters and wire capture before the refused creates (byteplus seedance duration series)",
@@ -366,6 +366,92 @@
               "    pm.expect(b.duration, JSON.stringify(b)).to.eql(30);",
               "    pm.expect(b, 'unified name on the wire: ' + JSON.stringify(b)).to.not.have.property('seconds');",
               "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "643.9 [EXPECT-400] byteplus POST /v1/videos refuses 20 seconds on a dreamina-seedance-2-5 edit, which takes only -1 (byteplus seedance duration series)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"byteplus/dreamina-seedance-2-5-260628\",\n  \"prompt\": \"turn the boat red\",\n  \"seconds\": \"20\",\n  \"omni_reference_task_type\": \"edit\",\n  \"reference_videos\": [\"https://example.test/source.mp4\"]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('seconds is refused as caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('seconds');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "643.10 fixture wire capture shows the refused edit never reached Ark (byteplus seedance duration series)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{providerErrorFixtureUrl}}/__wire"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var calls = pm.response.json().data[0].calls.filter(function (c) { return c.path === '/pp/byteplus/api/v3/contents/generations/tasks'; });",
+              "pm.test('only the two 2.5 creates of rows 6 and 7 reached Ark', function () {",
+              "  pm.expect(calls.length, JSON.stringify(calls)).to.eql(2);",
               "});"
             ]
           }
