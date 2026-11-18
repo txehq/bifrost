@@ -113,7 +113,9 @@ func TestSeedanceDurationForms(t *testing.T) {
 }
 
 // The duration range is the model's Seedance series (TXE-7809): the 2.5 series takes 4 to 30 and the
-// 2.0 series 4 to 15, each with -1; a model in neither keeps 2 to 15. A value inside the range
+// 2.0 series 4 to 15, each with -1; a model in neither (a 1.x model, an Ark endpoint ID that may
+// serve a 2.5 deployment) takes 2 to 30, the bounds of every series, and Ark enforces its own
+// narrower range. A value inside the range
 // reaches Ark as its duration; one outside it is refused with caller_unsupported_parameter naming
 // seconds, and never reaches Ark.
 func TestSeedanceDurationRangeIsTheModelsSeries(t *testing.T) {
@@ -127,8 +129,8 @@ func TestSeedanceDurationRangeIsTheModelsSeries(t *testing.T) {
 		{"dreamina-seedance-2-0-260128", []int{-1, 4, 15}, []int{3, 16, 30}},
 		{"dreamina-seedance-2-0-fast-260128", []int{-1, 4, 15}, []int{3, 16, 30}},
 		{"dreamina-seedance-2-0-mini-260615", []int{-1, 4, 15}, []int{3, 16, 30}},
-		{"seedance-1-0-pro-250528", []int{-1, 2, 15}, []int{1, 16, 30}},
-		{"ep-20261118000000-abcde", []int{-1, 2, 15}, []int{1, 16, 30}},
+		{"seedance-1-0-pro-250528", []int{-1, 2, 15, 30}, []int{1, 31}},
+		{"ep-20261118000000-abcde", []int{-1, 2, 16, 30}, []int{1, 31}},
 	}
 	for _, tc := range cases {
 		provider, captured, _ := newMockBytePlus(t, map[string]func(http.ResponseWriter, *http.Request){

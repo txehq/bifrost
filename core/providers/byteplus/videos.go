@@ -253,10 +253,10 @@ var seedanceSeriesDurations = []struct {
 	{"seedance-2-0", seedanceDurationRange{min: 4, max: 15}},
 }
 
-// seedanceOtherDurations is the range for a model in no listed series (the 1.x models, an Ark
-// endpoint ID): every such model's range lies inside it, and Ark refuses a value its model does not
-// take with its own 400.
-var seedanceOtherDurations = seedanceDurationRange{min: 2, max: 15}
+// seedanceOtherDurations is the range for a model in no listed series: a 1.x model, or an Ark
+// endpoint ID, which may serve any series, 2.5 included. Every Seedance model's range lies inside
+// it, and Ark refuses a value its model does not take with its own 400.
+var seedanceOtherDurations = seedanceDurationRange{min: 2, max: 30}
 
 // seedanceDurations returns the duration range of the model's Seedance series.
 func seedanceDurations(model string) seedanceDurationRange {
