@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"net"
 	"net/http"
@@ -651,6 +652,306 @@ func TestUpstreamRateCorrectionsApplyOnlyToTheValueTheyCorrect(t *testing.T) {
 		input, output, _ := rate(t, store, "databricks-gemini-3-pro", schemas.Databricks)
 		require.Equal(t, 2.5e-06, input)
 		require.Equal(t, 1.3e-05, output)
+	})
+}
+
+// upstreamPromotionRowsSnapshot is testdata/upstream_promotion_rows.json: every cost key (DBU keys
+// aside) of every row upstreamPromotions and listBilledPromotions record, verbatim.
+type upstreamPromotionRowsSnapshot struct {
+	Source  string                        `json:"source"`
+	Fetched string                        `json:"fetched"`
+	Rows    map[string]map[string]float64 `json:"rows"`
+}
+
+const upstreamPromotionRowsSnapshotPath = "testdata/upstream_promotion_rows.json"
+
+func readUpstreamPromotionRowsSnapshot(t *testing.T) upstreamPromotionRowsSnapshot {
+	t.Helper()
+	if source := os.Getenv("UPSTREAM_DATASHEET_FILE"); source != "" {
+		writeUpstreamPromotionRowsSnapshot(t, source)
+	}
+	raw, err := os.ReadFile(upstreamPromotionRowsSnapshotPath)
+	require.NoError(t, err)
+	var snapshot upstreamPromotionRowsSnapshot
+	require.NoError(t, json.Unmarshal(raw, &snapshot))
+	require.NotEmpty(t, snapshot.Rows, "%s lists no rows", upstreamPromotionRowsSnapshotPath)
+	return snapshot
+}
+
+func writeUpstreamPromotionRowsSnapshot(t *testing.T, source string) {
+	t.Helper()
+	raw, err := os.ReadFile(source)
+	require.NoError(t, err)
+	var datasheet map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(raw, &datasheet))
+	wanted := map[string]bool{}
+	for _, p := range upstreamPromotions {
+		for row := range p.rates {
+			wanted[row] = true
+		}
+	}
+	for _, p := range listBilledPromotions {
+		for row := range p.rows {
+			wanted[row] = true
+		}
+	}
+	rows := map[string]map[string]float64{}
+	for row := range wanted {
+		var fields map[string]any
+		if datasheet[row] == nil || json.Unmarshal(datasheet[row], &fields) != nil {
+			continue
+		}
+		kept := map[string]float64{}
+		for key, value := range fields {
+			if v, ok := value.(float64); ok && strings.Contains(key, "cost") && !strings.Contains(key, "dbu") {
+				kept[key] = v
+			}
+		}
+		rows[row] = kept
+	}
+	out, err := json.MarshalIndent(upstreamPromotionRowsSnapshot{
+		Source:  "https://getbifrost.ai/datasheet",
+		Fetched: os.Getenv("UPSTREAM_DATASHEET_FETCHED"),
+		Rows:    rows,
+	}, "", "  ")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Clean(upstreamPromotionRowsSnapshotPath), append(out, '\n'), 0o644))
+	t.Logf("wrote %d upstream promotion rows to %s", len(rows), upstreamPromotionRowsSnapshotPath)
+}
+
+// snapshotEntries decodes snapshot rows into datasheet entries, as a sync would.
+func snapshotEntries(t *testing.T, rows map[string]map[string]float64) map[string]Entry {
+	t.Helper()
+	raw, err := json.Marshal(rows)
+	require.NoError(t, err)
+	var entries map[string]Entry
+	require.NoError(t, json.Unmarshal(raw, &entries))
+	return entries
+}
+
+// promotionsStillBilledAfterTheyEnd returns every recorded rate the fork would still bill at its
+// promotional value on the day after its promotion ends, for each promotion ending within
+// promotionWarningDays of now (or already ended). It runs the real switch over the snapshot rows,
+// so a rate with no standard value, or a switch that does not apply, is reported before the first
+// day the rate would underbill.
+func promotionsStillBilledAfterTheyEnd(t *testing.T, rows map[string]map[string]float64, promotions []upstreamPromotion, now time.Time) []string {
+	t.Helper()
+	var due []string
+	horizon := now.UTC().AddDate(0, 0, promotionWarningDays).Format(time.DateOnly)
+	for _, p := range promotions {
+		if p.lastDay > horizon {
+			continue
+		}
+		last, err := time.Parse(time.DateOnly, p.lastDay)
+		require.NoError(t, err, "%s: lastDay %q", p.name, p.lastDay)
+		entries := snapshotEntries(t, rows)
+		applyPromotions(entries, last.AddDate(0, 0, 1), []upstreamPromotion{p})
+		for _, row := range sortedKeys(p.rates) {
+			entry, ok := entries[row]
+			if !ok {
+				continue
+			}
+			for _, key := range sortedKeys(p.rates[row]) {
+				rate := entryRateField(&entry, key)
+				if rate != nil && *rate != nil && **rate == p.rates[row][key].promotional {
+					due = append(due, fmt.Sprintf("%s: %s %s still bills the promotional %g after %s ends on %s", p.name, row, key, **rate, p.name, p.lastDay))
+				}
+			}
+		}
+	}
+	return due
+}
+
+// TestEveryPromotionHasItsStandardRateBeforeItEnds is TXE-7763's guard: it fails from
+// promotionWarningDays before a promotion's last day when the fork would still bill one of its
+// rates at the promotional value once the promotion ends.
+func TestEveryPromotionHasItsStandardRateBeforeItEnds(t *testing.T) {
+	snapshot := readUpstreamPromotionRowsSnapshot(t)
+	for _, line := range promotionsStillBilledAfterTheyEnd(t, snapshot.Rows, upstreamPromotions, promotionClock()) {
+		t.Error(line + ": record its standard rate in upstreamPromotions")
+	}
+
+	// The same check, with a promotion whose standard rate is not recorded, at dates around its end.
+	row := map[string]map[string]float64{"databricks/databricks-gemini-4-argon": {"input_cost_per_token": 2.49998e-06}}
+	unknown := []upstreamPromotion{{
+		name: "a promotion with no standard rate", lastDay: "2026-11-30", source: "test", read: "2026-11-18",
+		rates: map[string]map[string]promotionalRate{"databricks/databricks-gemini-4-argon": {"input_cost_per_token": {promotional: 2.49998e-06}}},
+	}}
+	at := func(day string) time.Time {
+		d, err := time.Parse(time.DateOnly, day)
+		require.NoError(t, err)
+		return d
+	}
+	require.Empty(t, promotionsStillBilledAfterTheyEnd(t, row, unknown, at("2026-11-15")), "15 days before the last day is outside the warning window")
+	require.Len(t, promotionsStillBilledAfterTheyEnd(t, row, unknown, at("2026-11-16")), 1, "14 days before the last day is inside the warning window")
+	require.Len(t, promotionsStillBilledAfterTheyEnd(t, row, unknown, at("2026-12-15")), 1, "a past end date with the promotional rate still billed fails")
+	known := []upstreamPromotion{unknown[0]}
+	known[0].rates = map[string]map[string]promotionalRate{"databricks/databricks-gemini-4-argon": {"input_cost_per_token": {2.49998e-06, 4.99996e-06}}}
+	require.Empty(t, promotionsStillBilledAfterTheyEnd(t, row, known, at("2026-12-15")), "a promotion with its standard rate recorded is switched")
+}
+
+// TestUpstreamPromotionsMatchTheSnapshot keeps the record honest (TXE-7763). Every recorded row must
+// be in the snapshot; every cost key on a promotion row must be recorded, and must publish either
+// its promotional or its standard value (anything else means upstream changed the row and the
+// record must be re-read against its source). A list-billed row must still publish its list rate.
+func TestUpstreamPromotionsMatchTheSnapshot(t *testing.T) {
+	snapshot := readUpstreamPromotionRowsSnapshot(t)
+	corrected := map[string]bool{}
+	for _, c := range upstreamRateCorrections {
+		corrected[c.row] = true
+	}
+	recordedIn := map[string]string{}
+	claim := func(row, name string) {
+		if other, ok := recordedIn[row]; ok {
+			t.Errorf("%s is recorded in both %q and %q", row, other, name)
+		}
+		recordedIn[row] = name
+		if corrected[row] {
+			t.Errorf("%s is in %q and in upstreamRateCorrections: record it in one place", row, name)
+		}
+	}
+	checkHeader := func(name, lastDay, source, read string) {
+		for _, day := range []string{lastDay, read} {
+			if _, err := time.Parse(time.DateOnly, day); err != nil {
+				t.Errorf("%s: %q is not a YYYY-MM-DD date", name, day)
+			}
+		}
+		if strings.TrimSpace(source) == "" {
+			t.Errorf("%s has no source", name)
+		}
+	}
+
+	for _, p := range upstreamPromotions {
+		checkHeader(p.name, p.lastDay, p.source, p.read)
+		require.NotEmpty(t, p.rates, "%s records no rates", p.name)
+		ended := promotionClock().Format(time.DateOnly) > p.lastDay
+		allStandard := true
+		for _, row := range sortedKeys(p.rates) {
+			claim(row, p.name)
+			published, ok := snapshot.Rows[row]
+			if !ok {
+				t.Errorf("%s: upstream no longer publishes %s (snapshot fetched %s): re-read %s and update the record", p.name, row, snapshot.Fetched, p.source)
+				continue
+			}
+			for _, key := range sortedKeys(published) {
+				if _, recorded := p.rates[row][key]; !recorded {
+					t.Errorf("%s: %s publishes %s (%g), which the promotion does not record: record its promotional and standard values", p.name, row, key, published[key])
+				}
+			}
+			for _, key := range sortedKeys(p.rates[row]) {
+				r := p.rates[row][key]
+				if entryRateField(&Entry{}, key) == nil {
+					t.Errorf("%s: %s %s is not a cost field the fork parses", p.name, row, key)
+				}
+				if r.standard != 0 && r.standard == r.promotional {
+					t.Errorf("%s: %s %s records the same promotional and standard value %g", p.name, row, key, r.standard)
+				}
+				value, has := published[key]
+				switch {
+				case !has:
+					t.Errorf("%s: %s no longer publishes %s: remove it from the record", p.name, row, key)
+				case value == r.promotional:
+					allStandard = false
+				case r.standard != 0 && value == r.standard:
+				default:
+					t.Errorf("%s: %s %s is %g upstream, neither the recorded promotional %g nor the standard %g: re-read %s", p.name, row, key, value, r.promotional, r.standard, p.source)
+					allStandard = false
+				}
+			}
+		}
+		if ended && allStandard {
+			t.Errorf("%s ended on %s and upstream publishes the standard rate on every row: remove the record", p.name, p.lastDay)
+		}
+	}
+
+	for _, p := range listBilledPromotions {
+		checkHeader(p.name, p.lastDay, p.source, p.read)
+		require.NotEmpty(t, p.rows, "%s records no rows", p.name)
+		for _, row := range sortedKeys(p.rows) {
+			claim(row, p.name)
+			value, ok := snapshot.Rows[row]["input_cost_per_token"]
+			switch {
+			case !ok:
+				t.Errorf("%s: upstream no longer publishes %s input_cost_per_token: re-read %s", p.name, row, p.source)
+			case value != p.rows[row]:
+				t.Errorf("%s: %s input_cost_per_token is %g upstream, not the list rate %g: if it is the promotional rate, move the row into upstreamPromotions", p.name, row, value, p.rows[row])
+			}
+		}
+	}
+}
+
+// TestUpstreamPromotionsSwitchOnTheirLastDay loads a datasheet the way a sync does, with the clock
+// set either side of a promotion's last day (TXE-7763). The rates bill the promotional value until
+// the day before, and the standard value from the last day (UTC), and the switch names the rates it
+// changed. A row that publishes any other value, and a list-billed row, are left as they are.
+func TestUpstreamPromotionsSwitchOnTheirLastDay(t *testing.T) {
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelWarn)
+	datasheet := map[string]any{
+		"databricks/databricks-gemini-4-argon": map[string]any{"provider": "databricks", "mode": "chat", "input_cost_per_token": 2.49998e-06, "output_cost_per_token": 1.249997e-05, "cache_read_input_token_cost": 1.2502e-07, "input_cost_per_token_priority": 4.50002e-06},
+		"databricks/system.ai.gpt-5-6-sol":     map[string]any{"provider": "databricks", "mode": "chat", "input_cost_per_token": 4.00001e-06, "output_cost_per_token": 1.999998e-05, "cache_read_input_token_cost": 3.9998e-07},
+		// Upstream has already moved this row to a rate that is neither recorded value.
+		"databricks/system.ai.gemini-4-argon":  map[string]any{"provider": "databricks", "mode": "chat", "input_cost_per_token": 6e-06, "output_cost_per_token": 3e-05, "cache_read_input_token_cost": 6e-07},
+		"databricks/databricks-gemini-3-1-pro": map[string]any{"provider": "databricks", "mode": "chat", "input_cost_per_token": 2.49998e-06, "output_cost_per_token": 1.500002e-05, "cache_read_input_token_cost": 2.4997e-07},
+	}
+	raw, err := json.Marshal(datasheet)
+	require.NoError(t, err)
+	path := filepath.Join(t.TempDir(), "pricing.json")
+	require.NoError(t, os.WriteFile(path, raw, 0o600))
+
+	loadAt := func(t *testing.T, when string) *Store {
+		t.Helper()
+		now, err := time.Parse(time.RFC3339, when)
+		require.NoError(t, err)
+		original := promotionClock
+		promotionClock = func() time.Time { return now }
+		t.Cleanup(func() { promotionClock = original })
+		store := New(nil, logger, Config{URL: "file://" + path})
+		require.NoError(t, store.LoadFromURLIntoMemory(context.Background()))
+		return store
+	}
+	rates := func(t *testing.T, store *Store, model string) (input, output, cacheRead float64) {
+		t.Helper()
+		row := store.Get(model, schemas.Databricks, schemas.ChatCompletionRequest)
+		require.NotNil(t, row, "databricks/%s has no chat pricing row", model)
+		return *row.InputCostPerToken, *row.OutputCostPerToken, *row.CacheReadInputTokenCost
+	}
+
+	t.Run("the day before Argon's last day, in UTC, bills the promotional rate", func(t *testing.T) {
+		store := loadAt(t, "2026-11-30T07:59:59+08:00") // 23:59:59 UTC on 29 Nov
+		input, output, cacheRead := rates(t, store, "databricks-gemini-4-argon")
+		require.Equal(t, []float64{2.49998e-06, 1.249997e-05, 1.2502e-07}, []float64{input, output, cacheRead})
+		input, _, _ = rates(t, store, "system.ai.gpt-5-6-sol")
+		require.Equal(t, 5.00001e-06, input, "Sol's last day, 21 Nov, is before this clock, so Sol is already switched")
+	})
+
+	t.Run("from Argon's last day it bills the standard rate", func(t *testing.T) {
+		store := loadAt(t, "2026-11-30T00:00:00Z")
+		input, output, cacheRead := rates(t, store, "databricks-gemini-4-argon")
+		require.Equal(t, []float64{4.99996e-06, 2.49999e-05, 2.5004e-07}, []float64{input, output, cacheRead})
+		priority := store.Get("databricks-gemini-4-argon", schemas.Databricks, schemas.ChatCompletionRequest).InputCostPerTokenPriority
+		require.Equal(t, 9.00004e-06, *priority)
+		input, output, cacheRead = rates(t, store, "system.ai.gpt-5-6-sol")
+		require.Equal(t, []float64{5.00001e-06, 3e-05, 4.99975e-07}, []float64{input, output, cacheRead})
+		input, _, _ = rates(t, store, "system.ai.gemini-4-argon")
+		require.Equal(t, 6e-06, input, "a row upstream has moved off the promotional value keeps its own rate")
+		input, _, _ = rates(t, store, "databricks-gemini-3-1-pro")
+		require.Equal(t, 2.49998e-06, input, "a list-billed row is not switched")
+	})
+
+	t.Run("the switch names each promotion and rate it changed", func(t *testing.T) {
+		entries := snapshotEntries(t, map[string]map[string]float64{
+			"databricks/databricks-gemini-4-argon": {"input_cost_per_token": 2.49998e-06},
+			"databricks/system.ai.gpt-5-6-sol":     {"output_cost_per_token": 1.999998e-05},
+		})
+		now, err := time.Parse(time.RFC3339, "2026-11-30T12:00:00Z")
+		require.NoError(t, err)
+		lines := applyUpstreamPromotions(entries, now)
+		require.Len(t, lines, 2, "one line per promotion switched: %v", lines)
+		require.Contains(t, lines[0], "Databricks Gemini 4 Argon 50% promotion ended 2026-11-30")
+		require.Contains(t, lines[0], "databricks/databricks-gemini-4-argon input_cost_per_token 2.49998e-06->4.99996e-06")
+		require.Contains(t, lines[1], "Databricks GPT-5.6 Sol promotional pricing ended 2026-11-21")
+		require.Contains(t, lines[1], "databricks/system.ai.gpt-5-6-sol output_cost_per_token 1.999998e-05->3e-05")
+		require.Empty(t, applyUpstreamPromotions(snapshotEntries(t, map[string]map[string]float64{"databricks/databricks-gemini-4-argon": {"input_cost_per_token": 2.49998e-06}}), now.AddDate(0, 0, -1)), "no line while no promotion has ended")
 	})
 }
 
