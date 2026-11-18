@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"net"
 	"net/url"
@@ -835,6 +836,33 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, updateKey schemas.Key) (sch
 			}
 			mergedKey.OAuthKeyConfig.ExtraParams[name] = stored
 		}
+	}
+
+	// A per-alias Azure endpoint is read through RedactedServiceURL, so one carrying a
+	// credential comes back masked. A save that echoes it keeps the stored endpoint of the
+	// alias with the same name; with no stored endpoint the mask is refused.
+	// The map is cloned before the first write: it can be the stored key's own map.
+	aliasesCloned := false
+	for name, alias := range mergedKey.Aliases {
+		if alias.AzureAliasCfg == nil || alias.AzureAliasCfg.Endpoint == nil || !alias.AzureAliasCfg.Endpoint.IsMaskedPlaceholder() {
+			continue
+		}
+		var stored *schemas.SecretVar
+		if old, ok := oldRawKey.Aliases[name]; ok && old.AzureAliasCfg != nil {
+			stored = old.AzureAliasCfg.Endpoint
+		}
+		azure := *alias.AzureAliasCfg
+		endpoint := *azure.Endpoint
+		if err := preserve(&endpoint, stored, "aliases."+name+".endpoint"); err != nil {
+			return schemas.Key{}, err
+		}
+		azure.Endpoint = &endpoint
+		alias.AzureAliasCfg = &azure
+		if !aliasesCloned {
+			mergedKey.Aliases = maps.Clone(mergedKey.Aliases)
+			aliasesCloned = true
+		}
+		mergedKey.Aliases[name] = alias
 	}
 
 	mergedKey.ConfigHash = oldRawKey.ConfigHash

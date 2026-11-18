@@ -2083,3 +2083,14 @@ func TestUpdateConfig_MaxResponseBodySizeMB(t *testing.T) {
 	require.Equal(t, fasthttp.StatusOK, reset.Response.StatusCode(), string(reset.Response.Body()))
 	assertLimit(0)
 }
+
+// TestRedactedGlobalProxyConfigMasksURLCredentials: the global proxy read masks the
+// password and the URL's userinfo, and leaves the stored config alone (TXE-7783).
+func TestRedactedGlobalProxyConfigMasksURLCredentials(t *testing.T) {
+	stored := &configtables.GlobalProxyConfig{URL: "http://user:fake-pass@proxy.example.com:3128", Password: "fake-password"}
+	got := redactedGlobalProxyConfig(stored)
+	assert.Equal(t, "http://redacted:redacted@proxy.example.com:3128", got.URL)
+	assert.Equal(t, "<redacted>", got.Password)
+	assert.Equal(t, "http://user:fake-pass@proxy.example.com:3128", stored.URL)
+	assert.Equal(t, "fake-password", stored.Password)
+}

@@ -70,6 +70,10 @@ func (a *UpstreamAuth) Redacted() *UpstreamAuth {
 		oauth.ClientID = a.OAuth.ClientID.FullyRedacted()
 		oauth.ClientSecret = a.OAuth.ClientSecret.FullyRedacted()
 		oauth.Scopes = slices.Clone(a.OAuth.Scopes)
+		// Writes refuse userinfo in these URLs; masking it here keeps a read safe anyway.
+		oauth.ProviderURL = RedactURLUserinfo(a.OAuth.ProviderURL)
+		oauth.DiscoveryURL = RedactURLUserinfo(a.OAuth.DiscoveryURL)
+		oauth.TokenURL = RedactURLUserinfo(a.OAuth.TokenURL)
 		copy.OAuth = &oauth
 	}
 	if a.TLS != nil {
@@ -140,7 +144,7 @@ type AgentRegistrationView struct {
 func (r AgentRegistration) Redacted() AgentRegistrationView {
 	return AgentRegistrationView{
 		Name:                                   r.Name,
-		AgentCardURL:                           r.AgentCardURL,
+		AgentCardURL:                           RedactURLUserinfo(r.AgentCardURL),
 		Enabled:                                r.Enabled,
 		AllowByDefault:                         r.AllowByDefault,
 		ForwardAcceptedCredential:              r.ForwardAcceptedCredential,

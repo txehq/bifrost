@@ -1877,6 +1877,49 @@ type OAuthConfigRequest struct {
 	Resource        string             `json:"resource"`
 }
 
+// restoreMaskedMCPRequestURLs resolves the OAuth and token-exchange URLs of an MCP
+// client write against the stored ones (schemas.RestoreRedactedURL): a URL echoed in
+// its masked read form keeps the stored URL, and a mask with nothing stored to match is
+// refused. On create both stored values are nil, so any mask is refused.
+func restoreMaskedMCPRequestURLs(oauth *OAuthConfigRequest, exchange *schemas.MCPTokenExchangeConfig, storedOauth *configstoreTables.TableOauthConfig, storedExchange *schemas.MCPTokenExchangeConfig) error {
+	if oauth != nil {
+		var storedAuthorize, storedToken, storedRegistration string
+		if storedOauth != nil {
+			storedAuthorize, storedToken = storedOauth.AuthorizeURL, storedOauth.TokenURL
+			if storedOauth.RegistrationURL != nil {
+				storedRegistration = *storedOauth.RegistrationURL
+			}
+		}
+		for _, field := range []struct {
+			name     string
+			incoming *string
+			stored   string
+		}{
+			{"oauth_config.authorize_url", &oauth.AuthorizeURL, storedAuthorize},
+			{"oauth_config.token_url", &oauth.TokenURL, storedToken},
+			{"oauth_config.registration_url", &oauth.RegistrationURL, storedRegistration},
+		} {
+			restored, err := schemas.RestoreRedactedURL(field.name, *field.incoming, field.stored)
+			if err != nil {
+				return err
+			}
+			*field.incoming = restored
+		}
+	}
+	if exchange != nil {
+		var stored *string
+		if storedExchange != nil {
+			stored = storedExchange.AuthorizationServerURL
+		}
+		restored, err := schemas.RestoreRedactedURLPtr("token_exchange.authorization_server_url", exchange.AuthorizationServerURL, stored)
+		if err != nil {
+			return err
+		}
+		exchange.AuthorizationServerURL = restored
+	}
+	return nil
+}
+
 // MCPClientRequest represents the full MCP client creation request with OAuth support.
 //
 // UserHeaders carries a sample set of per-user-headers values used only for
@@ -2155,6 +2198,10 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	if rejectSecretReferencesIfAuthBypassed(ctx, mcpClientSecretReferences(req.Headers, req.ConnectionString, req.OauthConfig, req.TokenExchange, req.TLSConfig, req.OpenAPIConfig)) {
+		return
+	}
+	if err := restoreMaskedMCPRequestURLs(req.OauthConfig, req.TokenExchange, nil, nil); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
 	if rejectPrivateMCPTargetIfAuthBypassed(ctx, req.ConnectionType, req.ConnectionString) {
@@ -3114,6 +3161,10 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		// masked value means "keep the stored one", mirroring the header
 		// and TLS redacted-merge behavior above. An env/vault reference is
 		// never a placeholder, so switching a credential to one is written.
+		if err := restoreMaskedMCPRequestURLs(nil, req.TokenExchange, nil, existingConfig.TokenExchange); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
 		if existingConfig.TokenExchange != nil {
 			if req.TokenExchange.ClientID.IsMaskedPlaceholder() {
 				req.TokenExchange.ClientID = existingConfig.TokenExchange.ClientID
@@ -3187,6 +3238,10 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		// SecretVar's own masked-placeholder convention; the plain-string/
 		// slice fields use the same "empty means not provided" convention
 		// the config.json path already uses for this block.
+		if err := restoreMaskedMCPRequestURLs(req.OauthConfig, nil, existingOauthConfig, nil); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
 		resolvedOauthFields = configstore.MCPOAuthConfigFields{
 			ClientID:        existingOauthConfig.ClientID,
 			ClientSecret:    existingOauthConfig.ClientSecret,

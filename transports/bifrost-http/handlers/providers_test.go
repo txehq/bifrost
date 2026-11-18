@@ -3674,7 +3674,8 @@ func TestAddProvider_RejectsHeaderSecretReferenceWhenAuthBypassed(t *testing.T) 
 // Management read paths redact field by field, so a secret-bearing field added later is
 // returned in plain text until someone remembers to list it. These tests do not list
 // fields. secretCanaryFill sets every field of a read path's source type by reflection:
-// every SecretVar and every string whose name marks it secret gets a unique canary. The read path renders the value the way its
+// every SecretVar and every string whose name marks it secret gets a unique canary, and
+// so does the userinfo password of every address field (TXE-7783). The read path renders the value the way its
 // handler does, and the test fails when a canary reaches the JSON, naming the field. A
 // new secret field is then caught the day it is added, on every path that carries it.
 //
@@ -3740,6 +3741,32 @@ var plaintextSecretVarFields = map[string]string{
 var shownFromEnvSecretVarFields = map[string]string{
 	"OAuth2ServerConfig.IssuerURL": "served unauthenticated at /.well-known/oauth-authorization-server",
 	"AuthConfig.AdminUserName":     "the settings form shows the login name; the password stays hidden",
+}
+
+// urlFieldName matches fields that hold an address. A read may show the address but
+// never a credential in its userinfo ("https://user:pass@host"), so the fill puts a
+// canary there (TXE-7783).
+var urlFieldName = regexp.MustCompile(`(^|_)(url|uri|endpoint|connection_string)$`)
+
+// urlFieldsWithoutCredentials are address fields whose userinfo may show, each with
+// the reason it cannot carry a credential worth hiding.
+var urlFieldsWithoutCredentials = map[string]string{
+	"ClientConfig.A2AExternalClientURL":    "the gateway's own public address, which it hands to every client",
+	"ClientConfig.MCPExternalClientURL":    "the gateway's own public address, which it hands to every client",
+	"ClientConfig.SkillsExternalClientURL": "the gateway's own public address, which it hands to every client",
+	"OAuth2ServerConfig.IssuerURL":         "served unauthenticated at /.well-known/oauth-authorization-server",
+}
+
+func isURLFieldName(name, typePath string) bool {
+	if _, exempt := urlFieldsWithoutCredentials[typePath]; exempt {
+		return false
+	}
+	return urlFieldName.MatchString(name)
+}
+
+// urlWithCanary is an address whose password is a canary.
+func (f *secretCanaryFill) urlWithCanary(path string) string {
+	return "https://user:" + f.next(path) + "@gateway.invalid/path"
 }
 
 type secretCanaryFill struct {
@@ -3832,8 +3859,11 @@ func (f *secretCanaryFill) fill(v reflect.Value, name, typePath string, depth in
 		f.fill(s.Index(0), name, typePath, depth+1)
 		v.Set(s)
 	case reflect.String:
-		if isSecretFieldName(name) {
+		switch {
+		case isSecretFieldName(name):
 			v.SetString(f.next(typePath))
+		case isURLFieldName(name, typePath):
+			v.SetString(f.urlWithCanary(typePath))
 		}
 	}
 }
@@ -3849,6 +3879,8 @@ func (f *secretCanaryFill) fillSecretVar(v reflect.Value, name, typePath string)
 		env := fmt.Sprintf("BF_TXE7780_REF_%d", f.n+1)
 		f.t.Setenv(env, f.next(typePath))
 		value = "env." + env
+	case plaintext && isURLFieldName(name, typePath):
+		value = f.urlWithCanary(typePath)
 	case plaintext || public:
 		value = "plain-identifier"
 	default:
@@ -3967,6 +3999,25 @@ func TestSecretCanaryFillCatchesAnUnredactedField(t *testing.T) {
 			t.Fatalf("envMode=%v: an unredacted extra header did not reach the JSON, so the walker cannot see it", envMode)
 		}
 	}
+}
+
+// TestSecretCanaryFillCatchesURLUserinfo proves the address rule fails on the leak it
+// is for: a read path that shows a base URL with its credentials (TXE-7783).
+func TestSecretCanaryFillCatchesURLUserinfo(t *testing.T) {
+	f := newSecretCanaryFill(t, false)
+	cfg := fillCanaries[configstore.ProviderConfig](f)
+	redacted := cfg.Redacted()
+	redacted.NetworkConfig.BaseURL = cfg.NetworkConfig.BaseURL // the forgotten mask
+	out, err := sonic.Marshal((&ProviderHandler{}).getProviderResponseFromConfig("openai", *redacted, ProviderStatusActive))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for canary, path := range f.canaries {
+		if path == "NetworkConfig.BaseURL" && bytes.Contains(out, []byte(canary)) {
+			return
+		}
+	}
+	t.Fatal("an unmasked base URL did not reach the JSON, so the walker cannot see it")
 }
 
 // managementGETRouteCoverage classifies every GET route under /api by prefix: either a

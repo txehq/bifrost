@@ -254,12 +254,15 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 // every ExtraHeaders value masked. Header values are masked regardless of name, since
 // operators put client secrets and bearer tokens under arbitrary names, and fully
 // rather than prefix/suffix, since a short credential would otherwise expose most of
-// itself. env/vault headers keep their reference, which is what serializes.
+// itself. env/vault headers keep their reference, which is what serializes. Credentials
+// in the base URLs' userinfo are masked (RedactURLUserinfo).
 func (nc *NetworkConfig) Redacted() *NetworkConfig {
 	if nc == nil {
 		return nil
 	}
 	redacted := *nc
+	redacted.BaseURL = RedactURLUserinfo(nc.BaseURL)
+	redacted.WorkspaceBaseURL = RedactURLUserinfo(nc.WorkspaceBaseURL)
 	if nc.CACertPEM != nil && nc.CACertPEM.IsSet() {
 		redacted.CACertPEM = nc.CACertPEM.Redacted()
 	}
@@ -270,6 +273,26 @@ func (nc *NetworkConfig) Redacted() *NetworkConfig {
 		}
 	}
 	return &redacted
+}
+
+// RestoreRedactedBaseURLs puts back the stored base URLs where nc carries their masked
+// read form (see RestoreRedactedURL). stored is nil for a new provider, where a masked
+// base URL is an error.
+func (nc *NetworkConfig) RestoreRedactedBaseURLs(stored *NetworkConfig) error {
+	var storedBase, storedWorkspace string
+	if stored != nil {
+		storedBase, storedWorkspace = stored.BaseURL, stored.WorkspaceBaseURL
+	}
+	base, err := RestoreRedactedURL("network_config.base_url", nc.BaseURL, storedBase)
+	if err != nil {
+		return err
+	}
+	workspace, err := RestoreRedactedURL("network_config.workspace_base_url", nc.WorkspaceBaseURL, storedWorkspace)
+	if err != nil {
+		return err
+	}
+	nc.BaseURL, nc.WorkspaceBaseURL = base, workspace
+	return nil
 }
 
 // RestoreRedactedExtraHeaders returns incoming with every masked literal value replaced by

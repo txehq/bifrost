@@ -26,6 +26,7 @@ import (
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/configstore"
 	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 )
@@ -2897,4 +2898,37 @@ func TestBFLKey_WebhookSecretRedactedRoundTrip(t *testing.T) {
 	if got := merged.BFLKeyConfig.WebhookSecret.GetValue(); got != "a-new-secret" {
 		t.Errorf("a new secret was not taken: got %q", got)
 	}
+}
+
+// TestMergeUpdatedKey_AliasEndpointWithCredentials: a per-alias Azure endpoint carrying a
+// credential is masked on read; echoing it keeps the stored endpoint, and a mask for an
+// alias with no stored endpoint is refused (TXE-7783).
+func TestMergeUpdatedKey_AliasEndpointWithCredentials(t *testing.T) {
+	h := &ProviderHandler{}
+	const endpoint = "https://user:fake-pass@res.openai.azure.com"
+	oldRaw := schemas.Key{ID: "key-1", Value: *schemas.NewSecretVar("sk-fake-0000000000000000"), Aliases: schemas.KeyAliases{
+		"gpt": {ModelID: "gpt-deploy", AzureAliasCfg: &schemas.AzureAliasCfg{Endpoint: schemas.NewSecretVar(endpoint)}},
+	}}
+	read := oldRaw.Aliases["gpt"].Redacted()
+	require.NotContains(t, read.AzureAliasCfg.Endpoint.GetValue(), "fake-pass", "the read masks the credential")
+
+	update := schemas.Key{ID: "key-1", Value: *oldRaw.Value.Redacted(), Aliases: schemas.KeyAliases{"gpt": read}}
+	merged, err := h.mergeUpdatedKey(oldRaw, update)
+	require.NoError(t, err)
+	assert.Equal(t, endpoint, merged.Aliases["gpt"].AzureAliasCfg.Endpoint.GetValue())
+	assert.True(t, oldRaw.Aliases["gpt"].AzureAliasCfg.Endpoint.GetValue() == endpoint, "the stored key is not mutated")
+
+	renamed := schemas.Key{ID: "key-1", Value: *oldRaw.Value.Redacted(), Aliases: schemas.KeyAliases{"other": read}}
+	_, err = h.mergeUpdatedKey(oldRaw, renamed)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "aliases.other.endpoint")
+}
+
+// TestOAuthKeyTokenURLWithCredentialsIsMasked: the OAuth key token_url is an address
+// shown on read, but a credential in it is not (TXE-7783).
+func TestOAuthKeyTokenURLWithCredentialsIsMasked(t *testing.T) {
+	cfg := &schemas.OAuthKeyConfig{TokenURL: *schemas.NewSecretVar("https://user:fake-pass@idp.example.com/token")}
+	assert.NotContains(t, cfg.Redacted().TokenURL.GetValue(), "fake-pass")
+	plain := &schemas.OAuthKeyConfig{TokenURL: *schemas.NewSecretVar("https://idp.example.com/token")}
+	assert.Equal(t, "https://idp.example.com/token", plain.Redacted().TokenURL.GetValue(), "a bare address is still shown")
 }
