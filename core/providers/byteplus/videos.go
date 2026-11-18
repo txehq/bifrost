@@ -58,6 +58,13 @@ func ToBytePlusVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGeneration
 	if bifrostErr != nil {
 		return nil, providerUtils.ConverterBifrostError(bifrostErr)
 	}
+	// Ark: "When set to edit, ... duration must be -1" (TXE-7809). An explicit edit with a fixed
+	// length is refused here; under "auto" the model picks the task type from the prompt, which
+	// nothing can know before the call.
+	if taskType, _ := params.ExtraParams["omni_reference_task_type"].(string); taskType == "edit" && duration != nil && *duration != seedanceAutoDuration {
+		return nil, providerUtils.ConverterBifrostError(schemas.NewUnsupportedParameterError("seconds", fmt.Sprintf(
+			"seconds must be -1 for a byteplus video edit (omni_reference_task_type edit); got %q", *params.Seconds)))
+	}
 	req.Duration = duration
 	// Fork (TXE-6426, contract C4): resolution and ratio come from the unified resolution and
 	// aspect_ratio, or from a size that names one Seedance tier and ratio exactly. A unified field
