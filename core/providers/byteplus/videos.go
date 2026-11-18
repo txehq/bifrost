@@ -54,7 +54,7 @@ func ToBytePlusVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGeneration
 	if params == nil {
 		return req, nil
 	}
-	duration, bifrostErr := seedanceDuration(params.Seconds)
+	duration, bifrostErr := seedanceDuration(bifrostReq.Model, params.Seconds)
 	if bifrostErr != nil {
 		return nil, providerUtils.ConverterBifrostError(bifrostErr)
 	}
@@ -227,23 +227,49 @@ const (
 	seedanceMaxExpiresAfter = 259200
 )
 
-// Seedance durations in whole seconds: every Seedance model's range lies inside these bounds,
-// and Ark refuses a value its model does not take with its own 400. seedanceAutoDuration is
-// Ark's "the model chooses the length".
-const (
-	seedanceMinDuration  = 2
-	seedanceMaxDuration  = 15
-	seedanceAutoDuration = -1
-)
+// seedanceAutoDuration is Ark's "the model chooses the length".
+const seedanceAutoDuration = -1
+
+// seedanceDurationRange is a range of Seedance durations in whole seconds, both ends included.
+type seedanceDurationRange struct{ min, max int }
+
+// seedanceSeriesDurations are the duration ranges Ark documents per Seedance series (fork,
+// TXE-7809): "Dreamina Seedance 2.5 series: Default -1; supports [4, 30] or -1" and "Dreamina
+// Seedance 2.0 series: Default 5; supports [4, 15] or -1". A model belongs to a series when its
+// name carries the series' id: dreamina-seedance-2-5-260628 and dreamina-seedance-2-5-flash-261115
+// are 2.5; dreamina-seedance-2-0-260128, its fast and its mini are 2.0.
+var seedanceSeriesDurations = []struct {
+	series  string
+	seconds seedanceDurationRange
+}{
+	{"seedance-2-5", seedanceDurationRange{min: 4, max: 30}},
+	{"seedance-2-0", seedanceDurationRange{min: 4, max: 15}},
+}
+
+// seedanceOtherDurations is the range for a model in no listed series (the 1.x models, an Ark
+// endpoint ID): every such model's range lies inside it, and Ark refuses a value its model does not
+// take with its own 400.
+var seedanceOtherDurations = seedanceDurationRange{min: 2, max: 15}
+
+// seedanceDurations returns the duration range of the model's Seedance series.
+func seedanceDurations(model string) seedanceDurationRange {
+	name := strings.ToLower(model)
+	for _, s := range seedanceSeriesDurations {
+		if strings.Contains(name, s.series) {
+			return s.seconds
+		}
+	}
+	return seedanceOtherDurations
+}
 
 // seedanceLinkLifetime is how long Ark keeps a task's video_url valid (contract C7, C9).
 const seedanceLinkLifetime = 24 * time.Hour
 
 // seedanceDuration converts the unified seconds to Ark's integer duration (fork, TXE-6426,
 // contract C4). Seedance bills by length and takes whole seconds only, so a fractional value, or
-// one outside every Seedance model's range, is refused with caller_unsupported_parameter: it is
-// never rounded or clamped. "-1" is the one form for "the model chooses the length".
-func seedanceDuration(seconds *string) (*int, *schemas.BifrostError) {
+// one outside the model's series range (TXE-7809), is refused with caller_unsupported_parameter:
+// it is never rounded or clamped. "-1" is the one form for "the model chooses the length".
+func seedanceDuration(model string, seconds *string) (*int, *schemas.BifrostError) {
 	if seconds == nil || strings.TrimSpace(*seconds) == "" {
 		return nil, nil
 	}
@@ -253,9 +279,9 @@ func seedanceDuration(seconds *string) (*int, *schemas.BifrostError) {
 			"seconds must be a whole number for byteplus video; got %q", *seconds))
 	}
 	duration := int(value)
-	if duration != seedanceAutoDuration && (duration < seedanceMinDuration || duration > seedanceMaxDuration) {
+	if r := seedanceDurations(model); duration != seedanceAutoDuration && (duration < r.min || duration > r.max) {
 		return nil, schemas.NewUnsupportedParameterError("seconds", fmt.Sprintf(
-			"seconds must be between %d and %d, or -1 for a length the model chooses, for byteplus video; got %q", seedanceMinDuration, seedanceMaxDuration, *seconds))
+			"seconds must be between %d and %d, or -1 for a length the model chooses, for byteplus video model %q; got %q", r.min, r.max, model, *seconds))
 	}
 	return &duration, nil
 }
