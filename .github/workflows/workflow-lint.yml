@@ -181,6 +181,12 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 .github/workflows/scripts/test-release-memory-gate.py
 
+      # The same-runner comparison fires on a recorded slowdown and not on recorded noise, and
+      # the release pipeline records each result and compares without gating on it (TXE-7762).
+      - name: Check the load trend comparison and its release wiring
+        if: ${{ !cancelled() }}
+        run: python3 .github/workflows/scripts/load-trend.py --self-test
+
       # Fake git/npx/docker/lsof only: an invalid override must fail before any baseline starts.
       - name: Check migration local-binary overrides fail closed
         if: ${{ !cancelled() }}
