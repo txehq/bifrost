@@ -952,6 +952,10 @@ func (provider *VolcengineProvider) SupportedUnifiedFields(requestType schemas.R
 	return byteplus.SeedanceSupportedUnifiedFields(requestType)
 }
 
+// AcceptsVideoCreateWithoutPrompt declares, as byteplus does for the same Ark API, that video
+// create takes a request with no prompt; the shared Seedance converter refuses what Ark refuses.
+func (provider *VolcengineProvider) AcceptsVideoCreateWithoutPrompt() bool { return true }
+
 func (provider *VolcengineProvider) VideoGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoGenerationRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
 	if err := provider.allowed(schemas.VideoGenerationRequest); err != nil {
 		return nil, err

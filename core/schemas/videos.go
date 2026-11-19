@@ -395,6 +395,49 @@ func HasVideoGenerationInput(input *VideoGenerationInput, params *VideoGeneratio
 	return false
 }
 
+// PromptlessVideoCreateProvider is implemented by a provider whose video create takes a request
+// with no prompt and none of input_reference or video_uri, generating from last_frame,
+// reference_images or its own extra params alone (fork: Seedance on BytePlus and Volcengine).
+// Every other provider's converter requires the prompt, so such a request routed to it is
+// refused before a key is chosen (NewVideoPromptRequiredError).
+type PromptlessVideoCreateProvider interface {
+	AcceptsVideoCreateWithoutPrompt() bool
+}
+
+// AcceptsVideoCreateWithoutPrompt reports whether provider declared that its video create takes
+// a request with no prompt, input_reference or video_uri.
+func AcceptsVideoCreateWithoutPrompt(provider any) bool {
+	p, ok := provider.(PromptlessVideoCreateProvider)
+	return ok && p.AcceptsVideoCreateWithoutPrompt()
+}
+
+// NeedsPromptlessVideoCreate reports whether req is a video create with no prompt, input_reference
+// or video_uri: one only a PromptlessVideoCreateProvider takes.
+func NeedsPromptlessVideoCreate(req *BifrostVideoGenerationRequest) bool {
+	if req == nil {
+		return false
+	}
+	in := req.Input
+	return in == nil || (in.Prompt == "" && in.InputReference == nil && in.VideoURI == nil)
+}
+
+// NewVideoPromptRequiredError is the 400 for a video create with no prompt, input_reference or
+// video_uri routed to a provider that requires one: error_type caller_invalid_request, error.param
+// "prompt". No upstream call is made.
+func NewVideoPromptRequiredError() *BifrostError {
+	return &BifrostError{
+		IsBifrostError: false,
+		StatusCode:     Ptr(400),
+		Error: &ErrorField{
+			Type:    Ptr("invalid_request_error"),
+			Code:    Ptr(string(ErrorTypeCallerInvalidRequest)),
+			Message: "this provider's video create needs a prompt, input_reference or video_uri",
+			Param:   "prompt",
+		},
+		ExtraFields: BifrostErrorExtraFields{UpstreamSent: Ptr(false), ErrorType: ErrorTypeCallerInvalidRequest},
+	}
+}
+
 // VideoUsage carries provider-reported usage for a video (or other async media) generation job.
 // Providers that report an exact price (e.g. Runware's per-task cost) populate Cost so pricing uses
 // it verbatim instead of a datasheet estimate.

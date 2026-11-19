@@ -10683,6 +10683,47 @@ func TestVideoGenerationWithoutPromptReachesTheProviderWhenItHasAnInput(t *testi
 	}
 }
 
+// A provider that does not declare it takes a video create with no prompt (every one but
+// Seedance's) gets 400 caller_invalid_request naming prompt for one, before any upstream call:
+// its converter requires the prompt, and would otherwise fail the request as an internal error.
+func TestVideoGenerationWithoutPromptIsRefusedForAProviderThatNeedsOne(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"video_1","status":"queued"}`)
+	}))
+	t.Cleanup(server.Close)
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 10, server.URL)
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{{ID: "k1", Name: "K1", Value: *schemas.NewSecretVar("sk-test-openai"), Weight: 1, Models: []string{"*"}}})
+	client, initErr := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
+	if initErr != nil {
+		t.Fatalf("Init failed: %v", initErr)
+	}
+	t.Cleanup(client.Shutdown)
+
+	for _, params := range []*schemas.VideoGenerationParameters{
+		{ReferenceImages: schemas.VideoReferenceImages{"https://example.test/a.png"}},
+		{LastFrame: "https://example.test/last.png"},
+	} {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		_, bifrostErr := client.VideoGenerationRequest(ctx, &schemas.BifrostVideoGenerationRequest{
+			Provider: schemas.OpenAI, Model: "sora-2", Input: &schemas.VideoGenerationInput{}, Params: params,
+		})
+		ctx.Cancel()
+		if bifrostErr == nil || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerInvalidRequest ||
+			bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400 || bifrostErr.Error == nil || bifrostErr.Error.Param != "prompt" {
+			t.Errorf("%+v: err = %+v, want 400 caller_invalid_request naming prompt", params, bifrostErr)
+		}
+	}
+	if got := calls.Load(); got != 0 {
+		t.Errorf("%d upstream calls, want 0", got)
+	}
+}
+
 // declaringImageProvider declares that it takes only size for image generation, and
 // counts the image generation calls that reach it.
 type declaringImageProvider struct {
