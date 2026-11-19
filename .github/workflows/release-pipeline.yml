@@ -346,8 +346,12 @@ jobs:
         with:
           name: bifrost-http-binary
           path: tmp/bifrost-http
-          # Consumed within the same run only; no reason to keep it around.
-          retention-days: 1
+          # Consumed within this run, but by jobs behind the live-providers approval, which can
+          # wait days: kept for the approval window in docs/release.md, which
+          # test-release-gates.py enforces (sync.13 waited 32 hours on a 1-day artifact, TXE-7895).
+          # Built once before the gate rather than in each gated job, so the binary every
+          # suite tests is the same one.
+          retention-days: 7
           if-no-files-found: error
           # A ~100MB Go binary compresses poorly, and the CPU spent on level 6
           # costs more than the bytes it saves on the intra-run round trip.

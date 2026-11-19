@@ -22,6 +22,8 @@ on:
       # named replicate.delivery turned main red after it merged (TXE-7139).
       - "tests/e2e/api/collections/provider-harness/**"
       - "tests/integrations/python/config.json"
+      # test-release-gates.py reads the approval window from the release runbook (TXE-7895).
+      - "docs/release.md"
 
 permissions:
   contents: read

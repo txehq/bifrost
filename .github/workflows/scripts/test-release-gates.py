@@ -11,11 +11,13 @@ It also pins the protected-main contract: release jobs build and tag the tested 
 never write main, and an image is published only after the bifrost-http release it
 ships has verified and completed. And every job that runs a script calling go sets up
 the Go the workspace requires before it does, and every actions/setup-go step in any
-workflow turns its shared built-in cache off.
+workflow turns its shared built-in cache off. And every artifact a job downloads behind an
+environment approval is kept at least as long as the approval window docs/release.md states.
 
 Usage: python3 test-release-gates.py
 """
 import ast
+import fnmatch
 import importlib.util
 import json
 import os
@@ -680,6 +682,160 @@ class ReleasesShareOneGroup(unittest.TestCase):
                 continue
             with self.subTest(workflow=path.name):
                 self.assertNotRegex(text, r"group:\s*['\"]?release-pipeline['\"]?\s*$")
+
+
+# The release runbook owns the approval window; the check below reads it from there.
+RUNBOOK = WORKFLOWS.parent.parent / "docs" / "release.md"
+# Environments with no approval rule. They hold secrets for trusted and untrusted CI runs and
+# never wait. Every other environment name counts as an approval gate, so a new one is checked
+# before anyone classifies it.
+UNGATED_ENVIRONMENTS = {"ci-trusted-branch", "pr-testing"}
+UPLOAD = "actions/upload-artifact@"
+DOWNLOAD = "actions/download-artifact@"
+
+
+def approval_window_days():
+    match = re.search(r"\*\*Approval window: (\d+) days\.\*\*", RUNBOOK.read_text())
+    assert match, f"{RUNBOOK.name} must state '**Approval window: <n> days.**'"
+    return int(match.group(1))
+
+
+def environment_names(environment):
+    """Every environment a job's `environment:` can name. An expression yields its quoted
+    literals; one with none yields itself, which is no ungated name, so it counts as a gate."""
+    if isinstance(environment, dict):
+        environment = environment.get("name")
+    if not environment:
+        return set()
+    environment = str(environment)
+    if "${{" not in environment:
+        return {environment}
+    return set(re.findall(r"'([^']+)'", environment)) or {environment}
+
+
+def is_gated(spec):
+    return bool(environment_names(spec.get("environment")) - UNGATED_ENVIRONMENTS)
+
+
+def needs_of(spec):
+    needs = spec.get("needs") or []
+    return [needs] if isinstance(needs, str) else list(needs)
+
+
+def ancestors(jobs, job):
+    seen, stack = set(), needs_of(jobs[job])
+    while stack:
+        parent = stack.pop()
+        if parent not in seen:
+            seen.add(parent)
+            stack.extend(needs_of(jobs.get(parent) or {}))
+    return seen
+
+
+def artifact_matcher(name):
+    """A regex for an artifact name; an expression in it (a matrix value) matches anything."""
+    parts = re.split(r"\$\{\{.*?\}\}", str(name))
+    return re.compile("^" + ".*".join(re.escape(p) for p in parts) + "$")
+
+
+def concrete(name, fill="x"):
+    """The name with each expression replaced by `fill`."""
+    return re.sub(r"\$\{\{.*?\}\}", fill, name)
+
+
+def gated_consumer_findings(jobs, window):
+    """Every artifact a job downloads after an approval gate that its producer keeps for less
+    than `window` days. The gates that matter are the consumer and its ancestors that the
+    producer does not wait for: they can still be pending when the artifact is uploaded."""
+    uploads = []
+    for job, spec in jobs.items():
+        for step in spec.get("steps") or []:
+            if str(step.get("uses", "")).startswith(UPLOAD):
+                uploads.append((job, step.get("with") or {}))
+    findings = []
+    for consumer, spec in jobs.items():
+        for step in spec.get("steps") or []:
+            if not str(step.get("uses", "")).startswith(DOWNLOAD):
+                continue
+            want = step.get("with") or {}
+            if "run-id" in want:
+                findings.append(f"{consumer}: downloads from another run; its retention cannot be read here")
+                continue
+            if want.get("name"):
+                wanted = lambda n, w=str(want["name"]): bool(artifact_matcher(n).match(concrete(w)) or artifact_matcher(w).match(concrete(n)))
+            elif want.get("pattern"):
+                wanted = lambda n, p=concrete(str(want["pattern"]), "*"): fnmatch.fnmatchcase(concrete(n), p)
+            else:
+                wanted = lambda n: True  # no name and no pattern downloads every artifact
+            producers = [(job, up) for job, up in uploads if wanted(str(up.get("name", "artifact")))]
+            if not producers:
+                findings.append(f"{consumer}: downloads {want.get('name') or want.get('pattern') or 'every artifact'}, which no job in this workflow uploads")
+                continue
+            reach = ancestors(jobs, consumer) | {consumer}
+            for producer, up in producers:
+                gates = sorted(j for j in reach - ancestors(jobs, producer) - {producer} if is_gated(jobs[j]))
+                if not gates:
+                    continue
+                days = up.get("retention-days")
+                if not isinstance(days, int) or days < window:
+                    findings.append(
+                        f"{consumer} downloads {up.get('name')!r} from {producer} after the gate(s) {', '.join(gates)}, "
+                        f"but its retention-days is {days!r}; it must be a literal of at least {window} (docs/release.md)")
+    return findings
+
+
+class GatedConsumersOutliveTheApprovalWindow(unittest.TestCase):
+    """A job behind an environment approval waits for a reviewer, and an artifact it downloads
+    must still exist when the reviewer comes. sync.13 (run 44223574926) waited about 32 hours
+    while bifrost-http-binary was kept for 1 day, and every job that read it failed (TXE-7895).
+    The window is the one the release runbook states, and the consumers are derived from every
+    workflow's YAML, so a new gated consumer or a new environment is checked as it lands."""
+
+    def test_the_runbook_states_the_window(self):
+        self.assertGreaterEqual(approval_window_days(), 1)
+
+    def test_every_gated_consumer_outlives_the_window(self):
+        window = approval_window_days()
+        for path in sorted(WORKFLOWS.glob("*.y*ml")):
+            jobs = (yaml.safe_load(path.read_text()) or {}).get("jobs") or {}
+            with self.subTest(workflow=path.name):
+                self.assertEqual(gated_consumer_findings(jobs, window), [])
+
+    def test_the_release_gates_are_seen(self):
+        # The derivation sees the consumers that failed sync.13 as gated, so a pass above is
+        # not a pass because nothing was found.
+        self.assertTrue(is_gated(JOBS["test-cli-harness"]))
+        self.assertTrue(is_gated(JOBS["test-api-integrations"]))
+        self.assertFalse(is_gated(JOBS["build-gateway"]))
+
+    def test_the_check_catches_a_short_retention_behind_a_gate(self):
+        def upload(name, days):
+            return {"uses": UPLOAD + "x", "with": {"name": name, "retention-days": days}}
+
+        def download(**kw):
+            return {"uses": DOWNLOAD + "x", "with": kw}
+
+        jobs = {
+            "build": {"steps": [upload("bin", 1), upload("report-${{ matrix.n }}", 1)]},
+            "gate": {"needs": "build", "environment": {"name": "new-approval-env"}, "steps": []},
+            "after-gate": {"needs": ["gate"], "steps": [download(name="bin")]},
+            "gated": {"needs": "build", "environment": "live-providers", "steps": [download(pattern="report-*")]},
+            "ungated": {"needs": "build", "environment": "${{ cond && 'pr-testing' || 'ci-trusted-branch' }}",
+                        "steps": [download(name="bin")]},
+            "all": {"needs": "gate", "steps": [download()]},
+        }
+        findings = gated_consumer_findings(jobs, 7)
+        self.assertEqual(len([f for f in findings if f.startswith("after-gate ")]), 1)
+        self.assertEqual(len([f for f in findings if f.startswith("gated ")]), 1)
+        self.assertEqual(len([f for f in findings if f.startswith("all ")]), 2)
+        self.assertFalse([f for f in findings if f.startswith("ungated")])
+        jobs["build"]["steps"] = [upload("bin", 7), upload("report-${{ matrix.n }}", 7)]
+        self.assertEqual(gated_consumer_findings(jobs, 7), [])
+        jobs["gate"]["needs"] = []
+        jobs["build"]["needs"] = "gate"  # a gate the producer already waited for does not count
+        jobs["build"]["steps"] = [upload("bin", 1)]
+        jobs["gated"]["steps"] = []
+        self.assertEqual(gated_consumer_findings(jobs, 7), [])
 
 
 if __name__ == "__main__":
