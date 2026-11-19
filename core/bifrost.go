@@ -8609,6 +8609,16 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			continue
 		}
 
+		// A video create with no prompt, input_reference or video_uri is refused here, before a key
+		// is chosen, unless this provider declared that its create takes one (Seedance): every
+		// other converter requires the prompt.
+		if schemas.NeedsPromptlessVideoCreate(req.BifrostRequest.VideoGenerationRequest) && !schemas.AcceptsVideoCreateWithoutPrompt(provider) {
+			promptErr := schemas.NewVideoPromptRequiredError()
+			promptErr.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), model, model)
+			bifrost.sendWorkerError(req, *promptErr)
+			continue
+		}
+
 		// The async task contract (C7) refuses these requests here, before a key is chosen, so
 		// none makes an upstream call: a task control field this provider does not take, a
 		// video or image task cancel on a provider with no cancel API, and a query by

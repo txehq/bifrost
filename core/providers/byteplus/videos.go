@@ -571,6 +571,11 @@ func (provider *BytePlusProvider) SupportedUnifiedFields(requestType schemas.Req
 	return SeedanceSupportedUnifiedFields(requestType)
 }
 
+// AcceptsVideoCreateWithoutPrompt declares that Seedance video create takes a request with no
+// prompt (schemas.PromptlessVideoCreateProvider); the converter refuses what Ark refuses
+// (seedanceContentProblem).
+func (provider *BytePlusProvider) AcceptsVideoCreateWithoutPrompt() bool { return true }
+
 // SeedanceSupportedUnifiedFields is the unified-field declaration of Seedance video create on any
 // Ark host: byteplus, and volcengine and modelark through ArkVideoAPI (fork, TXE-7493).
 func SeedanceSupportedUnifiedFields(requestType schemas.RequestType) ([]string, bool) {
