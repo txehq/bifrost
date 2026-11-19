@@ -51,29 +51,9 @@ validate_version() {
   esac
 }
 
-# Plugin names travel the same way and by a sharper edge: they are collected into the
-# changed-plugins JSON and interpolated as '${{ ... }}' inside single quotes at the
-# release-all-plugins.sh call site. jq -R escapes double quotes and backslashes when
-# building that JSON but leaves single quotes alone, so a name containing one closes
-# the shell string. A plugin name is a directory name - it has no business containing
-# anything but the characters below.
-validate_plugin_name() {
-  local value="$1"
-  case "$value" in
-    "")
-      echo "::error::refusing empty plugin name" >&2
-      return 1
-      ;;
-    *[!A-Za-z0-9._-]*)
-      echo "::error::refusing plugin name with unexpected characters: '$value'" >&2
-      return 1
-      ;;
-    *..*)
-      echo "::error::refusing plugin name containing '..': '$value'" >&2
-      return 1
-      ;;
-  esac
-}
+# validate_plugin_name and drop_unpublishable_plugins (TXE-7907).
+# shellcheck source=plugin-modules.sh
+source "$(dirname "${BASH_SOURCE[0]}")/plugin-modules.sh"
 
 # Get current versions
 CORE_VERSION=$(cat core/version)
@@ -305,6 +285,9 @@ for plugin_dir in plugins/*/; do
     fi
   fi
 done
+
+# Leave out a plugin whose release needs a module that is not published (TXE-7907).
+drop_unpublishable_plugins
 
 if [ ${#PLUGIN_CHANGES[@]} -gt 0 ]; then
   PLUGINS_NEED_RELEASE="true"

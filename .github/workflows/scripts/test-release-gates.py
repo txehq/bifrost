@@ -838,5 +838,108 @@ class GatedConsumersOutliveTheApprovalWindow(unittest.TestCase):
         self.assertEqual(gated_consumer_findings(jobs, 7), [])
 
 
+class PluginsReleaseOnlyOnPublishedModules(unittest.TestCase):
+    """A plugin release pins core, framework and the bifrost plugins it requires, then runs
+    go mod tidy against the module proxy, so each of them has to be tagged or released by the
+    same run. sync.13 (run 44223574926, attempt 2) selected governance because its changelog
+    gained a line while the fork had never published core v1.11.2 or framework v1.9.0; the
+    release failed in seconds and took the transport release and every image with it
+    (TXE-7907). This runs drop_unpublishable_plugins from plugin-modules.sh, the function
+    detect-all-changes.sh calls, against a scratch repository."""
+
+    ROOT = "github.com/example/bifrost"
+    HELPER = Path(__file__).resolve().parent / "plugin-modules.sh"
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.repo = Path(self._dir.name)
+        self.git("init", "-q")
+        self.write("core/go.mod", f"module {self.ROOT}/core\n\ngo 1.27\n")
+        self.write("plugins/governance/version", "1.9.0\n")
+        self.write("plugins/governance/go.mod",
+                   f"module {self.ROOT}/plugins/governance\n\ngo 1.27\n\nrequire (\n"
+                   f"\t{self.ROOT}/core v1.11.2\n\t{self.ROOT}/framework v1.8.1\n)\n")
+        # routing requires governance the way the real one does, inside a require block;
+        # semanticcache requires mocker on a single-line require.
+        self.write("plugins/routing/version", "1.2.0\n")
+        self.write("plugins/routing/go.mod",
+                   f"module {self.ROOT}/plugins/routing\n\ngo 1.27\n\nrequire (\n"
+                   f"\t{self.ROOT}/core v1.11.2\n\t{self.ROOT}/plugins/governance v1.8.6\n)\n")
+        self.write("plugins/mocker/version", "1.6.10\n")
+        self.write("plugins/mocker/go.mod", f"module {self.ROOT}/plugins/mocker\n\ngo 1.27\n")
+        self.write("plugins/semanticcache/version", "1.7.0\n")
+        self.write("plugins/semanticcache/go.mod",
+                   f"module {self.ROOT}/plugins/semanticcache\n\ngo 1.27\n\n"
+                   f"require {self.ROOT}/plugins/mocker v1.6.9 // indirect\n")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "init")
+
+    def tearDown(self):
+        self._dir.cleanup()
+
+    def git(self, *args):
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=self.repo,
+                       check=True, capture_output=True, text=True)
+
+    def write(self, path, text):
+        full = self.repo / path
+        full.parent.mkdir(parents=True, exist_ok=True)
+        full.write_text(text)
+
+    def tag(self, *tags):
+        for t in tags:
+            self.git("tag", t)
+
+    def select(self, plugins, core_due="false", framework_due="false"):
+        script = (
+            'set -euo pipefail\nsource "$1"\nshift\n'
+            'PLUGIN_CHANGES=("$@")\n'
+            f'CORE_VERSION=1.11.2 FRAMEWORK_VERSION=1.9.0 CORE_NEEDS_RELEASE={core_due} FRAMEWORK_NEEDS_RELEASE={framework_due}\n'
+            'drop_unpublishable_plugins\n'
+            'printf "kept:%s\\n" "${PLUGIN_CHANGES[@]+"${PLUGIN_CHANGES[@]}"}"\n')
+        out = subprocess.run(["bash", "-c", script, "bash", str(self.HELPER), *plugins], cwd=self.repo,
+                             check=True, capture_output=True, text=True).stdout
+        return [line[5:] for line in out.splitlines() if line.startswith("kept:") and line[5:]]
+
+    def test_sync13_unpublished_core_and_framework_release_no_plugin(self):
+        self.assertEqual(self.select(["governance"]), [])
+
+    def test_published_core_and_framework_release_the_plugin(self):
+        self.tag("core/v1.11.2", "framework/v1.9.0")
+        self.assertEqual(self.select(["governance"]), ["governance"])
+
+    def test_a_module_released_by_the_same_run_counts_as_published(self):
+        self.tag("framework/v1.9.0")
+        self.assertEqual(self.select(["governance"], core_due="true"), ["governance"])
+        self.assertEqual(self.select(["governance"], core_due="false"), [])
+        self.tag("core/v1.11.2")
+        self.git("tag", "-d", "framework/v1.9.0")
+        self.assertEqual(self.select(["governance"], framework_due="true"), ["governance"])
+
+    def test_a_plugin_dependency_must_be_tagged_or_released_alongside(self):
+        self.tag("core/v1.11.2", "framework/v1.9.0")
+        self.assertEqual(self.select(["routing"]), [])
+        self.assertEqual(self.select(["semanticcache"]), [])
+        self.assertEqual(self.select(["governance", "routing"]), ["governance", "routing"])
+        self.tag("plugins/governance/v1.9.0", "plugins/mocker/v1.6.10")
+        self.assertEqual(self.select(["routing", "semanticcache"]), ["routing", "semanticcache"])
+
+    def test_dropping_a_dependency_drops_what_requires_it(self):
+        self.tag("core/v1.11.2", "framework/v1.9.0")
+        # governance itself now requires an unpublished mocker, so it goes, and routing,
+        # which was only kept because governance was released alongside, goes with it.
+        self.write("plugins/governance/go.mod",
+                   f"module {self.ROOT}/plugins/governance\n\ngo 1.27\n\n"
+                   f"require {self.ROOT}/plugins/mocker v1.6.9\n")
+        self.assertEqual(self.select(["routing", "governance"]), [])
+
+    def test_detection_calls_the_filter_before_deciding(self):
+        code = (Path(__file__).resolve().parent / "detect-all-changes.sh").read_text()
+        call = code.find("\ndrop_unpublishable_plugins\n")
+        decide = code.find('PLUGINS_NEED_RELEASE="true"\n  echo')
+        self.assertTrue(0 < call < decide, "detect-all-changes.sh must filter PLUGIN_CHANGES before it sets plugins-need-release")
+        self.assertIn('source "$(dirname "${BASH_SOURCE[0]}")/plugin-modules.sh"', code)
+
+
 if __name__ == "__main__":
     unittest.main()
