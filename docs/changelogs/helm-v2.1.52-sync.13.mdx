@@ -3,11 +3,13 @@ title: "v2.1.52-sync.13"
 description: "Helm v2.1.52-sync.13 prerelease changelog - 2026-11-18"
 ---
 
-<Update label="Bifrost Helm" description="v2.1.52-sync.13 (prerelease)">
+<Update label="Bifrost Helm" description="v2.1.52-sync.13 (prerelease, no image)">
 
 ## Changelog
 
-Prerelease of the txehq fork for transport v2.4.0-sync.13; the stable chart stays 2.1.51 until a stable version supersedes it. Install this one with `helm install --devel` or `--version 2.1.52-sync.13`.
+**Do not install this chart: install [2.1.52-sync.14](/changelogs/helm-v2.1.52-sync.14).** The chart was published, but the transport release for v2.4.0-sync.13 failed before anything was tagged, so the image it selects, `ghcr.io/txehq/bifrost:v2.4.0-sync.13`, does not exist and an empty `image.tag` leaves its pods unable to pull. Every change below ships in v2.4.0-sync.14.
+
+Prerelease of the txehq fork for transport v2.4.0-sync.13; the stable chart stays 2.1.51 until a stable version supersedes it.
 
 - The chart's templates and values are unchanged from 2.1.52-sync.12, so a chart that renders today renders the same `config.json`.
 - `appVersion` is now `2.4.0-sync.13`, so an empty `image.tag` selects `v2.4.0-sync.13`. That transport bills recorded vendor promotions at the standard rate from their last day (TXE-7763; the first switch is on 21 Nov 2026 UTC), refuses a batch create past its vendor's per-batch maximum before converting it (TXE-7696), and on Vertex and Bedrock refuses storage or a Pub/Sub topic named by a virtual key with no list for it (TXE-7705, breaking). It adds no migration. Read the transport changelog's breaking changes before upgrading.

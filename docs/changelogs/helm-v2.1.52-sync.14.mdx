@@ -1,0 +1,16 @@
+---
+title: "v2.1.52-sync.14"
+description: "Helm v2.1.52-sync.14 prerelease changelog - 2026-11-19"
+---
+
+<Update label="Bifrost Helm" description="v2.1.52-sync.14 (prerelease)">
+
+## Changelog
+
+Prerelease of the txehq fork for transport v2.4.0-sync.14; the stable chart stays 2.1.51 until a stable version supersedes it. Install this one with `helm install --devel` or `--version 2.1.52-sync.14`.
+
+- The chart's templates and values are unchanged from 2.1.52-sync.12 and 2.1.52-sync.13, so a chart that renders today renders the same `config.json`.
+- `appVersion` is now `2.4.0-sync.14`, so an empty `image.tag` selects `v2.4.0-sync.14`. That transport carries everything 2.1.52-sync.13 lists, which was never released as an image: dated vendor promotions billed at the standard rate from their last day (TXE-7763), a batch create past its vendor's per-batch maximum refused before conversion (TXE-7696), and on Vertex and Bedrock storage or a Pub/Sub topic refused for a virtual key with no list for it (TXE-7705, breaking). It also masks a credential in a URL's userinfo on management reads (TXE-7783), takes 4 to 30 seconds on BytePlus Seedance 2.5 and 2.5 Flash video while the 2.0 series keeps 4 to 15 (TXE-7809), and lets a BytePlus or Volcengine video create leave out the prompt when it carries an image, video, audio clip or draft task (TXE 7827). It adds no migration. Read the transport changelog's breaking changes before upgrading.
+- 2.1.52-sync.13 has no image: `v2.4.0-sync.13` was never published. Install this chart in its place.
+
+</Update>
