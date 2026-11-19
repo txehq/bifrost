@@ -1,0 +1,373 @@
+{
+  "name": "644. BytePlus Seedance video: a create with no text reaches Ark when it has an image, video or audio Ark takes alone (byteplus seedance create without text)",
+  "description": "Local fixture regression, no live provider calls: start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json and run with providerErrorFixture=1; every case is skipped otherwise. Ark's create-task reference makes the text optional beside an image, a video, an audio clip or a draft task, takes audio alone on the Seedance 2.5 series and refuses it on the 2.0 series. Rows 2 to 4: a first frame alone on dreamina-seedance-2-5-260628, a reference audio alone on the same model, and a reference image alone on dreamina-seedance-2-0-260128 each return a queued task; before the change all three were refused with 400 before Ark. Row 5 proves the three creates reached Ark with no text item. Row 6: a reference audio alone on dreamina-seedance-2-0-260128 is refused with 400 caller_invalid_request; row 7: a create with no prompt and nothing to generate from is refused with 400. Row 8 proves neither reached Ark.",
+  "item": [
+    {
+      "name": "644.1 reset the fixture's counters and wire capture (byteplus seedance create without text)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "{{providerErrorFixtureUrl}}/__reset"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the fixture reset its counters', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  pm.expect(pm.response.json().data[0].reset).to.eql(true);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "644.2 byteplus POST /v1/videos takes a first frame with no prompt on dreamina-seedance-2-5 (byteplus seedance create without text)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"byteplus/dreamina-seedance-2-5-260628\",\n  \"input_reference\": \"https://example.test/first.png\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the create returns a queued task', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, 'id: ' + pm.response.text()).to.eql('cgt-fixture-video-task:byteplus');",
+              "  pm.expect(j.status, 'status: ' + pm.response.text()).to.eql('queued');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "644.3 byteplus POST /v1/videos takes a reference audio alone on dreamina-seedance-2-5 (byteplus seedance create without text)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"byteplus/dreamina-seedance-2-5-260628\",\n  \"reference_audios\": [\"https://example.test/voice.mp3\"]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the create returns a queued task', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, 'id: ' + pm.response.text()).to.eql('cgt-fixture-video-task:byteplus');",
+              "  pm.expect(j.status, 'status: ' + pm.response.text()).to.eql('queued');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "644.4 byteplus POST /v1/videos takes a reference image with no prompt on dreamina-seedance-2-0 (byteplus seedance create without text)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"byteplus/dreamina-seedance-2-0-260128\",\n  \"reference_images\": [\"https://example.test/subject.png\"]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the create returns a queued task', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, 'id: ' + pm.response.text()).to.eql('cgt-fixture-video-task:byteplus');",
+              "  pm.expect(j.status, 'status: ' + pm.response.text()).to.eql('queued');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "644.5 fixture wire capture shows the three creates reached Ark with no text item (byteplus seedance create without text)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{providerErrorFixtureUrl}}/__wire"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var calls = pm.response.json().data[0].calls.filter(function (c) { return c.path === '/pp/byteplus/api/v3/contents/generations/tasks'; });",
+              "pm.test('each create reached Ark with its media and no text item', function () {",
+              "  pm.expect(calls.length, JSON.stringify(calls)).to.eql(3);",
+              "  var bodies = calls.map(function (c) { return JSON.parse(c.body); });",
+              "  var types = bodies.map(function (b) { return b.content.map(function (i) { return i.type + ':' + (i.role || ''); }).join(','); });",
+              "  pm.expect(types, JSON.stringify(bodies)).to.eql(['image_url:first_frame', 'audio_url:reference_audio', 'image_url:reference_image']);",
+              "  pm.expect(bodies.map(function (b) { return b.model; }), JSON.stringify(bodies)).to.eql(['dreamina-seedance-2-5-260628', 'dreamina-seedance-2-5-260628', 'dreamina-seedance-2-0-260128']);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "644.6 [EXPECT-400] byteplus POST /v1/videos refuses a reference audio alone on dreamina-seedance-2-0, which needs an image or video beside it (byteplus seedance create without text)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"byteplus/dreamina-seedance-2-0-260128\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"reference_audios\": [\"https://example.test/voice.mp3\"]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the audio-only create is refused as caller_invalid_request', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_invalid_request');",
+              "  pm.expect(j.error && j.error.message, 'message: ' + pm.response.text()).to.include('Seedance 2.0 series');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "644.7 [EXPECT-400] byteplus POST /v1/videos refuses a create with no prompt and nothing to generate from (byteplus seedance create without text)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"byteplus/dreamina-seedance-2-5-260628\",\n  \"seconds\": \"5\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the empty create is refused, naming what it lacks', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.error && j.error.message, 'message: ' + pm.response.text()).to.include('prompt or an input');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "644.8 fixture wire capture shows neither refused create reached Ark (byteplus seedance create without text)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{providerErrorFixtureUrl}}/__wire"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var calls = pm.response.json().data[0].calls.filter(function (c) { return c.path === '/pp/byteplus/api/v3/contents/generations/tasks'; });",
+              "pm.test('only the three creates of rows 2 to 4 reached Ark', function () {",
+              "  pm.expect(calls.length, JSON.stringify(calls)).to.eql(3);",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

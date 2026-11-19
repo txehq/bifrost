@@ -10626,6 +10626,63 @@ func TestVideoGenerationKeepsProviderNormalizedSeconds(t *testing.T) {
 	}
 }
 
+// A video create with no prompt reaches the provider when it carries another input (Seedance
+// takes reference images, reference audio or a draft task with no text), and is refused before
+// any provider when it carries nothing to generate from.
+func TestVideoGenerationWithoutPromptReachesTheProviderWhenItHasAnInput(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"cgt-1"}`)
+	}))
+	t.Cleanup(server.Close)
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.BytePlus, 1, 10, server.URL)
+	account.SetKeysForProvider(schemas.BytePlus, []schemas.Key{{ID: "k1", Name: "K1", Value: *schemas.NewSecretVar("ark-test"), Weight: 1, Models: []string{"*"}}})
+	client, initErr := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
+	if initErr != nil {
+		t.Fatalf("Init failed: %v", initErr)
+	}
+	t.Cleanup(client.Shutdown)
+
+	for _, params := range []*schemas.VideoGenerationParameters{
+		{ReferenceImages: schemas.VideoReferenceImages{"https://example.test/a.png"}},
+		{LastFrame: "https://example.test/last.png"},
+		{ExtraParams: map[string]any{"reference_audios": []string{"https://example.test/a.mp3"}}},
+		{ExtraParams: map[string]any{"draft_task_id": "cgt-draft-1"}},
+	} {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		before := calls.Load()
+		_, bifrostErr := client.VideoGenerationRequest(ctx, &schemas.BifrostVideoGenerationRequest{
+			Provider: schemas.BytePlus, Model: "dreamina-seedance-2-5-260628", Input: &schemas.VideoGenerationInput{}, Params: params,
+		})
+		ctx.Cancel()
+		if bifrostErr != nil {
+			t.Errorf("%+v: refused: %+v", params, bifrostErr.Error)
+		}
+		if got := calls.Load() - before; got != 1 {
+			t.Errorf("%+v: %d upstream calls, want 1", params, got)
+		}
+	}
+
+	before := calls.Load()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+	_, bifrostErr := client.VideoGenerationRequest(ctx, &schemas.BifrostVideoGenerationRequest{
+		Provider: schemas.BytePlus, Model: "dreamina-seedance-2-5-260628", Input: &schemas.VideoGenerationInput{},
+		Params: &schemas.VideoGenerationParameters{Resolution: "720p", ExtraParams: map[string]any{"reference_audios": []string{}, "draft_task_id": ""}},
+	})
+	if bifrostErr == nil || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerInvalidRequest {
+		t.Fatalf("a create with nothing to generate from: err = %+v, want caller_invalid_request", bifrostErr)
+	}
+	if got := calls.Load() - before; got != 0 {
+		t.Errorf("a create with nothing to generate from made %d upstream calls, want 0", got)
+	}
+}
+
 // declaringImageProvider declares that it takes only size for image generation, and
 // counts the image generation calls that reach it.
 type declaringImageProvider struct {

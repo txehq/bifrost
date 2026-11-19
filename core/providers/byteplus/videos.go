@@ -16,18 +16,58 @@ import (
 // ToBytePlusVideoGenerationRequest converts a Bifrost video generation request to a Seedance task body.
 // Frame images, reference media and a draft task become content items; resolution, ratio and the rest
 // of Seedance's generation fields are read from size and extra params, and anything unrecognised passes through.
+// The prompt is optional where Ark's content rules make it so (seedanceContentProblem).
 func ToBytePlusVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationRequest) (*BytePlusVideoGenerationRequest, error) {
 	if bifrostReq == nil || bifrostReq.Input == nil {
 		return nil, providerUtils.InvalidRequestErrorf("prompt is required")
 	}
+	req, err := toBytePlusVideoGenerationRequest(bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	if problem := seedanceContentProblem(req.Model, req.Content); problem != "" {
+		return nil, providerUtils.InvalidRequestErrorf("%s", problem)
+	}
+	return req, nil
+}
+
+// seedanceContentProblem says why Ark refuses content, or "" when the fork knows of no reason.
+// Ark's create-task reference (fork, read 2026-11-18): "Text · Text (optional) + image · Text
+// (optional) + video · Text (optional) + audio (Dreamina Seedance 2.5 series supports audio-only
+// input) · Text (optional) + image + audio · ...", and for reference audio, "Dreamina Seedance 2.0
+// series: Audio-only input is not supported; include at least one reference image or video." So
+// text may be left out whenever an image, a video, an audio clip or a draft task is given, except
+// that a 2.0 model's audio needs an image or video beside it. A model in no listed series (1.x, an
+// endpoint ID) gets no audio rule here, and Ark answers for it.
+func seedanceContentProblem(model string, content []BytePlusVideoContentItem) string {
+	hasTextOrDraft, hasImageOrVideo, hasAudio := false, false, false
+	for _, item := range content {
+		switch item.Type {
+		case "text", "draft_task":
+			hasTextOrDraft = true
+		case "image_url", "video_url":
+			hasImageOrVideo = true
+		case "audio_url":
+			hasAudio = true
+		}
+	}
+	if !hasTextOrDraft && !hasImageOrVideo && !hasAudio {
+		return "prompt is required when no image, video, audio or draft_task_id is given"
+	}
+	if hasAudio && !hasImageOrVideo && strings.Contains(model, "seedance-2-0") {
+		return "reference_audios on a Seedance 2.0 series model need at least one reference image or video; only the 2.5 series takes audio alone"
+	}
+	return ""
+}
+
+// toBytePlusVideoGenerationRequest builds the Seedance task body; ToBytePlusVideoGenerationRequest
+// then checks its content as a whole.
+func toBytePlusVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationRequest) (*BytePlusVideoGenerationRequest, error) {
 	var draftTaskID string
 	if bifrostReq.Params != nil {
 		draftTaskID, _ = bifrostReq.Params.ExtraParams["draft_task_id"].(string)
 	}
 	prompt := strings.TrimSpace(bifrostReq.Input.Prompt)
-	if prompt == "" && draftTaskID == "" {
-		return nil, providerUtils.InvalidRequestErrorf("prompt is required")
-	}
 	req := &BytePlusVideoGenerationRequest{Model: bifrostReq.Model}
 	if prompt != "" {
 		req.Content = append(req.Content, BytePlusVideoContentItem{Type: "text", Text: bifrostReq.Input.Prompt})

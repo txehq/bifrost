@@ -3,6 +3,7 @@ package byteplus_test
 import (
 	"net/http"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/capsohq/bifrost/core/providers/byteplus"
@@ -205,6 +206,89 @@ func TestSeedanceEditTakesOnlyTheModelChosenLength(t *testing.T) {
 	}
 	if calls := captured(); len(calls) != 3 {
 		t.Errorf("%d upstream calls, want 3", len(calls))
+	}
+}
+
+// Ark takes a create with no text item whenever it has an image, a video, an audio clip or a draft
+// task, except that a Seedance 2.0 model's reference audio needs an image or video beside it. Each
+// allowed shape reaches Ark with no text item; each refused one is refused before Ark.
+func TestSeedanceCreateTakesNoTextWhereArkDoes(t *testing.T) {
+	const (
+		v25      = "dreamina-seedance-2-5-260628"
+		v25Flash = "dreamina-seedance-2-5-flash-261115"
+		v20      = "dreamina-seedance-2-0-260128"
+		v20Mini  = "dreamina-seedance-2-0-mini-260615"
+		v10Pro   = "seedance-1-0-pro-250528"
+		endpoint = "ep-20261118-abcde"
+	)
+	image, video, audio := "https://example.test/a.png", "https://example.test/a.mp4", "https://example.test/a.mp3"
+	cases := []struct {
+		name, model string
+		input       schemas.VideoGenerationInput
+		params      *schemas.VideoGenerationParameters
+		refused     string // a substring of the refusal; "" when Ark is called
+		wantTypes   string // the content item types sent, in order
+	}{
+		{name: "first frame on 2.5", model: v25, input: schemas.VideoGenerationInput{InputReference: &image}, wantTypes: "image_url"},
+		{name: "first frame on 2.0", model: v20, input: schemas.VideoGenerationInput{InputReference: &image}, wantTypes: "image_url"},
+		{name: "first frame on 1.0 pro", model: v10Pro, input: schemas.VideoGenerationInput{InputReference: &image}, wantTypes: "image_url"},
+		{name: "first and last frames on 2.0 mini", model: v20Mini, input: schemas.VideoGenerationInput{InputReference: &image},
+			params: &schemas.VideoGenerationParameters{LastFrame: schemas.TolerantString(image)}, wantTypes: "image_url,image_url"},
+		{name: "last frame alone on 2.5", model: v25, params: &schemas.VideoGenerationParameters{LastFrame: schemas.TolerantString(image)}, wantTypes: "image_url"},
+		{name: "reference images on 2.5 flash", model: v25Flash,
+			params: &schemas.VideoGenerationParameters{ReferenceImages: schemas.VideoReferenceImages{image, image}}, wantTypes: "image_url,image_url"},
+		{name: "reference video on 2.0", model: v20, params: &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"reference_videos": []string{video}}}, wantTypes: "video_url"},
+		{name: "audio alone on 2.5", model: v25, params: &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"reference_audios": []string{audio}}}, wantTypes: "audio_url"},
+		{name: "audio alone on 2.5 flash", model: v25Flash, params: &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"reference_audios": []string{audio}}}, wantTypes: "audio_url"},
+		{name: "audio with an image on 2.0", model: v20, params: &schemas.VideoGenerationParameters{ReferenceImages: schemas.VideoReferenceImages{image},
+			ExtraParams: map[string]any{"reference_audios": []string{audio}}}, wantTypes: "image_url,audio_url"},
+		{name: "audio with a video on 2.0 mini", model: v20Mini, params: &schemas.VideoGenerationParameters{
+			ExtraParams: map[string]any{"reference_videos": []string{video}, "reference_audios": []string{audio}}}, wantTypes: "video_url,audio_url"},
+		{name: "audio alone on an endpoint ID", model: endpoint, params: &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"reference_audios": []string{audio}}}, wantTypes: "audio_url"},
+		{name: "draft task on 2.5", model: v25, params: &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"draft_task_id": "cgt-draft-1"}}, wantTypes: "draft_task"},
+		{name: "text alone", model: v20, input: schemas.VideoGenerationInput{Prompt: "a paper boat"}, wantTypes: "text"},
+
+		{name: "audio alone on 2.0", model: v20, params: &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"reference_audios": []string{audio}}},
+			refused: "Seedance 2.0 series model need at least one reference image or video"},
+		{name: "audio and text on 2.0 mini", model: v20Mini, input: schemas.VideoGenerationInput{Prompt: "a paper boat"},
+			params: &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"reference_audios": []string{audio}}}, refused: "Seedance 2.0 series model need at least one reference image or video"},
+		{name: "nothing on 2.5", model: v25, refused: "prompt is required when no image, video, audio or draft_task_id is given"},
+		{name: "blank prompt on 2.0", model: v20, input: schemas.VideoGenerationInput{Prompt: "  "}, params: &schemas.VideoGenerationParameters{Seconds: schemas.Ptr("5")},
+			refused: "prompt is required when no image, video, audio or draft_task_id is given"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			provider, captured, _ := newMockBytePlus(t, map[string]func(http.ResponseWriter, *http.Request){
+				"POST " + seedanceTasksPath: jsonResponse(http.StatusOK, `{"id":"cgt-1"}`),
+			})
+			input := tc.input
+			req := &schemas.BifrostVideoGenerationRequest{Provider: schemas.BytePlus, Model: tc.model, Input: &input, Params: tc.params}
+			_, bifrostErr := provider.VideoGeneration(testContext(t), testKey(), req)
+			calls := captured()
+			if tc.refused != "" {
+				if bifrostErr == nil || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerInvalidRequest || bifrostErr.Error == nil ||
+					!strings.Contains(bifrostErr.Error.Message, tc.refused) {
+					t.Fatalf("err = %+v, want caller_invalid_request containing %q", bifrostErr, tc.refused)
+				}
+				if len(calls) != 0 {
+					t.Fatalf("a refused create made %d upstream calls", len(calls))
+				}
+				return
+			}
+			if bifrostErr != nil {
+				t.Fatalf("refused: %+v", bifrostErr.Error)
+			}
+			if len(calls) != 1 {
+				t.Fatalf("upstream calls = %d, want 1", len(calls))
+			}
+			var types []string
+			for _, item := range gjson.GetBytes(calls[0].body, "content").Array() {
+				types = append(types, item.Get("type").String())
+			}
+			if got := strings.Join(types, ","); got != tc.wantTypes {
+				t.Fatalf("content types = %q, want %q; body %s", got, tc.wantTypes, calls[0].body)
+			}
+		})
 	}
 }
 
