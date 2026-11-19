@@ -3181,17 +3181,21 @@ func prepareVideoGenerationRequest(ctx *fasthttp.RequestCtx, config *lib.Config)
 		req.VideoGenerationParameters = &schemas.VideoGenerationParameters{}
 	}
 
-	// Operations driven by an input asset (video upscale, image-to-3D) carry no prompt.
-	if req.VideoGenerationInput == nil ||
-		(req.Prompt == "" && req.InputReference == nil && req.VideoURI == nil) {
-		return nil, errors.New("prompt, input_reference or video_uri is required")
-	}
-
 	extraParams, err := extractExtraParams(ctx.PostBody(), videoGenerationParamsKnownFields)
 	if err != nil {
 		logger.Warn("Failed to extract extra params: %v", err)
 	} else {
 		req.VideoGenerationParameters.ExtraParams = extraParams
+	}
+
+	// Operations driven by an input asset (video upscale, image-to-3D, a Seedance create from
+	// images, video, audio or a draft task) carry no prompt. A body with none of the input's own
+	// fields leaves the input nil; it is made empty so providers read an empty prompt.
+	if !schemas.HasVideoGenerationInput(req.VideoGenerationInput, req.VideoGenerationParameters) {
+		return nil, errors.New("prompt or an input (input_reference, video_uri, last_frame, reference_images, reference_videos, reference_audios or draft_task_id) is required")
+	}
+	if req.VideoGenerationInput == nil {
+		req.VideoGenerationInput = &schemas.VideoGenerationInput{}
 	}
 
 	return &schemas.BifrostVideoGenerationRequest{

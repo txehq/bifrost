@@ -353,6 +353,48 @@ func (v *VideoReferenceImages) UnmarshalJSON(data []byte) error {
 // params) still read them from there. A provider that converts the typed field deletes the extra.
 var UnifiedVideoGenerationFields = []string{"aspect_ratio", "resolution", "last_frame", "reference_images"}
 
+// VideoGenerationInputExtraParams are the extra params that carry something to generate a video
+// from (fork): the unified last_frame and reference_images as the Go SDK and the object form send
+// them, and BytePlus Seedance's reference_videos, reference_audios and draft_task_id.
+var VideoGenerationInputExtraParams = []string{"last_frame", "reference_images", "reference_videos", "reference_audios", "draft_task_id"}
+
+// HasVideoGenerationInput reports whether a video create carries something to generate from: a
+// prompt, input_reference, video_uri, last_frame, reference_images, or one of
+// VideoGenerationInputExtraParams with a value. Seedance takes a create with no text when it has an
+// image, video, audio or draft task (fork); each provider refuses a combination its model cannot
+// serve.
+func HasVideoGenerationInput(input *VideoGenerationInput, params *VideoGenerationParameters) bool {
+	if input != nil && (input.Prompt != "" || input.InputReference != nil || input.VideoURI != nil) {
+		return true
+	}
+	if params == nil {
+		return false
+	}
+	if string(params.LastFrame) != "" || len(params.ReferenceImages) > 0 {
+		return true
+	}
+	for _, name := range VideoGenerationInputExtraParams {
+		switch v := params.ExtraParams[name].(type) {
+		case nil:
+		case string:
+			if v != "" {
+				return true
+			}
+		case []any:
+			if len(v) > 0 {
+				return true
+			}
+		case []string:
+			if len(v) > 0 {
+				return true
+			}
+		default:
+			return true
+		}
+	}
+	return false
+}
+
 // VideoUsage carries provider-reported usage for a video (or other async media) generation job.
 // Providers that report an exact price (e.g. Runware's per-task cost) populate Cost so pricing uses
 // it verbatim instead of a datasheet estimate.

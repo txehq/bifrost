@@ -355,7 +355,8 @@ func TestPrepareVideoGenerationRequest_NumericResolutionStaysExtra(t *testing.T)
 func TestPrepareVideoGenerationRequest_Validation(t *testing.T) {
 	for _, tc := range []struct{ name, body, want string }{
 		{"bad json", `{`, "Invalid request payload"},
-		{"no prompt or input", `{"model":"openai/sora-2","resolution":"720p"}`, "prompt, input_reference or video_uri is required"},
+		{"no prompt or input", `{"model":"openai/sora-2","resolution":"720p"}`, "prompt or an input (input_reference, video_uri, last_frame, reference_images, reference_videos, reference_audios or draft_task_id) is required"},
+		{"empty inputs", `{"model":"byteplus/dreamina-seedance-2-5-260628","prompt":"","reference_images":[],"reference_audios":[],"draft_task_id":""}`, "prompt or an input (input_reference, video_uri, last_frame, reference_images, reference_videos, reference_audios or draft_task_id) is required"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := prepareVideoGenerationRequest(jsonRequestCtx("/v1/videos", tc.body), nil)
@@ -363,6 +364,28 @@ func TestPrepareVideoGenerationRequest_Validation(t *testing.T) {
 				t.Fatalf("err = %v, want %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// Seedance takes a create with no text when it has an image, a video, an audio clip or a draft
+// task, so a body carrying only one of those reaches the provider, with an empty input.
+func TestPrepareVideoGenerationRequest_InputWithoutPrompt(t *testing.T) {
+	for _, body := range []string{
+		`{"model":"byteplus/dreamina-seedance-2-5-260628","last_frame":"https://example.com/last.png"}`,
+		`{"model":"byteplus/dreamina-seedance-2-5-260628","reference_images":["https://example.com/a.png"]}`,
+		`{"model":"byteplus/dreamina-seedance-2-5-260628","reference_images":[{"url":"https://example.com/a.png"}]}`,
+		`{"model":"byteplus/dreamina-seedance-2-0-260128","reference_videos":["https://example.com/a.mp4"]}`,
+		`{"model":"byteplus/dreamina-seedance-2-5-260628","reference_audios":["https://example.com/a.mp3"]}`,
+		`{"model":"byteplus/dreamina-seedance-2-5-260628","draft_task_id":"cgt-draft-1"}`,
+	} {
+		req, err := prepareVideoGenerationRequest(jsonRequestCtx("/v1/videos", body), nil)
+		if err != nil {
+			t.Errorf("%s: %v", body, err)
+			continue
+		}
+		if req.Input == nil || req.Input.Prompt != "" {
+			t.Errorf("%s: input = %+v, want an empty input", body, req.Input)
+		}
 	}
 }
 

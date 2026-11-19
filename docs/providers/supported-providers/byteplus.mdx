@@ -252,7 +252,7 @@ curl -X POST http://localhost:8080/v1/videos \
 
 | Bifrost parameter | Ark field | Notes |
 |-------------------|-----------|-------|
-| `prompt` | `content[]` text item | Required |
+| `prompt` | `content[]` text item | Optional when the request also has an image (`input_reference`, `last_frame` or `reference_images`), a reference video, a reference audio or a `draft_task_id`, as Ark allows. A request with none of them needs a `prompt`. On the Seedance 2.0 series, `reference_audios` need at least one reference image or video, with or without a prompt; the Seedance 2.5 series takes audio alone. Both are refused with a `400` before Ark. |
 | `input_reference` | `content[]` image item with role `first_frame` | Image to video |
 | `video_uri` | `content[]` video item with role `reference_video` | Models that accept reference video only |
 | `output_format` | `output_format` | `mp4` (default) or `mov`. Seedance 2.5 only. |
@@ -268,7 +268,7 @@ curl -X POST http://localhost:8080/v1/videos \
 | `extra_params.ratio` | `ratio` | Ark's own name for `aspect_ratio`. Accepted as an extra parameter only together with `aspect_ratio` and the same value. |
 | `extra_params.reference_videos` | `content[]` video items with role `reference_video` | Added after `video_uri`. Seedance 2.5 takes up to 10, Seedance 2.0 up to 3. |
 | `extra_params.reference_audios` | `content[]` audio items with role `reference_audio` | `wav` or `mp3`. Seedance 2.5 and 2.0 only. |
-| `extra_params.draft_task_id` | `content[]` draft task item | Turns a draft into the final video. `prompt` is optional when it is set. |
+| `extra_params.draft_task_id` | `content[]` draft task item | Turns a draft into the final video. |
 
 `aspect_ratio`, `resolution`, `last_frame` and `reference_images` are unified request fields: send them as the request's own fields. Naming one only among the extra parameters is refused with `400` `caller_unsupported_parameter`, because a field that affects the price must be visible on the request. Go SDK callers set the field on `Params` and keep the same value in `ExtraParams`, where this provider's converter reads it; the HTTP routes do that for you.
 
