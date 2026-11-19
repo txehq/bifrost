@@ -18,6 +18,30 @@ This page is for txehq/bifrost, the fork. The upstream release process does not 
    because the release PR changes `helm-charts/bifrost/`, and publishes
    `helm-chart-v<chart version>`.
 
+## Approving a release
+
+A release run asks for a `live-providers` approval on each job that runs in that environment
+(the test suites, then `core-release`, `framework-release` and `plugins-release`). A required
+reviewer approves it from the run page (**Review deployments**).
+`gh api repos/txehq/bifrost/actions/runs/<run-id>/pending_deployments` lists what is waiting.
+
+**Approval window: 7 days.** Approve every pending gate of a release run within 7 days of the
+run starting. Every artifact that a job behind an approval gate downloads is kept at least that
+long, and `test-release-gates.py` (`GatedConsumersOutliveTheApprovalWindow`) fails when one
+is not: it reads the window from the line above, finds every job that downloads an artifact
+after a job in an environment, and checks the retention the producing upload sets. An
+environment counts as a gate unless the test lists it as ungated, so a new environment or a
+new consumer is checked without anyone remembering to.
+
+Past the window, the build artifacts may be gone, and re-running only the failed jobs fails
+again with "Artifact not found", because the jobs that built them passed and are not re-run.
+Re-run the whole run instead (`gh run rerun <run-id> -R txehq/bifrost`); it asks for the
+approvals again.
+
+The window exists because the sync.13 release (run 44223574926) waited about 32 hours for its
+approval while `bifrost-http-binary` was kept for 1 day. Every job that downloaded it failed
+with "Artifact not found for name: bifrost-http-binary", and nothing was released (TXE-7895).
+
 ## Only the version bump releases
 
 A push to `main` may release only when the push itself changes a version file. The `gate`
