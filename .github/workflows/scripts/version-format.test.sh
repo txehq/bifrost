@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-# Tests the version-format guard in detect-all-changes.sh.
+# Tests the version-format guard in detect-all-changes.sh, and the plugin-name guard
+# in plugin-modules.sh, which it sources.
 #
 # The versions that script reads are echoed into GITHUB_OUTPUT and then
 # interpolated with ${{ }} into `run:` blocks across the release pipeline.
@@ -18,17 +19,26 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARGET="${SCRIPT_DIR}/detect-all-changes.sh"
+# validate_plugin_name lives in plugin-modules.sh, which detect-all-changes.sh sources
+# (TXE-7907); drop_unpublishable_plugins there validates plugin names read from go.mod.
+PLUGIN_MODULES="${SCRIPT_DIR}/plugin-modules.sh"
 
-for guard in validate_version validate_plugin_name; do
-  if ! grep -q "^${guard}()" "$TARGET"; then
-    echo "FAIL: detect-all-changes.sh defines no ${guard}() guard" >&2
+for pair in "validate_version:${TARGET}" "validate_plugin_name:${PLUGIN_MODULES}"; do
+  guard="${pair%%:*}"
+  file="${pair#*:}"
+  if ! grep -q "^${guard}()" "$file"; then
+    echo "FAIL: $(basename "$file") defines no ${guard}() guard" >&2
     exit 1
   fi
 done
+if ! grep -q '^source "$(dirname "${BASH_SOURCE\[0\]}")/plugin-modules.sh"' "$TARGET"; then
+  echo "FAIL: detect-all-changes.sh does not source plugin-modules.sh, so validate_plugin_name is not defined there" >&2
+  exit 1
+fi
 
 # Extract just the function definitions, each up to its closing brace at column 0.
 FN="$(awk '/^validate_version\(\)/,/^}/' "$TARGET")
-$(awk '/^validate_plugin_name\(\)/,/^}/' "$TARGET")"
+$(awk '/^validate_plugin_name\(\)/,/^}/' "$PLUGIN_MODULES")"
 
 passed=0
 failed=0
