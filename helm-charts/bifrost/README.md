@@ -4,15 +4,21 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/txehq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.51 (prereleases 2.1.52-sync.13, 2.1.52-sync.12, 2.1.52-sync.11, 2.1.52-sync.10, 2.1.52-sync.9, 2.1.52-sync.8, 2.1.52-sync.7, 2.1.52-sync.6, 2.1.52-sync.5, 2.1.52-sync.4, 2.1.52-sync.3, 2.1.52-sync.2 and 2.1.52-sync.1 carry the changes below; install them with `--devel`)
+**Latest Version:** 2.1.51 (prereleases 2.1.52-sync.14, 2.1.52-sync.13, 2.1.52-sync.12, 2.1.52-sync.11, 2.1.52-sync.10, 2.1.52-sync.9, 2.1.52-sync.8, 2.1.52-sync.7, 2.1.52-sync.6, 2.1.52-sync.5, 2.1.52-sync.4, 2.1.52-sync.3, 2.1.52-sync.2 and 2.1.52-sync.1 carry the changes below; install them with `--devel`)
 
 ## Changelog
 
-### 2.1.52-sync.13 (prerelease)
+### 2.1.52-sync.14 (prerelease)
 
-The prerelease chart for transport v2.4.0-sync.13. Its templates and values are unchanged from 2.1.52-sync.12, so a chart that renders today renders the same `config.json`:
+The prerelease chart for transport v2.4.0-sync.14. Its templates and values are unchanged from 2.1.52-sync.12 and 2.1.52-sync.13, so a chart that renders today renders the same `config.json`:
 
-- `appVersion` is now `2.4.0-sync.13`, so an empty `image.tag` selects `v2.4.0-sync.13`. That transport bills recorded vendor promotions at the standard rate from their last day (the first, on Databricks GPT-5.6 Sol, on 21 Nov 2026 UTC), refuses a batch create past its vendor's per-batch maximum before converting it, and has one breaking change listed in the transport changelog: on Vertex and Bedrock, a virtual key with no storage or topic list may no longer name storage or a topic. It adds no migration.
+- `appVersion` is now `2.4.0-sync.14`, so an empty `image.tag` selects `v2.4.0-sync.14`. That transport carries everything listed under 2.1.52-sync.13 below, which was never released as an image, and also masks a credential in a URL's userinfo on management reads, lets a BytePlus Seedance 2.5 video run up to 30 seconds, and lets a BytePlus video create leave out the prompt when it carries an image, video, audio clip or draft task. Its one breaking change is the one listed under 2.1.52-sync.13. It adds no migration.
+
+### 2.1.52-sync.13 (prerelease, no image)
+
+**Do not install this chart: install 2.1.52-sync.14.** It was published, but its transport release failed before anything was tagged, so the image it selects, `ghcr.io/txehq/bifrost:v2.4.0-sync.13`, does not exist, and an empty `image.tag` leaves its pods unable to pull. Its templates and values are unchanged from 2.1.52-sync.12.
+
+- `appVersion` is `2.4.0-sync.13`. The transport changes it was cut for ship in v2.4.0-sync.14: it bills recorded vendor promotions at the standard rate from their last day (the first, on Databricks GPT-5.6 Sol, on 21 Nov 2026 UTC), refuses a batch create past its vendor's per-batch maximum before converting it, and has one breaking change listed in the transport changelog: on Vertex and Bedrock, a virtual key with no storage or topic list may no longer name storage or a topic. It adds no migration.
 
 ### 2.1.52-sync.12 (prerelease)
 
