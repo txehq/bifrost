@@ -24,6 +24,11 @@ on:
       - "tests/integrations/python/config.json"
       # test-release-gates.py reads the approval window from the release runbook (TXE-7895).
       - "docs/release.md"
+      # check-module-changelogs-empty.py reads these: a module changelog with an entry makes
+      # the release pipeline try a module release the fork cannot publish.
+      - "core/changelog.md"
+      - "framework/changelog.md"
+      - "plugins/*/changelog.md"
 
 permissions:
   contents: read
@@ -178,6 +183,15 @@ jobs:
       - name: Check release gates require the embedded suites
         if: ${{ !cancelled() }}
         run: python3 .github/workflows/scripts/test-release-gates.py
+
+      # The fork publishes no core, framework or plugin module, and the release pipeline tries
+      # to release any module whose changelog has an entry; sync.13's plugins-release failed on
+      # plugins/governance/changelog.md with nothing tagged.
+      - name: Check core, framework and plugin changelogs stay empty
+        if: ${{ !cancelled() }}
+        run: |
+          python3 .github/workflows/scripts/check-module-changelogs-empty.py --self-test
+          python3 .github/workflows/scripts/check-module-changelogs-empty.py
 
       - name: Check every release job honours the memory-regression gate
         if: ${{ !cancelled() }}
