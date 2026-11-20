@@ -378,6 +378,8 @@ func TestMislabeledJSONBody(t *testing.T) {
 		{"audio/wav", "RIFF\x00\x00\x00\x00WAVEfmt {\"model\"", "", ""},
 		{"audio/l16", "{\x00\"\x00m\x00", "audio/l16", "is JSON that does not parse strictly"},
 		{"audio/l16", "{\x00\xff\x7f\x10\x80", "", ""},
+		{"audio/l16", "{\"model\":\"X\",\"a\":\"\xff\"}", "audio/l16", naming},
+		{"audio/pcm", "[{\"model\":\"X\"},\"\xfe\",]", "audio/pcm", lenient},
 		// Media with a header type is read like any body: an invalid byte, a comment or an
 		// unquoted key does not make JSON-shaped media content.
 		{"audio/wav", "/* c */ {model: 'X', a: '\xff'}", "audio/wav", lenient},

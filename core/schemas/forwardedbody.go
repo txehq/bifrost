@@ -312,9 +312,10 @@ func MislabeledJSONBody(body []byte, contentType string) (mediaType, problem str
 		// same opening rule as any body: whatever its byte validity, since a lenient parser
 		// replaces an invalid byte and reads on. Media with a header (RIFF, ID3, OggS, fLaC, PNG,
 		// JPEG, MP4...) never opens like JSON. Headerless raw audio (rawAudioMediaTypes) opens
-		// with "{" or "[" by chance in about 1 of 128 streams, so it is read only when its first
-		// 1 KB is UTF-8 text, as any JSON document is.
-		if rawAudioMediaTypes[mediaType] && !utf8.Valid(trimCutRune(body[:min(len(body), 1024)])) {
+		// with "{" or "[" by chance in about 1 of 128 streams, so it is skipped when its first
+		// 1 KB is not UTF-8 text and its bytes do not open with a JSON object or array structure
+		// ({" {} [{ [" [[ [] after whitespace): chance then falls to about 1 in 6,500.
+		if prefix := body[:min(len(body), 1024)]; rawAudioMediaTypes[mediaType] && !utf8.Valid(trimCutRune(prefix)) && !opensWithJSONStructure(prefix) {
 			return "", "", false
 		}
 		decodings = jsonTextDecodings[:1]
@@ -352,6 +353,18 @@ func MislabeledJSONBody(body []byte, contentType string) (mediaType, problem str
 // that is JSON text is still checked, while raw PCM is not mistaken for it.
 func isMediaType(mediaType string) bool {
 	return strings.HasPrefix(mediaType, "audio/") || strings.HasPrefix(mediaType, "image/") || strings.HasPrefix(mediaType, "video/")
+}
+
+// opensWithJSONStructure reports bytes that open, after ASCII whitespace, with "{" or "[" followed
+// (after whitespace) by a quote, a bracket or a brace: the opening of a JSON object or array
+// holding objects, strings or arrays.
+func opensWithJSONStructure(b []byte) bool {
+	b = bytes.TrimLeft(b, " \t\r\n")
+	if len(b) == 0 || (b[0] != '{' && b[0] != '[') {
+		return false
+	}
+	b = bytes.TrimLeft(b[1:], " \t\r\n")
+	return len(b) > 0 && bytes.IndexByte([]byte(`"{}[]`), b[0]) >= 0
 }
 
 // rawAudioMediaTypes are headerless audio formats: samples from the first byte, which can be any
