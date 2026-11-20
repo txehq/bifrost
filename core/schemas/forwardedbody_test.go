@@ -133,6 +133,25 @@ func TestAmbiguousMultipartField(t *testing.T) {
 	if member, ambiguous := AmbiguousBodyMember(body, "multipart/form-data"); !ambiguous || member != "multipart body with no boundary" {
 		t.Errorf("a multipart body with no boundary = %q, %t; want it refused", member, ambiguous)
 	}
+	// A part whose Content-Disposition Go cannot read one way only is refused: Go would skip it
+	// as nameless, and a lenient vendor parser might read it as a second model field.
+	for _, disposition := range []string{
+		"Content-Disposition: form-data; name=\"prompt\"; name=\"model\"",
+		"Content-Disposition: attachment; name=\"model\"",
+		"Content-Disposition: form-data; name=\"model\"\r\nContent-Disposition: form-data; name=\"prompt\"",
+		"Content-Disposition: form-data; name=\"model",
+		"Content-Disposition: form-data",
+	} {
+		raw := []byte("--b\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\na\r\n--b\r\n" + disposition + "\r\n\r\nb\r\n--b--\r\n")
+		if member, ambiguous := AmbiguousBodyMember(raw, "multipart/form-data; boundary=b"); !ambiguous || member != "multipart part with an unreadable Content-Disposition" {
+			t.Errorf("a part with %q = %q, %t; want it refused", disposition, member, ambiguous)
+		}
+	}
+	// A part with no Content-Disposition names no field and is not refused.
+	noDisposition := []byte("--b\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\na\r\n--b\r\nContent-Type: text/plain\r\n\r\nb\r\n--b--\r\n")
+	if member, ambiguous := AmbiguousBodyMember(noDisposition, "multipart/form-data; boundary=b"); ambiguous {
+		t.Errorf("a part with no Content-Disposition = %q, %t; want it admitted", member, ambiguous)
+	}
 }
 
 // TestForwardedBodyContentType: a passthrough request's declared type is read from its forwarded

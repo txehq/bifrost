@@ -203,6 +203,31 @@ func AmbiguousBodyMember(body []byte, contentType string) (string, bool) {
 // multipartUnparsable is the member reported for a multipart body that does not parse.
 const multipartUnparsable = "multipart body that does not parse"
 
+// multipartUnreadableDisposition is the member reported for a part whose name Go cannot read
+// but a lenient vendor parser might: a Content-Disposition given twice, one that does not
+// parse (such as one with two name parameters), or one that is not form-data.
+const multipartUnreadableDisposition = "multipart part with an unreadable Content-Disposition"
+
+// multipartPartName returns the form name of a part, and false when the part's
+// Content-Disposition cannot be read one way only. part.FormName returns "" for every such
+// part, which would let a part a vendor reads as a field slip past the repeat check. A part
+// with no Content-Disposition names no field and is readable, with an empty name.
+func multipartPartName(part *multipart.Part) (string, bool) {
+	dispositions := part.Header.Values("Content-Disposition")
+	switch len(dispositions) {
+	case 0:
+		return "", true
+	case 1:
+	default:
+		return "", false
+	}
+	disposition, params, err := mime.ParseMediaType(dispositions[0])
+	if err != nil || disposition != "form-data" || params["name"] == "" {
+		return "", false
+	}
+	return params["name"], true
+}
+
 // utf8ByteOrderMark opens some JSON documents; Python's json.loads, among others, skips it.
 var utf8ByteOrderMark = []byte{0xef, 0xbb, 0xbf}
 
@@ -335,8 +360,12 @@ func ambiguousMultipartField(body []byte, boundary string) (string, bool) {
 		if err != nil {
 			return multipartUnparsable, true
 		}
-		name, text := part.FormName(), part.FileName() == ""
+		name, readable := multipartPartName(part)
+		text := part.FileName() == ""
 		part.Close()
+		if !readable {
+			return multipartUnreadableDisposition, true
+		}
 		if name == "" || strings.HasSuffix(name, "[]") {
 			continue
 		}
