@@ -67,6 +67,9 @@ type BudgetResolver struct {
 	logger                  schemas.Logger
 	modelCatalog            *modelcatalog.ModelCatalog
 	governanceInMemoryStore InMemoryStore
+	// unpriced holds the triples whose admitted answers priced at $0 under a dollar budget
+	// (TXE-7957, unpricedbudget.go).
+	unpriced *unpricedAnswers
 }
 
 // NewBudgetResolver creates a new budget-based governance resolver
@@ -76,6 +79,7 @@ func NewBudgetResolver(store GovernanceStore, modelCatalog *modelcatalog.ModelCa
 		logger:                  logger,
 		modelCatalog:            modelCatalog,
 		governanceInMemoryStore: governanceInMemoryStore,
+		unpriced:                newUnpricedAnswers(),
 	}
 }
 
@@ -228,6 +232,12 @@ func (r *BudgetResolver) evaluateLimits(ctx *schemas.BifrostContext, evaluationR
 			Decision: decision,
 			Reason:   fmt.Sprintf("Budget exceeded: %s", reasonFromErr(err, decision)),
 		}
+	}
+
+	// A budget is charged what the price book says an answer cost, so a request it cannot price
+	// would spend nothing against any of them (TXE-7957).
+	if refusal := r.refuseUnpricedUnderBudget(ctx, evaluationRequest, budgets); refusal != nil {
+		return refusal
 	}
 
 	return &EvaluationResult{

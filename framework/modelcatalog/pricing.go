@@ -96,6 +96,22 @@ func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse, scopes *P
 	return mc.datasheet.CalculateCost(result, (*datasheet.LookupScopes)(scopes))
 }
 
+// PriceStatus is what the price book knows about a model's price for one kind of request; see
+// datasheet.PriceStatus.
+type PriceStatus = datasheet.PriceStatus
+
+const (
+	PriceUnpriced = datasheet.Unpriced
+	PriceFree     = datasheet.Free
+	PricePriced   = datasheet.Priced
+)
+
+// PriceStatus reports whether (provider, model) can be priced for requestType before any answer
+// exists, through the same lookup and overrides pricing uses (fork, TXE-7957).
+func (mc *ModelCatalog) PriceStatus(provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *PricingLookupScopes) PriceStatus {
+	return mc.datasheet.PriceStatus(provider, model, requestType, (*datasheet.LookupScopes)(scopes))
+}
+
 // SetIgnoreProviderCost toggles whether the provider's self-reported usage.cost
 // is ignored, so the request is priced from the catalog and pricing overrides.
 func (mc *ModelCatalog) SetIgnoreProviderCost(provider schemas.ModelProvider, ignore bool) {
