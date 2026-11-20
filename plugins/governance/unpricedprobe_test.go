@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/capsohq/bifrost/core/schemas"
+	"github.com/capsohq/bifrost/framework/grant"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -189,15 +190,37 @@ func TestUnpricedProbes(t *testing.T) {
 	assert.True(t, probesUnpriced(schemas.ChatCompletionRequest))
 }
 
-// A request presenting no virtual key is never probed: callers without one share a holder, so one
-// in flight would hold off the others.
-func TestRequestWithoutAVirtualKeyIsNotProbed(t *testing.T) {
+// A request is held under the most specific principal it presented: its virtual key, else its
+// user, else a digest of its credential. Requests that presented nothing share one hold, so they
+// are serialized rather than left unprobed.
+func TestProbeHolderIsTheMostSpecificPrincipal(t *testing.T) {
 	plugin, _ := unpricedBudgetPlugin(t)
-	for range 2 {
+	withIdentity := func(identity *grant.Identity) *schemas.BifrostContext {
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-		assert.Nil(t, plugin.resolver.probeUnconfirmed(ctx, schemas.ChatCompletionRequest, "openai|chat|gpt-4o", []string{"budget-unpriced"}))
-		assert.Nil(t, ctx.Value(unpricedProbeContextKey))
+		g := grant.New()
+		if identity != nil {
+			g.SetIdentity(identity)
+		}
+		ctx.SetGrant(g)
+		return ctx
 	}
+	session := grant.NewCredential(grant.CredentialSessionToken, "session-secret")
+	alice := withIdentity(grant.NewIdentity(session, &schemas.UserRef{ID: "alice"}, nil, nil, nil, nil, nil))
+	bob := withIdentity(grant.NewIdentity(session, &schemas.UserRef{ID: "bob"}, nil, nil, nil, nil, nil))
+	assert.Equal(t, "user:alice", unpricedHolder(alice))
+	tokenOnly := withIdentity(grant.NewIdentity(grant.NewCredential(grant.CredentialAPIKey, "api-secret"), nil, nil, nil, nil, nil, nil))
+	assert.NotContains(t, unpricedHolder(tokenOnly), "api-secret", "a credential is held by its digest")
+	assert.Contains(t, unpricedHolder(tokenOnly), "credential:api_key:")
+
+	row, budgets := "openai|chat|gpt-4o", []string{"budget-unpriced"}
+	require.Nil(t, plugin.resolver.probeUnconfirmed(alice, schemas.ChatCompletionRequest, row, budgets))
+	assert.Nil(t, plugin.resolver.probeUnconfirmed(bob, schemas.ChatCompletionRequest, row, budgets), "another user holds their own probe")
+
+	anonymous := withIdentity(nil)
+	require.Nil(t, plugin.resolver.probeUnconfirmed(anonymous, schemas.ChatCompletionRequest, row, budgets))
+	refused := plugin.resolver.probeUnconfirmed(withIdentity(nil), schemas.ChatCompletionRequest, row, budgets)
+	require.NotNil(t, refused, "requests that presented nothing share one hold")
+	assert.Equal(t, DecisionModelPricingUnconfirmed, refused.Decision)
 }
 
 // A stream holds its row until its final chunk.

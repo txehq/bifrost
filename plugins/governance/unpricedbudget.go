@@ -2,6 +2,8 @@ package governance
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"slices"
 	"strings"
@@ -244,9 +246,10 @@ func unpricedScopes(budgetIDs []string, holder string) []string {
 	return scopes
 }
 
-// unpricedHolder is the virtual key a request was admitted under, which an unpriced answer is
-// remembered for; empty for a request presenting none, whose answers are remembered for every
-// such request on the budget.
+// unpricedHolder is the principal a request was admitted under, which an unpriced answer is
+// remembered for and an unconfirmed row is probed for: its virtual key, else its user, else a
+// digest of the credential it presented (never the credential itself). Empty for a request that
+// presented nothing; such requests share one holder on a budget.
 func unpricedHolder(ctx *schemas.BifrostContext) string {
 	if ctx == nil || ctx.Grant() == nil {
 		return ""
@@ -255,8 +258,15 @@ func unpricedHolder(ctx *schemas.BifrostContext) string {
 	if identity == nil {
 		return ""
 	}
-	if vk := identity.VirtualKey(); vk != nil {
-		return vk.ID
+	if vk := identity.VirtualKey(); vk != nil && vk.ID != "" {
+		return "vk:" + vk.ID
+	}
+	if user := identity.User(); user != nil && user.ID != "" {
+		return "user:" + user.ID
+	}
+	if credential := identity.Credential(); credential.Kind != "" && credential.Value != "" {
+		sum := sha256.Sum256([]byte(credential.Value))
+		return "credential:" + credential.Kind + ":" + hex.EncodeToString(sum[:12])
 	}
 	return ""
 }

@@ -17,7 +17,8 @@ import (
 // at most one request on the row at a time: a concurrent one is refused with 429
 // model_pricing_unconfirmed and a one-second retry hint. Once an answer on the row priced above
 // $0, the row is confirmed for the scope and the limit lifts. A request with no dollar budget is
-// never probed. The state is per replica, like the refusal it guards.
+// never probed. The hold is per principal (unpricedHolder). The state is per replica, like the
+// refusal it guards.
 //
 // Live and Realtime units are not probed: a session holds its unit open for its whole length, so
 // one session would refuse every concurrent session of the key until its first unit closed.
@@ -161,17 +162,14 @@ func probesUnpriced(requestType schemas.RequestType) bool {
 // row is the price book row the request is priced as (priceIdentity in its pricing mode), which
 // the gate has already read: concurrent requests on one model resolve to the same row.
 //
-// A request presenting no virtual key is not probed: every such caller shares one holder, so one's
-// request in flight would hold off the others. Its answers are still judged after the fact.
+// The hold is per principal (unpricedHolder): a virtual key, a user, or a presented credential each
+// hold their own. Requests that presented nothing share one hold on the budget, which serializes
+// them until the first priced answer rather than leaving them unprobed.
 func (r *BudgetResolver) probeUnconfirmed(ctx *schemas.BifrostContext, requestType schemas.RequestType, row string, budgetIDs []string) *EvaluationResult {
 	if r.probes == nil || ctx == nil || row == "" || !probesUnpriced(requestType) {
 		return nil
 	}
-	holder := unpricedHolder(ctx)
-	if holder == "" {
-		return nil
-	}
-	holderScopes := unpricedScopes(budgetIDs, holder)
+	holderScopes := unpricedScopes(budgetIDs, unpricedHolder(ctx))
 	rows := []string{row}
 	if held, ok := ctx.Value(unpricedProbeContextKey).(*unpricedProbe); ok && held != nil {
 		if slices.Equal(held.scopes, holderScopes) && slices.Equal(held.rows, rows) {
