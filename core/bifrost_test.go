@@ -15803,7 +15803,8 @@ func assignsLastErr(body *ast.BlockStmt) bool {
 	ast.Inspect(body, func(n ast.Node) bool {
 		if assign, ok := n.(*ast.AssignStmt); ok {
 			for _, lhs := range assign.Lhs {
-				if ident, ok := lhs.(*ast.Ident); ok && ident.Name == "lastErr" {
+				// Either spelling: six Gemini loops named it lastError and were never checked (TXE-8031).
+				if ident, ok := lhs.(*ast.Ident); ok && (ident.Name == "lastErr" || ident.Name == "lastError") {
 					found = true
 				}
 			}

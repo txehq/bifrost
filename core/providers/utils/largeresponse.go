@@ -182,8 +182,10 @@ func FinalizeResponseWithLargeDetection(
 	// Nothing is buffered past client.max_response_body_size_mb (TXE-7148). A threshold above it
 	// would buffer a chunked or decompressed answer up to the threshold, so the limit lowers it
 	// and a longer answer is streamed through as any large response is, never held in memory.
-	if limit := network.MaxResponseBodyBytes(); responseThreshold > limit {
-		responseThreshold = limit
+	// A retrieve is held to its own, smaller limit (TXE-8031).
+	bodyLimit := RetrieveAwareBodyLimit(ctx)
+	if responseThreshold > bodyLimit {
+		responseThreshold = bodyLimit
 	}
 
 	contentLength := resp.Header.ContentLength()
@@ -234,9 +236,10 @@ func FinalizeResponseWithLargeDetection(
 	// the body in memory once, as with no threshold configured, and no more than the response
 	// limit (client.max_response_body_size_mb, TXE-7148), as every buffered upstream read.
 	if !schemas.LargePayloadEligibilityFromContext(ctx).RawResponse {
-		bodyBytes, readErr := network.ReadAllBounded(reader)
+		bodyBytes, readErr := network.ReadAllLimit(reader, bodyLimit)
 		cleanup()
 		if readErr != nil {
+			markRetrieveLimit(readErr, isRetrieve(ctx))
 			return nil, false, largeResponseReadError(readErr)
 		}
 		return bodyBytes, false, nil
@@ -244,9 +247,10 @@ func FinalizeResponseWithLargeDetection(
 
 	// Known small response — read from stream, return body for normal parsing
 	if contentLength > 0 && int64(contentLength) <= responseThreshold {
-		bodyBytes, readErr := network.ReadAllBounded(reader)
+		bodyBytes, readErr := network.ReadAllLimit(reader, bodyLimit)
 		cleanup()
 		if readErr != nil {
+			markRetrieveLimit(readErr, isRetrieve(ctx))
 			return nil, false, largeResponseReadError(readErr)
 		}
 		return bodyBytes, false, nil

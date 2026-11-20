@@ -2,6 +2,7 @@ package integrations
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"strings"
 	"testing"
@@ -434,4 +435,33 @@ func TestSendHelpers_ExtraFieldsPlacement(t *testing.T) {
 		assert.Equal(t, !inHeaders, strings.Contains(string(streamErrCtx.Response.Body()), `"extra_fields"`), "stream error headers=%v", inHeaders)
 		assert.Equal(t, "openai", string(streamErrCtx.Response.Header.Peek(lib.HeaderBifrostProvider)))
 	}
+}
+
+// TXE-8031: a converter's json.RawMessage is written as it is: the response holds the converter's
+// own bytes, not an encoded copy (gemini's batch retrieve carries most of a retrieve at its limit
+// that way). extra_fields still moves to the headers when asked, and a nil RawMessage is still
+// encoded as null.
+func TestSendSuccessWritesARawMessageAsItIs(t *testing.T) {
+	router := newTestGenericRouter()
+	converter := func(_ *schemas.BifrostContext, err *schemas.BifrostError) interface{} { return err }
+
+	raw := json.RawMessage(`{"name":"batches/b1","metadata":{"output":{"inlinedResponses":{"inlinedResponses":[{"response":{}}]}}}}`)
+	ctx := &fasthttp.RequestCtx{}
+	router.sendSuccess(ctx, newTestBifrostContext(), converter, raw, nil)
+	assert.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
+	assert.Equal(t, string(raw), string(ctx.Response.Body()))
+	if body := ctx.Response.Body(); len(body) > 0 {
+		assert.Same(t, &raw[0], &body[0], "the converter's bytes, not a copy")
+	}
+
+	withExtra := json.RawMessage(`{"id":"x","extra_fields":{"provider":"gemini"}}`)
+	headersCtx := &fasthttp.RequestCtx{}
+	headersCtx.SetUserValue(lib.FastHTTPUserValueExtraFieldsInHeaders, true)
+	router.sendSuccess(headersCtx, newTestBifrostContext(), converter, withExtra, nil)
+	assert.Equal(t, `{"id":"x"}`, string(headersCtx.Response.Body()))
+	assert.Contains(t, string(withExtra), "extra_fields", "the converter's bytes are not changed")
+
+	nilCtx := &fasthttp.RequestCtx{}
+	router.sendSuccess(nilCtx, newTestBifrostContext(), converter, json.RawMessage(nil), nil)
+	assert.Equal(t, "null", string(nilCtx.Response.Body()))
 }

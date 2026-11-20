@@ -3,6 +3,7 @@ package integrations
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -251,6 +252,15 @@ func (g *GenericRouter) sendSuccess(ctx *fasthttp.RequestCtx, bifrostCtx *schema
 		}
 	}
 
+	// A converter that returns json.RawMessage has encoded the body itself, into a slice it owns
+	// and does not change after (gemini's batch retrieve carries the vendor's output object, which
+	// is most of a retrieve at the retrieve limit). It is written as it is, without encoding it
+	// again or copying it into the response buffer: each would hold the whole response once more
+	// (TXE-8031).
+	if raw, ok := response.(json.RawMessage); ok && raw != nil {
+		ctx.Response.SetBodyRaw(lib.StripExtraFieldsIfInHeaders(ctx, raw))
+		return
+	}
 	responseBody, err := sonic.Marshal(response)
 	if err != nil {
 		g.sendError(ctx, bifrostCtx, errorConverter, newBifrostError(err, "failed to encode response"))

@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unsafe"
 
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
@@ -79,15 +80,39 @@ func GeminiBatchInputFileName(raw []byte, parsed GeminiBatchInputConfig) (string
 }
 
 // geminiBatchNativeOutput returns a batch job's output object as the vendor sent it:
-// metadata.output, or the done operation's response when the metadata carries none. It is a
-// copy, so it outlives the pooled response body. Nil when the job has no output yet.
+// metadata.output, or the done operation's response when the metadata carries none. Nil when the
+// job has no output yet. It is a slice of body, which must be the provider's own
+// (TakeDecodedBody and CheckAndDecodeBody return one), never the pooled response buffer: the
+// output is most of the body, so a copy would hold it twice (TXE-8031).
 func geminiBatchNativeOutput(body []byte) []byte {
+	if len(body) == 0 {
+		return nil
+	}
+	// gjson.GetBytes would copy the match; Get over a string view of body only reports where it is.
+	view := unsafe.String(unsafe.SliceData(body), len(body))
 	for _, path := range []string{"metadata.output", "response"} {
-		if out := providerUtils.GetJSONField(body, path); out.Exists() && out.IsObject() {
-			return append([]byte(nil), out.Raw...)
+		out := gjson.Get(view, path)
+		if !out.Exists() || !out.IsObject() {
+			continue
 		}
+		if end := out.Index + len(out.Raw); out.Index > 0 && end <= len(body) {
+			return body[out.Index:end:end]
+		}
+		return []byte(out.Raw)
 	}
 	return nil
+}
+
+// outputFile is the batch's responses file: the top-level response's, else metadata.output's
+// (geminiBatchOutput's order).
+func (job *geminiBatchJobStatus) outputFile() string {
+	if job.Response != nil && job.Response.ResponsesFile != "" {
+		return job.Response.ResponsesFile
+	}
+	if job.Metadata != nil && job.Metadata.Output != nil {
+		return job.Metadata.Output.ResponsesFile
+	}
+	return ""
 }
 
 // ToGeminiBatchRetrieveBody is the body the native /genai route returns for a batch job:

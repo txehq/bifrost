@@ -3024,6 +3024,27 @@ type GeminiBatchMetadata struct {
 	Name        string                           `json:"name"`
 }
 
+// geminiBatchJobStatus is a batch job as a retrieve reads it (fork, TXE-8031): its output keeps
+// only responsesFile, so the inline results a finished inline batch carries (up to 200,000) are
+// skipped by the decoder instead of decoded into Go values the retrieve never reads. Decoding them
+// cost about twenty times the body; the /genai route returns them from the body itself
+// (BifrostBatchRetrieveResponse.NativeOutput).
+type geminiBatchJobStatus struct {
+	Metadata *geminiBatchStatusMetadata `json:"metadata,omitempty"`
+	Response *geminiBatchOutputFile     `json:"response,omitempty"`
+}
+
+// geminiBatchStatusMetadata is GeminiBatchMetadata with its output read as geminiBatchOutputFile.
+type geminiBatchStatusMetadata struct {
+	GeminiBatchMetadata
+	Output *geminiBatchOutputFile `json:"output,omitempty"`
+}
+
+// geminiBatchOutputFile is the one part of a batch output a retrieve reads.
+type geminiBatchOutputFile struct {
+	ResponsesFile string `json:"responsesFile,omitempty"`
+}
+
 // GeminiBatchJobResponse represents the response from batch operations.
 type GeminiBatchJobResponse struct {
 	Name     string                `json:"name"` // e.g., "batches/xxx" or full resource name

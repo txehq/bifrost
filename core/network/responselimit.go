@@ -43,6 +43,23 @@ func MaxResponseBodyBytes() int64 {
 	return DefaultMaxResponseBodySizeMB << 20
 }
 
+// RetrieveResponseShare is how many retrieve bodies fit in the response limit (fork, TXE-8031):
+// a retrieve is read under MaxResponseBodyBytes / RetrieveResponseShare. Reading and converting
+// a retrieve allocates up to this many bytes per body byte: the read buffer (up to twice the
+// body, as fasthttp rounds its capacity up to a power of two), the route's rewritten body, and
+// what the decode and the encoders add. So a retrieve at its limit allocates no more than
+// client.max_response_body_size_mb in all. TestGeminiBatchRetrieveAllocatesWithinTheRetrieveShare
+// fails when converting the largest retrieve the gateway carries (a Gemini inline batch job, its
+// results inline) allocates more.
+const RetrieveResponseShare = 4
+
+// MaxRetrieveResponseBodyBytes returns the limit a retrieve's upstream body is read under
+// (schemas.RequestType.IsRetrieve): a RetrieveResponseShare-th of MaxResponseBodyBytes, so it
+// follows client.max_response_body_size_mb.
+func MaxRetrieveResponseBodyBytes() int64 {
+	return MaxResponseBodyBytes() / RetrieveResponseShare
+}
+
 // EffectiveMaxResponseBodySize returns the limit a fasthttp client's buffered read applies: the
 // client's own MaxResponseBodySize when it sets a tighter one on purpose (the media fetcher, the
 // auth client), otherwise the configured limit. It never returns 0, which fasthttp reads as
@@ -64,11 +81,20 @@ var ErrResponseBodyTooLarge = errors.New("upstream response body exceeds the gat
 // ResponseBodyTooLargeError reports an upstream response body larger than the limit it was read
 // under. The read fails; the body is never cut short and handed on as if it were whole.
 type ResponseBodyTooLargeError struct {
-	Limit int64 // bytes
+	Limit    int64 // bytes
+	Retrieve bool  // Limit is MaxRetrieveResponseBodyBytes
 }
 
 func (e *ResponseBodyTooLargeError) Error() string {
-	return fmt.Sprintf("upstream response body exceeds the gateway's limit of %d bytes (client.max_response_body_size_mb)", e.Limit)
+	return fmt.Sprintf("upstream response body exceeds the gateway's limit of %d bytes (%s)", e.Limit, e.Setting())
+}
+
+// Setting names where Limit comes from, for the caller's error.
+func (e *ResponseBodyTooLargeError) Setting() string {
+	if e.Retrieve {
+		return fmt.Sprintf("for a retrieve, client.max_response_body_size_mb / %d", RetrieveResponseShare)
+	}
+	return "client.max_response_body_size_mb"
 }
 
 // Is makes errors.Is(err, ErrResponseBodyTooLarge) true for every limit, and keeps
