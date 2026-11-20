@@ -64,14 +64,18 @@ func IsEmbeddingBatch(request *schemas.BifrostBatchCreateRequest) bool {
 	return request.Endpoint == schemas.BatchEndpointEmbeddings
 }
 
-// ToGeminiEmbeddingBatchLineRequests builds the EmbedContentRequests Gemini runs for one
+// ToGeminiEmbeddingBatchLineRequest builds the EmbedContentRequest Gemini runs for one
 // inline /v1/embeddings batch line, as encoded JSON. The line's body is parsed into the
 // request the sync route builds from it and converted with the sync operation's converter,
-// so each request is an entry of the :batchEmbedContents body the sync route sends for the
-// same body. An EmbedContentRequest embeds one content, so a line whose input holds several
-// items becomes that many requests, in input order.
+// so the request is the entry of the :batchEmbedContents body the sync route sends for the
+// same body.
 //
-// Fields outside the unified request are merged into every request, as the sync route merges
+// A line runs as exactly one vendor request. An EmbedContentRequest embeds one content, so a
+// line whose input holds several items is refused (CheckEmbeddingBatchLineHasOneInput,
+// TXE-7033, contract C8): sent as several requests, a line some of whose requests failed is
+// returned failed with no usage, while the vendor billed the requests that succeeded.
+//
+// Fields outside the unified request are merged into the request, as the sync route merges
 // them into its body: an embedding batch has no body of its own to carry them.
 //
 // A body already in Gemini shape (content, no input) is sent as it is.
@@ -79,7 +83,7 @@ func IsEmbeddingBatch(request *schemas.BifrostBatchCreateRequest) bool {
 // batchEndpoint is the batch's own endpoint, which a line with no url inherits. A line whose
 // operation is not /v1/embeddings is refused: a batch runs one url, and a line with no url
 // under a chat batch endpoint is a chat line even when the first line named /v1/embeddings.
-func ToGeminiEmbeddingBatchLineRequests(item schemas.BatchRequestItem, batchEndpoint schemas.BatchEndpoint, provider schemas.ModelProvider, model string) ([][]byte, error) {
+func ToGeminiEmbeddingBatchLineRequest(item schemas.BatchRequestItem, batchEndpoint schemas.BatchEndpoint, provider schemas.ModelProvider, model string) ([]byte, error) {
 	body := item.RequestBody()
 	if body == nil {
 		return nil, &schemas.BatchLineError{CustomID: item.CustomID, Param: "body", Message: "body is required"}
@@ -88,15 +92,14 @@ func ToGeminiEmbeddingBatchLineRequests(item schemas.BatchRequestItem, batchEndp
 		return nil, &schemas.BatchLineError{CustomID: item.CustomID, Param: "url", Unsupported: true, Message: fmt.Sprintf("url %s differs from the batch's other lines (%s): a batch runs one url", operation, schemas.BatchEndpointEmbeddings)}
 	}
 	if isNativeGeminiEmbeddingBatchBody(body) {
-		encoded, err := providerUtils.MarshalSorted(body)
-		if err != nil {
-			return nil, err
-		}
-		return [][]byte{encoded}, nil
+		return providerUtils.MarshalSorted(body)
 	}
 	embeddingRequest, err := item.ToBifrostEmbeddingRequest(provider, model)
 	if err != nil {
 		return nil, &schemas.BatchLineError{CustomID: item.CustomID, Param: "body", Message: err.Error()}
+	}
+	if err := checkEmbeddingBatchLineInputCount(item, provider, len(embeddingRequest.Input)); err != nil {
+		return nil, err
 	}
 	// The sync route refuses an encoding_format other than float before any upstream call;
 	// the converter drops the field, so without this a base64 line would run, be billed and
@@ -108,43 +111,68 @@ func ToGeminiEmbeddingBatchLineRequests(item schemas.BatchRequestItem, batchEndp
 	if err != nil {
 		return nil, &schemas.BatchLineError{CustomID: item.CustomID, Param: "body", Message: err.Error()}
 	}
-	requests := make([][]byte, len(converted.Requests))
-	for i := range converted.Requests {
-		entry := converted.Requests[i]
-		entry.ExtraParams = converted.ExtraParams
-		encoded, err := providerUtils.MarshalConvertedRequestBody(&entry, true)
-		if err != nil {
-			return nil, err
-		}
-		requests[i] = encoded
+	if len(converted.Requests) != 1 {
+		return nil, fmt.Errorf("batch request item (custom_id %q): one input converted into %d embedding requests", item.CustomID, len(converted.Requests))
 	}
-	return requests, nil
+	entry := converted.Requests[0]
+	entry.ExtraParams = converted.ExtraParams
+	return providerUtils.MarshalConvertedRequestBody(&entry, true)
+}
+
+// CheckEmbeddingBatchLineHasOneInput refuses an OpenAI-shape /v1/embeddings batch line whose
+// input holds more than one item, on a host of Gemini models (the Gemini API and Vertex).
+// Their embedding batch request embeds one content, so a line with several inputs would be
+// several vendor requests behind one result line, and that line has no way to report the
+// usage of the requests that succeeded when one failed (TXE-7033, contract C8). The caller
+// sends one input per line instead. A line that is not an embeddings line, or whose body has
+// no OpenAI input, is left to the checks that own it.
+func CheckEmbeddingBatchLineHasOneInput(item schemas.BatchRequestItem, batchEndpoint schemas.BatchEndpoint, provider schemas.ModelProvider, model string) error {
+	if batchLineOperation(item.Endpoint(batchEndpoint)) != schemas.BatchEndpointEmbeddings {
+		return nil
+	}
+	if _, hasInput := item.RequestBody()["input"]; !hasInput {
+		return nil
+	}
+	embeddingRequest, err := item.ToBifrostEmbeddingRequest(provider, model)
+	if err != nil {
+		return nil
+	}
+	return checkEmbeddingBatchLineInputCount(item, provider, len(embeddingRequest.Input))
+}
+
+func checkEmbeddingBatchLineInputCount(item schemas.BatchRequestItem, provider schemas.ModelProvider, inputs int) error {
+	if inputs <= 1 {
+		return nil
+	}
+	return &schemas.BatchLineError{
+		CustomID:    item.CustomID,
+		Param:       "body.input",
+		Unsupported: true,
+		Message:     fmt.Sprintf("input holds %d items, and a %s embedding batch line takes exactly one: each input is a vendor request of its own, and a line some of whose inputs failed could not report the usage the vendor billed for the others; send one input per line", inputs, provider),
+	}
 }
 
 // geminiEmbeddingBatchRequestItems builds the inline requests of an embedding batch from
-// its lines. Each request's metadata carries the line's custom_id and url, and, for a line
-// sent as several requests, the request's position in the line and the line's request count.
+// its lines, one request per line. Each request's metadata carries the line's custom_id and
+// url.
+//
+// The gateway no longer sends a line as several requests (TXE-7033), so it no longer writes
+// bifrost_input_index or bifrost_input_count. The results side still reads them: a job
+// created before the change can still be running (a job lives up to 48 hours).
 func geminiEmbeddingBatchRequestItems(request *schemas.BifrostBatchCreateRequest, model string, resolve func(string) string) ([]GeminiBatchRequestItem, *schemas.BifrostError) {
 	items := make([]GeminiBatchRequestItem, 0, len(request.Requests))
 	for i, line := range request.Requests {
 		if err := providerUtils.CheckBatchLineModel(line, schemas.Gemini, model, resolve); err != nil {
 			return nil, providerUtils.NewBatchLineBadRequestError(i, err)
 		}
-		lineRequests, err := ToGeminiEmbeddingBatchLineRequests(line, request.Endpoint, schemas.Gemini, model)
+		lineRequest, err := ToGeminiEmbeddingBatchLineRequest(line, request.Endpoint, schemas.Gemini, model)
 		if err != nil {
 			return nil, providerUtils.NewBatchLineBadRequestError(i, err)
 		}
-		for inputIndex, lineRequest := range lineRequests {
-			metadata := &GeminiBatchRequestMetadata{
-				Key:      line.CustomID,
-				Endpoint: string(schemas.BatchEndpointEmbeddings),
-			}
-			if len(lineRequests) > 1 {
-				metadata.InputIndex = strconv.Itoa(inputIndex)
-				metadata.InputCount = strconv.Itoa(len(lineRequests))
-			}
-			items = append(items, GeminiBatchRequestItem{Request: lineRequest, Metadata: metadata})
-		}
+		items = append(items, GeminiBatchRequestItem{Request: lineRequest, Metadata: &GeminiBatchRequestMetadata{
+			Key:      line.CustomID,
+			Endpoint: string(schemas.BatchEndpointEmbeddings),
+		}})
 	}
 	return items, nil
 }

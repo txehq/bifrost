@@ -1086,13 +1086,14 @@ func TestGeminiBatchListReturnsDisplayNameAndBothStateSpellings(t *testing.T) {
 }
 
 // A batch of /v1/embeddings lines is one asyncBatchEmbedContent job (Gemini batch B4), and each
-// request in it is the entry the sync route sends for the same body in :batchEmbedContents. A
-// line with several inputs is sent as one request per input, since an EmbedContentRequest
-// embeds one content. Before this, the create answered "url /v1/embeddings cannot run in a
-// generateContent batch".
+// request in it is the entry the sync route sends for the same body in :batchEmbedContents.
+// Each line is one request: a line with several inputs is refused (TXE-7033, see
+// TestGeminiEmbeddingBatchRefusesALineWithSeveralInputs). Before TXE-6637, the create answered
+// "url /v1/embeddings cannot run in a generateContent batch".
 func TestGeminiEmbeddingBatchCreateIsOneAsyncBatchEmbedContentJob(t *testing.T) {
 	const singleLine = `{"custom_id":"emb-1","method":"POST","url":"/v1/embeddings","body":{"model":"gemini-embedding-001","input":"What is the capital of France?","dimensions":256,"task_type":"RETRIEVAL_QUERY"}}`
-	const multiLine = `{"custom_id":"emb-2","method":"POST","url":"/v1/embeddings","body":{"model":"gemini-embedding-001","input":["Paris is in France.","Berlin is in Germany.","Rome is in Italy."],"task_type":"RETRIEVAL_DOCUMENT","title":"Capitals","vendor_only_switch":true}}`
+	// A one-item array is one input, the same as a string.
+	const extraLine = `{"custom_id":"emb-2","method":"POST","url":"/v1/embeddings","body":{"model":"gemini-embedding-001","input":["Paris is in France."],"task_type":"RETRIEVAL_DOCUMENT","title":"Capitals","vendor_only_switch":true}}`
 
 	vendor := newGeminiBatchVendor(t)
 	provider, keys := vendor.provider(false)
@@ -1102,7 +1103,7 @@ func TestGeminiEmbeddingBatchCreateIsOneAsyncBatchEmbedContentJob(t *testing.T) 
 		ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 		return ctx
 	}
-	items := []schemas.BatchRequestItem{batchLineFromJSON(t, singleLine), batchLineFromJSON(t, multiLine)}
+	items := []schemas.BatchRequestItem{batchLineFromJSON(t, singleLine), batchLineFromJSON(t, extraLine)}
 
 	// The sync route: the request the transport builds from each body, sent as an embedding.
 	for _, item := range items {
@@ -1134,14 +1135,14 @@ func TestGeminiEmbeddingBatchCreateIsOneAsyncBatchEmbedContentJob(t *testing.T) 
 
 	assert.Equal(t, "tokun-batch_tk_2", gjson.Get(vendor.batchBody, "batch.displayName").String())
 	sent := gjson.Get(vendor.batchBody, "batch.inputConfig.requests.requests").Array()
-	require.Len(t, sent, 4, "one request for the single-input line, three for the three-input line")
+	require.Len(t, sent, 2, "one request per line")
 
 	// Each request is the entry the sync route sent for the same input.
 	require.Len(t, vendor.syncBodies, 2)
 	syncSingle := gjson.Get(vendor.syncBodies[0], "requests").Array()
-	syncMulti := gjson.Get(vendor.syncBodies[1], "requests").Array()
+	syncExtra := gjson.Get(vendor.syncBodies[1], "requests").Array()
 	require.Len(t, syncSingle, 1)
-	require.Len(t, syncMulti, 3)
+	require.Len(t, syncExtra, 1)
 	assert.JSONEq(t, syncSingle[0].Raw, sent[0].Get("request").Raw)
 	assert.Equal(t, "models/gemini-embedding-001", sent[0].Get("request.model").String())
 	assert.Equal(t, "What is the capital of France?", sent[0].Get("request.content.parts.0.text").String())
@@ -1150,22 +1151,20 @@ func TestGeminiEmbeddingBatchCreateIsOneAsyncBatchEmbedContentJob(t *testing.T) 
 	assert.JSONEq(t, `{"key":"emb-1","bifrost_endpoint":"/v1/embeddings"}`, sent[0].Get("metadata").Raw)
 
 	// The sync route merges a field outside the unified request into its body; a batch has no
-	// body of its own, so the field is in each request of the line.
+	// body of its own, so the field is in the line's request.
 	assert.True(t, gjson.Get(vendor.syncBodies[1], "vendor_only_switch").Bool())
-	for i, text := range []string{"Paris is in France.", "Berlin is in Germany.", "Rome is in Italy."} {
-		request := sent[1+i]
-		assert.Equal(t, text, request.Get("request.content.parts.0.text").String())
-		assert.Equal(t, "RETRIEVAL_DOCUMENT", request.Get("request.taskType").String())
-		assert.Equal(t, "Capitals", request.Get("request.title").String())
-		assert.True(t, request.Get("request.vendor_only_switch").Bool())
-		withoutExtra, err := sonic.Marshal(map[string]any{
-			"model": request.Get("request.model").Value(), "content": request.Get("request.content").Value(),
-			"taskType": request.Get("request.taskType").Value(), "title": request.Get("request.title").Value(),
-		})
-		require.NoError(t, err)
-		assert.JSONEq(t, syncMulti[i].Raw, string(withoutExtra), "the request is the sync entry plus the merged field")
-		assert.JSONEq(t, fmt.Sprintf(`{"key":"emb-2","bifrost_endpoint":"/v1/embeddings","bifrost_input_index":"%d","bifrost_input_count":"3"}`, i), request.Get("metadata").Raw)
-	}
+	request := sent[1]
+	assert.Equal(t, "Paris is in France.", request.Get("request.content.parts.0.text").String())
+	assert.Equal(t, "RETRIEVAL_DOCUMENT", request.Get("request.taskType").String())
+	assert.Equal(t, "Capitals", request.Get("request.title").String())
+	assert.True(t, request.Get("request.vendor_only_switch").Bool())
+	withoutExtra, err := sonic.Marshal(map[string]any{
+		"model": request.Get("request.model").Value(), "content": request.Get("request.content").Value(),
+		"taskType": request.Get("request.taskType").Value(), "title": request.Get("request.title").Value(),
+	})
+	require.NoError(t, err)
+	assert.JSONEq(t, syncExtra[0].Raw, string(withoutExtra), "the request is the sync entry plus the merged field")
+	assert.JSONEq(t, `{"key":"emb-2","bifrost_endpoint":"/v1/embeddings"}`, request.Get("metadata").Raw, "a line is one request, so no input position is sent")
 
 	t.Run("a line's own url makes the batch an embedding batch", func(t *testing.T) {
 		own := newGeminiBatchVendor(t)
@@ -1215,7 +1214,7 @@ func TestGeminiEmbeddingBatchCreateIsOneAsyncBatchEmbedContentJob(t *testing.T) 
 			require.Nil(t, bareErr, "the job exists at the vendor: an error here would lose its id (%s)", created)
 			assert.Equal(t, "batches/bare1", bareResp.ID, created)
 			assert.Equal(t, schemas.BatchStatusInProgress, bareResp.Status, created)
-			assert.Equal(t, 4, bareResp.RequestCounts.Total, "the count is what was sent (%s)", created)
+			assert.Equal(t, 2, bareResp.RequestCounts.Total, "the count is what was sent (%s)", created)
 		}
 		// A response that names no job is still an error.
 		nameless := newGeminiBatchVendor(t)
@@ -1290,6 +1289,65 @@ func TestGeminiEmbeddingBatchCreateIsOneAsyncBatchEmbedContentJob(t *testing.T) 
 			assert.Equal(t, tc.param, refusal.Error.Param, name)
 			assert.Contains(t, refusal.Error.Message, tc.message, name)
 			assert.Empty(t, refusing.calls, name)
+		}
+	})
+}
+
+// TXE-7033 (contract C8): a /v1/embeddings batch line whose input holds several items is
+// refused with a 400 naming the line, and nothing is sent upstream. Gemini embeds one content
+// per request, so such a line used to be sent as one request per input; when one of them
+// failed, the line came back failed with no usage while Gemini billed the others. The caller
+// sends one input per line instead. A one-item array is one input. Token arrays are counted the same way, before Gemini refuses
+// token input of its own.
+func TestGeminiEmbeddingBatchRefusesALineWithSeveralInputs(t *testing.T) {
+	const okLine = `{"custom_id":"emb-ok","url":"/v1/embeddings","body":{"model":"gemini-embedding-001","input":"hello"}}`
+	newCtx := func() *schemas.BifrostContext {
+		return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	}
+	for name, tc := range map[string]struct {
+		endpoint schemas.BatchEndpoint
+		line     string
+		inputs   int
+	}{
+		"several strings":                      {line: `{"custom_id":"emb-multi","url":"/v1/embeddings","body":{"model":"gemini-embedding-001","input":["alpha","beta"]}}`, inputs: 2},
+		"several token arrays":                 {line: `{"custom_id":"emb-multi","url":"/v1/embeddings","body":{"model":"gemini-embedding-001","input":[[1,2],[3,4],[5]]}}`, inputs: 3},
+		"several inputs on a line with no url": {endpoint: schemas.BatchEndpointEmbeddings, line: `{"custom_id":"emb-multi","body":{"input":["alpha","beta"]}}`, inputs: 2},
+	} {
+		t.Run(name, func(t *testing.T) {
+			vendor := newGeminiBatchVendor(t)
+			provider, keys := vendor.provider(false)
+			_, refusal := provider.BatchCreate(newCtx(), keys[0], &schemas.BifrostBatchCreateRequest{
+				Provider: schemas.Gemini, Model: schemas.Ptr("gemini-embedding-001"), Endpoint: tc.endpoint,
+				Requests: []schemas.BatchRequestItem{batchLineFromJSON(t, okLine), batchLineFromJSON(t, tc.line)},
+			})
+			require.NotNil(t, refusal)
+			require.NotNil(t, refusal.StatusCode)
+			assert.Equal(t, http.StatusBadRequest, *refusal.StatusCode)
+			assert.Equal(t, "requests[1].body.input", refusal.Error.Param)
+			assert.Equal(t, schemas.ErrorTypeCallerUnsupportedParameter, refusal.ExtraFields.ErrorType)
+			assert.Contains(t, refusal.Error.Message, `custom_id "emb-multi"`)
+			assert.Contains(t, refusal.Error.Message, fmt.Sprintf("input holds %d items", tc.inputs))
+			assert.Contains(t, refusal.Error.Message, "send one input per line")
+			assert.Empty(t, vendor.calls, "nothing may be sent upstream")
+		})
+	}
+
+	t.Run("one input per line is sent, one request each", func(t *testing.T) {
+		vendor := newGeminiBatchVendor(t)
+		provider, keys := vendor.provider(false)
+		_, bifrostErr := provider.BatchCreate(newCtx(), keys[0], &schemas.BifrostBatchCreateRequest{
+			Provider: schemas.Gemini, Model: schemas.Ptr("gemini-embedding-001"),
+			Requests: []schemas.BatchRequestItem{
+				batchLineFromJSON(t, okLine),
+				batchLineFromJSON(t, `{"custom_id":"emb-array","url":"/v1/embeddings","body":{"input":["alpha"]}}`),
+			},
+		})
+		require.Nil(t, bifrostErr, "%+v", bifrostErr)
+		assert.Equal(t, []string{"POST /v1beta/models/gemini-embedding-001:asyncBatchEmbedContent"}, vendor.calls)
+		sent := gjson.Get(vendor.batchBody, "batch.inputConfig.requests.requests").Array()
+		require.Len(t, sent, 2)
+		for i, key := range []string{"emb-ok", "emb-array"} {
+			assert.JSONEq(t, fmt.Sprintf(`{"key":%q,"bifrost_endpoint":"/v1/embeddings"}`, key), sent[i].Get("metadata").Raw)
 		}
 	})
 }
@@ -1543,7 +1601,7 @@ func TestGeminiEmbeddingBatchResultsPageTheResponsesFile(t *testing.T) {
 // into EmbedContentRequests, and a finished batch's responses back into result lines.
 func BenchmarkGeminiEmbeddingBatchLineConversion(b *testing.B) {
 	var line schemas.BatchRequestItem
-	require.NoError(b, sonic.UnmarshalString(`{"custom_id":"emb-2","url":"/v1/embeddings","body":{"model":"gemini-embedding-001","input":["Paris is in France.","Berlin is in Germany.","Rome is in Italy."],"task_type":"RETRIEVAL_DOCUMENT"}}`, &line))
+	require.NoError(b, sonic.UnmarshalString(`{"custom_id":"emb-2","url":"/v1/embeddings","body":{"model":"gemini-embedding-001","input":"Paris is in France.","task_type":"RETRIEVAL_DOCUMENT"}}`, &line))
 	var job GeminiBatchJobResponse
 	embeddingJob := []byte(fmt.Sprintf(geminiFinishedEmbeddingBatch, "BATCH_STATE_SUCCEEDED", "inlinedResponses"))
 	require.NoError(b, sonic.Unmarshal(embeddingJob, &job))
@@ -1583,12 +1641,12 @@ func BenchmarkGeminiEmbeddingBatchLineConversion(b *testing.B) {
 			}
 		}
 	})
-	b.Run("line to requests", func(b *testing.B) {
+	b.Run("line to request", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
-			requests, err := ToGeminiEmbeddingBatchLineRequests(line, schemas.BatchEndpointEmbeddings, schemas.Gemini, "gemini-embedding-001")
-			if err != nil || len(requests) != 3 {
-				b.Fatalf("requests=%d err=%v", len(requests), err)
+			request, err := ToGeminiEmbeddingBatchLineRequest(line, schemas.BatchEndpointEmbeddings, schemas.Gemini, "gemini-embedding-001")
+			if err != nil || len(request) == 0 {
+				b.Fatalf("request=%d bytes err=%v", len(request), err)
 			}
 		}
 	})

@@ -1,9 +1,9 @@
 {
   "name": "406. Gemini embedding batches run through asyncBatchEmbedContent (gemini embedding-batch)",
-  "description": "Wire-level pins for Gemini embedding batches (TXE-6637; contract clauses C3, C8; Gemini batch B4). A batch of /v1/embeddings lines used to be refused on Gemini as a url a generateContent batch cannot run. Rows 406.1 to 406.4 run against a live gateway; rows 406.5 to 406.8 run against the provider error fixture and its isolated gateway (tests/e2e/api/README.md, --env-var providerErrorFixture=1) and are skipped otherwise, and the two rows that need the real vendor (406.1, 406.4) are skipped on the fixture. Live rows: (406.1) inline /v1/embeddings lines create one models/{model}:asyncBatchEmbedContent job: the echoed request body carries one EmbedContentRequest per input (a line with two inputs is two requests), each with the content, outputDimensionality and taskType the sync route sends, and the line's custom_id, url and input position in its metadata; the batch is cancelled at once. (406.2) a chat line in an embedding batch and (406.3) an embeddings line with no input are refused naming the line; nothing is sent upstream. (406.4) retrieve, cancel and results of a Gemini batch call upstream with the key the caller names in x-bf-api-key and with no other key, and report it in x-bifrost-routing-info-key: a run-scoped provider on the Gemini base has a dead key and a live key, both enabled for batches, and the body says which answered (Gemini's own 400 \"API key not valid\" or the live key's answer for a batch id that does not exist). Fixture rows: (406.5) the fixture's recorded calls are reset. (406.6) the same create reaches the fixture as exactly one asyncBatchEmbedContent call whose recorded body is what the gateway reports it sent, three requests for two lines. (406.7) the results of the fixture's finished batch, seven vendor responses for four lines, are OpenAI-shape embeddings lines paged in lines: limit=2 returns the one-input line and the three-input line put back together (data[0..2], usage 15) with a next_cursor, the next page the two failed lines with the vendor's error codes, and retrieve reports completed. (406.8) a run-scoped provider pointed at the fixture has a dead and a live key: retrieve and results with each named key reach the fixture bearing that key and no other, read back from the fixture's record of the x-goog-api-key of every batch read. The /genai route does not carry :asyncBatchEmbedContent and is not covered. Run with FEATURE=\"embedding-batch\".",
+  "description": "Wire-level pins for Gemini embedding batches (TXE-6637; contract clauses C3, C8; Gemini batch B4). A batch of /v1/embeddings lines used to be refused on Gemini as a url a generateContent batch cannot run. Rows 406.1 to 406.4 run against a live gateway; rows 406.5 to 406.8 run against the provider error fixture and its isolated gateway (tests/e2e/api/README.md, --env-var providerErrorFixture=1) and are skipped otherwise, and the two rows that need the real vendor (406.1, 406.4) are skipped on the fixture. Live rows: (406.1) inline /v1/embeddings lines create one models/{model}:asyncBatchEmbedContent job: the echoed request body carries one EmbedContentRequest per line, each with the content, outputDimensionality and taskType the sync route sends, and the line's custom_id and url in its metadata; the batch is cancelled at once. (406.2) a chat line in an embedding batch and (406.3) an embeddings line with no input are refused naming the line; nothing is sent upstream. (406.4) retrieve, cancel and results of a Gemini batch call upstream with the key the caller names in x-bf-api-key and with no other key, and report it in x-bifrost-routing-info-key: a run-scoped provider on the Gemini base has a dead key and a live key, both enabled for batches, and the body says which answered (Gemini's own 400 \"API key not valid\" or the live key's answer for a batch id that does not exist). Fixture rows: (406.5) the fixture's recorded calls are reset. (406.6) the same create reaches the fixture as exactly one asyncBatchEmbedContent call whose recorded body is what the gateway reports it sent, two requests for two lines. (406.7) the results of the fixture's finished batch, seven vendor responses for four lines (a job created before TXE-7033, when a line with several inputs was sent as one request per input), are OpenAI-shape embeddings lines paged in lines: limit=2 returns the one-input line and the three-input line put back together (data[0..2], usage 15) with a next_cursor, the next page the two failed lines with the vendor's error codes, and retrieve reports completed. (406.8) a run-scoped provider pointed at the fixture has a dead and a live key: retrieve and results with each named key reach the fixture bearing that key and no other, read back from the fixture's record of the x-goog-api-key of every batch read. (406.9) TXE-7033 (contract C8): a line whose input holds two items is refused with a 400 caller_unsupported_parameter naming requests[1].body.input and the line's custom_id; one input per line is the caller's to send, because a line sent as several requests that partly failed came back failed with no usage while the vendor billed the inputs that succeeded. It runs on the live gateway and on the fixture (the refusal comes before any upstream call). The /genai route does not carry :asyncBatchEmbedContent and is not covered. Run with FEATURE=\"embedding-batch\".",
   "item": [
     {
-      "name": "406.1 gemini/gemini-embedding-001 embedding-batch: inline /v1/embeddings lines create one asyncBatchEmbedContent job, one request per input",
+      "name": "406.1 gemini/gemini-embedding-001 embedding-batch: inline /v1/embeddings lines create one asyncBatchEmbedContent job, one request per line",
       "event": [
         {
           "listen": "prerequest",
@@ -31,11 +31,11 @@
               "var raw = (j.extra_fields || {}).raw_request || {};",
               "if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = {}; } }",
               "var lines = ((((raw.batch || {}).inputConfig || {}).requests || {}).requests) || [];",
-              "pm.test('two lines with three inputs are three EmbedContentRequests in one job', function () {",
-              "  pm.expect(lines.length, 'raw_request: ' + JSON.stringify(raw)).to.eql(3);",
+              "pm.test('two lines are two EmbedContentRequests in one job', function () {",
+              "  pm.expect(lines.length, 'raw_request: ' + JSON.stringify(raw)).to.eql(2);",
               "  pm.expect((raw.batch || {}).displayName, JSON.stringify(raw)).to.eql('harness-embedding-batch');",
               "});",
-              "var first = lines[0] || {}; var second = lines[1] || {}; var third = lines[2] || {};",
+              "var first = lines[0] || {}; var second = lines[1] || {};",
               "pm.test('each request is the sync route\\'s EmbedContentRequest for the input', function () {",
               "  pm.expect((((first.request || {}).content || {}).parts || [{}])[0].text, JSON.stringify(first)).to.eql('hello');",
               "  pm.expect((first.request || {}).model, JSON.stringify(first)).to.eql('models/gemini-embedding-001');",
@@ -43,12 +43,10 @@
               "  pm.expect((first.request || {}).taskType, JSON.stringify(first)).to.eql('RETRIEVAL_QUERY');",
               "  pm.expect((first.request || {}).input, 'the OpenAI input must not reach Gemini').to.eql(undefined);",
               "  pm.expect((((second.request || {}).content || {}).parts || [{}])[0].text, JSON.stringify(second)).to.eql('alpha');",
-              "  pm.expect((((third.request || {}).content || {}).parts || [{}])[0].text, JSON.stringify(third)).to.eql('beta');",
               "});",
-              "pm.test('the metadata carries the custom_id, the url, and the input position of a multi-input line', function () {",
+              "pm.test('the metadata carries the custom_id and the url, and no input position (a line is one request)', function () {",
               "  pm.expect(first.metadata, JSON.stringify(first)).to.eql({ key: 'eb-single-1', bifrost_endpoint: '/v1/embeddings' });",
-              "  pm.expect(second.metadata, JSON.stringify(second)).to.eql({ key: 'eb-multi-2', bifrost_endpoint: '/v1/embeddings', bifrost_input_index: '0', bifrost_input_count: '2' });",
-              "  pm.expect(third.metadata, JSON.stringify(third)).to.eql({ key: 'eb-multi-2', bifrost_endpoint: '/v1/embeddings', bifrost_input_index: '1', bifrost_input_count: '2' });",
+              "  pm.expect(second.metadata, JSON.stringify(second)).to.eql({ key: 'eb-second-2', bifrost_endpoint: '/v1/embeddings' });",
               "});",
               "// Cancel at once: the row pins the request, not the answer.",
               "if (j.id) {",
@@ -74,7 +72,7 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"model\": \"gemini/gemini-embedding-001\",\n  \"endpoint\": \"/v1/embeddings\",\n  \"display_name\": \"harness-embedding-batch\",\n  \"requests\": [\n    {\n      \"custom_id\": \"eb-single-1\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/embeddings\",\n      \"body\": {\n        \"model\": \"gemini-embedding-001\",\n        \"input\": \"hello\",\n        \"dimensions\": 128,\n        \"task_type\": \"RETRIEVAL_QUERY\"\n      }\n    },\n    {\n      \"custom_id\": \"eb-multi-2\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/embeddings\",\n      \"body\": {\n        \"model\": \"gemini-embedding-001\",\n        \"input\": [\n          \"alpha\",\n          \"beta\"\n        ]\n      }\n    }\n  ]\n}"
+          "raw": "{\n  \"model\": \"gemini/gemini-embedding-001\",\n  \"endpoint\": \"/v1/embeddings\",\n  \"display_name\": \"harness-embedding-batch\",\n  \"requests\": [\n    {\n      \"custom_id\": \"eb-single-1\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/embeddings\",\n      \"body\": {\n        \"model\": \"gemini-embedding-001\",\n        \"input\": \"hello\",\n        \"dimensions\": 128,\n        \"task_type\": \"RETRIEVAL_QUERY\"\n      }\n    },\n    {\n      \"custom_id\": \"eb-second-2\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/embeddings\",\n      \"body\": {\n        \"model\": \"gemini-embedding-001\",\n        \"input\": [\n          \"alpha\"\n        ]\n      }\n    }\n  ]\n}"
         },
         "url": {
           "raw": "{{baseUrl}}/v1/batches",
@@ -403,7 +401,7 @@
               "  pm.expect(j.id, pm.response.text()).to.eql('batches/emb-fixture-created');",
               "  pm.expect(j.status, pm.response.text()).to.eql('in_progress');",
               "  pm.expect(j.endpoint, pm.response.text()).to.eql('/v1/embeddings');",
-              "  pm.expect((j.request_counts || {}).total, pm.response.text()).to.eql(3);",
+              "  pm.expect((j.request_counts || {}).total, pm.response.text()).to.eql(2);",
               "  pm.expect(j.display_name, pm.response.text()).to.eql('harness-embedding-batch');",
               "});",
               "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
@@ -418,18 +416,16 @@
               "  });",
               "  var sent = {}; try { sent = JSON.parse(creates[0].body); } catch (e) { sent = {}; }",
               "  var lines = ((((sent.batch || {}).inputConfig || {}).requests || {}).requests) || [];",
-              "  var first = lines[0] || {}; var second = lines[1] || {}; var third = lines[2] || {};",
-              "  pm.test('the vendor received one EmbedContentRequest per input, as the sync route sends them', function () {",
-              "    pm.expect(lines.length, creates[0] && creates[0].body).to.eql(3);",
+              "  var first = lines[0] || {}; var second = lines[1] || {};",
+              "  pm.test('the vendor received one EmbedContentRequest per line, as the sync route sends them', function () {",
+              "    pm.expect(lines.length, creates[0] && creates[0].body).to.eql(2);",
               "    pm.expect((sent.batch || {}).displayName).to.eql('harness-embedding-batch');",
               "    pm.expect(first.request, JSON.stringify(first)).to.eql({ model: 'models/pp-embedding', content: { parts: [{ text: 'hello' }] }, outputDimensionality: 128, taskType: 'RETRIEVAL_QUERY' });",
               "    pm.expect(second.request, JSON.stringify(second)).to.eql({ model: 'models/pp-embedding', content: { parts: [{ text: 'alpha' }] } });",
-              "    pm.expect(third.request, JSON.stringify(third)).to.eql({ model: 'models/pp-embedding', content: { parts: [{ text: 'beta' }] } });",
               "  });",
-              "  pm.test('the metadata carries the custom_id, the url, and the input position of a multi-input line', function () {",
+              "  pm.test('the metadata carries the custom_id and the url, and no input position (a line is one request)', function () {",
               "    pm.expect(first.metadata, JSON.stringify(first)).to.eql({ key: 'eb-single-1', bifrost_endpoint: '/v1/embeddings' });",
-              "    pm.expect(second.metadata, JSON.stringify(second)).to.eql({ key: 'eb-multi-2', bifrost_endpoint: '/v1/embeddings', bifrost_input_index: '0', bifrost_input_count: '2' });",
-              "    pm.expect(third.metadata, JSON.stringify(third)).to.eql({ key: 'eb-multi-2', bifrost_endpoint: '/v1/embeddings', bifrost_input_index: '1', bifrost_input_count: '2' });",
+              "    pm.expect(second.metadata, JSON.stringify(second)).to.eql({ key: 'eb-second-2', bifrost_endpoint: '/v1/embeddings' });",
               "  });",
               "  var raw = (j.extra_fields || {}).raw_request || {};",
               "  if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = {}; } }",
@@ -455,7 +451,7 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"model\": \"gemini/pp-embedding\",\n  \"endpoint\": \"/v1/embeddings\",\n  \"display_name\": \"harness-embedding-batch\",\n  \"requests\": [\n    {\n      \"custom_id\": \"eb-single-1\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/embeddings\",\n      \"body\": {\n        \"model\": \"pp-embedding\",\n        \"input\": \"hello\",\n        \"dimensions\": 128,\n        \"task_type\": \"RETRIEVAL_QUERY\"\n      }\n    },\n    {\n      \"custom_id\": \"eb-multi-2\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/embeddings\",\n      \"body\": {\n        \"model\": \"pp-embedding\",\n        \"input\": [\n          \"alpha\",\n          \"beta\"\n        ]\n      }\n    }\n  ]\n}"
+          "raw": "{\n  \"model\": \"gemini/pp-embedding\",\n  \"endpoint\": \"/v1/embeddings\",\n  \"display_name\": \"harness-embedding-batch\",\n  \"requests\": [\n    {\n      \"custom_id\": \"eb-single-1\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/embeddings\",\n      \"body\": {\n        \"model\": \"pp-embedding\",\n        \"input\": \"hello\",\n        \"dimensions\": 128,\n        \"task_type\": \"RETRIEVAL_QUERY\"\n      }\n    },\n    {\n      \"custom_id\": \"eb-second-2\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/embeddings\",\n      \"body\": {\n        \"model\": \"pp-embedding\",\n        \"input\": [\n          \"alpha\"\n        ]\n      }\n    }\n  ]\n}"
         },
         "url": {
           "raw": "{{baseUrl}}/v1/batches",
@@ -696,6 +692,50 @@
               "key": "provider",
               "value": "{{ebFixtureKeyProvider}}"
             }
+          ]
+        }
+      }
+    },
+    {
+      "name": "406.9 [EXPECT-400] gemini embedding-batch: a line whose input holds several items is refused naming the line (TXE-7033)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('a line with two inputs is a 400 caller_unsupported_parameter naming requests[1].body.input and the line', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect((j.error || {}).param, pm.response.text()).to.eql('requests[1].body.input');",
+              "  pm.expect((j.extra_fields || {}).error_type, pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(pm.response.text()).to.include('eb-multi-2');",
+              "  pm.expect(pm.response.text()).to.include('send one input per line');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"gemini/gemini-embedding-001\",\n  \"endpoint\": \"/v1/embeddings\",\n  \"requests\": [\n    {\n      \"custom_id\": \"eb-one-1\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/embeddings\",\n      \"body\": {\n        \"model\": \"gemini-embedding-001\",\n        \"input\": \"hello\"\n      }\n    },\n    {\n      \"custom_id\": \"eb-multi-2\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/embeddings\",\n      \"body\": {\n        \"model\": \"gemini-embedding-001\",\n        \"input\": [\n          \"alpha\",\n          \"beta\"\n        ]\n      }\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches"
           ]
         }
       }
