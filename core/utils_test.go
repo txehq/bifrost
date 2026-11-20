@@ -1525,6 +1525,14 @@ func TestRunLLMPreHooksForwardsABatchInputFileUpload(t *testing.T) {
 		assert.True(t, gate.ran, "%s did not reach the plugins", tc.name)
 	}
 
+	// An undeclared strict JSON document on an upload route is still checked for repeats: the
+	// router and governance read an undeclared one.
+	_, shortCircuit, _ := newRoutingCommitPipeline(&bodyReadingGate{fakeRoutingPlugin: fakeRoutingPlugin{name: "gate"}}).RunLLMPreHooks(
+		schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+		passthrough(schemas.Gemini, "/upload/v1beta/files", "", `{"model":"a","model":"b"}`))
+	require.NotNil(t, shortCircuit, "an undeclared JSON body repeating model on an upload route was admitted")
+	assert.Contains(t, shortCircuit.Error.Error.Message, "gives model more than once")
+
 	// The same lines as a body to an inference route are refused: a vendor parsing it as JSON
 	// would run the model the first line names, past that model's own limits.
 	for _, contentType := range []string{"application/octet-stream", "application/x-ndjson"} {

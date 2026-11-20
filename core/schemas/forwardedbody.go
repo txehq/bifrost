@@ -343,8 +343,14 @@ func jsonTextStart(text []byte) (int, bool) {
 	for i < len(text) {
 		r, size := utf8.DecodeRune(text[i:])
 		switch {
+		case r == utf8.RuneError && size <= 1 && !utf8.FullRune(text[i:]):
+			// A rune cut by the end of a prefix: undecided, read on.
+			return len(text), false
 		case r == utf8.RuneError && size <= 1:
 			return i, false
+		case r == '/' && i+1 == len(text):
+			// A "/" cut by the end of a prefix may open a comment: undecided.
+			return len(text), false
 		case unicode.IsSpace(r) || r == 0xfeff || r == 0x200b:
 			i += size
 		case r == '/' && i+1 < len(text) && text[i+1] == '/':
@@ -435,27 +441,53 @@ func decodeUTF32(b []byte, bigEndian bool) []byte {
 	return out
 }
 
-// IsFileUploadPath reports a passthrough route that stores the request body as a file and runs no
-// model: OpenAI's and Anthropic's POST .../files, OpenAI's POST .../uploads/{id}/parts, and
-// Gemini's POST /upload/... media upload. A file is content, so MislabeledJSONBody does not apply
-// there: a batch input file is JSON Lines naming a model on every line, uploaded under whatever
-// type its SDK guesses (Python's mimetypes knows no .jsonl, so often application/octet-stream).
+// FileUploadRoute is a route that stores the request body as a file and runs no model. Path is a
+// pattern over "/"-separated segments: "*" matches one segment, "**" any number of them.
+type FileUploadRoute struct {
+	Method string
+	Path   string
+}
+
+// FileUploadRoutes are the upload routes of the vendors Bifrost serves: every typed file upload
+// route Bifrost registers is one of these, and TestEveryFileUploadRouteIsInTheSharedList fails
+// when a provider adds one that is not. A file is content, so MislabeledJSONBody does not apply
+// on these routes (core's guard skips it): a batch input file is JSON Lines naming a model on
+// every line, uploaded under whatever type its SDK guesses (Python's mimetypes knows no .jsonl, so
+// often application/octet-stream).
+var FileUploadRoutes = []FileUploadRoute{
+	{Method: "POST", Path: "**/files"},           // OpenAI, Azure, Anthropic and compatible /v1/files, /openai/files
+	{Method: "POST", Path: "**/uploads/*/parts"}, // OpenAI's multi-part upload
+	{Method: "POST", Path: "/upload/**"},         // Gemini's media upload, /upload/v1beta/files
+}
+
+// IsFileUploadPath reports a request to one of FileUploadRoutes.
 func IsFileUploadPath(method, path string) bool {
-	if method != "POST" {
-		return false
-	}
-	path = strings.TrimSuffix(path, "/")
-	switch {
-	case strings.HasSuffix(path, "/files"):
-		return true
-	case strings.HasPrefix(path, "/upload/"):
-		return true
-	}
-	if i := strings.Index(path, "/uploads/"); i >= 0 {
-		id, tail, _ := strings.Cut(path[i+len("/uploads/"):], "/")
-		return id != "" && tail == "parts"
+	segments := strings.Split(strings.Trim(path, "/"), "/")
+	for _, route := range FileUploadRoutes {
+		if strings.EqualFold(method, route.Method) && matchRouteSegments(strings.Split(strings.Trim(route.Path, "/"), "/"), segments) {
+			return true
+		}
 	}
 	return false
+}
+
+// matchRouteSegments matches path segments against a FileUploadRoute pattern.
+func matchRouteSegments(pattern, segments []string) bool {
+	if len(pattern) == 0 {
+		return len(segments) == 0
+	}
+	switch pattern[0] {
+	case "**":
+		for i := 0; i <= len(segments); i++ {
+			if matchRouteSegments(pattern[1:], segments[i:]) {
+				return true
+			}
+		}
+		return false
+	case "*":
+		return len(segments) > 0 && segments[0] != "" && matchRouteSegments(pattern[1:], segments[1:])
+	}
+	return len(segments) > 0 && segments[0] == pattern[0] && matchRouteSegments(pattern[1:], segments[1:])
 }
 
 // ambiguousJSONDocument checks one JSON document: nested no deeper than maxForwardedBodyDepth

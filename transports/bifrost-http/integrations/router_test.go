@@ -6,7 +6,11 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
+	"io/fs"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -2339,4 +2343,73 @@ func TestIntegrationIngressPassesThePriceFieldCheck(t *testing.T) {
 		}
 	}
 	require.Greater(t, patterns, 40, "the route constructors returned too few routes; the test is not seeing them")
+}
+
+// TestEveryFileUploadRouteIsInTheSharedList: core's guard exempts schemas.FileUploadRoutes from
+// its mislabeled-JSON refusal, because a batch input file names a model on every line and runs
+// none (TXE-8012). Every typed file upload route Bifrost registers mirrors a vendor's upload
+// endpoint, so each must be in that list, or a passthrough upload to the same vendor path would be
+// refused. The test builds every Create*RouteConfigs set in this package; the source check below
+// fails when a new constructor is not called here.
+func TestEveryFileUploadRouteIsInTheSharedList(t *testing.T) {
+	store := &mockHandlerStore{}
+	constructors := map[string]func() []RouteConfig{
+		"CreateAnthropicRouteConfigs":             func() []RouteConfig { return CreateAnthropicRouteConfigs("", nil) },
+		"CreateAnthropicListModelsRouteConfigs":   func() []RouteConfig { return CreateAnthropicListModelsRouteConfigs("", store) },
+		"CreateAnthropicCountTokensRouteConfigs":  func() []RouteConfig { return CreateAnthropicCountTokensRouteConfigs("", store) },
+		"CreateAnthropicBatchRouteConfigs":        func() []RouteConfig { return CreateAnthropicBatchRouteConfigs("", store) },
+		"CreateAnthropicFilesRouteConfigs":        func() []RouteConfig { return CreateAnthropicFilesRouteConfigs("", store) },
+		"CreateBedrockRouteConfigs":               func() []RouteConfig { return CreateBedrockRouteConfigs("", store) },
+		"CreateCohereRouteConfigs":                func() []RouteConfig { return CreateCohereRouteConfigs("") },
+		"CreateCursorChatCompletionsRouteConfigs": func() []RouteConfig { return CreateCursorChatCompletionsRouteConfigs("", store) },
+		"CreateGenAIRouteConfigs":                 func() []RouteConfig { return CreateGenAIRouteConfigs("") },
+		"CreateGenAIFileRouteConfigs":             func() []RouteConfig { return CreateGenAIFileRouteConfigs("", store) },
+		"CreateGenAIBatchRouteConfigs":            func() []RouteConfig { return CreateGenAIBatchRouteConfigs("", store) },
+		"CreateVertexBatchRouteConfigs":           func() []RouteConfig { return CreateVertexBatchRouteConfigs("") },
+		"CreateGenAICachedContentRouteConfigs":    func() []RouteConfig { return CreateGenAICachedContentRouteConfigs("", store) },
+		"CreateOpenAIRouteConfigs":                func() []RouteConfig { return CreateOpenAIRouteConfigs("", store) },
+		"CreateOpenAIListModelsRouteConfigs":      func() []RouteConfig { return CreateOpenAIListModelsRouteConfigs("", store) },
+		"CreateOpenAIModelRetrieveRouteConfigs":   func() []RouteConfig { return CreateOpenAIModelRetrieveRouteConfigs("", store) },
+		"CreateOpenAIBatchRouteConfigs":           func() []RouteConfig { return CreateOpenAIBatchRouteConfigs("", store) },
+		"CreateOpenAIFileRouteConfigs":            func() []RouteConfig { return CreateOpenAIFileRouteConfigs("", store) },
+		"CreateOpenAIContainerRouteConfigs":       func() []RouteConfig { return CreateOpenAIContainerRouteConfigs("", store) },
+		"CreateOpenAIContainerFileRouteConfigs":   func() []RouteConfig { return CreateOpenAIContainerFileRouteConfigs("", store) },
+		"CreateTypesafeRouteConfigs":              func() []RouteConfig { return CreateTypesafeRouteConfigs("") },
+	}
+	// Bedrock's batch input goes to S3 with PUT /{bucket}/{key}: an object store, not a vendor route
+	// a passthrough forwards a request body to, so it is not a FileUploadRoute.
+	exempt := map[string]string{"PUT /{bucket}/{key:*}": "S3 object put"}
+
+	// Every Create*RouteConfigs in this package is called above.
+	fset := token.NewFileSet()
+	pkgs, err := parser.ParseDir(fset, ".", func(info fs.FileInfo) bool { return !strings.HasSuffix(info.Name(), "_test.go") }, 0)
+	require.NoError(t, err)
+	for _, pkg := range pkgs {
+		for _, file := range pkg.Files {
+			for _, decl := range file.Decls {
+				if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv == nil && strings.HasPrefix(fn.Name.Name, "Create") && strings.HasSuffix(fn.Name.Name, "RouteConfigs") {
+					assert.Contains(t, constructors, fn.Name.Name, "%s is not checked for file upload routes; add it to this test", fn.Name.Name)
+				}
+			}
+		}
+	}
+
+	param := regexp.MustCompile(`\{[^}]*\}`)
+	uploads := 0
+	for name, build := range constructors {
+		for _, route := range build() {
+			if route.GetHTTPRequestType == nil || route.GetHTTPRequestType(&fasthttp.RequestCtx{}) != schemas.FileUploadRequest {
+				continue
+			}
+			uploads++
+			key := route.Method + " " + route.Path
+			if exempt[key] != "" {
+				continue
+			}
+			path := param.ReplaceAllString(route.Path, "x")
+			assert.True(t, schemas.IsFileUploadPath(route.Method, path),
+				"%s registers file upload route %s, which is not in schemas.FileUploadRoutes; add it so a passthrough upload there is not refused", name, key)
+		}
+	}
+	assert.GreaterOrEqual(t, uploads, 5, "found too few file upload routes; the check is not looking where they are")
 }

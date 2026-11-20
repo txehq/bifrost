@@ -364,6 +364,10 @@ func TestMislabeledJSONBody(t *testing.T) {
 		{"text/plain", "{\"mo\\\nde\\154\":\"X\",}", "text/plain", "model"},
 		{"text/plain", `{"a":"\\",}`, "text/plain", "model"},
 		{"audio/wav", "RIFF\x00\x00\x00\x00WAVEfmt {\"model\"", "", ""},
+		// The 1 KB prefix must not decide on a rune or a "/" it cut: ideographic spaces (3 bytes)
+		// to byte 1025, and spaces to a "/" at byte 1024 that opens a comment.
+		{"text/plain", strings.Repeat("\u3000", 342) + `{"model":"X"}`, "text/plain", "model"},
+		{"text/plain", strings.Repeat(" ", 1023) + "/* c */" + `{"model":"X"}`, "text/plain", "model"},
 		// JSON a lenient parser accepts: no strict reading places the key, so a mention is enough.
 		{"text/plain", `{"model":"X",}`, "text/plain", "model"},
 		{"text/plain", `{model: 'X'}`, "text/plain", "model"},

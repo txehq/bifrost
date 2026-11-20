@@ -17,6 +17,7 @@ import (
 	"github.com/capsohq/bifrost/core/mcp"
 	"github.com/capsohq/bifrost/core/network"
 	"github.com/capsohq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 )
 
 // Aliases; canonical definitions live in schemas so EffectiveHTTPStatus can match them.
@@ -1220,8 +1221,10 @@ func refuseAmbiguousForwardedBody(req *schemas.BifrostRequest) *schemas.LLMPlugi
 		return nil
 	}
 	body, contentType := req.ForwardedBody(), req.ForwardedBodyContentType()
-	if contentType == "" && forwardsAFile(req) {
-		// A file with no declared type is a file: its bytes are stored, never read as a request.
+	if contentType == "" && forwardsAFile(req) && !gjson.ValidBytes(body) {
+		// A file with no declared type that is not one JSON document (a JSON Lines batch file) is
+		// a file: no reader reads a member from it. A strict JSON document there is still checked,
+		// since the router and governance read an undeclared one.
 		return nil
 	}
 	var message string
