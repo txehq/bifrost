@@ -2892,10 +2892,24 @@ func (provider *VertexProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 			fmt.Sprintf("video not ready, current status: %s", videoResp.Status),
 			nil)
 	}
+	return provider.downloadTaskVideo(ctx, key, request, videoResp, func(gcsURI, contentType string) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError) {
+		return provider.downloadGCSVideo(ctx, key, request, gcsURI, contentType)
+	})
+}
+
+// downloadTaskVideo serves the video request names (index, default 0) from a completed Veo
+// task object. readGCS reads a video Veo wrote to Cloud Storage; it is a parameter so a test
+// can point it at a stub bucket.
+func (provider *VertexProvider) downloadTaskVideo(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoDownloadRequest, videoResp *schemas.BifrostVideoGenerationResponse, readGCS func(gcsURI, contentType string) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError)) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError) {
 	if len(videoResp.Videos) == 0 {
 		return nil, providerUtils.NewBifrostOperationError("video URL not available", nil)
 	}
-	video := videoResp.Videos[0]
+	// Fork (TXE-7040): a Veo task can hold up to four videos (sampleCount); the caller names
+	// one with index (default 0).
+	video, indexErr := schemas.SelectDownloadVideo(request, videoResp.Videos)
+	if indexErr != nil {
+		return nil, indexErr
+	}
 	downloadFailed := func(resp *fasthttp.Response) *schemas.BifrostError {
 		return providerUtils.NewBifrostOperationError(fmt.Sprintf("failed to download video: HTTP %d", resp.StatusCode()), nil)
 	}
@@ -2912,7 +2926,7 @@ func (provider *VertexProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 		// Fork: Veo wrote the file to the caller's bucket (parameters.storageUri) and named it
 		// by a gs:// URI, which is not an HTTP address. It is read through the Cloud Storage
 		// JSON API with the key's own Google credentials (contract C9 / BF20).
-		return provider.downloadGCSVideo(ctx, key, request, video.ID, video.ContentType)
+		return readGCS(video.ID, video.ContentType)
 	case video.Type == schemas.VideoOutputTypeURL && video.URL != nil:
 		// Regular URL - fetch from HTTP endpoint
 		req := fasthttp.AcquireRequest()

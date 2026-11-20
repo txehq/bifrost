@@ -531,10 +531,18 @@ func (provider *RunwareProvider) VideoDownload(ctx *schemas.BifrostContext, key 
 	if taskDetails.Status != schemas.VideoStatusCompleted {
 		return nil, providerUtils.NewBifrostOperationError(fmt.Sprintf("video not ready, current status: %s", taskDetails.Status), nil)
 	}
-	if len(taskDetails.Videos) == 0 || taskDetails.Videos[0].URL == nil || *taskDetails.Videos[0].URL == "" {
+	if len(taskDetails.Videos) == 0 {
 		return nil, providerUtils.NewBifrostOperationError("video URL not available", nil)
 	}
-	videoURL := *taskDetails.Videos[0].URL
+	// Fork (TXE-7040): the caller names one of the task's videos with index (default 0).
+	selected, indexErr := schemas.SelectDownloadVideo(request, taskDetails.Videos)
+	if indexErr != nil {
+		return nil, indexErr
+	}
+	if selected.URL == nil || *selected.URL == "" {
+		return nil, providerUtils.NewBifrostOperationError("video URL not available", nil)
+	}
+	videoURL := *selected.URL
 
 	req := fasthttp.AcquireRequest()
 	defer fasthttp.ReleaseRequest(req)

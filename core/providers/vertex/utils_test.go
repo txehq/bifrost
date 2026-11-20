@@ -2308,3 +2308,81 @@ func TestVertexGeminiImageCarriesTheServedTier(t *testing.T) {
 		}
 	}
 }
+
+// TestVertexVideoDownloadServesTheNamedGCSVideo is TXE-7040: a Veo task with sampleCount 2 wrote
+// two objects to the caller's bucket, and /content?index=1 reads the second one. An index
+// outside the task's videos is a 400 naming index, and no object is read.
+func TestVertexVideoDownloadServesTheNamedGCSVideo(t *testing.T) {
+	objects := map[string]string{
+		"/storage/v1/b/tokun-out/o/task_123%2Fsample_0.mp4?alt=media": "FIRST-VIDEO-BYTES",
+		"/storage/v1/b/tokun-out/o/task_123%2Fsample_1.mp4?alt=media": "SECOND-VIDEO-BYTES",
+	}
+	var mu sync.Mutex
+	var reads []string
+	storage := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		reads = append(reads, r.RequestURI)
+		mu.Unlock()
+		body, ok := objects[r.RequestURI]
+		if !ok || r.Header.Get("Authorization") != "Bearer ya29.token" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "video/mp4")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer storage.Close()
+
+	var operation gemini.GenerateVideosOperation
+	if err := sonic.Unmarshal([]byte(`{"name":"projects/p/locations/us-central1/publishers/google/models/veo-3.1-generate-001/operations/op-2","done":true,"response":{"videos":[{"gcsUri":"gs://tokun-out/task_123/sample_0.mp4","mimeType":"video/mp4"},{"gcsUri":"gs://tokun-out/task_123/sample_1.mp4","mimeType":"video/mp4"}]}}`), &operation); err != nil {
+		t.Fatalf("operation: %v", err)
+	}
+	task, bifrostErr := gemini.ToBifrostVideoGenerationResponse(&operation, "")
+	if bifrostErr != nil || len(task.Videos) != 2 {
+		t.Fatalf("task = %+v, %v; want two videos", task, bifrostErr)
+	}
+
+	config := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 30}}
+	config.CheckAndSetDefaults()
+	provider, err := NewVertexProvider(config, nil)
+	if err != nil {
+		t.Fatalf("NewVertexProvider: %v", err)
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	download := func(index *int) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError) {
+		request := &schemas.BifrostVideoDownloadRequest{Provider: schemas.Vertex, ID: providerUtils.AddVideoIDProviderSuffix(operation.Name, schemas.Vertex), Index: index}
+		return provider.downloadTaskVideo(ctx, schemas.Key{}, request, task, func(gcsURI, contentType string) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError) {
+			bucket, objectKey, err := parseGCSURI(gcsURI)
+			if err != nil {
+				t.Fatalf("parseGCSURI(%q): %v", gcsURI, err)
+			}
+			return provider.fetchGCSVideo(ctx, storage.URL+"/storage/v1", "Bearer ya29.token", request, bucket, objectKey, contentType)
+		})
+	}
+
+	for _, tc := range []struct {
+		index *int
+		want  string
+	}{{nil, "FIRST-VIDEO-BYTES"}, {schemas.Ptr(0), "FIRST-VIDEO-BYTES"}, {schemas.Ptr(1), "SECOND-VIDEO-BYTES"}} {
+		resp, bifrostErr := download(tc.index)
+		if bifrostErr != nil {
+			t.Fatalf("index %v: %v", tc.index, bifrostErr.Error)
+		}
+		if string(resp.Content) != tc.want {
+			t.Fatalf("index %v served %q, want %q", tc.index, resp.Content, tc.want)
+		}
+	}
+
+	mu.Lock()
+	readsBefore := len(reads)
+	mu.Unlock()
+	_, bifrostErr = download(schemas.Ptr(2))
+	if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest || bifrostErr.Error.Param != "index" {
+		t.Fatalf("index 2 of a two-video task: got %+v, want a 400 naming index", bifrostErr)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(reads) != readsBefore {
+		t.Fatalf("a refused index read %d objects from the bucket", len(reads)-readsBefore)
+	}
+}

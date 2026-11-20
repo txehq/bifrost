@@ -868,7 +868,7 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 		// or performing request validation after parsing
 		if config.PreCallback != nil {
 			if err := config.PreCallback(ctx, bifrostCtx, req); err != nil {
-				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute pre-request callback: "+err.Error()))
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, preCallbackError(err))
 				return
 			}
 		}

@@ -195,7 +195,15 @@ func (api *ArkVideoAPI) Download(ctx *schemas.BifrostContext, key schemas.Key, r
 	if task.Status != schemas.VideoStatusCompleted {
 		return nil, providerUtils.NewBifrostOperationError(fmt.Sprintf("video not ready, current status: %s", task.Status), nil)
 	}
-	if len(task.Videos) == 0 || task.Videos[0].URL == nil || *task.Videos[0].URL == "" {
+	if len(task.Videos) == 0 {
+		return nil, providerUtils.NewBifrostOperationError("video URL not available", nil)
+	}
+	// Fork (TXE-7040): the caller names one of the task's videos with index (default 0).
+	selected, indexErr := schemas.SelectDownloadVideo(request, task.Videos)
+	if indexErr != nil {
+		return nil, indexErr
+	}
+	if selected.URL == nil || *selected.URL == "" {
 		return nil, providerUtils.NewBifrostOperationError("video URL not available", nil)
 	}
 
@@ -205,7 +213,7 @@ func (api *ArkVideoAPI) Download(ctx *schemas.BifrostContext, key schemas.Key, r
 	// given: Ark's files are on a storage host, never the API's. No credentials are sent; errors
 	// name the URL without its signed query. A streamed request is forwarded as the file arrives,
 	// with no size cap (TXE-7036); any other is held, within the fetcher's 256 MiB cap.
-	videoURL := *task.Videos[0].URL
+	videoURL := *selected.URL
 	return providerUtils.FetchVideoContent(ctx, providerUtils.VideoContentFetch{
 		VendorURL:                videoURL,
 		Stream:                   request.Stream,

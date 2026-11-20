@@ -158,6 +158,17 @@ fails with both times in the message. The last row reads `GET /__hits`: one vend
 named key and the filters unchanged. Run it as the content-length truncation folder above is run, with
 `FEATURE="video content stream"`.
 
+## One video of a task by index
+
+Folder 645 pins TXE-7040 on `GET /v1/videos/{id}/content` and `GET /openai/v1/videos/{id}/content`: `index`
+names one of a task's videos (default 0). It uses the same fixture, gateway and `fixture_video_keys` provider
+as folder 405 and makes no live provider call. Rows 2 and 3 send a malformed `index` on each route and expect a
+400 with `error.param` `index`; row 4 asks for `index=1` of an OpenAI video, which is one file, and expects the
+same 400 rather than that file. Row 5 reads `GET /__hits`: only row 4 reached the vendor, once, with key a.
+Before TXE-7040 every row answered 200 with the file. The multi-video case itself (two Veo samples on Vertex
+`gs://` and on the Gemini API) has no fixture route and is covered by the Go tests. Run it as the
+content-length truncation folder above is run, with `FEATURE="video content index"`.
+
 ## Vendor-named video files through the media fetcher
 
 Folder 482 pins TXE-7036 on `GET /v1/videos/{id}/content` for BytePlus and MiniMax, whose finished task

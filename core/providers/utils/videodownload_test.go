@@ -1124,3 +1124,51 @@ func TestPartialVideoContent(t *testing.T) {
 		t.Errorf("a gzip-encoded partial body: got %v, want ErrVideoRangeUnusable", err)
 	}
 }
+
+// TestVideoDownloadsSelectTheNamedVideo is the check that keeps TXE-7040 a property of every
+// provider: a task can hold several videos (Veo sampleCount, Sora n_variants), and the caller
+// names one with GET /v1/videos/{id}/content?index=N. A provider that indexes a task's Videos
+// at a fixed position (Videos[0]) serves the first video whatever was asked; it must pick through
+// schemas.SelectDownloadVideo, which honours index and refuses one outside the task with a 400
+// naming it. Core refuses a non-zero index no provider path selected, so a single-file
+// provider is safe without it.
+func TestVideoDownloadsSelectTheNamedVideo(t *testing.T) {
+	files, err := filepath.Glob(filepath.Join("..", "*", "*.go"))
+	if err != nil || len(files) < 50 {
+		t.Fatalf("provider sources not found: %d files, %v", len(files), err)
+	}
+	selections := 0
+	for _, file := range files {
+		if strings.HasSuffix(file, "_test.go") || filepath.Base(filepath.Dir(file)) == "utils" {
+			continue
+		}
+		name := filepath.ToSlash(strings.TrimPrefix(file, ".."+string(filepath.Separator)))
+		fset := token.NewFileSet()
+		parsed, err := parser.ParseFile(fset, file, nil, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatalf("%s: %v", file, err)
+		}
+		ast.Inspect(parsed, func(node ast.Node) bool {
+			switch n := node.(type) {
+			case *ast.IndexExpr:
+				// A constant index (Videos[0]) is a fixed pick; a loop filling Videos[i] is not.
+				if _, constant := n.Index.(*ast.BasicLit); !constant {
+					return true
+				}
+				if selector, ok := n.X.(*ast.SelectorExpr); ok && selector.Sel.Name == "Videos" {
+					t.Errorf("%s:%d indexes a task's Videos at a fixed position; pick the video with schemas.SelectDownloadVideo(request, ….Videos) so the caller's index is served", name, fset.Position(n.Pos()).Line)
+				}
+			case *ast.CallExpr:
+				if selector, ok := n.Fun.(*ast.SelectorExpr); ok && selector.Sel.Name == "SelectDownloadVideo" {
+					selections++
+				}
+			}
+			return true
+		})
+	}
+	// bfl, byteplus, dashscope, kling, minimax, replicate, runware, runway, xai, azure Sora
+	// jobs, gemini and vertex (Veo and the two Omni interaction paths): 14 at TXE-7040.
+	if selections < 14 {
+		t.Fatalf("found %d SelectDownloadVideo calls, want the 14 of TXE-7040 at least; the scan is not seeing the provider sources", selections)
+	}
+}
