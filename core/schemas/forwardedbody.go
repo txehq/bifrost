@@ -174,6 +174,10 @@ func AmbiguousBodyMember(body []byte, contentType string) (string, bool) {
 	declaredJSON := mimeErr == nil && (mediaType == "application/json" || strings.HasSuffix(mediaType, "+json"))
 	switch {
 	case declaredJSON || trimmed[0] == '{' || trimmed[0] == '[':
+		// The depth is bounded before gjson validates: its validator recurses once per level.
+		if member, deep := jsonNestedTooDeep(trimmed); deep {
+			return member, true
+		}
 		if !gjson.ValidBytes(trimmed) {
 			// A declared JSON Lines file (a batch input upload) is read line by line. Any other
 			// body opening with "{" or "[" that is not strict JSON is refused whatever type it
@@ -184,9 +188,7 @@ func AmbiguousBodyMember(body []byte, contentType string) (string, bool) {
 			}
 			return "a JSON body that does not parse strictly", true
 		}
-		// The body is not written while it is read, so it is viewed as a string, not copied.
-		path := make([]bodyPathSegment, 0, 8)
-		return ambiguousJSONMember(gjson.Parse(unsafe.String(unsafe.SliceData(trimmed), len(trimmed))), &path, 0)
+		return ambiguousJSONMember(trimmed)
 	case bytes.HasPrefix(trimmed, []byte("--")):
 		// A body opening with a boundary line is read as multipart whatever type it declares: a
 		// vendor sniffing it, or a type rewritten on the way, must not find a repeat unchecked.
@@ -229,11 +231,13 @@ func ambiguousJSONLinesMember(body []byte) (string, bool) {
 			continue
 		}
 		prefix := "line " + strconv.Itoa(number) + ": "
+		if member, deep := jsonNestedTooDeep(line); deep {
+			return prefix + member, true
+		}
 		if !gjson.ValidBytes(line) {
 			return prefix + "a JSON body that does not parse strictly", true
 		}
-		path := make([]bodyPathSegment, 0, 8)
-		if member, ambiguous := ambiguousJSONMember(gjson.ParseBytes(line), &path, 0); ambiguous {
+		if member, ambiguous := ambiguousJSONMember(line); ambiguous {
 			return prefix + member, true
 		}
 	}
@@ -330,77 +334,190 @@ type bodyPathSegment struct {
 	index int // -1 for an object member
 }
 
-// ambiguousJSONMember walks value depth first; path holds the steps leading to it, and is
-// rendered only when a repeat is found, so a clean body costs no string building.
-func ambiguousJSONMember(value gjson.Result, path *[]bodyPathSegment, depth int) (string, bool) {
-	if !value.IsObject() && !value.IsArray() {
-		return "", false
-	}
-	if depth >= maxForwardedBodyDepth {
-		return renderBodyPath(*path, "") + " (nested more than " + strconv.Itoa(maxForwardedBodyDepth) + " levels)", true
-	}
-	var found string
-	var ambiguous bool
-	if value.IsArray() {
-		index := 0
-		value.ForEach(func(_, element gjson.Result) bool {
-			if element.IsObject() || element.IsArray() {
-				*path = append(*path, bodyPathSegment{index: index})
-				found, ambiguous = ambiguousJSONMember(element, path, depth+1)
-				*path = (*path)[:len(*path)-1]
+// jsonNestedTooDeep reports a document that opens more than maxForwardedBodyDepth containers at
+// once. It is one pass over the bytes with no recursion, so it runs before anything that
+// recurses per level (gjson's validator) sees the body.
+func jsonNestedTooDeep(doc []byte) (string, bool) {
+	depth, inString := 0, false
+	for i := 0; i < len(doc); i++ {
+		switch c := doc[i]; {
+		case inString && c == '\\':
+			i++
+		case c == '"':
+			inString = !inString
+		case inString:
+		case c == '{' || c == '[':
+			if depth++; depth > maxForwardedBodyDepth {
+				return "a JSON body nested more than " + strconv.Itoa(maxForwardedBodyDepth) + " levels", true
 			}
-			index++
-			return !ambiguous
-		})
-		return found, ambiguous
+		case c == '}' || c == ']':
+			depth--
+		}
+	}
+	return "", false
+}
+
+// jsonFrame is one open container while ambiguousJSONMember scans.
+type jsonFrame struct {
+	object    bool
+	key       string // the member being read, in an object
+	index     int    // the element being read, in an array
+	foldGated bool   // gated keys are compared without case in this object
+	keys      []string
+	large     map[string]struct{}
+	gated     []string // gated keys (folded) this object has given
+}
+
+// seen records name in the frame and reports whether the object already gave it.
+func (f *jsonFrame) seen(name string) bool {
+	if folded := gatedBodyKey(name); f.foldGated && folded != "" {
+		if slices.Contains(f.gated, folded) {
+			return true
+		}
+		f.gated = append(f.gated, folded)
+	}
+	if f.large != nil {
+		if _, ok := f.large[name]; ok {
+			return true
+		}
+		f.large[name] = struct{}{}
+		return false
+	}
+	if slices.Contains(f.keys, name) {
+		return true
 	}
 	// Most objects carry a handful of keys: a slice is cheaper than a map until they do not.
-	var keys [16]string
-	small := keys[:0]
-	var large map[string]struct{}
-	var gated []string // gated keys (folded) this object has given
-	// Gated keys are read from the root object and the objects of a root array only.
-	foldGated := depth == 0 || (depth == 1 && (*path)[0].index >= 0)
-	value.ForEach(func(key, member gjson.Result) bool {
-		name := key.Str
-		if folded := gatedBodyKey(name); foldGated && folded != "" {
-			if slices.Contains(gated, folded) {
-				found, ambiguous = renderBodyPath(*path, name), true
-				return false
-			}
-			gated = append(gated, folded)
+	if len(f.keys) == 16 {
+		f.large = make(map[string]struct{}, 32)
+		for _, key := range f.keys {
+			f.large[key] = struct{}{}
 		}
-		if large != nil {
-			if _, seen := large[name]; seen {
-				found, ambiguous = renderBodyPath(*path, name), true
-				return false
+		f.large[name] = struct{}{}
+		return false
+	}
+	f.keys = append(f.keys, name)
+	return false
+}
+
+// ambiguousJSONMember scans a strictly valid document, nested no deeper than
+// maxForwardedBodyDepth, in one pass with an explicit stack: each byte is visited once, however
+// deep the nesting (a recursive walk re-reads every child at each level). It reports the first
+// object that gives a key twice, as a path.
+func ambiguousJSONMember(doc []byte) (string, bool) {
+	stack := make([]jsonFrame, 0, 8)
+	i := skipJSONSpace(doc, 0)
+	for i < len(doc) {
+		// i is at the start of a value.
+		switch doc[i] {
+		case '{', '[':
+			frame := jsonFrame{object: doc[i] == '{'}
+			if len(stack) < cap(stack) {
+				// Reuse the key buffers a closed sibling at this depth left behind.
+				previous := stack[: len(stack)+1 : cap(stack)][len(stack)]
+				frame.keys, frame.gated = previous.keys[:0], previous.gated[:0]
 			}
-			large[name] = struct{}{}
-		} else {
-			for _, seen := range small {
-				if seen == name {
-					found, ambiguous = renderBodyPath(*path, name), true
-					return false
+			if frame.object {
+				depth := len(stack)
+				frame.foldGated = depth == 0 || (depth == 1 && !stack[0].object)
+			}
+			stack = append(stack, frame)
+			i = skipJSONSpace(doc, i+1)
+			if doc[i] == '}' || doc[i] == ']' {
+				stack = stack[:len(stack)-1]
+				i++
+				break
+			}
+			if frame.object {
+				var member string
+				var ambiguous bool
+				if i, member, ambiguous = readJSONKey(doc, i, stack); ambiguous {
+					return member, true
 				}
 			}
-			if len(small) == len(keys) {
-				large = make(map[string]struct{}, 2*len(keys))
-				for _, seen := range small {
-					large[seen] = struct{}{}
-				}
-				large[name] = struct{}{}
+			continue
+		case '"':
+			i = skipJSONString(doc, i)
+		default:
+			for i < len(doc) && !strings.ContainsRune(",]} \t\r\n", rune(doc[i])) {
+				i++
+			}
+		}
+		// A value ended: move past separators and closing brackets to the next value.
+		for {
+			i = skipJSONSpace(doc, i)
+			if len(stack) == 0 || i >= len(doc) {
+				return "", false
+			}
+			if doc[i] != ',' {
+				stack = stack[:len(stack)-1]
+				i++
+				continue
+			}
+			i = skipJSONSpace(doc, i+1)
+			top := &stack[len(stack)-1]
+			if !top.object {
+				top.index++
+				break
+			}
+			var member string
+			var ambiguous bool
+			if i, member, ambiguous = readJSONKey(doc, i, stack); ambiguous {
+				return member, true
+			}
+			break
+		}
+	}
+	return "", false
+}
+
+// readJSONKey reads the member name at doc[i] for the object on top of stack, records it, and
+// returns the index of the member's value. A name the object already gave is reported as a path.
+func readJSONKey(doc []byte, i int, stack []jsonFrame) (int, string, bool) {
+	end := skipJSONString(doc, i)
+	raw := doc[i+1 : end-1]
+	var name string
+	if bytes.IndexByte(raw, '\\') >= 0 {
+		name = gjson.ParseBytes(doc[i:end]).Str // decoded: "mod\u0065l" is "model"
+	} else {
+		// The body is not written while it is read, so the name is viewed, not copied.
+		name = unsafe.String(unsafe.SliceData(raw), len(raw))
+	}
+	top := &stack[len(stack)-1]
+	if top.seen(name) {
+		path := make([]bodyPathSegment, 0, len(stack)-1)
+		for _, frame := range stack[:len(stack)-1] {
+			if frame.object {
+				path = append(path, bodyPathSegment{key: frame.key, index: -1})
 			} else {
-				small = append(small, name)
+				path = append(path, bodyPathSegment{index: frame.index})
 			}
 		}
-		if member.IsObject() || member.IsArray() {
-			*path = append(*path, bodyPathSegment{key: name, index: -1})
-			found, ambiguous = ambiguousJSONMember(member, path, depth+1)
-			*path = (*path)[:len(*path)-1]
+		return 0, renderBodyPath(path, name), true
+	}
+	top.key = name
+	i = skipJSONSpace(doc, end) // at ':'
+	return skipJSONSpace(doc, i+1), "", false
+}
+
+// skipJSONString returns the index just past the string that opens at doc[i].
+func skipJSONString(doc []byte, i int) int {
+	for i++; i < len(doc); i++ {
+		switch doc[i] {
+		case '\\':
+			i++
+		case '"':
+			return i + 1
 		}
-		return !ambiguous
-	})
-	return found, ambiguous
+	}
+	return len(doc)
+}
+
+// skipJSONSpace returns the first index at or after i that is not JSON whitespace.
+func skipJSONSpace(doc []byte, i int) int {
+	for i < len(doc) && (doc[i] == ' ' || doc[i] == '\t' || doc[i] == '\r' || doc[i] == '\n') {
+		i++
+	}
+	return i
 }
 
 // renderBodyPath writes the steps leading to an object and, when key is set, the key it

@@ -52,6 +52,16 @@ func TestAmbiguousBodyMember(t *testing.T) {
 	if member, ambiguous := AmbiguousBodyMember([]byte(deep), ""); !ambiguous || !strings.Contains(member, "nested more than") {
 		t.Fatalf("a body nested past the bound = %q, %t; want it refused", member, ambiguous)
 	}
+	// A million levels is refused before anything recurses per level (gjson's validator would
+	// grow the stack once per level), and brackets inside a string are not nesting.
+	million := strings.Repeat("[", 1_000_000) + strings.Repeat("]", 1_000_000)
+	if member, ambiguous := AmbiguousBodyMember([]byte(million), "application/json"); !ambiguous || !strings.Contains(member, "nested more than") {
+		t.Fatalf("a body nested a million levels = %q, %t; want it refused", member, ambiguous)
+	}
+	inString := `{"text":"` + strings.Repeat("[", 2*maxForwardedBodyDepth) + `\"{"}`
+	if member, ambiguous := AmbiguousBodyMember([]byte(inString), ""); ambiguous {
+		t.Fatalf("brackets inside a string = %q, refused", member)
+	}
 	shallow := strings.Repeat("[", maxForwardedBodyDepth-1) + strings.Repeat("]", maxForwardedBodyDepth-1)
 	if member, ambiguous := AmbiguousBodyMember([]byte(shallow), ""); ambiguous {
 		t.Fatalf("a body nested within the bound = %q, refused", member)
@@ -246,6 +256,8 @@ func BenchmarkAmbiguousBodyMember(b *testing.B) {
 		{"chat_1MB", []byte(chat.String())},
 		{"small", []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`)},
 		{"not_json", bytes.Repeat([]byte{0xff}, 1<<20)},
+		// Nested to the bound around a large string: one pass, not one pass per level.
+		{"nested_511_around_4MB", []byte(strings.Repeat("[", maxForwardedBodyDepth-1) + `"` + strings.Repeat("x", 4<<20) + `"` + strings.Repeat("]", maxForwardedBodyDepth-1))},
 	} {
 		b.Run(tc.name, func(b *testing.B) {
 			b.SetBytes(int64(len(tc.body)))
