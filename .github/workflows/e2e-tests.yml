@@ -29,6 +29,20 @@ jobs:
         with:
           egress-policy: audit
 
+      - name: Check that live-providers secrets reach this job
+        # TXE-7574: an empty canary means this job did not get the live-providers
+        # environment's secrets, so its provider keys are empty too. Fail before any key is
+        # used. check-provider-key-environment.py requires this step in every job that names
+        # the environment.
+        id: live-providers-canary
+        env:
+          LIVE_PROVIDERS_CANARY: ${{ secrets.LIVE_PROVIDERS_CANARY }}
+        run: |
+          if [ -z "$LIVE_PROVIDERS_CANARY" ]; then
+            echo "::error::LIVE_PROVIDERS_CANARY is empty: this job did not get the live-providers environment's secrets, so its provider keys are empty too (TXE-7574)."
+            exit 1
+          fi
+          echo "live-providers environment secrets reach this job"
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:

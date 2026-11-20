@@ -1,0 +1,17 @@
+# expect: runs a step other than the runner hardening before `live-providers-canary`
+# The canary runs after the checkout, so repository code runs before the check.
+on: workflow_dispatch
+jobs:
+  test-core:
+    environment: live-providers
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - id: live-providers-canary
+        env:
+          LIVE_PROVIDERS_CANARY: ${{ secrets.LIVE_PROVIDERS_CANARY }}
+        run: |
+          if [ -z "$LIVE_PROVIDERS_CANARY" ]; then exit 1; fi
+      - run: make test-core
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

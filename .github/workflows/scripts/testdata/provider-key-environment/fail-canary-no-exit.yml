@@ -1,0 +1,16 @@
+# expect: does not fail (`exit 1`)
+# The canary only prints, so an empty secret passes.
+on: workflow_dispatch
+jobs:
+  test-core:
+    environment: live-providers
+    runs-on: ubuntu-24.04
+    steps:
+      - id: live-providers-canary
+        env:
+          LIVE_PROVIDERS_CANARY: ${{ secrets.LIVE_PROVIDERS_CANARY }}
+        run: |
+          if [ -z "$LIVE_PROVIDERS_CANARY" ]; then echo empty; fi
+      - run: make test-core
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
