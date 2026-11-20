@@ -622,3 +622,44 @@ func assertIndexError(t *testing.T, err *BifrostError) {
 		t.Fatalf("want a 400 caller_invalid_request naming index, got %+v", err)
 	}
 }
+
+// BenchmarkVideoDownloadIndex measures the per-request work TXE-7040 adds to
+// GET /v1/videos/{id}/content: parsing index, resetting the mark, selecting the video and
+// core's served check. "fixed_first" is the pick origin/main made (videos[0]); "default" is a
+// request without index (the common case) and "explicit" one with ?index=1.
+func BenchmarkVideoDownloadIndex(b *testing.B) {
+	url0, url1 := "https://example.test/0.mp4", "https://example.test/1.mp4"
+	videos := []VideoOutput{{Type: VideoOutputTypeURL, URL: &url0}, {Type: VideoOutputTypeURL, URL: &url1}}
+	var sink VideoOutput
+	b.Run("fixed_first", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			sink = videos[0]
+		}
+	})
+	run := func(raw string) func(b *testing.B) {
+		return func(b *testing.B) {
+			b.ReportAllocs()
+			request := &BifrostVideoDownloadRequest{Provider: OpenAI, ID: "video_1"}
+			for i := 0; i < b.N; i++ {
+				index, err := ParseVideoDownloadIndex(raw)
+				if err != nil {
+					b.Fatal(err)
+				}
+				request.Index = index
+				request.ResetIndexSelected()
+				video, selectErr := SelectDownloadVideo(request, videos)
+				if selectErr != nil {
+					b.Fatal(selectErr)
+				}
+				if served := CheckVideoDownloadIndexServed(request, nil); served != nil {
+					b.Fatal(served)
+				}
+				sink = video
+			}
+		}
+	}
+	b.Run("default", run(""))
+	b.Run("explicit", run("1"))
+	_ = sink
+}

@@ -740,15 +740,10 @@ type BifrostVideoDownloadRequest struct {
 	// caller that forwards it never holds the whole file (fork, contract C9 / BF20). A provider
 	// that cannot stream ignores it and fills Content; the caller handles both.
 	Stream bool            `json:"-"`
-	Range  *VideoByteRange `json:"-"` // part of the file only, on a streamed download; see providerUtils.FetchVideoContent (fork, TXE-7391)
-	// Index names which of the task's videos to serve, counting from 0 in the order of the
-	// task object's videos[]; nil is 0. A task can hold several (Veo sampleCount, Sora
-	// n_variants). A provider path serves it only through SelectDownloadVideo; core refuses a
-	// non-zero Index that no path selected, so a provider never silently serves the first
-	// video instead (fork, TXE-7040).
-	Index *int `json:"index,omitempty"`
+	Range  *VideoByteRange `json:"-"`               // part of the file only, on a streamed download; see providerUtils.FetchVideoContent (fork, TXE-7391)
+	Index  *int            `json:"index,omitempty"` // which of the task's videos[] to serve, from 0; nil is 0; see SelectDownloadVideo (fork, TXE-7040)
 
-	indexSelected bool
+	indexSelected bool // set by SelectDownloadVideo; read by CheckVideoDownloadIndexServed
 }
 
 // VideoDownloadIndexParam is the query parameter and error.param naming one video of a task
@@ -792,8 +787,11 @@ func (r *BifrostVideoDownloadRequest) ResetIndexSelected() {
 	}
 }
 
-// SelectDownloadVideo returns the task video the request names (Index, default 0) and marks
-// the index honoured. An index outside videos is a 400 caller_invalid_request with
+// SelectDownloadVideo returns the task video the request names (Index, default 0, counting in
+// the order of the task object's videos[]) and marks the index honoured. A task can hold
+// several videos (Veo sampleCount, Sora n_variants); a provider path serves Index only through
+// this function, and core refuses a non-zero Index that no path selected
+// (CheckVideoDownloadIndexServed), so a provider never silently serves the first video instead. An index outside videos is a 400 caller_invalid_request with
 // error.param "index"; no file is fetched. Every provider download that reads a task's
 // videos[] picks its video here, never videos[0] (a source test in core/providers enforces it).
 func SelectDownloadVideo(request *BifrostVideoDownloadRequest, videos []VideoOutput) (VideoOutput, *BifrostError) {
