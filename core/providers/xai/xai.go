@@ -259,6 +259,10 @@ func normalizeXAIChatUsage(response *schemas.BifrostChatResponse) {
 // the request costs (fork, TXE-7043, contract C4). The merge is switched on for this call
 // only, so a fallback to another provider is not sent xAI's fields.
 func (provider *XAIProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	// A custom provider on this base serves responses only when its allowed_requests allows it (TXE-7027).
+	if err := providerUtils.CheckOperationAllowed(schemas.XAI, provider.customProviderConfig, schemas.ResponsesRequest); err != nil {
+		return nil, err
+	}
 	defer providerUtils.ForceExtraParamsPassthrough(ctx)()
 	response, bifrostErr := openai.HandleOpenAIResponsesRequest(
 		ctx,
@@ -285,6 +289,10 @@ func (provider *XAIProvider) Responses(ctx *schemas.BifrostContext, key schemas.
 // ResponsesStream performs a streaming responses request to the xAI API. Extra fields are
 // merged as in Responses.
 func (provider *XAIProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	// A custom provider on this base serves responses stream only when its allowed_requests allows it (TXE-7027).
+	if err := providerUtils.CheckOperationAllowed(schemas.XAI, provider.customProviderConfig, schemas.ResponsesStreamRequest); err != nil {
+		return nil, err
+	}
 	// The request body is built before this call returns, so the switch is needed no longer.
 	defer providerUtils.ForceExtraParamsPassthrough(ctx)()
 	return openai.HandleOpenAIResponsesStreaming(

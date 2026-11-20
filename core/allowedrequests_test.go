@@ -7,14 +7,19 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strconv"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 )
 
@@ -447,4 +452,202 @@ func TestSelectKeyForProviderRequestTypeEnforcesAllowedRequests(t *testing.T) {
 	if key.ID != "custom-key" {
 		t.Fatalf("realtime got key %q", key.ID)
 	}
+}
+
+// allowAllBut returns an AllowedRequests with every flag set except the one that allows
+// operation.
+func allowAllBut(t *testing.T, operation schemas.RequestType) *schemas.AllowedRequests {
+	t.Helper()
+	ar := allowEverything()
+	v := reflect.ValueOf(ar).Elem()
+	for i := 0; i < v.NumField(); i++ {
+		v.Field(i).SetBool(false)
+		if !ar.IsOperationAllowed(operation) {
+			return ar
+		}
+		v.Field(i).SetBool(true)
+	}
+	t.Fatalf("no allowed_requests flag allows %s", operation)
+	return nil
+}
+
+// TestAllowedRequestsGateAgreesWithEveryProvider is the class check for TXE-7027. For every
+// base a custom provider may use and every call in the gate tables, it builds a provider that
+// allows everything except that call's own request type and asks two questions: does the
+// provider method reach the vendor (it served the request through a conversion of its own,
+// such as OpenAI answering Responses with a chat completion), and does core's gate let the
+// request through. The answers must agree. A provider that converts a request without
+// declaring it through schemas.UpstreamOperationConverter is refused by the gate before its
+// conversion can run (the 400 TXE-7370 gave stepfun); a declared conversion the provider
+// does not make lets through a request the provider then refuses.
+func TestAllowedRequestsGateAgreesWithEveryProvider(t *testing.T) {
+	upstream := newGuardUpstream(t)
+	client := &Bifrost{logger: NewNoOpLogger()}
+	calls := make(map[schemas.RequestType]resourceOverrideCall, len(resourceOverrideCalls)+len(allowedRequestsGateCalls))
+	for requestType, call := range resourceOverrideCalls {
+		calls[requestType] = call
+	}
+	for requestType, call := range allowedRequestsGateCalls {
+		calls[requestType] = call
+	}
+	if calls[schemas.ResponsesRequest] == nil {
+		t.Fatal("allowedRequestsGateCalls has no Responses call; the OpenAI responses-to-chat conversion would go unchecked")
+	}
+	requestTypes := make([]schemas.RequestType, 0, len(calls))
+	for requestType := range calls {
+		requestTypes = append(requestTypes, requestType)
+	}
+	slices.Sort(requestTypes)
+
+	converted := 0
+	for _, base := range schemas.SupportedBaseProviders {
+		t.Run(string(base), func(t *testing.T) {
+			for _, requestType := range requestTypes {
+				name := schemas.ModelProvider("agree-" + string(base))
+				config := &schemas.ProviderConfig{
+					NetworkConfig: schemas.NetworkConfig{BaseURL: "http://" + guardUpstreamHost, DefaultRequestTimeoutInSeconds: 10},
+					ProxyConfig: &schemas.ProxyConfig{
+						Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(upstream.proxyURL), CACertPEM: schemas.NewSecretVar(upstream.caPEM),
+					},
+					CustomProviderConfig: &schemas.CustomProviderConfig{CustomProviderKey: string(name), BaseProviderType: base, AllowedRequests: allowAllBut(t, requestType)},
+				}
+				provider, err := client.createBaseProvider(name, config)
+				if err != nil {
+					t.Fatalf("construct: %v", err)
+				}
+				ids := resourceOverrideIDs
+				if placeholders, ok := providerUtils.ResourcePathPlaceholders[requestType]; ok {
+					ids = resourceOverrideIDs[:len(placeholders)]
+				}
+				upstream.take()
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, base)
+				func() {
+					defer func() { _ = recover() }()
+					_ = calls[requestType](ctx, provider, []schemas.Key{guardKey(base)}, base, ids)
+				}()
+				served := len(upstream.take()) > 0
+
+				req := &schemas.BifrostRequest{RequestType: requestType}
+				switch requestType {
+				case schemas.ChatCompletionRequest:
+					req.ChatRequest = &schemas.BifrostChatRequest{}
+				case schemas.ResponsesRequest:
+					req.ResponsesRequest = &schemas.BifrostResponsesRequest{}
+				}
+				gateCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				gateCtx.SetValue(schemas.BifrostContextKeyBaseProviderType, base)
+				gateErr := checkAllowedRequest(gateCtx, provider, config, req)
+				passed := gateErr == nil
+
+				switch {
+				case served && !passed:
+					t.Errorf("%s %s: the provider method reaches the vendor with %s disabled, but the gate refuses it. A conversion to an allowed operation is declared with schemas.UpstreamOperationConverter; otherwise the method is missing its own CheckOperationAllowed", base, requestType, requestType)
+				case passed && !served:
+					t.Errorf("%s %s: the gate lets it through as %s, but the provider never reaches the vendor", base, requestType, upstreamOperation(gateCtx, provider, req))
+				case served:
+					converted++
+				}
+			}
+		})
+	}
+	// The OpenAI base's Responses-as-chat is the one conversion known today; the sweep must see it.
+	if converted == 0 {
+		t.Fatal("no provider served a disabled request type through a conversion; the sweep no longer reaches the OpenAI responses-to-chat path")
+	}
+}
+
+// chatPathUpstream answers chat completions, plain or streamed, and records each request path.
+func chatPathUpstream(t *testing.T) (*httptest.Server, func() []string) {
+	t.Helper()
+	var mu sync.Mutex
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		if strings.Contains(string(body), `"stream":true`) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, `data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":null}]}`+"\n\n")
+			_, _ = io.WriteString(w, `data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`+"\n\n")
+			_, _ = io.WriteString(w, "data: [DONE]\n\n")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"c1","object":"chat.completion","created":1,"model":"m",` +
+			`"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],` +
+			`"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	t.Cleanup(server.Close)
+	return server, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), paths...)
+	}
+}
+
+// TestResponsesOnChatOnlyOpenAICustomProviderServedAsChat pins the TXE-7027 decision through
+// the whole client: an OpenAI-base custom provider whose allowed_requests has chat but not
+// responses (StepFun as Tokun's reconciler writes it) serves /v1/responses, plain and
+// streamed, with one chat completion upstream. A provider that allows neither is refused
+// before any upstream call.
+func TestResponsesOnChatOnlyOpenAICustomProviderServedAsChat(t *testing.T) {
+	const name = schemas.ModelProvider("stepfun")
+	input := []schemas.ResponsesMessage{{Role: Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: Ptr("hi")}}}
+	newCtx := func(t *testing.T) *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+		t.Cleanup(ctx.Cancel)
+		return ctx
+	}
+
+	t.Run("served as chat", func(t *testing.T) {
+		server, paths := chatPathUpstream(t)
+		client := newStreamTestClient(t, customProviderAccount(name, schemas.OpenAI, server.URL,
+			&schemas.AllowedRequests{ChatCompletion: true, ChatCompletionStream: true, Speech: true}))
+
+		resp, err := client.ResponsesRequest(newCtx(t), &schemas.BifrostResponsesRequest{Provider: name, Model: "step-5-preview", Input: input})
+		if err != nil {
+			t.Fatalf("responses on a chat-only provider: want it served as chat, got %v", err.Error)
+		}
+		if resp == nil || resp.ExtraFields.ConvertedRequestType != schemas.ChatCompletionRequest {
+			t.Fatalf("want a Responses answer converted from chat, got %+v", resp)
+		}
+
+		stream, err := client.ResponsesStreamRequest(newCtx(t), &schemas.BifrostResponsesRequest{Provider: name, Model: "step-5-preview", Input: input})
+		if err != nil {
+			t.Fatalf("responses stream on a chat-only provider: want it served as chat stream, got %v", err.Error)
+		}
+		chunks := 0
+		for chunk := range stream {
+			if chunk.BifrostError != nil {
+				t.Fatalf("stream error: %+v", chunk.BifrostError.Error)
+			}
+			chunks++
+		}
+		if chunks == 0 {
+			t.Fatal("the streamed Responses request returned no chunks")
+		}
+
+		got := paths()
+		if len(got) != 2 || got[0] != "/v1/chat/completions" || got[1] != "/v1/chat/completions" {
+			t.Fatalf("upstream paths %v, want two calls to /v1/chat/completions", got)
+		}
+	})
+
+	t.Run("refused when neither is allowed", func(t *testing.T) {
+		server, paths := chatPathUpstream(t)
+		client := newStreamTestClient(t, customProviderAccount(name, schemas.OpenAI, server.URL, &schemas.AllowedRequests{Speech: true}))
+		_, err := client.ResponsesRequest(newCtx(t), &schemas.BifrostResponsesRequest{Provider: name, Model: "step-5-preview", Input: input})
+		if err == nil || err.Error == nil || err.Error.Code == nil || *err.Error.Code != "unsupported_operation" {
+			t.Fatalf("want unsupported_operation, got %+v", err)
+		}
+		_, err = client.ResponsesStreamRequest(newCtx(t), &schemas.BifrostResponsesRequest{Provider: name, Model: "step-5-preview", Input: input})
+		if err == nil || err.Error == nil || err.Error.Code == nil || *err.Error.Code != "unsupported_operation" {
+			t.Fatalf("stream: want unsupported_operation, got %+v", err)
+		}
+		if got := paths(); len(got) != 0 {
+			t.Fatalf("a refused request reached the upstream: %v", got)
+		}
+	})
 }

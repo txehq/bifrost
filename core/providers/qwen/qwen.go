@@ -186,6 +186,10 @@ func (provider *QwenProvider) ChatCompletionStream(ctx *schemas.BifrostContext, 
 
 // Responses performs a responses request to the Qwen API.
 func (provider *QwenProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	// A custom provider on this base serves responses only when its allowed_requests allows it (TXE-7027).
+	if err := providerUtils.CheckOperationAllowed(schemas.Qwen, provider.customProviderConfig, schemas.ResponsesRequest); err != nil {
+		return nil, err
+	}
 	chatResponse, err := provider.servedChatCompletion(ctx, key, request.ToChatRequest())
 	if err != nil {
 		return nil, err
@@ -201,6 +205,10 @@ func (provider *QwenProvider) Responses(ctx *schemas.BifrostContext, key schemas
 
 // ResponsesStream performs a streaming responses request to the Qwen API.
 func (provider *QwenProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	// A custom provider on this base serves responses stream only when its allowed_requests allows it (TXE-7027).
+	if err := providerUtils.CheckOperationAllowed(schemas.Qwen, provider.customProviderConfig, schemas.ResponsesStreamRequest); err != nil {
+		return nil, err
+	}
 	ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
 	return provider.ChatCompletionStream(
 		ctx,
