@@ -847,6 +847,70 @@ func TestPreLLMHookChecksEveryModelAPassthroughBodyNames(t *testing.T) {
 	assert.Nil(t, shortCircuit)
 }
 
+// TestRepeatedBodyModelCannotRunAModelTheKeyIsNotAllowed (TXE-7994): governance reads a
+// passthrough body's model with gjson, which keeps the first of two equal keys; the vendor, like
+// encoding/json, keeps the last. A key restricted to gpt-4o that sends {"model":"gpt-4o",
+// "model":"o1"} was gated on gpt-4o and ran o1. Core now refuses a forwarded body that repeats a
+// member before governance reads it, with 400 caller_invalid_request naming the member, in an
+// object body, in a task of an array body, and in raw request body mode. A body naming its model
+// once is still gated as before.
+func TestRepeatedBodyModelCannotRunAModelTheKeyIsNotAllowed(t *testing.T) {
+	vk := buildVirtualKeyWithProviders("vk-dup", "sk-bf-dup", "Duplicate VK", []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"gpt-4o"}),
+	})
+	plugin := newAccessTestPlugin(t, vk, nil)
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: emptyAccount{}, Logger: NewMockLogger(), LLMPlugins: []schemas.LLMPlugin{plugin},
+	})
+	require.NoError(t, err)
+	t.Cleanup(client.Shutdown)
+
+	passthrough := func(model, body string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.PassthroughStreamRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+			Provider: schemas.OpenAI, Model: model, Method: "POST", Path: "/v1/chat/completions", Body: []byte(body),
+		}}
+	}
+	rawChat := func(model, body string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.ChatCompletionStreamRequest, ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI, Model: model, RawRequestBody: []byte(body),
+		}}
+	}
+	for _, tc := range []struct {
+		name   string
+		req    *schemas.BifrostRequest
+		member string // "" when the request is gated as before
+		want   Decision
+	}{
+		{"object body, allowed model first", passthrough("", `{"model":"gpt-4o","messages":[],"model":"o1"}`), "model", ""},
+		{"object body, the model the request names first", passthrough("gpt-4o", `{"model":"gpt-4o","model":"o1"}`), "model", ""},
+		{"object body, escaped repeat", passthrough("", `{"model":"gpt-4o","model":"o1"}`), "model", ""},
+		{"task array body", passthrough("", `[{"model":"gpt-4o"},{"model":"gpt-4o","model":"o1"}]`), "[1].model", ""},
+		{"raw request body mode", rawChat("gpt-4o", `{"model":"gpt-4o","model":"o1"}`), "model", ""},
+		{"nested member", passthrough("gpt-4o", `{"model":"gpt-4o","metadata":{"tier":"a","tier":"b"}}`), "metadata.tier", ""},
+		{"allowed model named once", passthrough("gpt-4o", `{"model":"gpt-4o"}`), "", DecisionAllow},
+		{"other model named once", passthrough("", `{"model":"o1"}`), "", DecisionModelBlocked},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, preErr := client.RunStreamPreHooks(presentCtx("sk-bf-dup"), tc.req)
+			switch {
+			case tc.member != "":
+				require.NotNil(t, preErr, "a body repeating %q was admitted", tc.member)
+				require.NotNil(t, preErr.StatusCode)
+				assert.Equal(t, 400, *preErr.StatusCode)
+				assert.Equal(t, schemas.ErrorTypeCallerInvalidRequest, preErr.ExtraFields.ErrorType)
+				require.NotNil(t, preErr.Error)
+				assert.Contains(t, preErr.Error.Message, "gives "+tc.member+" more than once")
+			case tc.want == DecisionAllow:
+				assert.Nil(t, preErr)
+			default:
+				require.NotNil(t, preErr)
+				require.NotNil(t, preErr.Type)
+				assert.Equal(t, string(tc.want), *preErr.Type)
+			}
+		})
+	}
+}
+
 // TestBudgetResolver_EvaluateVirtualKey_ActiveNoExpiry verifies that a VK
 // with no expiry is allowed.
 // A mixed Runware task array leaves the request model empty, so the request is charged against
