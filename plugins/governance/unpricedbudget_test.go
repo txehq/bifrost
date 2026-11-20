@@ -225,9 +225,31 @@ func TestUnpricedModelUnderADollarBudgetIsRefusedBeforeTheCall(t *testing.T) {
 		}}
 	}
 	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", fileBatch(nil)), "a batch whose models are only inside its uploaded input")
+	// OpenAI's batch API runs the models its input rows name: a priced model on the request is only
+	// a hint, so it does not admit the batch.
 	priced := "gpt-4o"
-	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", fileBatch(&priced)), "a file batch naming a priced model is served")
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", fileBatch(&priced)), "an openai file batch naming a priced model it does not bind")
 	assert.Nil(t, preLLM(t, plugin, "sk-bf-open", fileBatch(nil)), "a file batch on a key with no dollar budget is not refused")
+}
+
+// A $0 answer recorded under the key that served it is found by the next request, which has not
+// chosen a key yet: the gate checks every row the request could be priced as. key-priced is priced
+// only by an override on the openai key, and the answer reports no usage.
+func TestUnpricedAnswerUnderAKeyScopedPriceRefusesBeforeKeySelection(t *testing.T) {
+	plugin, _ := unpricedBudgetPlugin(t)
+	ctx := resolverCtx(plugin.store, "sk-bf-budget")
+	_, shortCircuit, err := plugin.PreLLMHook(ctx, chatOn("key-priced"))
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit, "a model priced by the key's override is admitted")
+	ctx.SetValue(schemas.BifrostContextKeySelectedKeyID, "openai-key-1")
+	_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{ExtraFields: schemas.BifrostResponseExtraFields{
+		RequestType: schemas.ChatCompletionRequest, Provider: schemas.OpenAI, OriginalModelRequested: "key-priced",
+		RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenAI, Model: "key-priced"},
+	}}}, nil)
+	require.NoError(t, err)
+	plugin.wg.Wait()
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", chatOn("key-priced")), "the next request before its key is selected")
+	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", chatOn("gpt-4o")), "another model under the same budget is still served")
 }
 
 // An answer the gate admitted that still priced at $0 under a dollar budget fails closed for that

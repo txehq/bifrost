@@ -2,6 +2,7 @@ package governance
 
 import (
 	"fmt"
+	"slices"
 	"sync"
 
 	"github.com/capsohq/bifrost/core/schemas"
@@ -183,6 +184,22 @@ func (u *unpricedAnswers) record(budgetIDs []string, row string) {
 }
 
 // refused reports the first of budgetIDs that has seen a $0 answer on row, or is full.
+// holdsAny reports whether any of budgetIDs has seen a $0 answer, so a request charged to none of
+// them skips the per-row check.
+func (u *unpricedAnswers) holdsAny(budgetIDs []string) bool {
+	if u == nil {
+		return false
+	}
+	u.mu.RLock()
+	defer u.mu.RUnlock()
+	for _, budgetID := range budgetIDs {
+		if rows := u.byBudget[budgetID]; rows != nil && (rows.full || len(rows.rows) > 0) {
+			return true
+		}
+	}
+	return false
+}
+
 func (u *unpricedAnswers) refused(budgetIDs []string, row string) (string, bool) {
 	if u == nil {
 		return "", false
@@ -225,34 +242,46 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 	if budgetPricingOf(requestType) == budgetPricingNone {
 		return nil
 	}
-	// A batch create naming no model of its own. Its inline requests were each gated as their own
-	// model before the envelope (PreLLMHook), so the envelope has nothing left to price. An uploaded
-	// input's models are not visible to governance, so none of them can be priced before it runs.
-	if requestType == schemas.BatchCreateRequest && evaluationRequest.Model == "" {
-		if !evaluationRequest.OpaqueBatchInput {
+	provider := evaluationRequest.Provider
+	if requestType == schemas.BatchCreateRequest {
+		// An inline batch naming no model of its own: each request was gated as its own model before
+		// the envelope (PreLLMHook), so the envelope has nothing left to price.
+		if evaluationRequest.Model == "" && !evaluationRequest.OpaqueBatchInput {
 			return nil
 		}
-		return &EvaluationResult{
-			Decision: DecisionModelUnpriced,
-			Reason:   "a batch whose models are named only inside its uploaded input cannot be priced before it runs, so it cannot be charged to a dollar budget; name its model on the request, or send its requests inline",
+		// An uploaded input runs the models its rows name. Only where the provider's batch API runs
+		// the model named on the request does that model say what will be charged; elsewhere
+		// (OpenAI, Azure, xAI) it is at most a hint, and the rows cannot be priced before they run.
+		if evaluationRequest.OpaqueBatchInput && (evaluationRequest.Model == "" || !batchModelBoundByProvider(provider, r.governanceInMemoryStore)) {
+			return &EvaluationResult{
+				Decision: DecisionModelUnpriced,
+				Reason: fmt.Sprintf("a batch on provider %q runs the models named inside its uploaded input, which cannot be priced before it runs, so it cannot be charged to a dollar budget; send its requests inline",
+					provider),
+			}
 		}
 	}
-	provider := evaluationRequest.Provider
 	model := pricedModel(requestType, evaluationRequest.Model)
 	scopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(provider))
-	row, status := r.priceIdentity(provider, model, requestType, scopes)
-	if status == modelcatalog.PriceUnpriced {
+	if _, status := r.priceIdentity(provider, model, requestType, scopes); status == modelcatalog.PriceUnpriced {
 		return &EvaluationResult{
 			Decision: DecisionModelUnpriced,
 			Reason: fmt.Sprintf("model %q on provider %q has no price for %s requests, so it cannot be charged to a dollar budget; add a pricing override for it",
 				model, provider, requestType),
 		}
 	}
-	if _, refused := r.unpriced.refused(limitIDs(budgets), row); refused {
-		return &EvaluationResult{
-			Decision: DecisionModelUnpriced,
-			Reason: fmt.Sprintf("model %q on provider %q delivered an answer the price book could not price against this request's dollar budget, so it cannot be charged to it; add a pricing override for it",
-				model, provider),
+	// Which key serves the request, and so which override prices it, is chosen after this runs:
+	// every row the request could be priced as is checked against what its budgets remember.
+	budgetIDs := limitIDs(budgets)
+	if r.unpriced.holdsAny(budgetIDs) {
+		_, rows := r.priceIdentities(provider, model, requestType, scopes)
+		for _, row := range rows {
+			if _, refused := r.unpriced.refused(budgetIDs, row); refused {
+				return &EvaluationResult{
+					Decision: DecisionModelUnpriced,
+					Reason: fmt.Sprintf("model %q on provider %q delivered an answer the price book could not price against this request's dollar budget, so it cannot be charged to it; add a pricing override for it",
+						model, provider),
+				}
+			}
 		}
 	}
 	return nil
@@ -260,20 +289,23 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 
 // noteUnpricedAnswer is called for an answer charged to the dollar budgets budgetIDs. When the
 // answer priced at $0 and the price book does not say the model is free, it is logged as
-// unpriced and its price book row is refused for those budgets from now on (fail closed after
-// the fact). Reports whether it was unpriced.
+// unpriced, and every price book row the request could be priced as (under each configured key's
+// scope) is refused for those budgets from now on (fail closed after the fact). Reports whether it
+// was unpriced.
 func (r *BudgetResolver) noteUnpricedAnswer(provider schemas.ModelProvider, model string, requestType schemas.RequestType, cost float64, scopes *modelcatalog.PricingLookupScopes, requestID string, budgetIDs []string) bool {
 	if r == nil || r.modelCatalog == nil || cost > 0 || len(budgetIDs) == 0 {
 		return false
 	}
 	model = pricedModel(requestType, model)
-	row, status := r.priceIdentity(provider, model, requestType, scopes)
-	if status == modelcatalog.PriceFree {
+	best, rows := r.priceIdentities(provider, model, requestType, scopes)
+	if best == modelcatalog.PriceFree {
 		return false
 	}
 	// A model with no row at all is refused before the call by the gate itself; there is no row
 	// to remember.
-	r.unpriced.record(budgetIDs, row)
+	for _, row := range rows {
+		r.unpriced.record(budgetIDs, row)
+	}
 	if r.logger != nil {
 		r.logger.Warn("governance: unpriced answer under a dollar budget (TXE-7957): request %s, provider %s, model %s, request type %s was charged $0 against budgets %v; requests charged to them on it are refused from now on until it is priced",
 			requestID, provider, model, requestType, budgetIDs)
@@ -343,4 +375,51 @@ func (r *BudgetResolver) priceIdentity(provider schemas.ModelProvider, model str
 		}
 	}
 	return bestRow, best
+}
+
+// priceIdentities is every price book row the request could be priced as, and the best status
+// among them: under the scopes given, and under each configured key's scope for the model and the
+// key's alias targets. The gate and the after-the-fact record both read this whole set, so a row
+// remembered under the key that served an answer is found by a request that has not chosen a key.
+func (r *BudgetResolver) priceIdentities(provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) (modelcatalog.PriceStatus, []string) {
+	var rows []string
+	add := func(row string) {
+		if row != "" && !slices.Contains(rows, row) {
+			rows = append(rows, row)
+		}
+	}
+	firstRow, best := r.modelCatalog.PriceIdentity(provider, model, requestType, scopes)
+	add(firstRow)
+	if model == "" || r.governanceInMemoryStore == nil {
+		return best, rows
+	}
+	config, ok := configuredProvider(r.governanceInMemoryStore, provider)
+	if !ok {
+		return best, rows
+	}
+	for _, key := range config.Keys {
+		keyScopes := modelcatalog.PricingLookupScopes{}
+		if scopes != nil {
+			keyScopes = *scopes
+		}
+		keyScopes.SelectedKeyID = key.ID
+		candidates := [3]string{model}
+		if alias := key.Aliases.ResolveConfig(model); alias != nil {
+			candidates[1] = alias.ModelID
+			if alias.ModelName != nil {
+				candidates[2] = *alias.ModelName
+			}
+		}
+		for _, candidate := range candidates {
+			if candidate == "" {
+				continue
+			}
+			row, status := r.modelCatalog.PriceIdentity(provider, candidate, requestType, &keyScopes)
+			add(row)
+			if status > best {
+				best = status
+			}
+		}
+	}
+	return best, rows
 }
