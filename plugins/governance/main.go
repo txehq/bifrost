@@ -1620,7 +1620,12 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		sessionContinuation := isLiveSessionContinuation(ctx)
 		bodyModel, _ := ctx.Value(passthroughBodyModelContextKey).(string)
 		read, _ := ctx.Value(passthroughReadContextKey).(bool)
-		holder := unpricedHolder(ctx)
+		// Only an answer charged to a dollar budget is judged as unpriced, so only then is the
+		// principal it is remembered for built.
+		holder := ""
+		if len(accountedBudgets) > 0 {
+			holder = unpricedHolder(ctx)
+		}
 		workerProbe := probe
 		probe = nil
 
@@ -2192,10 +2197,11 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifro
 			if passthrough := result.PassthroughResponse; passthrough != nil {
 				pricedAs = modelcatalog.PassthroughPricingRequestType(provider, result.GetExtraFields().PassthroughPath, passthrough.PassthroughUsage)
 			}
-			// A price confirms the probed row only when that row's model served the answer: one a
-			// provider's server-side fallback served was priced as another model.
+			// A price confirms only the row the serving key priced the answer on, and only when that
+			// row's model served it: one a provider's server-side fallback served was priced as
+			// another model.
 			if answerCost > 0 && fallback == "" {
-				probe.confirm()
+				p.resolver.confirmProbe(probe, pricingScopes)
 			}
 			p.resolver.noteUnpricedAnswer(provider, priced, fallback, requestType, pricedAs, answerCost, pricingScopes, requestID, limitIDs(budgets), holder)
 		}

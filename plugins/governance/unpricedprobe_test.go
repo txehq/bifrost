@@ -8,6 +8,7 @@ import (
 
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/grant"
+	"github.com/capsohq/bifrost/plugins/governance/internal/testtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -198,7 +199,7 @@ func TestUnpricedProbes(t *testing.T) {
 	held.release()
 	_, busy = probes.acquire(scopes, []string{"row"})
 	assert.True(t, busy, "the expired probe's late release leaves its replacement's hold in place")
-	stale.confirm()
+	stale.confirm("row")
 	stale.release()
 	stale.release()
 	confirmed, busy := probes.acquire(scopes, []string{"row"})
@@ -232,15 +233,61 @@ func TestProbeHolderIsTheMostSpecificPrincipal(t *testing.T) {
 	assert.NotContains(t, unpricedHolder(tokenOnly), "api-secret", "a credential is held by its digest")
 	assert.Contains(t, unpricedHolder(tokenOnly), "credential:api_key:")
 
-	row, budgets := "openai|chat|gpt-4o", []string{"budget-unpriced"}
-	require.Nil(t, plugin.resolver.probeUnconfirmed(alice, schemas.ChatCompletionRequest, row, budgets))
-	assert.Nil(t, plugin.resolver.probeUnconfirmed(bob, schemas.ChatCompletionRequest, row, budgets), "another user holds their own probe")
+	budgets := []string{"budget-unpriced"}
+	probe := func(ctx *schemas.BifrostContext) *EvaluationResult {
+		return plugin.resolver.probeUnconfirmed(ctx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, nil, budgets)
+	}
+	require.Nil(t, probe(alice))
+	assert.Nil(t, probe(bob), "another user holds their own probe")
 
 	anonymous := withIdentity(nil)
-	require.Nil(t, plugin.resolver.probeUnconfirmed(anonymous, schemas.ChatCompletionRequest, row, budgets))
-	refused := plugin.resolver.probeUnconfirmed(withIdentity(nil), schemas.ChatCompletionRequest, row, budgets)
+	require.Nil(t, probe(anonymous))
+	refused := probe(withIdentity(nil))
 	require.NotNil(t, refused, "requests that presented nothing share one hold")
 	assert.Equal(t, DecisionModelPricingUnconfirmed, refused.Decision)
+}
+
+// A request core ends without running its post-hooks (a full queue, a cancel while queued) frees
+// its hold when its context ends.
+func TestProbeIsReleasedWhenTheRequestContextEnds(t *testing.T) {
+	plugin, _ := unpricedBudgetPlugin(t)
+	parent, cancel := context.WithCancel(context.Background())
+	ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
+	g := grant.New()
+	g.SetIdentity(grant.NewIdentity(grant.NewCredential(grant.CredentialVirtualKey, "v"), nil, &schemas.EntityRef{ID: "vk-ctx"}, nil, nil, nil, nil))
+	ctx.SetGrant(g)
+	budgets := []string{"budget-unpriced"}
+	require.Nil(t, plugin.resolver.probeUnconfirmed(ctx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, nil, budgets))
+	scopes := unpricedScopes(budgets, "vk:vk-ctx")
+	_, rows := plugin.resolver.priceIdentities(schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, nil)
+	_, busy := plugin.resolver.probes.acquire(scopes, rows)
+	require.True(t, busy, "held while the request runs")
+	cancel()
+	assert.EventuallyWithT(t, func(c *assert.CollectT) {
+		held, busy := plugin.resolver.probes.acquire(scopes, rows)
+		assert.False(c, busy, "released when the request's context ended")
+		held.release()
+	}, testtime.Scale(time.Second), testtime.Scale(10*time.Millisecond))
+}
+
+// Confirming the row one key priced an answer on leaves the request's other candidate rows (another
+// key's override) held one request at a time.
+func TestConfirmingOneRowLeavesTheOthersProbed(t *testing.T) {
+	probes := newUnpricedProbes()
+	scopes := []string{"s"}
+	first, busy := probes.acquire(scopes, []string{"key-a-row", "key-b-row"})
+	require.False(t, busy)
+	first.confirm("key-a-row")
+	first.confirm("not-held")
+	first.release()
+	second, busy := probes.acquire(scopes, []string{"key-a-row", "key-b-row"})
+	require.False(t, busy)
+	require.NotNil(t, second)
+	assert.Equal(t, []string{"s\x00key-b-row"}, second.keys, "only the unconfirmed row is held")
+	_, busy = probes.acquire(scopes, []string{"key-a-row", "key-b-row"})
+	assert.True(t, busy, "the other key's row is still probed")
+	_, busy = probes.acquire(scopes, []string{"not-held"})
+	assert.False(t, busy)
 }
 
 // A stream holds its row until its final chunk.

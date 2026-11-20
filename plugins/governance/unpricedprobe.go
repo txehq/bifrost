@@ -1,11 +1,13 @@
 package governance
 
 import (
+	"context"
 	"slices"
 	"sync"
 	"time"
 
 	"github.com/capsohq/bifrost/core/schemas"
+	"github.com/capsohq/bifrost/framework/modelcatalog"
 )
 
 // A dollar budget refuses a price book row for a virtual key once an answer on it priced at $0
@@ -79,6 +81,14 @@ type unpricedProbe struct {
 	scopes []string
 	rows   []string
 	once   sync.Once
+	// stop cancels the release registered on the request's context.
+	stop func() bool
+
+	// What the gate priced the request as, so the row the serving key priced the answer on can be
+	// read the same way once a key is selected.
+	provider schemas.ModelProvider
+	model    string
+	mode     schemas.RequestType
 }
 
 // acquire holds every (scope, row) not yet confirmed for the request. It reports busy when another
@@ -123,6 +133,9 @@ func (probe *unpricedProbe) release() {
 		return
 	}
 	probe.once.Do(func() {
+		if probe.stop != nil {
+			probe.stop()
+		}
 		probe.probes.mu.Lock()
 		defer probe.probes.mu.Unlock()
 		for _, key := range probe.keys {
@@ -133,9 +146,10 @@ func (probe *unpricedProbe) release() {
 	})
 }
 
-// confirm records the probe's rows as priced for its scopes: an answer on them priced above $0.
-func (probe *unpricedProbe) confirm() {
-	if probe == nil {
+// confirm records row as priced for the probe's scopes: an answer on it priced above $0. A row the
+// probe did not hold is not confirmed.
+func (probe *unpricedProbe) confirm(row string) {
+	if probe == nil || row == "" || !slices.Contains(probe.rows, row) {
 		return
 	}
 	p := probe.probes
@@ -147,17 +161,26 @@ func (probe *unpricedProbe) confirm() {
 			confirmed = &confirmedRows{rows: make(map[string]struct{})}
 			p.confirmed[scope] = confirmed
 		}
-		for _, row := range probe.rows {
-			if _, ok := confirmed.rows[row]; ok {
-				continue
-			}
-			if len(confirmed.rows) >= maxConfirmedRowsPerScope {
-				confirmed.full = true
-				break
-			}
-			confirmed.rows[row] = struct{}{}
+		if _, ok := confirmed.rows[row]; ok {
+			continue
 		}
+		if len(confirmed.rows) >= maxConfirmedRowsPerScope {
+			confirmed.full = true
+			continue
+		}
+		confirmed.rows[row] = struct{}{}
 	}
+}
+
+// confirmProbe confirms the row the answer was priced on: read as the gate read it, under the
+// scopes of the key that served the answer. A row another key prices, which may still answer $0,
+// stays unconfirmed.
+func (r *BudgetResolver) confirmProbe(probe *unpricedProbe, servedScopes *modelcatalog.PricingLookupScopes) {
+	if r == nil || probe == nil || r.modelCatalog == nil {
+		return
+	}
+	row, _ := r.modelCatalog.PriceIdentity(probe.provider, probe.model, probe.mode, servedScopes)
+	probe.confirm(row)
 }
 
 // probesUnpriced reports whether a request type is probed: an answer the after-the-fact refusal
@@ -170,22 +193,28 @@ func probesUnpriced(requestType schemas.RequestType) bool {
 	return budgetPricingOf(requestType) == budgetPricingAnswer
 }
 
-// probeUnconfirmed holds the request's rows for its (budget, virtual key) scopes until its answer
+// probeUnconfirmed holds the request's rows for its (budget, principal) scopes until its answer
 // returns, or refuses it when another request holds one of them. The hold is kept on the request,
-// and a later pass over the same rows (a body model, then the envelope) reuses it.
+// and a later pass over the same rows (a body model, then the envelope) reuses it. It is released
+// by the request's last post-hook call, or when the request's context ends, whichever is first: a
+// request core ends without post-hooks (a full queue, a cancel while queued) frees it too.
 //
-// row is the price book row the request is priced as (priceIdentity in its pricing mode), which
-// the gate has already read: concurrent requests on one model resolve to the same row.
+// The rows are every row the request could be priced as before its key is chosen (priceIdentities:
+// the scope given and each configured key's): each stays held until an answer the serving key
+// priced on it confirms it, so confirming one key's row leaves another key's row probed.
 //
 // The hold is per principal (unpricedHolder): a virtual key, a user, or a presented credential each
 // hold their own. Requests that presented nothing share one hold on the budget, which serializes
 // them until the first priced answer rather than leaving them unprobed.
-func (r *BudgetResolver) probeUnconfirmed(ctx *schemas.BifrostContext, requestType schemas.RequestType, row string, budgetIDs []string) *EvaluationResult {
-	if r.probes == nil || ctx == nil || row == "" || !probesUnpriced(requestType) {
+func (r *BudgetResolver) probeUnconfirmed(ctx *schemas.BifrostContext, requestType schemas.RequestType, provider schemas.ModelProvider, model string, mode schemas.RequestType, scopes *modelcatalog.PricingLookupScopes, budgetIDs []string) *EvaluationResult {
+	if r.probes == nil || ctx == nil || model == "" || !probesUnpriced(requestType) {
+		return nil
+	}
+	_, rows := r.priceIdentities(provider, model, mode, scopes)
+	if len(rows) == 0 {
 		return nil
 	}
 	holderScopes := unpricedScopes(budgetIDs, unpricedHolder(ctx))
-	rows := []string{row}
 	if held, ok := ctx.Value(unpricedProbeContextKey).(*unpricedProbe); ok && held != nil {
 		if slices.Equal(held.scopes, holderScopes) && slices.Equal(held.rows, rows) {
 			return nil
@@ -201,6 +230,8 @@ func (r *BudgetResolver) probeUnconfirmed(ctx *schemas.BifrostContext, requestTy
 		}
 	}
 	if probe != nil {
+		probe.provider, probe.model, probe.mode = provider, model, mode
+		probe.stop = context.AfterFunc(ctx, probe.release)
 		ctx.SetValue(unpricedProbeContextKey, probe)
 		if r.probes.afterAcquire != nil {
 			r.probes.afterAcquire()
