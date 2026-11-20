@@ -463,6 +463,12 @@ func TestIsFileUploadPath(t *testing.T) {
 		{"POST", "/v1/chat/completions", false},
 		{"POST", "/v1/uploads", false},
 		{"POST", "/v1/uploads/upload_abc/complete", false},
+		// Routes that attach an existing file by id are not uploads.
+		{"POST", "/v1/vector_stores/vs_1/files", false},
+		{"POST", "/v1/containers/cntr_1/files", false},
+		{"POST", "/openai/files", true},
+		{"POST", "/upload/v1/files", true},
+		{"POST", "/upload/v1beta/files/extra", false},
 	} {
 		if got := IsFileUploadPath(tc.method, tc.path); got != tc.want {
 			t.Errorf("IsFileUploadPath(%s %s) = %t; want %t", tc.method, tc.path, got, tc.want)

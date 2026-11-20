@@ -1561,6 +1561,12 @@ func TestRunLLMPreHooksForwardsABatchInputFileUpload(t *testing.T) {
 		passthrough(schemas.OpenAI, "/v1/responses", "text/plain", `{"input":[{"type":"input_file","file_id":"file-foreign"}],}`))
 	require.NotNil(t, refused, "content naming a file id to an inference route was admitted")
 	assert.Contains(t, refused.Error.Error.Message, "is JSON naming a provider object but is declared text/plain")
+	// A route that attaches an existing file by id is no upload: refused the same way.
+	_, refused, _ = newRoutingCommitPipeline(&bodyReadingGate{fakeRoutingPlugin: fakeRoutingPlugin{name: "gate"}}).RunLLMPreHooks(
+		schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+		passthrough(schemas.OpenAI, "/v1/vector_stores/vs_1/files", "text/plain", `{"file_id":"file-foreign"}`))
+	require.NotNil(t, refused, "content naming a file id to a vector store attach was admitted")
+	assert.Contains(t, refused.Error.Error.Message, "is JSON naming a provider object")
 	// The same on an upload route is a file.
 	_, admitted, _ := newRoutingCommitPipeline(&bodyReadingGate{fakeRoutingPlugin: fakeRoutingPlugin{name: "gate"}}).RunLLMPreHooks(
 		schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),

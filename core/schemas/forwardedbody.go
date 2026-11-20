@@ -507,7 +507,8 @@ func providerObjectMention(doc []byte) string {
 }
 
 // FileUploadRoute is a route that stores the request body as a file and runs no model. Path is a
-// pattern over "/"-separated segments: "*" matches one segment, "**" any number of them.
+// pattern over "/"-separated segments: "*" matches one segment, "**" any number of them. Paths are
+// as forwarded, after a passthrough prefix is stripped.
 type FileUploadRoute struct {
 	Method string
 	Path   string
@@ -519,10 +520,17 @@ type FileUploadRoute struct {
 // on these routes (core's guard skips it): a batch input file is JSON Lines naming a model on
 // every line, uploaded under whatever type its SDK guesses (Python's mimetypes knows no .jsonl, so
 // often application/octet-stream).
+//
+// Each is the root of an upload collection, never a route that attaches an existing object:
+// POST /v1/vector_stores/{id}/files and /v1/containers/{id}/files name a file by id, so they stay
+// under the guard and governance's object gate.
 var FileUploadRoutes = []FileUploadRoute{
-	{Method: "POST", Path: "**/files"},           // OpenAI, Azure, Anthropic and compatible /v1/files, /openai/files
-	{Method: "POST", Path: "**/uploads/*/parts"}, // OpenAI's multi-part upload
-	{Method: "POST", Path: "/upload/**"},         // Gemini's media upload, /upload/v1beta/files
+	{Method: "POST", Path: "/v1/files"},           // OpenAI, Anthropic and compatible
+	{Method: "POST", Path: "/files"},              // OpenAI-compatible without a version
+	{Method: "POST", Path: "/openai/files"},       // Azure OpenAI
+	{Method: "POST", Path: "/openai/v1/files"},    // Azure OpenAI v1
+	{Method: "POST", Path: "/v1/uploads/*/parts"}, // OpenAI's multi-part upload
+	{Method: "POST", Path: "/upload/*/files"},     // Gemini's media upload, /upload/v1beta/files
 }
 
 // IsFileUploadPath reports a request to one of FileUploadRoutes.
