@@ -348,9 +348,13 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 	// An inline batch is settled in the mode of each request's endpoint (jobaccounting.BatchRequestType):
 	// a model is priced in each mode the requests naming it run in, not in whichever mode prices it.
 	checkedModes := []schemas.RequestType{pricedAs}
+	// A batch the requests do not price (one run from an uploaded file, whose provider binds it to
+	// the batch's model) is settled in its endpoint's mode.
 	if requestType == schemas.BatchCreateRequest {
 		if modes := evaluationRequest.batchModes.of(evaluationRequest.request, evaluationRequest.Model); len(modes) > 0 {
 			checkedModes = modes
+		} else if evaluationRequest.request != nil && evaluationRequest.request.BatchCreateRequest != nil {
+			checkedModes = []schemas.RequestType{jobaccounting.BatchRequestType(evaluationRequest.request.BatchCreateRequest.Endpoint)}
 		}
 	}
 	for _, mode := range checkedModes {

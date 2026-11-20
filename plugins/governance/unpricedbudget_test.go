@@ -139,7 +139,9 @@ func unpricedBudgetPlugin(t testing.TB) (*GovernancePlugin, *LocalGovernanceStor
 		"container-4g":{"provider":"openai","mode":"container_create","code_interpreter_cost_per_session":0.12},
 		"responses-free":{"provider":"openai","mode":"chat","input_cost_per_token":0.000001,"output_cost_per_token":0.000002},
 		"seconds-chat":{"provider":"openai","mode":"chat","input_cost_per_second":0.001},
-		"dual-1":{"provider":"openai","mode":"chat","input_cost_per_token":0.000001,"output_cost_per_token":0.000002}
+		"dual-1":{"provider":"openai","mode":"chat","input_cost_per_token":0.000001,"output_cost_per_token":0.000002},
+		"gem-embed":{"provider":"gemini","mode":"embedding","input_cost_per_token":0.0000001},
+		"gem-chat":{"provider":"gemini","mode":"chat","input_cost_per_token":0.000001,"output_cost_per_token":0.000002}
 	}`), 0o600))
 	ds := datasheet.New(nil, NewMockLogger(), datasheet.Config{URL: "file://" + sheet})
 	require.NoError(t, ds.LoadFromURLIntoMemory(context.Background()))
@@ -166,6 +168,7 @@ func unpricedBudgetPlugin(t testing.TB) (*GovernancePlugin, *LocalGovernanceStor
 	logger := NewMockLogger()
 	budget := buildBudgetWithUsage("budget-unpriced", 100.0, 0, "1d")
 	budgeted := buildVirtualKeyWithBudget("vk-budget", "sk-bf-budget", "Budget VK", budget)
+	budgeted.ProviderConfigs = append(budgeted.ProviderConfigs, buildProviderConfig("gemini", []string{"*"}))
 	otherBudget := buildBudgetWithUsage("budget-other-tenant", 100.0, 0, "1d")
 	otherTenant := buildVirtualKeyWithBudget("vk-other-tenant", "sk-bf-other", "Other tenant VK", otherBudget)
 	open := buildVirtualKey("vk-open", "sk-bf-open", "Open VK", true)
@@ -275,6 +278,15 @@ func TestUnpricedModelUnderADollarBudgetIsRefusedBeforeTheCall(t *testing.T) {
 	priced := "gpt-4o"
 	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", fileBatch(&priced)), "an openai file batch naming a priced model it does not bind")
 	assert.Nil(t, preLLM(t, plugin, "sk-bf-open", fileBatch(nil)), "a file batch on a key with no dollar budget is not refused")
+	// Gemini runs a file batch on the batch's model, settled in the batch endpoint's mode (chat when
+	// it names none): the model is priced in that mode.
+	geminiFileBatch := func(model string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{
+			Provider: schemas.Gemini, Model: &model, InputFileID: "files/abc",
+		}}
+	}
+	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", geminiFileBatch("gem-chat")), "a gemini file batch on a chat-priced model is served")
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", geminiFileBatch("gem-embed")), "a gemini file batch on a model priced only for embeddings")
 
 	// A passthrough whose body names its models (a Runware task array) names none on the request:
 	// each body model is gated on its own, and the envelope is not refused for naming none.
