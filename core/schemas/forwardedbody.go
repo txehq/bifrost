@@ -175,7 +175,10 @@ func AmbiguousBodyMember(body []byte, contentType string) (string, bool) {
 	switch {
 	case declaredJSON || trimmed[0] == '{' || trimmed[0] == '[':
 		if !gjson.ValidBytes(trimmed) {
-			if !declaredJSON && trimmed[0] != '{' && trimmed[0] != '[' {
+			// Under another declared type (a text/plain or octet-stream file upload, a JSONL
+			// file), a body that is not JSON is just content. Valid JSON under such a type is
+			// still checked above and below: a vendor sniffing it reads it as JSON.
+			if !declaredJSON && contentType != "" {
 				return "", false
 			}
 			return "a JSON body that does not parse strictly", true
