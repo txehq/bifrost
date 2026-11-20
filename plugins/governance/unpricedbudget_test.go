@@ -922,6 +922,7 @@ func TestUnpricedAnswerRefusesOnlyTheHolderThatReceivedIt(t *testing.T) {
 // embeddings batch on it is refused, while chat on it is still served.
 func TestRefusedRowIsCheckedInEachInlineBatchMode(t *testing.T) {
 	plugin, _ := unpricedBudgetPlugin(t)
+	plugin.SetProviderJobAccountingEnabled(true) // a batch is otherwise refused as unsettled first (TXE-7963)
 	require.True(t, plugin.resolver.noteUnpricedAnswer(schemas.OpenAI, "dual-1", "", schemas.EmbeddingRequest, schemas.EmbeddingRequest, 0, nil, "r", []string{"budget-unpriced"}, "vk-budget"))
 	batch := &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{
 		Provider: schemas.OpenAI, Endpoint: schemas.BatchEndpointEmbeddings,
