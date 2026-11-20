@@ -1,0 +1,209 @@
+{
+  "name": "648. Chat prompt-cache fields reach a custom provider as sent; a compatible vendor refuses the price-tier ones (chat cache fields)",
+  "description": "Local fixture regression for TXE-7063 (Bifrost–Tokun contract C4, agreement three), no live provider calls. Start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json, and run with providerErrorFixture=1; every case is skipped otherwise. Before TXE-7063 the OpenAI-shape chat converter removed prompt_cache_key, prompt_cache_retention and prompt_cache_options for the openai-based custom provider cp_plain (it falls into the converter's default case) and for every compatible vendor, without telling the caller. 648.2 sends all three to cp_plain and reads from GET /__wire that the vendor received each as sent. 648.3 and 648.4 send prompt_cache_retention (unary) and prompt_cache_options (streamed) to MiniMax, whose catalog lists neither: each is refused with 400 caller_unsupported_parameter naming the field, and /__wire shows no call. prompt_cache_key alone on a vendor with no cache key is the documented exemption (removed, not refused); core's TestChatConverterNeverDropsAPriceFieldSilently and TestGroqChatRefusesPriceTierCacheFieldsWithNoUpstreamCall cover it.",
+  "item": [
+    {
+      "name": "648.1 fixture counters and recorded requests reset",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('counters cleared', function () { pm.expect(j.data[0].reset, pm.response.text()).to.equal(true); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "{{providerErrorFixtureUrl}}/__reset"
+      }
+    },
+    {
+      "name": "648.2 the openai-based custom provider cp_plain receives prompt_cache_key, prompt_cache_retention and prompt_cache_options as sent (chat cache fields)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the request succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture reports what reached it', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/cp/v1/chat/completions' && c.body.indexOf('txe-7063-cache-fields') !== -1; });",
+              "  pm.test('one request reached the vendor', function () { pm.expect(calls.length, res.text()).to.equal(1); });",
+              "  var sent = JSON.parse(calls[0].body);",
+              "  pm.test('prompt_cache_key reached the vendor', function () { pm.expect(sent.prompt_cache_key, calls[0].body).to.equal('tenant-42'); });",
+              "  pm.test('prompt_cache_retention reached the vendor', function () { pm.expect(sent.prompt_cache_retention, calls[0].body).to.equal('24h'); });",
+              "  pm.test('prompt_cache_options reached the vendor', function () { pm.expect((sent.prompt_cache_options || {}).ttl, calls[0].body).to.equal('1h'); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"cp_plain/txe-7063-cache-fields\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"prompt_cache_key\": \"tenant-42\",\n  \"prompt_cache_retention\": \"24h\",\n  \"prompt_cache_options\": {\n    \"ttl\": \"1h\"\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "648.3 [EXPECT-400] MiniMax refuses prompt_cache_retention with 400 caller_unsupported_parameter and makes no upstream call (chat cache fields)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('refused with 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+              "var j = pm.response.json();",
+              "pm.test('error_type is caller_unsupported_parameter', function () { pm.expect((j.extra_fields || {}).error_type, pm.response.text()).to.equal('caller_unsupported_parameter'); });",
+              "pm.test('error.param names prompt_cache_retention', function () { pm.expect((j.error || {}).param, pm.response.text()).to.equal('prompt_cache_retention'); });",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture reports what reached it', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/minimax/v1/chat/completions' && c.body.indexOf('txe-7063-retention') !== -1; });",
+              "  pm.test('nothing reached the vendor', function () { pm.expect(calls.length, res.text()).to.equal(0); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"minimax/txe-7063-retention\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"prompt_cache_key\": \"tenant-42\",\n  \"prompt_cache_retention\": \"24h\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "648.4 [EXPECT-400] MiniMax refuses a streamed prompt_cache_options with 400 caller_unsupported_parameter and makes no upstream call (chat cache fields)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('refused with 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+              "var j = pm.response.json();",
+              "pm.test('error_type is caller_unsupported_parameter', function () { pm.expect((j.extra_fields || {}).error_type, pm.response.text()).to.equal('caller_unsupported_parameter'); });",
+              "pm.test('error.param names prompt_cache_options', function () { pm.expect((j.error || {}).param, pm.response.text()).to.equal('prompt_cache_options'); });",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture reports what reached it', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/minimax/v1/chat/completions' && c.body.indexOf('txe-7063-options') !== -1; });",
+              "  pm.test('nothing reached the vendor', function () { pm.expect(calls.length, res.text()).to.equal(0); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"minimax/txe-7063-options\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"stream\": true,\n  \"prompt_cache_options\": {\n    \"ttl\": \"1h\"\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    }
+  ]
+}

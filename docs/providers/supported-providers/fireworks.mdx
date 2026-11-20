@@ -175,10 +175,10 @@ Fireworks chat completions use the standard OpenAI-compatible wire format.
 
 ## Filtered Parameters
 
-For Fireworks chat completions, Bifrost removes or rewrites a small set of OpenAI-specific fields before sending the request upstream:
+For Fireworks chat completions, Bifrost removes, rewrites or refuses a small set of OpenAI-specific fields before sending the request upstream:
 
 - `prompt_cache_key` is mapped to Fireworks `prompt_cache_isolation_key`
-- `prompt_cache_retention` is removed
+- `prompt_cache_retention` and `prompt_cache_options` are refused with 400 `caller_unsupported_parameter` unless the model's capability record lists them (they set the cache lifetime, so the price)
 - `verbosity` is removed
 - `store` is removed
 - `web_search_options` is removed

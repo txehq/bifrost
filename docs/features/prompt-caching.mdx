@@ -89,6 +89,22 @@ ever sent. The setting starts working the moment that provider gains a model tha
 accepts explicit markers.
 </Info>
 
+## Prompt-cache fields on OpenAI-compatible chat
+
+`prompt_cache_key`, `prompt_cache_retention` and `prompt_cache_options` on `/v1/chat/completions` decide what a vendor caches and for how long, and `service_tier` picks a price tier. On a provider that uses the OpenAI chat shape, Bifrost delivers each of these fields as sent or refuses the request with 400 `caller_unsupported_parameter`, naming the field in `error.param`, before anything is sent. It never drops one of them silently:
+
+| Provider | `prompt_cache_key` | `prompt_cache_retention`, `prompt_cache_options` | `service_tier` |
+|----------|--------------------|-------------------------------------------------|----------------|
+| OpenAI, Azure OpenAI | Sent | Sent | Sent, or refused when the model's record does not list the tier |
+| Custom providers (any base) | Sent | Sent | As for the base provider |
+| Moonshot (Kimi) | Sent | `prompt_cache_options` sent; `prompt_cache_retention` as for other compatible vendors | Sent |
+| Fireworks | Sent as `prompt_cache_isolation_key` | Sent when the model's record lists it, refused otherwise | Sent |
+| xAI | Sent when the model's record lists it, refused otherwise | Sent when the model's record lists it, refused otherwise | Sent |
+| Gemini (OpenAI shape) | Removed (see below) | Sent when the model's record lists it, refused otherwise | Refused, except `default` |
+| Every other compatible vendor (Groq, Cerebras, DeepSeek, Mistral, MiniMax, BytePlus, Ollama, OpenRouter, Parasail, Vertex, and others) | Removed unless the model's record lists it (see below) | Sent when the model's record lists it, refused otherwise | Sent |
+
+`prompt_cache_key` on a vendor that has no cache key is removed, not refused. Such a vendor caches by prefix or not at all, so the key selects nothing and does not change the price. OpenAI SDK clients, Codex among them, send it on every call, and refusing it would fail requests that are billed exactly as asked.
+
 See the provider guides for the full cache-control semantics of each dialect:
 [Anthropic](/providers/supported-providers/anthropic#auto-inject-cache-breakpoints),
 [Bedrock](/providers/supported-providers/bedrock#cache-control),
