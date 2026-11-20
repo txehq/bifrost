@@ -173,3 +173,29 @@ func TestProviderJobAccountingSwitchGatesSettledJobs(t *testing.T) {
 	plugin.SetProviderJobAccountingEnabled(false)
 	requireUnsettledRefusal(t, pre(), "job_unsettled", "after the transport turns job accounting off")
 }
+
+// A passthrough body is judged as the upstream's decoder might read it, failing closed: any
+// occurrence of the key, any value but false or null, an escaped key name, a byte order mark, and
+// a body gjson cannot read that names background all count.
+func TestPassthroughBodyIsBackground(t *testing.T) {
+	for body, want := range map[string]bool{
+		`{"model":"m","background":true}`:             true,
+		`{"model":"m","background":"true"}`:           true,
+		`{"model":"m","background":1}`:                true,
+		`{"model":"m","background":"yes"}`:            true,
+		`{"background":false,"background":true}`:      true,
+		`{"background":true,"background":false}`:      true,
+		`{"background":true}`:                         true,
+		"\xef\xbb\xbf{\"background\":true}":           true,
+		`{"model":"m","background":true,}`:            true, // not JSON gjson reads, names background
+		`{"model":"m","background":false}`:            false,
+		`{"model":"m","background":null}`:             false,
+		`{"model":"m","input":"draw a background"}`:   false,
+		`{"model":"m","tools":[{"background":true}]}`: false, // not top level
+		`[{"model":"m","background":true}]`:           false, // a task array is not a Responses create
+		`not json at all`:                             false,
+		``:                                            false,
+	} {
+		assert.Equal(t, want, passthroughBodyIsBackground([]byte(body)), "%q", body)
+	}
+}

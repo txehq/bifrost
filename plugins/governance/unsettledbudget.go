@@ -1,6 +1,7 @@
 package governance
 
 import (
+	"bytes"
 	"fmt"
 
 	"github.com/capsohq/bifrost/core/schemas"
@@ -103,12 +104,17 @@ func isBackgroundResponsesCreate(req *schemas.BifrostRequest) bool {
 	return false
 }
 
-// passthroughBodyIsBackground reports whether any top-level "background" key of a JSON body is
-// true. Every occurrence is read: gjson returns the first of a duplicated key and most decoders
-// keep the last, so reading one would let {"background":false,"background":true} past the gate.
+// passthroughBodyIsBackground reports whether a passthrough body may ask the upstream to run in
+// the background. It fails closed, since the upstream's decoder, not gjson, decides what runs:
+//   - every top-level "background" key is read: gjson returns the first of a duplicated key and
+//     most decoders keep the last, so {"background":false,"background":true} must not pass;
+//   - any value other than false or null counts, since a lenient decoder may coerce one;
+//   - a body that is not a JSON value gjson can read, after a UTF-8 byte order mark, counts when it
+//     names background anywhere: a decoder more lenient than gjson might still read the key.
 func passthroughBodyIsBackground(body []byte) bool {
+	body = bytes.TrimPrefix(body, []byte("\xef\xbb\xbf"))
 	if !gjson.ValidBytes(body) {
-		return false
+		return bytes.Contains(bytes.ToLower(body), []byte("background"))
 	}
 	root := gjson.ParseBytes(body)
 	if !root.IsObject() {
@@ -116,7 +122,7 @@ func passthroughBodyIsBackground(body []byte) bool {
 	}
 	background := false
 	root.ForEach(func(key, value gjson.Result) bool {
-		if key.Str == "background" && (value.Type == gjson.True || (value.Type == gjson.String && value.Str == "true")) {
+		if key.Str == "background" && value.Type != gjson.False && value.Type != gjson.Null {
 			background = true
 			return false
 		}
