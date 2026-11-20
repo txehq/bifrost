@@ -83,8 +83,20 @@ Since TXE-7566 the Release Pipeline's workflow file is `release.yml`, and
   `release` skipped.
 
 The provider keys are `live-providers` environment secrets that the called jobs read
-themselves. No run has yet shown them reaching a called workflow, because the environment held
-no keys when this changed. TXE-7574 is the check to run at the first release that has keys.
+themselves. Every job that names `live-providers` first runs the step `live-providers-canary`
+(TXE-7574). It reads the environment secret `LIVE_PROVIDERS_CANARY` and fails the job when the
+value is empty, before any provider key is used. A green canary shows that the environment's
+secrets reached that job, including the jobs in the called `release-pipeline.yml`, whether or
+not any provider key is set yet. `check-provider-key-environment.py` (workflow-lint) fails a
+live-providers job without the step, and fails a caller that passes the canary. The canary
+must stay an environment secret only. Its value is not sensitive; any non-empty string works:
+
+```bash
+gh secret set LIVE_PROVIDERS_CANARY --env live-providers -R txehq/bifrost --body present
+```
+
+If a canary fails with the secret set, stop releasing with live jobs and read TXE-7574 for the
+two ways out.
 
 ## Retrying a release that failed
 

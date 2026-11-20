@@ -1,0 +1,8 @@
+# expect: passes LIVE_PROVIDERS_CANARY to a reusable workflow
+# A caller that passes the canary would hand the called job a copy, so the canary would no longer show that environment secrets reach that job.
+on: workflow_dispatch
+jobs:
+  release:
+    uses: ./.github/workflows/release-pipeline.yml
+    secrets:
+      LIVE_PROVIDERS_CANARY: ${{ secrets.LIVE_PROVIDERS_CANARY }}

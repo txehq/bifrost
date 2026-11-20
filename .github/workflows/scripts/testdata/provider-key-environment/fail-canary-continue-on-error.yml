@@ -1,0 +1,17 @@
+# expect: sets `continue-on-error`
+# The canary may fail without failing the job.
+on: workflow_dispatch
+jobs:
+  test-core:
+    environment: live-providers
+    runs-on: ubuntu-24.04
+    steps:
+      - id: live-providers-canary
+        continue-on-error: true
+        env:
+          LIVE_PROVIDERS_CANARY: ${{ secrets.LIVE_PROVIDERS_CANARY }}
+        run: |
+          if [ -z "$LIVE_PROVIDERS_CANARY" ]; then exit 1; fi
+      - run: make test-core
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
