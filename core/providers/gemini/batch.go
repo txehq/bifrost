@@ -11,6 +11,7 @@ import (
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -24,6 +25,58 @@ const (
 
 // GeminiBatchCreateMethods lists every batch-create method BatchCreate sends.
 var GeminiBatchCreateMethods = []string{GeminiBatchGenerateContentMethod, GeminiAsyncBatchEmbedContentMethod}
+
+// geminiBatchInputConfigKeys and geminiBatchFileNameKeys are every spelling Gemini accepts for
+// batch.inputConfig and its fileName: ProtoJSON reads a field by its JSON name and by its
+// proto name.
+var (
+	geminiBatchInputConfigKeys = map[string]bool{"inputConfig": true, "input_config": true}
+	geminiBatchFileNameKeys    = map[string]bool{"fileName": true, "file_name": true}
+)
+
+// GeminiBatchInputFileName returns the one input file a native batch create names, read from
+// the body as Gemini reads it, so the file whose ownership is checked is the file the vendor
+// runs (TXE-7030). raw is the request body when it is forwarded as it is (raw passthrough);
+// every occurrence of batch, inputConfig/input_config and fileName/file_name in it is read,
+// repeated keys included, because a parser that keeps the last of a repeated key would run a
+// file the first one does not name. When raw is empty the parsed config is the body sent.
+// Two different names are refused: the caller states one file, or none.
+func GeminiBatchInputFileName(raw []byte, parsed GeminiBatchInputConfig) (string, error) {
+	names := make([]string, 0, 2)
+	if len(raw) == 0 {
+		names = append(names, parsed.FileName, parsed.FileNameSnake)
+	} else {
+		gjson.ParseBytes(raw).ForEach(func(key, batch gjson.Result) bool {
+			if key.String() != "batch" {
+				return true
+			}
+			batch.ForEach(func(key, config gjson.Result) bool {
+				if !geminiBatchInputConfigKeys[key.String()] {
+					return true
+				}
+				config.ForEach(func(key, value gjson.Result) bool {
+					if geminiBatchFileNameKeys[key.String()] {
+						names = append(names, value.String())
+					}
+					return true
+				})
+				return true
+			})
+			return true
+		})
+	}
+	file := ""
+	for _, name := range names {
+		if name == "" || name == file {
+			continue
+		}
+		if file != "" {
+			return "", fmt.Errorf("batch.inputConfig names two input files (%q and %q): send one fileName", file, name)
+		}
+		file = name
+	}
+	return file, nil
+}
 
 // geminiBatchNativeOutput returns a batch job's output object as the vendor sent it:
 // metadata.output, or the done operation's response when the metadata carries none. It is a

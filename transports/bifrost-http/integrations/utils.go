@@ -39,27 +39,33 @@ func newBifrostErrorWithCode(err error, message string, statusCode int) *schemas
 	return e
 }
 
-// preCallbackRefusal is an error a PreCallback returns to refuse the request with a
-// structured BifrostError (status, error.type, error.param) instead of the generic
-// "failed to execute pre-request callback" message (fork, TXE-7040).
-type preCallbackRefusal struct {
+// requestRefusal is an error a PreCallback or request converter returns to refuse the
+// request with a structured BifrostError (status, error.type, error.param) instead of a
+// generic failure message (fork, TXE-7040, TXE-7030).
+type requestRefusal struct {
 	bifrostErr *schemas.BifrostError
 }
 
-func (e *preCallbackRefusal) Error() string {
+func (e *requestRefusal) Error() string {
 	if e == nil || e.bifrostErr == nil || e.bifrostErr.Error == nil {
 		return "request refused"
 	}
 	return e.bifrostErr.Error.Message
 }
 
-// preCallbackError is the BifrostError the router sends for a PreCallback error.
-func preCallbackError(err error) *schemas.BifrostError {
-	var refusal *preCallbackRefusal
+// newParameterRefusal returns a 400 refusal naming the caller's param.
+func newParameterRefusal(param, message string) error {
+	return &requestRefusal{bifrostErr: schemas.NewUnsupportedParameterError(param, message)}
+}
+
+// refusalError is the BifrostError the router sends for a PreCallback or converter error:
+// a refusal's own error, otherwise fallback with the error's text.
+func refusalError(err error, fallback string) *schemas.BifrostError {
+	var refusal *requestRefusal
 	if errors.As(err, &refusal) && refusal.bifrostErr != nil {
 		return refusal.bifrostErr
 	}
-	return newBifrostError(err, "failed to execute pre-request callback: "+err.Error())
+	return newBifrostError(err, fallback+err.Error())
 }
 
 // newBifrostError wraps a standard error into a BifrostError with IsBifrostError set to false.

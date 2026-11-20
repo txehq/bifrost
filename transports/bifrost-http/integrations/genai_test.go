@@ -1022,6 +1022,69 @@ func TestGenAIAsyncBatchEmbedContentCreatesAndReadsEmbeddingBatch(t *testing.T) 
 	}
 }
 
+// TestGenAIBatchCreateChecksTheFileGeminiRuns (TXE-7030, Codex security finding on #407): a
+// raw-passthrough batch create is forwarded as sent, so the file whose ownership is checked
+// (InputFileID) is read from the body as Gemini reads it. A body that names one file in one
+// spelling and another file in another is refused before anything reaches the vendor; a file
+// named only in a proto-name spelling is still the file checked.
+func TestGenAIBatchCreateChecksTheFileGeminiRuns(t *testing.T) {
+	var calls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"name":"batches/f1","metadata":{"name":"batches/f1","state":"BATCH_STATE_PENDING"}}`))
+	}))
+	defer upstream.Close()
+	account := &nativeMessagesTestAccount{
+		configs: map[schemas.ModelProvider]*schemas.ProviderConfig{
+			schemas.Gemini: {NetworkConfig: schemas.NetworkConfig{BaseURL: upstream.URL + "/v1beta", AllowPrivateNetwork: true}},
+		},
+		keys: map[schemas.ModelProvider][]schemas.Key{
+			schemas.Gemini: {{ID: "gemini-key", Value: schemas.SecretVar{Val: "gemini-secret"}, Models: schemas.WhiteList{"*"}, Weight: 1, UseForBatchAPI: schemas.Ptr(true)}},
+		},
+	}
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: bifrost.NewNoOpLogger(), InitialPoolSize: 1})
+	require.NoError(t, err)
+	defer client.Shutdown()
+	router := NewGenericRouter(client, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
+	createRoute := findGenAIRouteForTest(t, CreateGenAIRouteConfigs("/genai"), "/genai/v1beta/models/{model:*}", "POST")
+
+	for _, body := range []string{
+		`{"batch":{"inputConfig":{"fileName":"files/mine","file_name":"files/theirs"}}}`,
+		`{"batch":{"inputConfig":{"fileName":"files/mine"},"input_config":{"file_name":"files/theirs"}}}`,
+	} {
+		for _, method := range gemini.GeminiBatchCreateMethods {
+			t.Run(method+" "+body, func(t *testing.T) {
+				calls = 0
+				create := &fasthttp.RequestCtx{}
+				create.Request.Header.SetMethod(fasthttp.MethodPost)
+				create.Request.SetRequestURI("/genai/v1beta/models/gemini-embedding-001:" + method)
+				create.SetUserValue("model", "gemini-embedding-001:"+method)
+				create.Request.Header.SetContentType("application/json")
+				create.Request.Header.Set("x-model-provider", "gemini")
+				create.Request.SetBody([]byte(body))
+				create.SetUserValue(schemas.BifrostContextKeyHTTPRequestType, createRoute.GetHTTPRequestType(create))
+				router.createHandler(createRoute)(create)
+
+				assert.Equal(t, fasthttp.StatusBadRequest, create.Response.StatusCode(), "%s", create.Response.Body())
+				assert.Contains(t, string(create.Response.Body()), "two input files", "%s", create.Response.Body())
+				assert.Zero(t, calls, "a refused create reaches no vendor")
+			})
+		}
+	}
+
+	t.Run("proto-name spelling is the file checked", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		raw := []byte(`{"batch":{"input_config":{"file_name":"files/theirs"}}}`)
+		ctx.SetValue(genAIRawRequestBodyContextKey, raw)
+		req := &gemini.GeminiBatchCreateRequest{}
+		require.NoError(t, sonic.Unmarshal(raw, req))
+		batch, err := createRoute.BatchRequestConverter(ctx, req)
+		require.NoError(t, err)
+		assert.Equal(t, "files/theirs", batch.CreateRequest.InputFileID, "the governance file-ownership check reads InputFileID")
+	})
+}
+
 func floats(r gjson.Result) []float64 {
 	var out []float64
 	for _, v := range r.Array() {

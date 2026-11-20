@@ -227,10 +227,14 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 					bifrostBatchReq.DisplayName = &geminiReq.Batch.DisplayName
 				}
 
-				// Handle file-based input
-				if fileName := geminiReq.Batch.InputConfig.InputFileName(); fileName != "" {
-					bifrostBatchReq.InputFileID = fileName
+				// Handle file-based input. The file is read from the body as Gemini reads it
+				// (both spellings, repeated keys), so the file whose ownership is checked is the
+				// one the vendor runs; two different names are refused.
+				fileName, err := gemini.GeminiBatchInputFileName(bifrostBatchReq.RawRequestBody, geminiReq.Batch.InputConfig)
+				if err != nil {
+					return nil, newParameterRefusal("batch.inputConfig.fileName", err.Error())
 				}
+				bifrostBatchReq.InputFileID = fileName
 
 				// models/{model}:asyncBatchEmbedContent creates an embedding batch: its lines
 				// are EmbedContentRequests, and the provider sends them to the same method.

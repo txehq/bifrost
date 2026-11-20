@@ -2890,17 +2890,7 @@ type GeminiBatchConfig struct {
 type GeminiBatchInputConfig struct {
 	Requests      *GeminiBatchRequestsWrapper `json:"requests,omitempty"`
 	FileName      string                      `json:"fileName,omitempty"`
-	FileNameSnake string                      `json:"file_name,omitempty"` // SDK spelling for embedding batches; see InputFileName
-}
-
-// InputFileName returns the input file a batch create names, in either spelling: Google's SDK
-// writes inputConfig.fileName for a generateContent batch and inputConfig.file_name for an
-// embedding batch (batches.create_embeddings, TXE-7030).
-func (c GeminiBatchInputConfig) InputFileName() string {
-	if c.FileName != "" {
-		return c.FileName
-	}
-	return c.FileNameSnake
+	FileNameSnake string                      `json:"file_name,omitempty"` // SDK spelling for embedding batches; see GeminiBatchInputFileName
 }
 
 // GeminiBatchRequestsWrapper wraps the array of batch request items.
