@@ -743,6 +743,12 @@ func (provider *GeminiProvider) interactionVideoDownload(ctx *schemas.BifrostCon
 	if artifact == nil {
 		return nil, providerUtils.NewBifrostOperationError("the interaction holds no video", nil)
 	}
+	// Fork (TXE-7040): the task object lists this one artifact as its only video, so index 0
+	// is the only one there is; any other is refused naming index.
+	video, indexErr := schemas.SelectDownloadVideo(request, videoResp.Videos)
+	if indexErr != nil {
+		return nil, indexErr
+	}
 
 	if artifact.Data != "" {
 		content, contentType, bifrostErr := DecodeInteractionVideoData(artifact)
@@ -756,7 +762,7 @@ func (provider *GeminiProvider) interactionVideoDownload(ctx *schemas.BifrostCon
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	return provider.fetchGeminiFile(ctx, key, request, downloadURL, videoResp.Videos[0].ContentType)
+	return provider.fetchGeminiFile(ctx, key, request, downloadURL, video.ContentType)
 }
 
 // geminiFileMaxRedirects bounds the redirects a Gemini Files download follows on the

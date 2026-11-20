@@ -225,6 +225,11 @@ func (provider *VertexProvider) interactionVideoDownload(ctx *schemas.BifrostCon
 	if artifact == nil {
 		return nil, providerUtils.NewBifrostOperationError("the interaction holds no video", nil)
 	}
+	// Fork (TXE-7040): the task object lists this one artifact as its only video, so index 0
+	// is the only one there is; any other is refused naming index.
+	if _, indexErr := schemas.SelectDownloadVideo(request, videoResp.Videos); indexErr != nil {
+		return nil, indexErr
+	}
 	if artifact.Data == "" {
 		// Vertex documents no form for a delivery=uri artifact, so there is no host the
 		// credentials are known to be meant for. The uri is left to the caller, in the raw

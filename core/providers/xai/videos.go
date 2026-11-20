@@ -556,7 +556,15 @@ func (provider *XAIProvider) VideoDownload(ctx *schemas.BifrostContext, key sche
 	if task.Status != schemas.VideoStatusCompleted {
 		return nil, providerUtils.NewBifrostBadRequestError(fmt.Sprintf("video not ready, current status: %s", task.Status))
 	}
-	if len(task.Videos) == 0 || task.Videos[0].URL == nil || *task.Videos[0].URL == "" {
+	if len(task.Videos) == 0 {
+		return nil, schemas.NewProviderEmptyResultError("xAI reported the task done but gave no video link")
+	}
+	// Fork (TXE-7040): the caller names one of the task's videos with index (default 0).
+	selected, indexErr := schemas.SelectDownloadVideo(request, task.Videos)
+	if indexErr != nil {
+		return nil, indexErr
+	}
+	if selected.URL == nil || *selected.URL == "" {
 		return nil, schemas.NewProviderEmptyResultError("xAI reported the task done but gave no video link")
 	}
 
@@ -567,11 +575,11 @@ func (provider *XAIProvider) VideoDownload(ctx *schemas.BifrostContext, key sche
 	// api.x.ai alone.
 	req := fasthttp.AcquireRequest()
 	defer fasthttp.ReleaseRequest(req)
-	req.SetRequestURI(*task.Videos[0].URL)
+	req.SetRequestURI(*selected.URL)
 	req.Header.SetMethod(http.MethodGet)
 	return providerUtils.FetchVideoContent(ctx, providerUtils.VideoContentFetch{
 		Request:                  req,
-		VendorURL:                *task.Videos[0].URL,
+		VendorURL:                *selected.URL,
 		Stream:                   request.Stream,
 		VideoID:                  request.ID,
 		StreamIdleTimeoutSeconds: provider.networkConfig.StreamIdleTimeoutInSeconds,

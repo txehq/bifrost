@@ -1,0 +1,260 @@
+{
+  "name": "645. Video /content names one video of a task with index; a malformed index or one the task does not have is a 400 naming index (video content index)",
+  "description": "Local fixture regression for TXE-7040 (Bifrost–Tokun contract C9), no live provider calls. Start tests/e2e/api/runners/provider-error-fixture.mjs and an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json and run with providerErrorFixture=1; every case is skipped otherwise. fixture_video_keys is an OpenAI-based custom provider on the fixture, and OpenAI stores one file per video id. GET /v1/videos/{id}/content and the OpenAI SDK route GET /openai/v1/videos/{id}/content take index, a non-negative integer naming one of the task's videos (default 0). 645.2 and 645.3 send a malformed index on each route: a 400 with error.param index, before any vendor call. 645.4 asks for index 1 of a single-file video: a 400 naming index instead of the one file served as if it were the second. 645.5 reads the fixture's counters: only 645.4 reached the vendor, once, with the key it named. Red before the change: index was ignored, so every row answered 200 with the first (only) file. The Go tests cover the multi-video case itself on Vertex gs:// (Cloud Storage, two Veo samples), the Gemini API (two generated samples) and the Omni interaction paths, which no fixture route stands in for; a source check in core/providers/utils fails a provider that picks a task's Videos at a fixed position.",
+  "item": [
+    {
+      "name": "645.1 fixture hit counters reset before the video content index rows (video content index)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('counters cleared', function () { pm.expect(j.data[0].reset, pm.response.text()).to.equal(true); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{providerErrorFixtureUrl}}/__reset",
+          "host": [
+            "{{providerErrorFixtureUrl}}"
+          ],
+          "path": [
+            "__reset"
+          ]
+        }
+      }
+    },
+    {
+      "name": "645.2 /v1/videos/{id}/content on fixture_video_keys with index=abc is a 400 naming index [EXPECT-400] (video content index)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('400 naming index, as a caller_invalid_request', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.error && j.error.param, pm.response.text()).to.equal('index');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "fixture-video-key-a"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/video_gapped_1:fixture_video_keys/content?index=abc",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "video_gapped_1:fixture_video_keys",
+            "content"
+          ],
+          "query": [
+            {
+              "key": "index",
+              "value": "abc"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "645.3 /openai/v1/videos/{id}/content on fixture_video_keys with index=-1 is a 400 naming index [EXPECT-400] (video content index)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('400 naming index, as a caller_invalid_request', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.error && j.error.param, pm.response.text()).to.equal('index');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "fixture-video-key-a"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/videos/video_gapped_1:fixture_video_keys/content?index=-1",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "videos",
+            "video_gapped_1:fixture_video_keys",
+            "content"
+          ],
+          "query": [
+            {
+              "key": "index",
+              "value": "-1"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "645.4 /v1/videos/{id}/content on fixture_video_keys with index=1 of a one-file video is a 400 naming index, not the first file [EXPECT-400] (video content index)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('400 naming index, as a caller_invalid_request', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.error && j.error.param, pm.response.text()).to.equal('index');",
+              "});",
+              "pm.test('no file is served in place of the one asked for', function () {",
+              "  pm.expect(pm.response.headers.get('Content-Type') || '', pm.response.text()).to.not.match(/^video\\//);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "fixture-video-key-a"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/video_gapped_1:fixture_video_keys/content?index=1",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "video_gapped_1:fixture_video_keys",
+            "content"
+          ],
+          "query": [
+            {
+              "key": "index",
+              "value": "1"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "645.5 only the index=1 row reached the fixture, once, with the named key (video content index)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var h = pm.response.json().data[0].hits;",
+              "var seen = {};",
+              "Object.keys(h).forEach(function (k) { if (k.indexOf('video.') === 0) { seen[k] = h[k]; } });",
+              "pm.test('a malformed index never reaches the vendor', function () {",
+              "  pm.expect(seen, JSON.stringify(h)).to.eql({ 'video.content@fixture-video-a': 1 });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{providerErrorFixtureUrl}}/__hits",
+          "host": [
+            "{{providerErrorFixtureUrl}}"
+          ],
+          "path": [
+            "__hits"
+          ]
+        }
+      }
+    }
+  ]
+}

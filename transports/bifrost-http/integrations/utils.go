@@ -3,6 +3,7 @@ package integrations
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/url"
 	"reflect"
@@ -36,6 +37,29 @@ func newBifrostErrorWithCode(err error, message string, statusCode int) *schemas
 	e := newBifrostError(err, message)
 	e.StatusCode = &statusCode
 	return e
+}
+
+// preCallbackRefusal is an error a PreCallback returns to refuse the request with a
+// structured BifrostError (status, error.type, error.param) instead of the generic
+// "failed to execute pre-request callback" message (fork, TXE-7040).
+type preCallbackRefusal struct {
+	bifrostErr *schemas.BifrostError
+}
+
+func (e *preCallbackRefusal) Error() string {
+	if e == nil || e.bifrostErr == nil || e.bifrostErr.Error == nil {
+		return "request refused"
+	}
+	return e.bifrostErr.Error.Message
+}
+
+// preCallbackError is the BifrostError the router sends for a PreCallback error.
+func preCallbackError(err error) *schemas.BifrostError {
+	var refusal *preCallbackRefusal
+	if errors.As(err, &refusal) && refusal.bifrostErr != nil {
+		return refusal.bifrostErr
+	}
+	return newBifrostError(err, "failed to execute pre-request callback: "+err.Error())
 }
 
 // newBifrostError wraps a standard error into a BifrostError with IsBifrostError set to false.

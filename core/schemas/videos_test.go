@@ -533,3 +533,92 @@ func BenchmarkCheckVideoRetrieveByClientReference(b *testing.B) {
 		})
 	}
 }
+
+// TXE-7040: a task can hold several videos; /content serves the one index names (default 0),
+// and an index outside the task is a 400 naming index, never the first video.
+func TestSelectDownloadVideo(t *testing.T) {
+	videos := []VideoOutput{{ID: "gs://b/sample_0.mp4"}, {ID: "gs://b/sample_1.mp4"}}
+	index := func(i int) *int { return &i }
+
+	request := &BifrostVideoDownloadRequest{ID: "op"}
+	got, err := SelectDownloadVideo(request, videos)
+	if err != nil || got.ID != "gs://b/sample_0.mp4" || !request.IndexSelected() {
+		t.Fatalf("no index: got %+v, %v, selected %v; want the first video", got, err, request.IndexSelected())
+	}
+	request = &BifrostVideoDownloadRequest{ID: "op", Index: index(1)}
+	got, err = SelectDownloadVideo(request, videos)
+	if err != nil || got.ID != "gs://b/sample_1.mp4" || !request.IndexSelected() {
+		t.Fatalf("index 1: got %+v, %v; want the second video", got, err)
+	}
+	request.ResetIndexSelected()
+	if request.IndexSelected() {
+		t.Fatal("ResetIndexSelected left the mark set")
+	}
+	for _, bad := range []int{2, 7, -1} {
+		request = &BifrostVideoDownloadRequest{ID: "op", Index: index(bad)}
+		_, err = SelectDownloadVideo(request, videos)
+		assertIndexError(t, err)
+		if request.IndexSelected() {
+			t.Fatalf("index %d: refused but marked selected", bad)
+		}
+	}
+	_, err = SelectDownloadVideo(&BifrostVideoDownloadRequest{}, nil)
+	assertIndexError(t, err)
+}
+
+func TestParseVideoDownloadIndex(t *testing.T) {
+	if got, err := ParseVideoDownloadIndex(""); got != nil || err != nil {
+		t.Fatalf("absent: %v, %v; want nil, nil", got, err)
+	}
+	for raw, want := range map[string]int{"0": 0, "1": 1, "3": 3} {
+		got, err := ParseVideoDownloadIndex(raw)
+		if err != nil || got == nil || *got != want {
+			t.Fatalf("%q: %v, %v; want %d", raw, got, err, want)
+		}
+	}
+	for _, raw := range []string{"-1", "abc", "1.5", "+1", " 1", "1 ", "99999999999999999999999"} {
+		got, err := ParseVideoDownloadIndex(raw)
+		if got != nil {
+			t.Fatalf("%q parsed as %d", raw, *got)
+		}
+		assertIndexError(t, err)
+	}
+}
+
+type closeRecorder struct{ closed bool }
+
+func (c *closeRecorder) Read([]byte) (int, error) { return 0, nil }
+func (c *closeRecorder) Close() error             { c.closed = true; return nil }
+
+// Core's guard: a non-zero index that no provider path selected is refused and the stream it
+// opened is closed; index 0 and a selected index stand.
+func TestCheckVideoDownloadIndexServed(t *testing.T) {
+	one := 1
+	zero := 0
+	for _, request := range []*BifrostVideoDownloadRequest{{}, {Index: &zero}} {
+		if err := CheckVideoDownloadIndexServed(request, &BifrostVideoDownloadResponse{}); err != nil {
+			t.Fatalf("index 0 unselected refused: %v", err.Error)
+		}
+	}
+	body := &closeRecorder{}
+	request := &BifrostVideoDownloadRequest{Provider: OpenAI, Index: &one}
+	err := CheckVideoDownloadIndexServed(request, &BifrostVideoDownloadResponse{Body: body})
+	assertIndexError(t, err)
+	if !body.closed {
+		t.Fatal("the refused download's stream was left open")
+	}
+	if _, selErr := SelectDownloadVideo(request, []VideoOutput{{}, {}}); selErr != nil {
+		t.Fatal(selErr.Error)
+	}
+	if err := CheckVideoDownloadIndexServed(request, &BifrostVideoDownloadResponse{}); err != nil {
+		t.Fatalf("selected index refused: %v", err.Error)
+	}
+}
+
+func assertIndexError(t *testing.T, err *BifrostError) {
+	t.Helper()
+	if err == nil || err.StatusCode == nil || *err.StatusCode != 400 || err.Error == nil ||
+		err.Error.Param != VideoDownloadIndexParam || err.ExtraFields.ErrorType != ErrorTypeCallerInvalidRequest {
+		t.Fatalf("want a 400 caller_invalid_request naming index, got %+v", err)
+	}
+}

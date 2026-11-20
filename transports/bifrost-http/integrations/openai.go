@@ -2593,9 +2593,15 @@ func extractVideoIDFromPath(_ lib.HandlerStore) PreRequestCallback {
 			r.Provider = providerName
 			r.ID = rawVideoID
 		case *schemas.BifrostVideoDownloadRequest:
+			// Fork (TXE-7040): index names one of the task's videos (default 0).
+			index, indexErr := schemas.ParseVideoDownloadIndex(string(ctx.QueryArgs().Peek(schemas.VideoDownloadIndexParam)))
+			if indexErr != nil {
+				return &preCallbackRefusal{bifrostErr: indexErr}
+			}
 			r.Provider = providerName
 			r.ID = rawVideoID
 			r.Variant = schemas.Ptr(schemas.VideoDownloadVariant(variant))
+			r.Index = index
 		case *openai.OpenAIVideoRemixRequest:
 			r.Provider = providerName
 			r.ID = rawVideoID

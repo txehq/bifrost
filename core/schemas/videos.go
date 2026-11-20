@@ -1,8 +1,11 @@
 package schemas
 
 import (
+	"fmt"
 	"io"
 	"slices"
+	"strconv"
+	"strings"
 )
 
 // VideoStatus is the lifecycle status of a video job.
@@ -738,6 +741,103 @@ type BifrostVideoDownloadRequest struct {
 	// that cannot stream ignores it and fills Content; the caller handles both.
 	Stream bool            `json:"-"`
 	Range  *VideoByteRange `json:"-"` // part of the file only, on a streamed download; see providerUtils.FetchVideoContent (fork, TXE-7391)
+	// Index names which of the task's videos to serve, counting from 0 in the order of the
+	// task object's videos[]; nil is 0. A task can hold several (Veo sampleCount, Sora
+	// n_variants). A provider path serves it only through SelectDownloadVideo; core refuses a
+	// non-zero Index that no path selected, so a provider never silently serves the first
+	// video instead (fork, TXE-7040).
+	Index *int `json:"index,omitempty"`
+
+	indexSelected bool
+}
+
+// VideoDownloadIndexParam is the query parameter and error.param naming one video of a task
+// on GET /v1/videos/{id}/content (fork, TXE-7040).
+const VideoDownloadIndexParam = "index"
+
+// ParseVideoDownloadIndex reads the index query parameter of GET /v1/videos/{id}/content: nil
+// when absent, else a non-negative decimal integer. Anything else is the 400 naming index
+// (fork, TXE-7040).
+func ParseVideoDownloadIndex(raw string) (*int, *BifrostError) {
+	if raw == "" {
+		return nil, nil
+	}
+	index, err := strconv.Atoi(raw)
+	if err != nil || index < 0 || strings.TrimSpace(raw) != raw || strings.HasPrefix(raw, "+") {
+		return nil, NewVideoDownloadIndexError(fmt.Sprintf(
+			"index must be a non-negative integer naming one of the task's videos, got %q", BoundEchoedName(raw)))
+	}
+	return &index, nil
+}
+
+// RequestedIndex is the video index the caller asked for: 0 when none was given.
+func (r *BifrostVideoDownloadRequest) RequestedIndex() int {
+	if r == nil || r.Index == nil {
+		return 0
+	}
+	return *r.Index
+}
+
+// IndexSelected reports whether a provider path picked the video through
+// SelectDownloadVideo, so a non-zero Index was honoured.
+func (r *BifrostVideoDownloadRequest) IndexSelected() bool {
+	return r != nil && r.indexSelected
+}
+
+// ResetIndexSelected clears the mark SelectDownloadVideo set; core calls it before each
+// provider attempt so a fallback's selection is its own.
+func (r *BifrostVideoDownloadRequest) ResetIndexSelected() {
+	if r != nil {
+		r.indexSelected = false
+	}
+}
+
+// SelectDownloadVideo returns the task video the request names (Index, default 0) and marks
+// the index honoured. An index outside videos is a 400 caller_invalid_request with
+// error.param "index"; no file is fetched. Every provider download that reads a task's
+// videos[] picks its video here, never videos[0] (a source test in core/providers enforces it).
+func SelectDownloadVideo(request *BifrostVideoDownloadRequest, videos []VideoOutput) (VideoOutput, *BifrostError) {
+	index := request.RequestedIndex()
+	if index < 0 || index >= len(videos) {
+		return VideoOutput{}, NewVideoDownloadIndexError(fmt.Sprintf(
+			"index %d is outside this task's videos: it has %d (index counts from 0)", index, len(videos)))
+	}
+	if request != nil {
+		request.indexSelected = true
+	}
+	return videos[index], nil
+}
+
+// NewVideoDownloadIndexError is the 400 for an index that names no video of the task, or that
+// the provider path cannot honour: error_type caller_invalid_request, error.param "index".
+func NewVideoDownloadIndexError(message string) *BifrostError {
+	return &BifrostError{
+		IsBifrostError: false,
+		StatusCode:     Ptr(400),
+		Error: &ErrorField{
+			Type:    Ptr("invalid_request_error"),
+			Code:    Ptr(string(ErrorTypeCallerInvalidRequest)),
+			Message: BoundRefusalMessage(message),
+			Param:   VideoDownloadIndexParam,
+		},
+		ExtraFields: BifrostErrorExtraFields{RequestType: VideoDownloadRequest, ErrorType: ErrorTypeCallerInvalidRequest},
+	}
+}
+
+// CheckVideoDownloadIndexServed is core's guard after a provider's VideoDownload succeeded:
+// a non-zero Index that no provider path selected through SelectDownloadVideo is refused, and
+// the response's stream is closed, instead of serving the task's first video as if it were
+// the one asked for. It returns nil when the download stands.
+func CheckVideoDownloadIndexServed(request *BifrostVideoDownloadRequest, response *BifrostVideoDownloadResponse) *BifrostError {
+	if request.RequestedIndex() == 0 || request.IndexSelected() {
+		return nil
+	}
+	if response != nil && response.Body != nil {
+		_ = response.Body.Close()
+	}
+	return NewVideoDownloadIndexError(fmt.Sprintf(
+		"index %d is not available on %s for this video: it serves one file per task (omit index or use 0)",
+		request.RequestedIndex(), request.Provider))
 }
 
 // VideoByteRange is Length bytes of a file starting at byte Offset.

@@ -469,9 +469,15 @@ func (provider *AzureProvider) soraJobsDownload(ctx *schemas.BifrostContext, key
 		return nil, newAzureSoraJobsInvalidRequest("video_id",
 			fmt.Sprintf("the video is not ready: the job is %s (%s)", task.Status, task.ProviderStatus))
 	}
+	// Fork (TXE-7040): a job with n_variants above 1 has a generation per variant; the caller
+	// names one with index (default 0).
+	generation, indexErr := schemas.SelectDownloadVideo(request, task.Videos)
+	if indexErr != nil {
+		return nil, indexErr
+	}
 	// The job lookup above is a buffered call; the file itself is streamed to a caller that
 	// asked for it, never held whole (contract C9 / BF20).
-	response, bifrostErr := provider.soraJobsContent(ctx, key, task.Videos[0].ID, content, contentType, request.Stream)
+	response, bifrostErr := provider.soraJobsContent(ctx, key, generation.ID, content, contentType, request.Stream)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
