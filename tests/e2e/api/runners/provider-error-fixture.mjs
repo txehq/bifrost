@@ -526,6 +526,12 @@ const openRouterDecisionAnswer = () => ({ model: "typesafe/jev-1.13.0", answers:
 // The rows the per-call pricing folder is judged against. Every other fixture model stays unpriced.
 const turnRates = { mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002, input_cost_per_token_above_272k_tokens: 0.00001, output_cost_per_token_above_272k_tokens: 0.00002, input_cost_per_token_priority: 0.000002, output_cost_per_token_priority: 0.000004 };
 const fixturePricing = {
+	// Folder 647 (TXE-7406): rows under openai, zai and dashscope only. priced_custom (a custom provider over openai), glm and
+	// qwen have no row under their own names, as in production, so each is priced only through its base provider or the
+	// datasheet's name for it: 1 prompt and 1 completion token from /pp/ownkey cost $0.000009.
+	"openai/fixture-custom-priced": { provider: "openai", mode: "chat", input_cost_per_token: 0.000003, output_cost_per_token: 0.000006 },
+	"zai/fixture-glm-priced": { provider: "zai", mode: "chat", input_cost_per_token: 0.000003, output_cost_per_token: 0.000006 },
+	"dashscope/fixture-qwen-priced": { provider: "dashscope", mode: "chat", input_cost_per_token: 0.000003, output_cost_per_token: 0.000006 },
 	"turns-priced": { provider: "openai_turns", ...turnRates },
 	// Folder 617 (TXE-7513): every line of batch_results_bound uses 3 prompt and 2 completion tokens, so at these batch
 	// rates a line costs $0.000007 and the whole 1,500-line batch $0.0105.

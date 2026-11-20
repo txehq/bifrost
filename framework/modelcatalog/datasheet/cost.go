@@ -3531,7 +3531,6 @@ func markNoOutputImages(imageUsage *schemas.ImageUsage) {
 // applies.
 func (s *Store) resolvePricing(routingInfo schemas.RoutingInfo, requestType schemas.RequestType, scopes LookupScopes) *configstoreTables.TableModelPricing {
 	provider := string(routingInfo.Provider)
-	catalogProvider := normalizeProvider(provider)
 	var aliasModelID, aliasModelName string
 	if rka := routingInfo.ResolvedKeyAlias; rka != nil {
 		aliasModelID = rka.ModelID
@@ -3556,22 +3555,26 @@ func (s *Store) resolvePricing(routingInfo schemas.RoutingInfo, requestType sche
 		scopes.Provider = provider
 	}
 
-	for _, candidate := range []string{serverSideFallbackModel, aliasModelName, aliasModelID, routingInfo.Model} {
-		if candidate == "" {
-			continue
-		}
-		base, exists := s.getBasePricing(candidate, catalogProvider, requestType)
-		if exists && base != nil {
-			result, matched := s.applyPricingOverrides(overrideKey, requestType, *base, scopes)
-			// A decision priced from a text row was answered by emulation, one Responses
-			// call, so an override written for that call applies when no decision-specific
-			// one does.
-			if !matched && requestType == schemas.DecisionRequest && base.Mode != normalizeRequestType(schemas.DecisionRequest) {
-				result, _ = s.applyPricingOverrides(overrideKey, schemas.ResponsesRequest, *base, scopes)
+	// Rows filed under the provider's own name win; then the datasheet's name for it; then, for a
+	// custom provider, its base provider's (fork, TXE-7406, see pricingProviders).
+	for _, catalogProvider := range s.pricingProviders(provider) {
+		for _, candidate := range []string{serverSideFallbackModel, aliasModelName, aliasModelID, routingInfo.Model} {
+			if candidate == "" {
+				continue
 			}
-			return &result
+			base, exists := s.getBasePricing(candidate, catalogProvider, requestType)
+			if exists && base != nil {
+				result, matched := s.applyPricingOverrides(overrideKey, requestType, *base, scopes)
+				// A decision priced from a text row was answered by emulation, one Responses
+				// call, so an override written for that call applies when no decision-specific
+				// one does.
+				if !matched && requestType == schemas.DecisionRequest && base.Mode != normalizeRequestType(schemas.DecisionRequest) {
+					result, _ = s.applyPricingOverrides(overrideKey, schemas.ResponsesRequest, *base, scopes)
+				}
+				return &result
+			}
+			s.logger.Debug("pricing not found for %s under %s, trying next candidate", candidate, catalogProvider)
 		}
-		s.logger.Debug("pricing not found for %s, trying next candidate", candidate)
 	}
 
 	// No base catalog entry found; still try overrides in case the user defined
@@ -3581,7 +3584,7 @@ func (s *Store) resolvePricing(routingInfo schemas.RoutingInfo, requestType sche
 	if applied {
 		return &result
 	}
-	s.logger.Debug("no pricing found for wire model %s and provider %s, skipping cost calculation", overrideKey, provider)
+	s.warnUnpriced(provider, overrideKey, requestType)
 	return nil
 }
 

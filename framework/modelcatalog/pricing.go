@@ -107,6 +107,18 @@ func (mc *ModelCatalog) ReplaceIgnoreProviderCost(providers []schemas.ModelProvi
 	mc.datasheet.ReplaceIgnoreProviderCost(providers)
 }
 
+// SetCustomProviderBase records a custom provider's base provider, so a request on it is priced
+// from the base provider's datasheet rows when none is filed under its own name (fork, TXE-7406).
+// An empty base forgets the provider.
+func (mc *ModelCatalog) SetCustomProviderBase(provider, base schemas.ModelProvider) {
+	mc.datasheet.SetCustomProviderBase(provider, base)
+}
+
+// ReplaceCustomProviderBases resets every custom provider's base provider (startup).
+func (mc *ModelCatalog) ReplaceCustomProviderBases(bases map[schemas.ModelProvider]schemas.ModelProvider) {
+	mc.datasheet.ReplaceCustomProviderBases(bases)
+}
+
 // IsProviderCostIgnored reports whether the provider's self-reported cost is ignored.
 func (mc *ModelCatalog) IsProviderCostIgnored(provider schemas.ModelProvider) bool {
 	if mc == nil {

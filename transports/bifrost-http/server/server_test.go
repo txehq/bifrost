@@ -30,6 +30,7 @@ import (
 	configstoreTables "github.com/capsohq/bifrost/framework/configstore/tables"
 	"github.com/capsohq/bifrost/framework/logstore"
 	"github.com/capsohq/bifrost/framework/modelcatalog"
+	"github.com/capsohq/bifrost/framework/modelcatalog/datasheet"
 	"github.com/fasthttp/router"
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -1070,6 +1071,56 @@ func TestReloadProvider_FailedRefetchKeepsPreviousCatalog(t *testing.T) {
 	}
 	if got := catalog.GetUnfilteredModelsForProvider("custom-provider"); !slices.Equal(got, []string{"some-model", "unlisted-model"}) {
 		t.Errorf("unfiltered catalog after failed refetch = %v, want [some-model unlisted-model] retained", got)
+	}
+}
+
+// TestCustomProviderRequestsArePricedFromTheirBase is the server half of the class check for
+// custom providers (fork, TXE-7406): startup and every provider write record a custom provider's
+// base provider in the model catalog, so a request on it is priced from the base's datasheet rows.
+// Without that, 61,651 production requests on Tokun's custom providers were logged with no cost.
+func TestCustomProviderRequestsArePricedFromTheirBase(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+
+	ds := datasheet.NewTestStore(nil)
+	ds.SetPricingRowsForTest([]configstoreTables.TableModelPricing{{
+		Model: "gpt-test", Provider: "openai", Mode: "chat",
+		InputCostPerToken: schemas.Ptr(1e-6), OutputCostPerToken: schemas.Ptr(2e-6),
+	}})
+	catalog := modelcatalog.NewTestCatalogWithDatasheet(ds)
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500}
+	price := func(provider schemas.ModelProvider) float64 {
+		return catalog.CalculateCostForUsage(usage, provider, "gpt-test", schemas.ChatCompletionStreamRequest, nil)
+	}
+
+	// Startup: every configured custom provider, and nothing else.
+	catalog.ReplaceCustomProviderBases(customProviderBases(map[schemas.ModelProvider]configstore.ProviderConfig{
+		"tkp_startup":  {CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI}},
+		schemas.OpenAI: {},
+	}))
+	if got := price("tkp_startup"); math.Abs(got-0.002) > 1e-12 {
+		t.Fatalf("a custom provider configured at startup is priced %v, want 0.002 from its openai base", got)
+	}
+
+	// A provider written at runtime: ReloadProvider records its base.
+	server := newReloadProviderServer(catalog, "tkp_runtime", []schemas.Key{{ID: "key-1"}}, false)
+	server.Config.Providers["tkp_runtime"].CustomProviderConfig.BaseProviderType = schemas.OpenAI
+	if got := price("tkp_runtime"); got != 0 {
+		t.Fatalf("before the reload the runtime provider is priced %v, want 0", got)
+	}
+	if _, err := server.ReloadProvider(context.Background(), "tkp_runtime", true); err != nil {
+		t.Fatalf("ReloadProvider: %v", err)
+	}
+	if got := price("tkp_runtime"); math.Abs(got-0.002) > 1e-12 {
+		t.Fatalf("a custom provider added at runtime is priced %v, want 0.002 from its openai base", got)
+	}
+
+	// A provider that is no longer configured forgets its base on the next sync.
+	delete(server.Config.Providers, "tkp_runtime")
+	server.syncProviderPricingSettings("tkp_runtime")
+	if got := price("tkp_runtime"); got != 0 {
+		t.Fatalf("a provider no longer configured is still priced %v from its old base", got)
 	}
 }
 

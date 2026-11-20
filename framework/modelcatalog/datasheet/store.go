@@ -83,6 +83,11 @@ type Store struct {
 	ignoreProviderCostMu sync.RWMutex
 	ignoreProviderCost   map[schemas.ModelProvider]struct{}
 
+	// The base provider of every configured custom provider (fork, TXE-7406); see pricingprovider.go.
+	customBases customProviderBases
+	// The requests already reported as recorded with no cost (warnUnpriced).
+	unpriced unpricedWarnings
+
 	// Sync configuration owned here so UpdateSyncConfig is atomic w.r.t. the
 	// URL accessors in sync.go. The composer's ticker reads SyncInterval()
 	// and LastSyncedAt() to schedule.
