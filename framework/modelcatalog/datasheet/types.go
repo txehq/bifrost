@@ -653,9 +653,15 @@ type LookupScopes struct {
 	// start-time rate. The zero value means "unknown" and falls back to the
 	// wall clock at evaluation time.
 	BilledAt time.Time
+	// RequestedPromptCacheTTL is the prompt_cache_options.ttl the request sent ("" for none),
+	// which core stamps on every attempt (schemas.BifrostContextKeyRequestedPromptCacheTTL). It
+	// prices a cache write only for a provider in RequestTTLPricedCacheWrites whose response
+	// reports no tier; usage is never rewritten with it (contract C5; fork, TXE-7069).
+	RequestedPromptCacheTTL string
 }
 
-// LookupScopesFromContext builds a LookupScopes from a BifrostContext. Reads
+// LookupScopesFromContext builds a LookupScopes from a BifrostContext. It reads only the keys in
+// schemas.PricingContextKeys, which the tracer copies into its stream accumulator. Reads
 // the governance virtual key ID (not the raw VK token), the selected key ID,
 // and the resolved calling user ID. provider should be the provider name
 // string (e.g. "openai"); pass "" if unavailable. Returns nil only when ctx
@@ -676,12 +682,14 @@ func LookupScopesFromContext(ctx *schemas.BifrostContext, provider string) *Look
 	virtualKeyID, _ := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string)
 	selectedKeyID, _ := ctx.Value(schemas.BifrostContextKeySelectedKeyID).(string)
 	billedAt, _ := ctx.Value(schemas.BifrostContextKeyRequestStartTime).(time.Time)
+	requestedTTL, _ := ctx.Value(schemas.BifrostContextKeyRequestedPromptCacheTTL).(string)
 	return &LookupScopes{
-		UserID:        userID,
-		VirtualKeyID:  virtualKeyID,
-		SelectedKeyID: selectedKeyID,
-		Provider:      provider,
-		BilledAt:      billedAt,
+		UserID:                  userID,
+		VirtualKeyID:            virtualKeyID,
+		SelectedKeyID:           selectedKeyID,
+		Provider:                provider,
+		BilledAt:                billedAt,
+		RequestedPromptCacheTTL: requestedTTL,
 	}
 }
 
