@@ -146,17 +146,18 @@ func pricedModel(requestType schemas.RequestType, model string) string {
 	return model
 }
 
-// unpricedAnswers remembers, per dollar budget, the pricing rows whose admitted answers still
-// priced at $0 against that budget, so the next request charged to it on such a row is refused
-// before the upstream call.
+// unpricedAnswers remembers, per dollar budget and holder, the pricing rows whose admitted answers
+// still priced at $0 against that budget, so the holder's next request charged to it on such a row
+// is refused before the upstream call.
 //
 // It is keyed on what governance controls, never on what a caller sends: a budget id (budgets
-// are made by operators) and the identity of the price book row the model resolved to (every
-// spelling of a model the lookup folds onto one row has one identity). A $0 answer refuses that
-// row only for the budgets it was charged to, so one tenant's answer never refuses another's.
-// Each budget holds at most maxUnpricedRowsPerBudget rows; a budget that fills is refused on
-// every row it would be charged for, until restart, rather than forgetting one. Other budgets
-// are unaffected.
+// are made by operators), the virtual key the answer was admitted under (unpricedHolder), and the
+// identity of the price book row the model resolved to (every spelling of a model the lookup folds
+// onto one row has one identity). A $0 answer refuses that row only for the holder that received
+// it, on the budgets it was charged to: one caller's answer never refuses another caller sharing
+// the budget, nor another tenant. A budget shared by K keys admits at most K such answers per row.
+// Each (budget, holder) scope holds at most maxUnpricedRowsPerBudget rows; a scope that fills is
+// refused on every row it would be charged for, until restart, rather than forgetting one.
 type unpricedAnswers struct {
 	mu       sync.RWMutex
 	byBudget map[string]*unpricedRows
@@ -196,9 +197,9 @@ func (u *unpricedAnswers) record(budgetIDs []string, row string) {
 	}
 }
 
-// refused reports the first of budgetIDs that has seen a $0 answer on row, or is full.
-// holdsAny reports whether any of budgetIDs has seen a $0 answer, so a request charged to none of
-// them skips the per-row check.
+// refused reports the first of the scopes that has seen a $0 answer on row, or is full. holdsAny
+// reports whether any of the scopes has seen a $0 answer, so a request charged to none of them
+// skips the per-row check. Scopes are unpricedScopes of a request's budgets and holder.
 func (u *unpricedAnswers) holdsAny(budgetIDs []string) bool {
 	if u == nil {
 		return false
@@ -232,6 +233,32 @@ func (u *unpricedAnswers) refused(budgetIDs []string, row string) (string, bool)
 		}
 	}
 	return "", false
+}
+
+// unpricedScopes keys a request's budgets by the holder it was admitted under (TXE-7957).
+func unpricedScopes(budgetIDs []string, holder string) []string {
+	scopes := make([]string, 0, len(budgetIDs))
+	for _, budgetID := range budgetIDs {
+		scopes = append(scopes, budgetID+"\x00"+holder)
+	}
+	return scopes
+}
+
+// unpricedHolder is the virtual key a request was admitted under, which an unpriced answer is
+// remembered for; empty for a request presenting none, whose answers are remembered for every
+// such request on the budget.
+func unpricedHolder(ctx *schemas.BifrostContext) string {
+	if ctx == nil || ctx.Grant() == nil {
+		return ""
+	}
+	identity := ctx.Grant().Identity()
+	if identity == nil {
+		return ""
+	}
+	if vk := identity.VirtualKey(); vk != nil {
+		return vk.ID
+	}
+	return ""
 }
 
 func limitIDs(limits []schemas.Limit) []string {
@@ -377,7 +404,7 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 	}
 	// Which key serves the request, and so which override prices it, is chosen after this runs:
 	// every row the request could be priced as is checked against what its budgets remember.
-	budgetIDs := limitIDs(budgets)
+	budgetIDs := unpricedScopes(limitIDs(budgets), unpricedHolder(ctx))
 	if r.unpriced.holdsAny(budgetIDs) {
 		for _, mode := range checkedModes {
 			_, rows := r.priceIdentities(provider, model, mode, scopes)
@@ -398,15 +425,15 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 // noteUnpricedAnswer is called for an answer charged to the dollar budgets budgetIDs. When the
 // answer priced at $0 and the price book does not say the model is free, it is logged as
 // unpriced, and every price book row the request could be priced as (under each configured key's
-// scope) is refused for those budgets from now on (fail closed after the fact). Reports whether it
-// was unpriced.
+// scope) is refused for holder on those budgets from now on (fail closed after the fact). Reports
+// whether it was unpriced.
 //
 // pricedAs is the request type accounting priced the answer as (a passthrough is priced in the
 // mode its path implies); requestType is the request's own, which the gate reads rows under.
 // servedModel is the model that served the answer when it is not model (a provider's server-side
 // fallback): its price decides whether $0 was free, and model's rows, which admission checks, are
 // the ones refused.
-func (r *BudgetResolver) noteUnpricedAnswer(provider schemas.ModelProvider, model, servedModel string, requestType, pricedAs schemas.RequestType, cost float64, scopes *modelcatalog.PricingLookupScopes, requestID string, budgetIDs []string) bool {
+func (r *BudgetResolver) noteUnpricedAnswer(provider schemas.ModelProvider, model, servedModel string, requestType, pricedAs schemas.RequestType, cost float64, scopes *modelcatalog.PricingLookupScopes, requestID string, budgetIDs []string, holder string) bool {
 	if r == nil || r.modelCatalog == nil || cost > 0 || len(budgetIDs) == 0 {
 		return false
 	}
@@ -443,12 +470,13 @@ func (r *BudgetResolver) noteUnpricedAnswer(provider schemas.ModelProvider, mode
 	}
 	// A model with no row at all is refused before the call by the gate itself; there is no row
 	// to remember.
+	holderScopes := unpricedScopes(budgetIDs, holder)
 	for _, row := range rows {
-		r.unpriced.record(budgetIDs, row)
+		r.unpriced.record(holderScopes, row)
 	}
 	if r.logger != nil {
-		r.logger.Warn("governance: unpriced answer under a dollar budget (TXE-7957): request %s, provider %s, model %s, request type %s was charged $0 against budgets %v; requests charged to them on it are refused from now on until it is priced",
-			requestID, provider, model, requestType, budgetIDs)
+		r.logger.Warn("governance: unpriced answer under a dollar budget (TXE-7957): request %s, provider %s, model %s, request type %s was charged $0 against budgets %v for virtual key %q; its requests charged to them on it are refused from now on until it is priced",
+			requestID, provider, model, requestType, budgetIDs, holder)
 	}
 	return true
 }

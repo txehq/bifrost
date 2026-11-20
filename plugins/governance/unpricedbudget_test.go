@@ -828,9 +828,9 @@ func TestContainerCreateIsPricedByItsMemoryTier(t *testing.T) {
 func TestPassthroughAnswerIsJudgedInItsPricedMode(t *testing.T) {
 	plugin, _ := unpricedBudgetPlugin(t)
 	budgets := []string{"budget-unpriced"}
-	assert.False(t, plugin.resolver.noteUnpricedAnswer(schemas.OpenAI, "responses-free", "", schemas.PassthroughRequest, schemas.ResponsesRequest, 0, nil, "r1", budgets),
+	assert.False(t, plugin.resolver.noteUnpricedAnswer(schemas.OpenAI, "responses-free", "", schemas.PassthroughRequest, schemas.ResponsesRequest, 0, nil, "r1", budgets, "vk-budget"),
 		"free in the mode it was priced in")
-	assert.True(t, plugin.resolver.noteUnpricedAnswer(schemas.OpenAI, "responses-free", "", schemas.PassthroughRequest, schemas.ChatCompletionRequest, 0, nil, "r2", budgets),
+	assert.True(t, plugin.resolver.noteUnpricedAnswer(schemas.OpenAI, "responses-free", "", schemas.PassthroughRequest, schemas.ChatCompletionRequest, 0, nil, "r2", budgets, "vk-budget"),
 		"priced in chat, so a $0 chat answer is unpriced")
 }
 
@@ -897,11 +897,22 @@ func TestLiveUnitsArePricedInTheirAccountingMode(t *testing.T) {
 	assert.True(t, settlesIncurredUsage(settling, &schemas.BifrostError{Type: &unpriced, ExtraFields: schemas.BifrostErrorExtraFields{BilledUsage: &schemas.BifrostLLMUsage{TextMessages: schemas.Ptr(2)}}}))
 }
 
+// A $0 answer refuses its row only for the virtual key that received it: another key charged to the
+// same budget is still served (one caller cannot refuse a model for every caller sharing a budget).
+func TestUnpricedAnswerRefusesOnlyTheHolderThatReceivedIt(t *testing.T) {
+	plugin, _ := unpricedBudgetPlugin(t)
+	chat := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o"}}
+	require.True(t, plugin.resolver.noteUnpricedAnswer(schemas.OpenAI, "gpt-4o", "", schemas.ChatCompletionRequest, schemas.ChatCompletionRequest, 0, nil, "r", []string{"budget-unpriced"}, "another-vk"))
+	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", chat), "another key's $0 answer on the shared budget does not refuse this key")
+	require.True(t, plugin.resolver.noteUnpricedAnswer(schemas.OpenAI, "gpt-4o", "", schemas.ChatCompletionRequest, schemas.ChatCompletionRequest, 0, nil, "r", []string{"budget-unpriced"}, "vk-budget"))
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", chat), "this key's own $0 answer refuses it")
+}
+
 // A model priced in two modes whose embedding row was refused after a $0 answer: an inline
 // embeddings batch on it is refused, while chat on it is still served.
 func TestRefusedRowIsCheckedInEachInlineBatchMode(t *testing.T) {
 	plugin, _ := unpricedBudgetPlugin(t)
-	require.True(t, plugin.resolver.noteUnpricedAnswer(schemas.OpenAI, "dual-1", "", schemas.EmbeddingRequest, schemas.EmbeddingRequest, 0, nil, "r", []string{"budget-unpriced"}))
+	require.True(t, plugin.resolver.noteUnpricedAnswer(schemas.OpenAI, "dual-1", "", schemas.EmbeddingRequest, schemas.EmbeddingRequest, 0, nil, "r", []string{"budget-unpriced"}, "vk-budget"))
 	batch := &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{
 		Provider: schemas.OpenAI, Endpoint: schemas.BatchEndpointEmbeddings,
 		Requests: []schemas.BatchRequestItem{{CustomID: "1", Body: map[string]any{"model": "dual-1"}}},

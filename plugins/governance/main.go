@@ -1609,6 +1609,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		sessionContinuation := isLiveSessionContinuation(ctx)
 		bodyModel, _ := ctx.Value(passthroughBodyModelContextKey).(string)
 		read, _ := ctx.Value(passthroughReadContextKey).(bool)
+		holder := unpricedHolder(ctx)
 
 		p.wg.Add(1)
 		go func() {
@@ -1621,7 +1622,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 				}
 			}()
 			// Use the requested model for usage tracking
-			p.postHookWorker(result, err, provider, requestedModel, requestType, requestID, billingNonce, isFinalChunk, attemptNumber, fallbackIndex, sessionContinuation, pricingScopes, accountedBudgets, accountedRateLimits, routingMetadata, bodyModel, read)
+			p.postHookWorker(result, err, provider, requestedModel, requestType, requestID, billingNonce, isFinalChunk, attemptNumber, fallbackIndex, sessionContinuation, pricingScopes, accountedBudgets, accountedRateLimits, routingMetadata, bodyModel, read, holder)
 		}()
 	} else if bodyModel, _ := ctx.Value(passthroughBodyModelContextKey).(string); bodyModel != "" && (!bifrost.IsStreamRequestType(requestType) || isFinalChunk) && passthroughGenerated(result) {
 		// A passthrough whose body named the model it runs, answered with no usage the provider
@@ -1634,7 +1635,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 			}
 			if len(budgets) > 0 {
 				pricedAs := modelcatalog.PassthroughPricingRequestType(provider, result.GetExtraFields().PassthroughPath, nil)
-				p.resolver.noteUnpricedAnswer(provider, bodyModel, "", requestType, pricedAs, 0, pricingScopes, requestID, limitIDs(budgets))
+				p.resolver.noteUnpricedAnswer(provider, bodyModel, "", requestType, pricedAs, 0, pricingScopes, requestID, limitIDs(budgets), unpricedHolder(ctx))
 			}
 		}
 	}
@@ -2072,7 +2073,7 @@ func responseTokensUsed(result *schemas.BifrostResponse) int {
 //   - isFinalChunk: Whether the request is the final chunk
 //   - skipRequestCount: Whether this is a session continuation that must not count as a request
 //   - pricingScopes: Prebuilt pricing lookup scopes using governance VK ID (nil if not applicable)
-func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, provider schemas.ModelProvider, model string, requestType schemas.RequestType, requestID string, billingNonce string, isFinalChunk bool, attemptNumber int, fallbackIndex int, skipRequestCount bool, pricingScopes *modelcatalog.PricingLookupScopes, budgets, rateLimits []schemas.Limit, routingMetadata *schemas.BifrostRoutingMetadata, bodyModel string, passthroughRead bool) {
+func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, provider schemas.ModelProvider, model string, requestType schemas.RequestType, requestID string, billingNonce string, isFinalChunk bool, attemptNumber int, fallbackIndex int, skipRequestCount bool, pricingScopes *modelcatalog.PricingLookupScopes, budgets, rateLimits []schemas.Limit, routingMetadata *schemas.BifrostRoutingMetadata, bodyModel string, passthroughRead bool, holder string) {
 	// Determine if request was successful
 	success := (result != nil)
 	billedReason := "success"
@@ -2171,7 +2172,7 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifro
 			if passthrough := result.PassthroughResponse; passthrough != nil {
 				pricedAs = modelcatalog.PassthroughPricingRequestType(provider, result.GetExtraFields().PassthroughPath, passthrough.PassthroughUsage)
 			}
-			p.resolver.noteUnpricedAnswer(provider, priced, fallback, requestType, pricedAs, answerCost, pricingScopes, requestID, limitIDs(budgets))
+			p.resolver.noteUnpricedAnswer(provider, priced, fallback, requestType, pricedAs, answerCost, pricingScopes, requestID, limitIDs(budgets), holder)
 		}
 
 		// Create usage update for tracker (business logic)
