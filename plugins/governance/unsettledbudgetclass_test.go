@@ -203,7 +203,7 @@ func TestPassthroughIsBackground(t *testing.T) {
 	} {
 		assert.Equal(t, want, passthroughIsBackground("/v1/responses", []byte(body)), "%q", body)
 	}
-	for _, path := range []string{"/v1/responses", "/openai/v1/responses", "/openai/RESPONSES", "/v1/responses/"} {
+	for _, path := range []string{"/v1/responses", "/openai/v1/responses", "/openai/RESPONSES", "/v1/responses/", "/v1/respons%65s"} {
 		assert.True(t, passthroughIsBackground(path, []byte(`{"background":true}`)), path)
 	}
 	for _, path := range []string{"/v1/files", "/v1/fine_tuning/jobs", "/v1/images/generations"} {

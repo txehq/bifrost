@@ -3,6 +3,7 @@ package governance
 import (
 	"bytes"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/capsohq/bifrost/core/schemas"
@@ -116,6 +117,10 @@ func isBackgroundResponsesCreate(req *schemas.BifrostRequest) bool {
 //   - a body gjson cannot read as JSON (compressed, UTF-16, malformed) counts: what an upstream
 //     makes of it cannot be judged here.
 func passthroughIsBackground(path string, body []byte) bool {
+	// The upstream decodes the path, so an escaped one (/v1/respons%65s) is read decoded too.
+	if decoded, err := url.PathUnescape(path); err == nil {
+		path = decoded
+	}
 	if !strings.Contains(strings.ToLower(path), "responses") {
 		return false
 	}
