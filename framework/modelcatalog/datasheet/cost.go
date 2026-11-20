@@ -3555,25 +3555,21 @@ func (s *Store) resolvePricing(routingInfo schemas.RoutingInfo, requestType sche
 		scopes.Provider = provider
 	}
 
-	// Rows filed under the provider's own name win; then the datasheet's name for it; then, for a
-	// custom provider, its base provider's (fork, TXE-7406, see pricingProviders).
-	for _, catalogProvider := range s.pricingProviders(provider) {
-		for _, candidate := range []string{serverSideFallbackModel, aliasModelName, aliasModelID, routingInfo.Model} {
-			if candidate == "" {
-				continue
-			}
-			base, exists := s.getBasePricing(candidate, catalogProvider, requestType)
-			if exists && base != nil {
-				result, matched := s.applyPricingOverrides(overrideKey, requestType, *base, scopes)
-				// A decision priced from a text row was answered by emulation, one Responses
-				// call, so an override written for that call applies when no decision-specific
-				// one does.
-				if !matched && requestType == schemas.DecisionRequest && base.Mode != normalizeRequestType(schemas.DecisionRequest) {
-					result, _ = s.applyPricingOverrides(overrideKey, schemas.ResponsesRequest, *base, scopes)
-				}
-				return &result
-			}
-			s.logger.Debug("pricing not found for %s under %s, trying next candidate", candidate, catalogProvider)
+	// Rows filed under the provider's own name win. That lookup is the whole path for an ordinary
+	// request and allocates nothing beyond the result; only when it misses are the fallback names
+	// built: the datasheet's name for the provider, then, for a custom provider, its base
+	// provider's (fork, TXE-7406, see pricingProviders).
+	candidates := [4]string{serverSideFallbackModel, aliasModelName, aliasModelID, routingInfo.Model}
+	catalogProvider := normalizeProvider(provider)
+	if result := s.priceUnder(catalogProvider, candidates, overrideKey, requestType, scopes); result != nil {
+		return result
+	}
+	for _, fallback := range s.pricingProviders(provider) {
+		if fallback == catalogProvider {
+			continue
+		}
+		if result := s.priceUnder(fallback, candidates, overrideKey, requestType, scopes); result != nil {
+			return result
 		}
 	}
 
@@ -3585,6 +3581,29 @@ func (s *Store) resolvePricing(routingInfo schemas.RoutingInfo, requestType sche
 		return &result
 	}
 	s.warnUnpriced(provider, overrideKey, requestType)
+	return nil
+}
+
+// priceUnder prices the first of candidates that has a base row under catalogProvider, with the
+// overrides keyed by overrideKey applied, or returns nil when none has one.
+func (s *Store) priceUnder(catalogProvider string, candidates [4]string, overrideKey string, requestType schemas.RequestType, scopes LookupScopes) *configstoreTables.TableModelPricing {
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		base, exists := s.getBasePricing(candidate, catalogProvider, requestType)
+		if exists && base != nil {
+			result, matched := s.applyPricingOverrides(overrideKey, requestType, *base, scopes)
+			// A decision priced from a text row was answered by emulation, one Responses
+			// call, so an override written for that call applies when no decision-specific
+			// one does.
+			if !matched && requestType == schemas.DecisionRequest && base.Mode != normalizeRequestType(schemas.DecisionRequest) {
+				result, _ = s.applyPricingOverrides(overrideKey, schemas.ResponsesRequest, *base, scopes)
+			}
+			return &result
+		}
+		s.logger.Debug("pricing not found for %s, trying next candidate", candidate)
+	}
 	return nil
 }
 

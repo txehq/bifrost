@@ -9,7 +9,7 @@ import (
 
 // datasheetProviderNames maps a fork provider to the provider name the datasheet files its rows
 // under, where the two differ (fork, TXE-7406). Before this, every request on such a provider looked
-// up rows under the fork's name, found none, and was logged with no cost: 2,016 qwen and 532 glm
+// up rows under the fork's name, found none, and was logged with no cost: 2,105 qwen and 988 glm
 // requests in production between 2026-09-13 and 2026-11-13. The provider's own name is still tried
 // first, so a row filed under it wins.
 //

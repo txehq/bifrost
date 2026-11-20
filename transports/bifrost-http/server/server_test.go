@@ -1077,7 +1077,7 @@ func TestReloadProvider_FailedRefetchKeepsPreviousCatalog(t *testing.T) {
 // TestCustomProviderRequestsArePricedFromTheirBase is the server half of the class check for
 // custom providers (fork, TXE-7406): startup and every provider write record a custom provider's
 // base provider in the model catalog, so a request on it is priced from the base's datasheet rows.
-// Without that, 61,651 production requests on Tokun's custom providers were logged with no cost.
+// Without that, 35,956 successful production requests on Tokun's custom providers were logged with no cost.
 func TestCustomProviderRequestsArePricedFromTheirBase(t *testing.T) {
 	prevLogger := logger
 	logger = noopTestLogger{}

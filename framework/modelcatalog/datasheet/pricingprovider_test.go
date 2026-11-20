@@ -42,8 +42,8 @@ func datasheetName(provider schemas.ModelProvider) string {
 
 // TestCustomProviderIsPricedFromItsBaseOnEveryBase is the class check for custom providers (fork,
 // TXE-7406). A custom provider is named by its operator (Tokun's tkp_52), so the datasheet files no
-// row under that name. Pricing looked rows up only by the name the request was sent to, and 61,651
-// production requests on Tokun's custom providers between 2026-09-13 and 2026-11-13 were logged
+// row under that name. Pricing looked rows up only by the name the request was sent to, and 35,956
+// successful production requests on Tokun's custom providers between 2026-09-13 and 2026-11-13 were logged
 // with no cost. Every provider a custom provider can be based on is checked: a model its base
 // prices is priced the same on the custom provider, through the response path that logging,
 // governance and telemetry read, and through the bare-usage path that a failed request's partial
@@ -120,7 +120,7 @@ func TestCustomProviderPricingKeepsItsOwnRowsAndOverrides(t *testing.T) {
 }
 
 // TestProviderPricedUnderTheDatasheetsName: glm and qwen requests are priced from the rows the
-// datasheet files under zai and dashscope (fork, TXE-7406; 532 glm and 2,016 qwen production
+// datasheet files under zai and dashscope (fork, TXE-7406; 988 glm and 2,105 qwen production
 // requests were logged with no cost), and a row under the fork's own name would still win.
 func TestProviderPricedUnderTheDatasheetsName(t *testing.T) {
 	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
@@ -289,4 +289,26 @@ func TestUnpricedRequestIsReportedOnceWithTheReason(t *testing.T) {
 		s.CalculateCostForUsage(pricingProviderTestUsage, "tkp_52", fmt.Sprintf("m-%d", i), schemas.ChatCompletionRequest, nil)
 	}
 	assert.Len(t, s.unpriced.seen, maxUnpricedWarnings, "the remembered set is bounded")
+}
+
+// TestOrdinaryProviderPricingAddsNoAllocations: the fallback names (the datasheet's name for a
+// provider, a custom provider's base) are built only when the lookup under the provider's own name
+// misses (fork, TXE-7406). A request whose row is filed under its own provider must allocate no
+// more than it did before the fallbacks existed: 6 allocations on origin/main c4d539212b, measured
+// with this test's loop. Building the fallback list first cost one more on every catalog-priced
+// request. Raising the budget needs the same before/after measurement.
+func TestOrdinaryProviderPricingAddsNoAllocations(t *testing.T) {
+	const allocationsBeforeFallbacks = 6
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("own-model", "openai", "chat"): pricedChatRow("own-model", "openai"),
+	})
+	s.SetCustomProviderBase("tkp_under_test", schemas.OpenAI)
+	routing := schemas.RoutingInfo{Provider: schemas.OpenAI, Model: "own-model"}
+
+	require.NotNil(t, s.resolvePricing(routing, schemas.ChatCompletionRequest, LookupScopes{}))
+	allocations := testing.AllocsPerRun(200, func() {
+		_ = s.resolvePricing(routing, schemas.ChatCompletionRequest, LookupScopes{})
+	})
+	assert.LessOrEqual(t, allocations, float64(allocationsBeforeFallbacks),
+		"pricing a request under its own provider allocates %v times, %d before the fallbacks: build the fallback names only after the own-name lookup misses", allocations, allocationsBeforeFallbacks)
 }
