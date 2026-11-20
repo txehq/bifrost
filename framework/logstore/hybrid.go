@@ -38,6 +38,31 @@ const (
 	uploadKindLogMerge
 )
 
+// uploadKindRetries records, for every upload kind, whether a failed upload is
+// retried. Every kind must have an entry: TestHybrid_EveryUploadKindHasRetryPolicy
+// reads the uploadKind constants from this file and fails on one that is missing,
+// so a new kind cannot inherit fire-and-forget without someone deciding it.
+//
+//   - uploadKindLogMerge is retried (TXE-7328). Its payload is a late output that
+//     reached the log after its pending entry was evicted. The DB row stays
+//     content-free, so this upload is the only copy of that output: a dropped
+//     Put lost it for good.
+//   - The other kinds stay fire-and-forget, so object-store latency never backs
+//     up the upload queues. A dropped one is counted in droppedUploads.
+var uploadKindRetries = map[uploadKind]bool{
+	uploadKindLog:      false,
+	uploadKindMCP:      false,
+	uploadKindAgent:    false,
+	uploadKindLogMerge: true,
+}
+
+// defaultUploadRetryBackoff is the wait before each retry of an upload whose
+// kind uploadKindRetries marks as retried (today only merge uploads): three
+// attempts in all. The worst case holds the row's upload shard for about
+// 3s plus the attempts' own timeouts. Only reconciles of evicted pending
+// entries produce merge uploads, so they are rare.
+var defaultUploadRetryBackoff = []time.Duration{1 * time.Second, 2 * time.Second}
+
 // uploadWork represents an async S3 upload job.
 type uploadWork struct {
 	logID     string
@@ -67,7 +92,14 @@ type HybridLogStore struct {
 	wg             sync.WaitGroup
 	closed         atomic.Bool
 	droppedUploads atomic.Int64
-	pendingBytes   atomic.Int64
+	// droppedMergeUploads counts merge uploads lost for good: dropped before they
+	// were queued, or failed on every attempt. Each one is a late output that no
+	// read can serve (TXE-7328). They are counted in droppedUploads too.
+	droppedMergeUploads atomic.Int64
+	// uploadRetryBackoff is the wait before each retry of a retried upload kind;
+	// its length is the number of retries. Tests shorten it.
+	uploadRetryBackoff []time.Duration
+	pendingBytes       atomic.Int64
 	// outstanding counts uploads accepted onto a queue and not yet finished: queued,
 	// or taken by a worker and still uploading or setting has_object.
 	outstanding atomic.Int64
@@ -144,6 +176,7 @@ func newHybridLogStore(inner LogStore, objects objectstore.ObjectStore, prefix s
 		excludedRequestTypes:  excludedTypes,
 		offloadErrorRawBodies: offloadErrorRawBodies,
 		objectExt:             jsonObjectExt,
+		uploadRetryBackoff:    defaultUploadRetryBackoff,
 	}
 	// Start upload workers, one per queue shard. Uploads for one log id always
 	// land on the same shard (see uploadShard), so an insert's upload and a
@@ -181,10 +214,11 @@ func (h *HybridLogStore) outstandingUploads() int64 {
 }
 
 // processUpload uploads a single payload to object storage.
-// This is fire-and-forget by design: on Put failure the upload is dropped and
+// Most kinds are fire-and-forget: on Put failure the upload is dropped and
 // counted in droppedUploads. The DB row retains has_object=false, so FindByID
-// falls back to whatever data the DB holds. Retries are intentionally omitted
-// to keep S3 latency from cascading into the write path.
+// falls back to whatever data the DB holds. Those kinds are not retried, so S3
+// latency does not back up the upload queues. A merge upload is the exception:
+// it is retried with backoff (see uploadKindRetries and putUpload).
 func (h *HybridLogStore) processUpload(work *uploadWork) {
 	payloadSize := int64(len(work.payload))
 	// Deferred first, so it runs last: the upload counts as outstanding until it is settled.
@@ -226,17 +260,7 @@ func (h *HybridLogStore) processUpload(work *uploadWork) {
 		}
 	}
 
-	if work.kind == uploadKindLogMerge {
-		merged, ok := h.mergeIntoStoredObject(ctx, work)
-		if !ok {
-			return
-		}
-		work.payload = merged
-	}
-
-	if err := h.putPayload(ctx, work.key, work.payload, work.tags); err != nil {
-		h.logger.Warn("objectstore: failed to upload log %s: %v", work.logID, err)
-		h.droppedUploads.Add(1)
+	if !h.putUpload(work) {
 		return
 	}
 	// The new object carries everything the other-format copy held, so drop
@@ -295,38 +319,97 @@ func isPayloadEmpty(payload map[string]string) bool {
 	return true
 }
 
+// putUpload writes the work's object. A merge upload first reads the row's
+// object and lays the late fields over it (see mergeIntoStoredObject). A kind
+// that uploadKindRetries marks as retried gets a new attempt, with a fresh
+// deadline, after each wait in uploadRetryBackoff when the read or Put fails.
+// A failure that a retry cannot fix (a stored payload that does not decode) is
+// not retried. When the upload fails for good it is counted and logged, and
+// false is returned. For a merge upload, losing it is logged as an error: its
+// payload was the only copy of a late output, because the DB row stays
+// content-free, so from then on reads serve the stored object without it. On
+// success work.payload holds the bytes that were written.
+func (h *HybridLogStore) putUpload(work *uploadWork) bool {
+	retries := 0
+	if uploadKindRetries[work.kind] {
+		retries = len(h.uploadRetryBackoff)
+	}
+	payload := work.payload
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		written, retryable, err := h.putUploadOnce(work, payload)
+		if err == nil {
+			work.payload = written
+			return true
+		}
+		lastErr = err
+		if !retryable || attempt >= retries {
+			break
+		}
+		h.logger.Warn("objectstore: upload for log %s failed (attempt %d/%d), retrying: %v", work.logID, attempt+1, retries+1, err)
+		time.Sleep(h.uploadRetryBackoff[attempt]) // sleep-ok: backoff between upload attempts
+	}
+	if work.kind == uploadKindLogMerge {
+		h.logger.Error("objectstore: merge upload for log %s dropped; its late output is lost and reads serve the stored object without it: %v", work.logID, lastErr)
+	} else {
+		h.logger.Warn("objectstore: failed to upload log %s: %v", work.logID, lastErr)
+	}
+	h.countDroppedUpload(work.kind)
+	return false
+}
+
+// putUploadOnce runs one upload attempt with its own deadline. retryable
+// reports whether a later attempt could succeed.
+func (h *HybridLogStore) putUploadOnce(work *uploadWork, payload []byte) (written []byte, retryable bool, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if work.kind == uploadKindLogMerge {
+		payload, retryable, err = h.mergeIntoStoredObject(ctx, work, payload)
+		if err != nil {
+			return nil, retryable, err
+		}
+	}
+	if err := h.putPayload(ctx, work.key, payload, work.tags); err != nil {
+		return nil, true, fmt.Errorf("put: %w", err)
+	}
+	return payload, false, nil
+}
+
+// countDroppedUpload counts one upload lost for good.
+func (h *HybridLogStore) countDroppedUpload(kind uploadKind) {
+	h.droppedUploads.Add(1)
+	if kind == uploadKindLogMerge {
+		h.droppedMergeUploads.Add(1)
+	}
+}
+
 // mergeIntoStoredObject prepares a merge upload: the row's object is read and
-// the work's non-empty payload fields are laid over it, so the result carries
+// the overlay's non-empty payload fields are laid over it, so the result carries
 // everything the object held plus the late fields. It runs on the row's upload
 // shard, after any earlier upload for the same id, which is what lets a
 // reconcile queued before the insert's upload finished still see the full
 // input. The object store is always consulted, never the row's has_object flag:
 // a Put can succeed while every has_object update fails, leaving an object the
 // flag does not admit to. A definite not-found means there is nothing to
-// preserve and the payload is uploaded as is; any other read or decode failure
-// drops the upload and counts it, because a payload rebuilt without the stored
-// content must never replace an object that may exist (for a hidden row that
-// object is the only copy of the input).
-func (h *HybridLogStore) mergeIntoStoredObject(ctx context.Context, work *uploadWork) ([]byte, bool) {
+// preserve and the overlay is uploaded as is; any other read or decode failure
+// returns an error and leaves the stored object alone, because a payload rebuilt
+// without the stored content must never replace an object that may exist (for a
+// hidden row that object is the only copy of the input). A read failure is
+// retryable; a decode or encode failure is not.
+func (h *HybridLogStore) mergeIntoStoredObject(ctx context.Context, work *uploadWork, overlayData []byte) ([]byte, bool, error) {
 	existing, foundKey, err := h.getPayload(ctx, work.key)
 	if err != nil {
 		if errors.Is(err, objectstore.ErrNotFound) {
-			return work.payload, true
+			return overlayData, false, nil
 		}
-		h.logger.Warn("objectstore: failed to fetch payload for log %s before merge upload, leaving the stored object untouched: %v", work.logID, err)
-		h.droppedUploads.Add(1)
-		return nil, false
+		return nil, true, fmt.Errorf("fetch stored payload before merge, leaving the stored object untouched: %w", err)
 	}
 	var base, overlay map[string]string
 	if err := sonic.Unmarshal(existing, &base); err != nil {
-		h.logger.Warn("objectstore: failed to decode payload for log %s before merge upload, leaving the stored object untouched: %v", work.logID, err)
-		h.droppedUploads.Add(1)
-		return nil, false
+		return nil, false, fmt.Errorf("decode stored payload before merge, leaving the stored object untouched: %w", err)
 	}
-	if err := sonic.Unmarshal(work.payload, &overlay); err != nil {
-		h.logger.Warn("objectstore: failed to decode merge payload for log %s: %v", work.logID, err)
-		h.droppedUploads.Add(1)
-		return nil, false
+	if err := sonic.Unmarshal(overlayData, &overlay); err != nil {
+		return nil, false, fmt.Errorf("decode merge payload: %w", err)
 	}
 	if base == nil {
 		base = make(map[string]string, len(overlay))
@@ -334,6 +417,8 @@ func (h *HybridLogStore) mergeIntoStoredObject(ctx context.Context, work *upload
 	if foundKey != work.key {
 		// The stored copy is in the other format; the merged object replaces it.
 		work.staleKey = foundKey
+	} else {
+		work.staleKey = ""
 	}
 	for k, v := range overlay {
 		if v != "" {
@@ -342,11 +427,9 @@ func (h *HybridLogStore) mergeIntoStoredObject(ctx context.Context, work *upload
 	}
 	merged, err := sonic.Marshal(base)
 	if err != nil {
-		h.logger.Warn("objectstore: failed to encode merged payload for log %s: %v", work.logID, err)
-		h.droppedUploads.Add(1)
-		return nil, false
+		return nil, false, fmt.Errorf("encode merged payload: %w", err)
 	}
-	return merged, true
+	return merged, false, nil
 }
 
 // setObjectFormat selects how new payload objects are encoded. "parquet"
@@ -504,14 +587,14 @@ func (h *HybridLogStore) enqueueReplacingUpload(logID string, timestamp time.Tim
 	// Deferred after the cleanup, so it runs first and the cleanup still runs.
 	defer func() {
 		if r := recover(); r != nil {
-			h.droppedUploads.Add(1)
+			h.countDroppedUpload(kind)
 		}
 	}()
 	if h.closed.Load() || len(data) == 0 {
 		return
 	}
 	if h.pendingBytes.Load()+int64(len(data)) > defaultMaxUploadQueueBytes {
-		h.droppedUploads.Add(1)
+		h.countDroppedUpload(kind)
 		h.logger.Warn("objectstore: upload queue memory limit reached, dropping upload for log %s", logID)
 		return
 	}
@@ -520,7 +603,7 @@ func (h *HybridLogStore) enqueueReplacingUpload(logID string, timestamp time.Tim
 		sent = true
 		h.pendingBytes.Add(int64(len(data)))
 	default:
-		h.droppedUploads.Add(1)
+		h.countDroppedUpload(kind)
 		h.logger.Warn("objectstore: upload queue full, dropping upload for log %s", logID)
 	}
 }
@@ -1028,6 +1111,13 @@ func (h *HybridLogStore) Close(ctx context.Context) error {
 // DroppedUploads returns the number of S3 uploads that were dropped.
 func (h *HybridLogStore) DroppedUploads() int64 {
 	return h.droppedUploads.Load()
+}
+
+// DroppedMergeUploads returns the number of merge uploads lost for good: late
+// outputs that reached a log after its pending entry was evicted and that no
+// read can serve (TXE-7328). DroppedUploads includes them.
+func (h *HybridLogStore) DroppedMergeUploads() int64 {
+	return h.droppedMergeUploads.Load()
 }
 
 // --- Delegated methods (pass through to inner store unchanged) ---
@@ -1585,7 +1675,7 @@ func (h *HybridLogStore) BatchUpdate(ctx context.Context, entries []*Log) error 
 		data, err := sonic.Marshal(u.payload)
 		if err != nil {
 			h.logger.Warn("objectstore: failed to marshal merge payload for log %s: %v", u.logID, err)
-			h.droppedUploads.Add(1)
+			h.countDroppedUpload(uploadKindLogMerge)
 			continue
 		}
 		h.enqueueRawUpload(u.logID, u.timestamp, h.logKey(u.timestamp, u.logID), uploadKindLogMerge, "", data, BuildTags(u.tagRow))
