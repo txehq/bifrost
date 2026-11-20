@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/capsohq/bifrost/core/schemas"
+	"github.com/capsohq/bifrost/framework/jobaccounting"
 	"github.com/capsohq/bifrost/framework/modelcatalog"
 	"github.com/tidwall/gjson"
 )
@@ -249,7 +250,7 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 		return nil
 	}
 	requestType := evaluationRequest.RequestType
-	if budgetPricingOf(requestType) == budgetPricingNone {
+	if budgetPricingOf(requestType) == budgetPricingNone || passthroughRead(evaluationRequest.request) {
 		return nil
 	}
 	provider := evaluationRequest.Provider
@@ -329,11 +330,21 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 			}
 		}
 	}
-	if _, status := r.priceIdentity(provider, model, pricedAs, scopes); status == modelcatalog.PriceUnpriced {
-		return &EvaluationResult{
-			Decision: DecisionModelUnpriced,
-			Reason: fmt.Sprintf("model %q on provider %q has no price for %s requests, so it cannot be charged to a dollar budget; add a pricing override for it",
-				model, provider, requestType),
+	// An inline batch is settled in the mode of each request's endpoint (jobaccounting.BatchRequestType):
+	// a model is priced in each mode the requests naming it run in, not in whichever mode prices it.
+	checkedModes := []schemas.RequestType{pricedAs}
+	if requestType == schemas.BatchCreateRequest {
+		if modes := inlineBatchPricingModes(evaluationRequest.request, evaluationRequest.Model); len(modes) > 0 {
+			checkedModes = modes
+		}
+	}
+	for _, mode := range checkedModes {
+		if _, status := r.priceIdentity(provider, model, mode, scopes); status == modelcatalog.PriceUnpriced {
+			return &EvaluationResult{
+				Decision: DecisionModelUnpriced,
+				Reason: fmt.Sprintf("model %q on provider %q has no price for %s requests, so it cannot be charged to a dollar budget; add a pricing override for it",
+					model, provider, mode),
+			}
 		}
 	}
 	// Which key serves the request, and so which override prices it, is chosen after this runs:
@@ -658,6 +669,66 @@ func passthroughBodyNamesEveryModel(req *schemas.BifrostRequest) bool {
 			return all
 		})
 		return tasks > 0 && all
+	}
+	return false
+}
+
+// inlineBatchPricingModes returns the request types settlement prices the inline batch requests
+// naming model as: jobaccounting.BatchRequestType of each request's url, else of the batch's
+// endpoint. Empty when neither names an endpoint, and the model is priced in any mode as before.
+func inlineBatchPricingModes(req *schemas.BifrostRequest, model string) []schemas.RequestType {
+	if req == nil || req.RequestType != schemas.BatchCreateRequest || req.BatchCreateRequest == nil || len(req.BatchCreateRequest.Requests) == 0 {
+		return nil
+	}
+	batch := req.BatchCreateRequest
+	var modes []schemas.RequestType
+	add := func(endpoint schemas.BatchEndpoint) {
+		if endpoint == "" {
+			return
+		}
+		mode := jobaccounting.BatchRequestType(endpoint)
+		if !slices.Contains(modes, mode) {
+			modes = append(modes, mode)
+		}
+	}
+	for _, item := range batch.Requests {
+		named := ""
+		for _, body := range []map[string]any{item.Body, item.Params} {
+			if m, ok := body["model"].(string); ok {
+				named = m
+				break
+			}
+		}
+		// The envelope's model runs the requests naming none (BatchCreateModels).
+		if named != model && (named != "" || model != batchEnvelopeModel(batch)) {
+			continue
+		}
+		if item.URL != "" {
+			add(schemas.BatchEndpoint(item.URL))
+		} else {
+			add(batch.Endpoint)
+		}
+	}
+	return modes
+}
+
+// batchEnvelopeModel is the model a batch create names on itself.
+func batchEnvelopeModel(batch *schemas.BifrostBatchCreateRequest) string {
+	if batch.Model == nil {
+		return ""
+	}
+	return *batch.Model
+}
+
+// passthroughRead reports whether a request is a passthrough read (GET or HEAD): polling an
+// operation or fetching a resource runs no model, so it has nothing to price.
+func passthroughRead(req *schemas.BifrostRequest) bool {
+	if req == nil || req.PassthroughRequest == nil {
+		return false
+	}
+	switch strings.ToUpper(req.PassthroughRequest.Method) {
+	case "GET", "HEAD":
+		return true
 	}
 	return false
 }

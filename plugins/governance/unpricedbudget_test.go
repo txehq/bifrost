@@ -236,6 +236,23 @@ func TestUnpricedModelUnderADollarBudgetIsRefusedBeforeTheCall(t *testing.T) {
 		Provider: schemas.OpenAI,
 		Requests: []schemas.BatchRequestItem{{CustomID: "1", Body: map[string]any{"model": "gpt-4o"}}, {CustomID: "2", Body: map[string]any{"messages": []any{}}}},
 	}}), "an inline batch with a request naming no model")
+	// An inline batch is settled in its endpoint's mode (jobaccounting.BatchRequestType), so a model
+	// is priced in that mode, not in whichever mode prices it.
+	endpointBatch := func(endpoint schemas.BatchEndpoint, itemURL, model string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{
+			Provider: schemas.OpenAI, Endpoint: endpoint,
+			Requests: []schemas.BatchRequestItem{{CustomID: "1", URL: itemURL, Body: map[string]any{"model": model}}},
+		}}
+	}
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", endpointBatch(schemas.BatchEndpointEmbeddings, "", "gpt-4o")), "an embeddings batch on a model priced only for chat")
+	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", endpointBatch(schemas.BatchEndpointChatCompletions, "", "gpt-4o")), "a chat batch on a model priced for chat is served")
+	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", endpointBatch(schemas.BatchEndpointEmbeddings, "", "embed-1")), "an embeddings batch on a model priced for embeddings is served")
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", endpointBatch(schemas.BatchEndpointChatCompletions, "/v1/embeddings", "gpt-4o")), "a request whose own url is embeddings is priced as one")
+	envelopeModel := "gpt-4o"
+	envelope := endpointBatch(schemas.BatchEndpointEmbeddings, "", "embed-1")
+	envelope.BatchCreateRequest.Model = &envelopeModel
+	envelope.BatchCreateRequest.Requests = append(envelope.BatchCreateRequest.Requests, schemas.BatchRequestItem{CustomID: "2", Body: map[string]any{"input": "x"}})
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", envelope), "a request naming no model runs the batch's model, priced in the batch's mode")
 
 	fileBatch := func(model *string) *schemas.BifrostRequest {
 		return &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{
@@ -592,6 +609,41 @@ func TestAnswerFreeUnderTheServingAliasDoesNotRefuseTheModel(t *testing.T) {
 
 // A queued acknowledgment (Runware's taskType and taskUUID only) and a stream chunk before the last
 // are not answers yet: neither refuses the model, and a later stream's final chunk is judged.
+// A passthrough read (polling an operation, fetching a resource) runs no model: it is not refused
+// under a dollar budget for naming none, and its $0 answer refuses nothing.
+func TestPassthroughReadIsNotPriced(t *testing.T) {
+	plugin, _ := unpricedBudgetPlugin(t)
+	read := func(model string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+			Provider: schemas.OpenAI, Model: model, Method: "GET", Path: "/v1/projects/p/locations/l/operations/987654",
+		}}
+	}
+	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", read("")), "a model-less GET is served under a dollar budget")
+	head := read("")
+	head.PassthroughRequest.Method = "head"
+	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", head), "a model-less HEAD is served under a dollar budget")
+	post := read("")
+	post.PassthroughRequest.Method = "POST"
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", post), "a model-less POST is still refused")
+
+	ctx := resolverCtx(plugin.store, "sk-bf-budget")
+	_, shortCircuit, err := plugin.PreLLMHook(ctx, read("gpt-4o"))
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit)
+	_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{PassthroughResponse: &schemas.BifrostPassthroughResponse{
+		StatusCode: 200, Body: []byte(`{"name":"operations/987654","done":true}`),
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.PassthroughRequest, Provider: schemas.OpenAI,
+			RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenAI, Model: "gpt-4o"},
+		},
+	}}, nil)
+	require.NoError(t, err)
+	plugin.wg.Wait()
+	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o"},
+	}), "a read's $0 answer does not refuse the model it names")
+}
+
 func TestQueuedPassthroughAcknowledgmentDoesNotRefuseTheModel(t *testing.T) {
 	assert.True(t, passthroughQueuedAcknowledgment([]byte(`{"data":[{"taskType":"imageInference","taskUUID":"a"}]}`)))
 	assert.False(t, passthroughQueuedAcknowledgment([]byte(`{"data":[{"taskType":"imageInference","taskUUID":"a","imageURL":"https://example.invalid/1.png"}]}`)))

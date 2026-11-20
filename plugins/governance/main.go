@@ -33,6 +33,9 @@ const (
 	// names none of its own (string), so the post-hook can judge its answer by it. A body naming
 	// several is refused under a dollar budget, and nothing is recorded for it.
 	passthroughBodyModelContextKey schemas.BifrostContextKey = "bf-governance-passthrough-body-model"
+	// passthroughReadContextKey marks a passthrough read (GET or HEAD, bool): it runs no model, so
+	// its answer is not judged as one (TXE-7957).
+	passthroughReadContextKey schemas.BifrostContextKey = "bf-governance-passthrough-read"
 
 	VirtualKeyPrefix = "sk-bf-"
 )
@@ -1221,6 +1224,9 @@ func (p *GovernancePlugin) preLLMHook(ctx *schemas.BifrostContext, req *schemas.
 		OpaqueBatchInput: isOpaqueBatchInput(req),
 		request:          req,
 	}
+	if passthroughRead(req) {
+		ctx.SetValue(passthroughReadContextKey, true)
+	}
 	// A passthrough body is forwarded as the provider reads it, and a task array (Runware) names a
 	// model per task that the request itself may not carry. Every model the body names is
 	// evaluated the way inline batch items are, before the request's own pass; a request naming
@@ -1587,6 +1593,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		// A live session's continuation bills its usage but was already counted as a request at admission.
 		sessionContinuation := isLiveSessionContinuation(ctx)
 		bodyModel, _ := ctx.Value(passthroughBodyModelContextKey).(string)
+		read, _ := ctx.Value(passthroughReadContextKey).(bool)
 
 		p.wg.Add(1)
 		go func() {
@@ -1599,7 +1606,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 				}
 			}()
 			// Use the requested model for usage tracking
-			p.postHookWorker(result, err, provider, requestedModel, requestType, requestID, billingNonce, isFinalChunk, attemptNumber, fallbackIndex, sessionContinuation, pricingScopes, accountedBudgets, accountedRateLimits, routingMetadata, bodyModel)
+			p.postHookWorker(result, err, provider, requestedModel, requestType, requestID, billingNonce, isFinalChunk, attemptNumber, fallbackIndex, sessionContinuation, pricingScopes, accountedBudgets, accountedRateLimits, routingMetadata, bodyModel, read)
 		}()
 	} else if bodyModel, _ := ctx.Value(passthroughBodyModelContextKey).(string); bodyModel != "" && (!bifrost.IsStreamRequestType(requestType) || isFinalChunk) && passthroughGenerated(result) {
 		// A passthrough whose body named the model it runs, answered with no usage the provider
@@ -2050,7 +2057,7 @@ func responseTokensUsed(result *schemas.BifrostResponse) int {
 //   - isFinalChunk: Whether the request is the final chunk
 //   - skipRequestCount: Whether this is a session continuation that must not count as a request
 //   - pricingScopes: Prebuilt pricing lookup scopes using governance VK ID (nil if not applicable)
-func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, provider schemas.ModelProvider, model string, requestType schemas.RequestType, requestID string, billingNonce string, isFinalChunk bool, attemptNumber int, fallbackIndex int, skipRequestCount bool, pricingScopes *modelcatalog.PricingLookupScopes, budgets, rateLimits []schemas.Limit, routingMetadata *schemas.BifrostRoutingMetadata, bodyModel string) {
+func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, provider schemas.ModelProvider, model string, requestType schemas.RequestType, requestID string, billingNonce string, isFinalChunk bool, attemptNumber int, fallbackIndex int, skipRequestCount bool, pricingScopes *modelcatalog.PricingLookupScopes, budgets, rateLimits []schemas.Limit, routingMetadata *schemas.BifrostRoutingMetadata, bodyModel string, passthroughRead bool) {
 	// Determine if request was successful
 	success := (result != nil)
 	billedReason := "success"
@@ -2113,7 +2120,7 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifro
 		// An answer charged to a dollar budget that priced at $0 spent nothing against it: logged,
 		// and the model refused under a budget from now on (TXE-7957, unpricedbudget.go).
 		// A passthrough naming no model of its own is judged by the models its body names.
-		if len(budgets) > 0 && budgetPricingOf(requestType) == budgetPricingAnswer && deliveredAnswer(result) {
+		if len(budgets) > 0 && budgetPricingOf(requestType) == budgetPricingAnswer && !passthroughRead && deliveredAnswer(result) {
 			priced := model
 			if priced == "" {
 				priced = bodyModel
