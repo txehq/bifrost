@@ -4,6 +4,7 @@ package governance
 import (
 	"fmt"
 	"strings"
+	"sync/atomic"
 
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/schemas"
@@ -55,6 +56,10 @@ type EvaluationRequest struct {
 	// batchModes indexes an inline batch's pricing modes by model once for every pass PreLLMHook
 	// makes over the batch's models (copies of this request share it); nil for any other request.
 	batchModes *inlineBatchModes
+	// Background marks a Responses create sent with background: true, for a caller that has no
+	// request to hand. With request set, the gate reads it from the request itself, only when a
+	// budget applies (TXE-7963).
+	Background bool `json:"background,omitempty"`
 }
 
 // EvaluationResult is a governance verdict: whether the request may proceed, and why not when it
@@ -77,6 +82,10 @@ type BudgetResolver struct {
 	// unpriced holds the triples whose admitted answers priced at $0 under a dollar budget
 	// (TXE-7957, unpricedbudget.go).
 	unpriced *unpricedAnswers
+	// providerJobAccounting says whether framework/jobaccounting settles provider jobs on this
+	// deployment, so a job priced at settlement is charged to its budgets (TXE-7963). Off until
+	// the transport says otherwise: a job nothing settles must not be admitted under a budget.
+	providerJobAccounting atomic.Bool
 }
 
 // NewBudgetResolver creates a new budget-based governance resolver

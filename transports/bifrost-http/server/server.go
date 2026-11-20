@@ -631,6 +631,10 @@ func (s *BifrostHTTPServer) markPluginDisabled(name string) error {
 
 // getGovernancePluginName returns the governance plugin name from context or default
 func (s *BifrostHTTPServer) getGovernancePluginName() string {
+	// A nil *BifrostContext would reach governancePluginNameFromContext as a non-nil interface.
+	if s.Ctx == nil {
+		return governance.PluginName
+	}
 	return governancePluginNameFromContext(s.Ctx)
 }
 

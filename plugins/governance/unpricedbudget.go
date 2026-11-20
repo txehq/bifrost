@@ -282,6 +282,10 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 	if budgetPricingOf(requestType) == budgetPricingNone || passthroughRead(evaluationRequest.request) {
 		return nil
 	}
+	// A queued answer nothing will price is not charged at all, priced model or not (TXE-7963).
+	if refusal := r.refuseUnsettledUnderBudget(evaluationRequest); refusal != nil {
+		return refusal
+	}
 	provider := evaluationRequest.Provider
 	if budgetPricingOf(requestType) == budgetPricingUnpriced {
 		return &EvaluationResult{

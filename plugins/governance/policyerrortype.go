@@ -15,6 +15,8 @@ var policyErrorTypes = map[string]schemas.ErrorType{
 	missingRequiredHeadersType:                schemas.ErrorTypePolicyAccessDenied,
 	string(DecisionModelBlocked):              schemas.ErrorTypePolicyModelBlocked,
 	string(DecisionModelUnpriced):             schemas.ErrorTypePolicyModelBlocked,
+	string(DecisionBackgroundUnsettled):       schemas.ErrorTypePolicyModelBlocked,
+	string(DecisionJobUnsettled):              schemas.ErrorTypePolicyModelBlocked,
 	string(DecisionProviderBlocked):           schemas.ErrorTypePolicyProviderBlocked,
 	string(DecisionMCPToolBlocked):            schemas.ErrorTypePolicyToolBlocked,
 	string(DecisionRateLimited):               schemas.ErrorTypePolicyRateLimited,

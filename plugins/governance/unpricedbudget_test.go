@@ -215,6 +215,8 @@ func preLLM(t testing.TB, plugin *GovernancePlugin, vk string, req *schemas.Bifr
 // batch whose items are all priced, and an operation that is never charged are unaffected.
 func TestUnpricedModelUnderADollarBudgetIsRefusedBeforeTheCall(t *testing.T) {
 	plugin, _ := unpricedBudgetPlugin(t)
+	// Batch creates are charged at settlement, so they are admitted only where it runs (TXE-7963).
+	plugin.SetProviderJobAccountingEnabled(true)
 
 	for i := 0; i < 3; i++ {
 		requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", chatOn("house-llm")), "chat on a model with no row")
@@ -468,6 +470,8 @@ func TestQueuedOrCachedAnswerDoesNotRefuseTheModel(t *testing.T) {
 // the model.
 func TestUnbilledSettledJobDoesNotRefuseTheModel(t *testing.T) {
 	plugin, _ := unpricedBudgetPlugin(t)
+	// A job is charged at settlement only where job accounting settles it (TXE-7963).
+	plugin.SetProviderJobAccountingEnabled(true)
 	video := &schemas.BifrostRequest{
 		RequestType:            schemas.VideoGenerationRequest,
 		VideoGenerationRequest: &schemas.BifrostVideoGenerationRequest{Provider: schemas.OpenAI, Model: "clip-1"},
