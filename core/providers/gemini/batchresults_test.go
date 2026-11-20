@@ -1758,3 +1758,23 @@ func TestGeminiBatchCreateRefusesMoreLinesThanTheLimit(t *testing.T) {
 		assert.Equal(t, limit, int(gjson.Get(vendor.batchBody, "batch.inputConfig.requests.requests.#").Int()), "every line converted and sent")
 	})
 }
+
+// BenchmarkGeminiBatchNativeOutput measures what a Gemini batch retrieve now does on top of its
+// decode (TXE-7030): find metadata.output (or a done operation's response) and copy it so it
+// outlives the pooled body. A job without output costs the two lookups only.
+func BenchmarkGeminiBatchNativeOutput(b *testing.B) {
+	pending := []byte(`{"name":"batches/b1","metadata":{"name":"batches/b1","state":"BATCH_STATE_RUNNING","batchStats":{"requestCount":"2"}}}`)
+	done := []byte(`{"name":"batches/b1","done":true,"metadata":{"name":"batches/b1","state":"BATCH_STATE_SUCCEEDED","batchStats":{"requestCount":"2"},` +
+		`"output":{"inlinedResponses":{"inlinedResponses":[{"response":{"embedding":{"values":[0.11,0.12]}}},{"response":{"embedding":{"values":[0.21,0.22]}}}]}}}}`)
+	for _, tc := range []struct {
+		name string
+		body []byte
+	}{{"running, no output", pending}, {"succeeded, two inline embeddings", done}} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = geminiBatchNativeOutput(tc.body)
+			}
+		})
+	}
+}

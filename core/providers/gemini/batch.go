@@ -1,6 +1,7 @@
 package gemini
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -12,6 +13,53 @@ import (
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
+
+// The model methods BatchCreate sends a batch to, models/{model}:<method>. The /genai
+// ingress classifies a request by the same list, so a batch method the provider sends has a
+// native route to create it (TXE-7030; transports' genai tests fail on one without).
+const (
+	GeminiBatchGenerateContentMethod   = "batchGenerateContent"
+	GeminiAsyncBatchEmbedContentMethod = "asyncBatchEmbedContent"
+)
+
+// GeminiBatchCreateMethods lists every batch-create method BatchCreate sends.
+var GeminiBatchCreateMethods = []string{GeminiBatchGenerateContentMethod, GeminiAsyncBatchEmbedContentMethod}
+
+// geminiBatchNativeOutput returns a batch job's output object as the vendor sent it:
+// metadata.output, or the done operation's response when the metadata carries none. It is a
+// copy, so it outlives the pooled response body. Nil when the job has no output yet.
+func geminiBatchNativeOutput(body []byte) []byte {
+	for _, path := range []string{"metadata.output", "response"} {
+		if out := providerUtils.GetJSONField(body, path); out.Exists() && out.IsObject() {
+			return append([]byte(nil), out.Raw...)
+		}
+	}
+	return nil
+}
+
+// ToGeminiBatchRetrieveBody is the body the native /genai route returns for a batch job:
+// ToGeminiBatchRetrieveResponse, with the vendor's own output object, inline responses
+// included, at metadata.output, where Google's SDK reads it. The SDK takes
+// metadata.output.inlinedResponses as a generateContent batch's results and, when they hold
+// embeddings, as an embedding batch's (python-genai t_recv_batch_job_destination renames them
+// to inlinedEmbedContentResponses), so the object goes back unchanged. The unified retrieve
+// response has no field for inline results, so without it the route returned the job's state
+// and counts and no results.
+func ToGeminiBatchRetrieveBody(resp *schemas.BifrostBatchRetrieveResponse) (interface{}, error) {
+	job := ToGeminiBatchRetrieveResponse(resp)
+	if job == nil || len(resp.NativeOutput) == 0 {
+		return job, nil
+	}
+	encoded, err := providerUtils.MarshalSorted(job)
+	if err != nil {
+		return nil, err
+	}
+	withOutput, err := providerUtils.SetRawJSONField(encoded, "metadata.output", resp.NativeOutput)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(withOutput), nil
+}
 
 // ToGeminiBatchGenerateContentRequest converts one Bifrost batch request body into the
 // Gemini GenerateContentRequest shape used for batch input. OpenAI-style bodies (with
