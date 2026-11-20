@@ -11528,3 +11528,24 @@ func TestKimiCacheWriteFromTheRequestContextIsPricedAtTheRequestedTTL(t *testing
 		})
 	}
 }
+
+// Named both typed and in extra params with different values, either tier may be the one rendered,
+// so the job is charged the dearer by what each is charged, not by pixels: with an override that
+// prices 720p above the unbanded rate and no 1080p band, an xAI create with typed 720p (which xAI
+// sends) and extra 1080p is charged at 720p, not at the unbanded rate 1080p falls back to
+// (TXE-7101, review of #404).
+func TestVideoBandSize_ConflictingTiersChargeTheDearerByRate(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		OutputCostPerSecond:     bifrost.Ptr(0.10),
+		OutputCostPerSecond720p: bifrost.Ptr(0.20),
+	}
+	seconds := 6
+	d := VideoPricingDimensions{Resolution: "720p", Extra: map[string]any{"resolution": "1080p"}, Seconds: &seconds}
+	assert.Equal(t, "720p", d.bandSize(schemas.XAI, &p, false))
+	d = VideoPricingDimensions{Resolution: "1080p", Extra: map[string]any{"resolution": "720p"}, Seconds: &seconds}
+	assert.Equal(t, "720p", d.bandSize(schemas.Gemini, &p, false), "the extra tier, which Gemini sends, is the dearer")
+	// Both cheaper than the unbanded rate: neither lowers the price.
+	cheap := configstoreTables.TableModelPricing{OutputCostPerSecond: bifrost.Ptr(0.40), OutputCostPerSecond480p: bifrost.Ptr(0.05), OutputCostPerSecond720p: bifrost.Ptr(0.10)}
+	d = VideoPricingDimensions{Resolution: "480p", Extra: map[string]any{"resolution": "720p"}, Seconds: &seconds}
+	assert.Equal(t, "", d.bandSize(schemas.XAI, &cheap, false))
+}

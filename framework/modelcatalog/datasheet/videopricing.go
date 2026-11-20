@@ -339,11 +339,9 @@ func (d VideoPricingDimensions) requestedTier(renderer schemas.ModelProvider) (s
 	typed, typedKnown := tierFor(reader, d.Resolution)
 	extraTier, _ := d.Extra["resolution"].(string)
 	extra, extraKnown := tierFor(reader, extraTier)
-	// Named both ways with different values, the converters disagree on which one is sent:
-	// Gemini reads extra_params.resolution first, xAI and BytePlus the typed field, falling back to
-	// the extra only when the typed field is empty, whatever it holds. Neither can lower the price
-	// then; the dearer is priced as a tier the provider may ignore.
-	if typedRaw, extraRaw := strings.TrimSpace(d.Resolution), strings.TrimSpace(extraTier); typedRaw != "" && extraRaw != "" && !strings.EqualFold(typedRaw, extraRaw) {
+	// Named both ways with different values, neither is trusted (conflictingTiers). Without rates
+	// the larger is returned; bandSize compares the two by charge instead.
+	if d.conflictingTiers() {
 		if videoResolutionBand(extra) > videoResolutionBand(typed) {
 			return extra, false
 		}
@@ -359,6 +357,16 @@ func (d VideoPricingDimensions) requestedTier(renderer schemas.ModelProvider) (s
 	default:
 		return extra, false
 	}
+}
+
+// conflictingTiers reports whether the request named its tier both typed and in extra params, with
+// different values. The converters disagree on which one is sent then: Gemini reads
+// extra_params.resolution first, xAI and BytePlus the typed field, falling back to the extra only
+// when the typed field is empty, whatever it holds. So neither can lower the price.
+func (d VideoPricingDimensions) conflictingTiers() bool {
+	extraTier, _ := d.Extra["resolution"].(string)
+	typedRaw, extraRaw := strings.TrimSpace(d.Resolution), strings.TrimSpace(extraTier)
+	return typedRaw != "" && extraRaw != "" && !strings.EqualFold(typedRaw, extraRaw)
 }
 
 // tierFor is the tier label a requested tier names a rate band by, or "" when it names none,
@@ -404,6 +412,22 @@ func (d VideoPricingDimensions) bandSize(provider schemas.ModelProvider, pricing
 	if d.SizeReported && videoResolutionBand(d.Size) > 0 {
 		return d.Size
 	}
+	job := d.job()
+	if d.conflictingTiers() {
+		// Either tier may be the one rendered, so the job is charged the dearest of the two and the
+		// size, by what each is charged: an override can price a lower band above a higher one.
+		reader := schemas.VideoTierReaderFor(d.renderer(provider))
+		extraTier, _ := d.Extra["resolution"].(string)
+		best, bestCharge := d.Size, videoBandCharge(pricing, d.Size, audio, d.Seconds, job)
+		for _, requested := range []string{d.Resolution, extraTier} {
+			if tier, _ := tierFor(reader, requested); tier != "" {
+				if charge := videoBandCharge(pricing, tier, audio, d.Seconds, job); charge > bestCharge {
+					best, bestCharge = tier, charge
+				}
+			}
+		}
+		return best
+	}
 	tier, rendered := d.requestedTier(d.renderer(provider))
 	if tier == "" {
 		return d.Size
@@ -411,7 +435,6 @@ func (d VideoPricingDimensions) bandSize(provider schemas.ModelProvider, pricing
 	if rendered {
 		return tier
 	}
-	job := d.job()
 	if videoBandCharge(pricing, tier, audio, d.Seconds, job) > videoBandCharge(pricing, d.Size, audio, d.Seconds, job) {
 		return tier
 	}
