@@ -4041,6 +4041,11 @@ func HandleOpenAIImageGenerationStreaming(
 	if fieldErr := checkOpenAIImageGenerationFields(ctx, request); fieldErr != nil {
 		return nil, fieldErr
 	}
+	// A streamed request for more than one image is refused: the stream ends on the first completed
+	// event, so later images would be dropped while the vendor bills them (TXE-7116).
+	if countErr := checkOpenAIImageStreamCount(imageGenerationN(request), imageGenerationRawBody(ctx, request)); countErr != nil {
+		return nil, countErr
+	}
 
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
@@ -5783,6 +5788,12 @@ func HandleOpenAIImageEditStreamRequest(
 	// A unified field OpenAI's edit API has no field for is refused, never dropped (TXE-6984).
 	if fieldErr := checkOpenAIImageEditFields(ctx, request); fieldErr != nil {
 		return nil, fieldErr
+	}
+	// A streamed edit for more than one image is refused, as for generation (TXE-7116).
+	if request != nil && request.Params != nil {
+		if countErr := checkOpenAIImageStreamCount(request.Params.N, nil); countErr != nil {
+			return nil, countErr
+		}
 	}
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, streamIdleTimeoutInSeconds)
 	// Time the request conversion as the convertor phase.

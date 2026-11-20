@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 
+	"github.com/bytedance/sonic"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 )
@@ -144,6 +145,38 @@ func checkOpenAIImageEditFields(ctx *schemas.BifrostContext, request *schemas.Bi
 		return nil
 	}
 	return schemas.NewUnsupportedParameterError(param, "")
+}
+
+// checkOpenAIImageStreamCount refuses a streamed image generation or edit that asks for more than
+// one image (fork, TXE-7116, contract C4 and C5). HandleOpenAIImageGenerationStreaming and
+// HandleOpenAIImageEditStreamRequest end the stream on the first completed event and report
+// usage.output_images from that one event. If the vendor streams one completed event per image,
+// every image after the first is dropped while the vendor bills all n. OpenAI's reference does not
+// say how a stream with n greater than 1 behaves, and no recorded trace exists, so such a request is
+// answered 400 caller_unsupported_parameter naming n before any upstream call. The non-streaming
+// routes still take any n.
+//
+// The check is in the shared handlers, not keyed on the provider name, so every provider that
+// streams through them is covered: openai, azure, and custom providers built on openai. n is read
+// from the parsed params and, when the caller's raw body is sent as is, from that JSON body as
+// well. A large payload streamed to the vendor unparsed is not checked: Bifrost cannot read its n.
+func checkOpenAIImageStreamCount(n *int, rawBody []byte) *schemas.BifrostError {
+	count := 0
+	if n != nil {
+		count = *n
+	}
+	if count <= 1 && len(rawBody) > 0 {
+		if node, err := sonic.Get(rawBody, "n"); err == nil {
+			if v, err := node.Int64(); err == nil && v > 1 {
+				count = int(v)
+			}
+		}
+	}
+	if count <= 1 {
+		return nil
+	}
+	return schemas.NewUnsupportedParameterError("n", fmt.Sprintf(
+		"n must be 1 when stream is true: the image stream delivers one finished image, got n=%d; send the request without stream to get %d images", count, count))
 }
 
 // setStreamedOutputImages writes usage.output_images on the completed frame of an OpenAI image
@@ -709,4 +742,24 @@ func parseImageVariationFormDataBodyFromRequest(writer *multipart.Writer, openai
 	}
 
 	return nil
+}
+
+// imageGenerationN is the n a generation request asks for, nil when it names none.
+func imageGenerationN(request *schemas.BifrostImageGenerationRequest) *int {
+	if request == nil || request.Params == nil {
+		return nil
+	}
+	return request.Params.N
+}
+
+// imageGenerationRawBody is the caller's body when it is sent to the vendor as is, else nil.
+func imageGenerationRawBody(ctx *schemas.BifrostContext, request *schemas.BifrostImageGenerationRequest) []byte {
+	if ctx == nil || request == nil {
+		return nil
+	}
+	raw, ok := providerUtils.CheckAndGetRawRequestBody(ctx, request)
+	if !ok {
+		return nil
+	}
+	return raw
 }

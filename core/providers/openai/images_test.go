@@ -993,3 +993,129 @@ func TestImageStreamReportsOutputImages(t *testing.T) {
 		t.Fatalf("a vendor-reported count was overwritten: %d", *reported.Usage.OutputImages)
 	}
 }
+
+// TXE-7116 (contract C4, C5): the OpenAI image stream handlers end on the first completed event and
+// report usage.output_images from it, so a streamed request for more than one image would drop
+// every image after the first while OpenAI bills all of them. Such a request is refused 400
+// caller_unsupported_parameter naming n, before any upstream call, on generation and edit, from the
+// parsed params and from a raw body sent as is. n=1 and an unset n still stream with one call, and
+// the non-streaming routes still take n=2 (TestImageResponsesReportOutputImages).
+func TestImageStreamRefusesMoreThanOneImage(t *testing.T) {
+	// A pass-through post hook, so a stream that is wrongly opened fails the assertion, not a nil hook.
+	passHook := func(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return resp, err
+	}
+	checkRefused := func(t *testing.T, stream chan *schemas.BifrostStreamChunk, bifrostErr *schemas.BifrostError, calls int) {
+		t.Helper()
+		if stream != nil || bifrostErr == nil {
+			t.Fatalf("a stream was opened (err %+v), want a 400 naming n", bifrostErr)
+		}
+		if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+			t.Fatalf("status = %v, want 400", bifrostErr.StatusCode)
+		}
+		if got := bifrostErr.ResolveErrorType(); got != schemas.ErrorTypeCallerUnsupportedParameter {
+			t.Fatalf("error_type = %q, want %q", got, schemas.ErrorTypeCallerUnsupportedParameter)
+		}
+		if bifrostErr.Error == nil || bifrostErr.Error.Param != "n" {
+			t.Fatalf("error.param = %+v, want \"n\"", bifrostErr.Error)
+		}
+		if calls != 0 {
+			t.Fatalf("upstream calls = %d, want 0", calls)
+		}
+	}
+	generation := func(params *schemas.ImageGenerationParameters) *schemas.BifrostImageGenerationRequest {
+		return &schemas.BifrostImageGenerationRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-image-1.5",
+			Input:    &schemas.ImageGenerationInput{Prompt: "two foxes"},
+			Params:   params,
+		}
+	}
+	edit := func(params *schemas.ImageEditParameters) *schemas.BifrostImageEditRequest {
+		return &schemas.BifrostImageEditRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-image-1.5",
+			Input:    &schemas.ImageEditInput{Prompt: "two hats", Images: []schemas.ImageInput{{Image: []byte("\x89PNG\r\n\x1a\nfake")}}},
+			Params:   params,
+		}
+	}
+	for _, n := range []int{2, 4} {
+		t.Run(fmt.Sprintf("generation n=%d", n), func(t *testing.T) {
+			provider, calls, _, _ := imageTestProvider(t, http.StatusOK, imageTestOKBody)
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			stream, bifrostErr := provider.ImageGenerationStream(ctx, passHook, nil, imageTestKey(), generation(&schemas.ImageGenerationParameters{N: schemas.Ptr(n), PartialImages: schemas.Ptr(1)}))
+			checkRefused(t, stream, bifrostErr, *calls)
+		})
+		t.Run(fmt.Sprintf("edit n=%d", n), func(t *testing.T) {
+			provider, calls, _, _ := imageTestProvider(t, http.StatusOK, imageTestOKBody)
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			stream, bifrostErr := provider.ImageEditStream(ctx, passHook, nil, imageTestKey(), edit(&schemas.ImageEditParameters{N: schemas.Ptr(n), PartialImages: schemas.Ptr(1)}))
+			checkRefused(t, stream, bifrostErr, *calls)
+		})
+	}
+	t.Run("generation raw body n=2", func(t *testing.T) {
+		provider, calls, _, _ := imageTestProvider(t, http.StatusOK, imageTestOKBody)
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+		req := generation(nil)
+		req.RawRequestBody = []byte(`{"model":"gpt-image-1.5","prompt":"two foxes","n":2,"stream":true}`)
+		stream, bifrostErr := provider.ImageGenerationStream(ctx, passHook, nil, imageTestKey(), req)
+		checkRefused(t, stream, bifrostErr, *calls)
+	})
+	// The check is in the shared handler, not keyed on the provider: a custom provider built on
+	// openai streams through the same handler and gets the same refusal.
+	t.Run("custom provider on the shared handler", func(t *testing.T) {
+		provider, calls, _, _ := imageTestProvider(t, http.StatusOK, imageTestOKBody)
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		req := generation(&schemas.ImageGenerationParameters{N: schemas.Ptr(2)})
+		req.Provider = "my-openai-compatible"
+		stream, bifrostErr := HandleOpenAIImageGenerationStreaming(ctx, provider.streamingClient, provider.networkConfig.BaseURL+"/v1/images/generations",
+			req, nil, nil, 0, false, false, "my-openai-compatible", passHook, nil, nil, nil, testNoopLogger{}, nil)
+		checkRefused(t, stream, bifrostErr, *calls)
+		editReq := edit(&schemas.ImageEditParameters{N: schemas.Ptr(2)})
+		editReq.Provider = "my-openai-compatible"
+		stream, bifrostErr = HandleOpenAIImageEditStreamRequest(ctx, provider.streamingClient, provider.networkConfig.BaseURL+"/v1/images/edits",
+			editReq, nil, nil, 0, false, false, "my-openai-compatible", passHook, nil, nil, nil, testNoopLogger{}, nil)
+		checkRefused(t, stream, bifrostErr, *calls)
+	})
+	for _, tc := range []struct {
+		name string
+		n    *int
+	}{{"n unset", nil}, {"n=1", schemas.Ptr(1)}} {
+		t.Run("generation "+tc.name+" streams", func(t *testing.T) {
+			sse := "data: " + `{"type":"image_generation.completed","b64_json":"aGk=","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}` + "\n\n"
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				_, _ = io.Copy(io.Discard, r.Body)
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, sse)
+			}))
+			t.Cleanup(server.Close)
+			provider := NewOpenAIProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL}}, testNoopLogger{})
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			postHook := func(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				return resp, err
+			}
+			stream, bifrostErr := provider.ImageGenerationStream(ctx, postHook, nil, imageTestKey(), generation(&schemas.ImageGenerationParameters{N: tc.n}))
+			if bifrostErr != nil {
+				t.Fatalf("stream setup: %+v", bifrostErr.Error)
+			}
+			var final *schemas.BifrostImageGenerationStreamResponse
+			for chunk := range stream {
+				if chunk != nil && chunk.BifrostError != nil {
+					t.Fatalf("stream error: %+v", chunk.BifrostError.Error)
+				}
+				if chunk != nil && chunk.BifrostImageGenerationStreamResponse != nil {
+					final = chunk.BifrostImageGenerationStreamResponse
+				}
+			}
+			if final == nil || final.Usage == nil || final.Usage.OutputImages == nil || *final.Usage.OutputImages != 1 {
+				t.Fatalf("completed frame = %+v, want usage.output_images 1", final)
+			}
+			if calls != 1 {
+				t.Fatalf("upstream calls = %d, want 1", calls)
+			}
+		})
+	}
+}
