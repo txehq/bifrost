@@ -533,6 +533,57 @@ func (s *Store) CalculateBatchCostDetailsForUsage(usage *schemas.BifrostLLMUsage
 	}
 }
 
+// BatchPriceStatus is PriceStatus for a batch line settled as requestType: whether the row
+// CalculateBatchCostDetailsForUsage resolves carries the rates it applies (fork, TXE-7957). An image
+// line needs an image-token rate and the input token rate; a text line the input token rate, and
+// the output one unless it is an embedding; any other mode has no batch price. A batch admitted on
+// a price its settlement cannot use is parked uncharged, so admission reads the same rules.
+func (s *Store) BatchPriceStatus(provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *LookupScopes) PriceStatus {
+	if model == "" {
+		return Unpriced
+	}
+	var lookupScopes LookupScopes
+	if scopes != nil {
+		lookupScopes = *scopes
+	}
+	if lookupScopes.Provider == "" {
+		lookupScopes.Provider = string(provider)
+	}
+	requestType = normalizeStreamRequestType(requestType)
+	pricing := s.resolvePricing(schemas.RoutingInfo{Provider: provider, Model: model}, requestType, lookupScopes)
+	if pricing == nil {
+		return Unpriced
+	}
+	input := resolveBatchRate(pricing.InputCostPerToken, pricing.InputCostPerTokenBatches)
+	rates := []*float64{input}
+	switch requestType {
+	case schemas.ImageGenerationRequest, schemas.ImageEditRequest:
+		image := pricing.OutputCostPerImageTokenBatches
+		if image == nil {
+			image = pricing.OutputCostPerImageToken
+		}
+		rates = append(rates, image)
+	case schemas.BatchResultsRequest, schemas.ChatCompletionRequest, schemas.TextCompletionRequest, schemas.ResponsesRequest:
+		rates = append(rates, resolveBatchRate(pricing.OutputCostPerToken, pricing.OutputCostPerTokenBatches))
+	case schemas.EmbeddingRequest:
+	default:
+		return Unpriced
+	}
+	free := pricing.CostPerRequest == nil || *pricing.CostPerRequest == 0
+	for _, rate := range rates {
+		if rate == nil {
+			return Unpriced
+		}
+		if *rate != 0 {
+			free = false
+		}
+	}
+	if free {
+		return Free
+	}
+	return Priced
+}
+
 // scaledRate returns rate multiplied by m, or nil for a nil rate.
 func scaledRate(rate *float64, m float64) *float64 {
 	if rate == nil {

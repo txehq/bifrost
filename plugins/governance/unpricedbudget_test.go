@@ -269,6 +269,10 @@ func TestUnpricedModelUnderADollarBudgetIsRefusedBeforeTheCall(t *testing.T) {
 	// A batch naming no endpoint is settled as chat (Anthropic's Messages, Gemini's generateContent).
 	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", endpointBatch("", "", "embed-1")), "an endpoint-less batch on a model priced only for embeddings")
 	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", endpointBatch("", "", "gpt-4o")), "an endpoint-less batch on a chat-priced model is served")
+	// An image batch is settled at image-token rates: a model priced for images otherwise is not
+	// priced for a batch.
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", endpointBatch(schemas.BatchEndpointImageGeneration, "", "token-image")), "an image batch on a row with no input token rate")
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", endpointBatch("", "", "seconds-chat")), "a batch on a chat row priced per second")
 	envelopeModel := "gpt-4o"
 	envelope := endpointBatch(schemas.BatchEndpointEmbeddings, "", "embed-1")
 	envelope.BatchCreateRequest.Model = &envelopeModel

@@ -112,6 +112,12 @@ func (mc *ModelCatalog) PriceStatus(provider schemas.ModelProvider, model string
 	return mc.datasheet.PriceStatus(provider, model, requestType, (*datasheet.LookupScopes)(scopes))
 }
 
+// BatchPriceStatus is PriceStatus for a batch line settled as requestType; see
+// datasheet.Store.BatchPriceStatus.
+func (mc *ModelCatalog) BatchPriceStatus(provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *PricingLookupScopes) PriceStatus {
+	return mc.datasheet.BatchPriceStatus(provider, model, requestType, (*datasheet.LookupScopes)(scopes))
+}
+
 // PassthroughPricingRequestType is the request type a passthrough answer is priced as: inferred,
 // as pricing infers it, from the provider path and the usage the provider reported (fork, TXE-7957).
 func PassthroughPricingRequestType(provider schemas.ModelProvider, path string, usage *schemas.BifrostPassthroughUsage) schemas.RequestType {

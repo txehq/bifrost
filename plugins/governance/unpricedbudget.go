@@ -365,6 +365,15 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 					model, provider, mode),
 			}
 		}
+		// A batch is settled at batch rates: a price its settlement cannot apply (an image row priced
+		// per image, a chat row priced per second) parks the job uncharged.
+		if requestType == schemas.BatchCreateRequest && r.batchPriceStatus(provider, model, mode, scopes) == modelcatalog.PriceUnpriced {
+			return &EvaluationResult{
+				Decision: DecisionModelUnpriced,
+				Reason: fmt.Sprintf("model %q on provider %q has no batch price for %s requests, so a batch on it cannot be charged to a dollar budget; add a token-rate pricing override for it",
+					model, provider, mode),
+			}
+		}
 	}
 	// Which key serves the request, and so which override prices it, is chosen after this runs:
 	// every row the request could be priced as is checked against what its budgets remember.
@@ -533,7 +542,26 @@ func pricingModesOf(requestType schemas.RequestType) []schemas.RequestType {
 
 // priceIdentityIn is priceIdentity for one pricing mode.
 func (r *BudgetResolver) priceIdentityIn(provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) (string, modelcatalog.PriceStatus) {
-	bestRow, best := r.modelCatalog.PriceIdentity(provider, model, requestType, scopes)
+	return r.bestOverKeyScopes(provider, model, scopes, func(candidate string, candidateScopes *modelcatalog.PricingLookupScopes) (string, modelcatalog.PriceStatus) {
+		return r.modelCatalog.PriceIdentity(provider, candidate, requestType, candidateScopes)
+	})
+}
+
+// batchPriceStatus is the best batch price status (modelcatalog.BatchPriceStatus) of a batch line
+// settled as requestType, under the scopes given and under each configured key's, as
+// priceIdentityIn reads a request's price.
+func (r *BudgetResolver) batchPriceStatus(provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) modelcatalog.PriceStatus {
+	_, status := r.bestOverKeyScopes(provider, model, scopes, func(candidate string, candidateScopes *modelcatalog.PricingLookupScopes) (string, modelcatalog.PriceStatus) {
+		return "", r.modelCatalog.BatchPriceStatus(provider, candidate, requestType, candidateScopes)
+	})
+	return status
+}
+
+// bestOverKeyScopes reads lookup under the scopes given, then, unless that prices the model,
+// under each configured key's scope for the model and the key's alias targets, and returns the
+// best it found: which key serves the request is chosen after admission.
+func (r *BudgetResolver) bestOverKeyScopes(provider schemas.ModelProvider, model string, scopes *modelcatalog.PricingLookupScopes, lookup func(candidate string, candidateScopes *modelcatalog.PricingLookupScopes) (string, modelcatalog.PriceStatus)) (string, modelcatalog.PriceStatus) {
+	bestRow, best := lookup(model, scopes)
 	if best == modelcatalog.PricePriced || model == "" || r.governanceInMemoryStore == nil {
 		return bestRow, best
 	}
@@ -558,7 +586,7 @@ func (r *BudgetResolver) priceIdentityIn(provider schemas.ModelProvider, model s
 			if candidate == "" {
 				continue
 			}
-			if row, status := r.modelCatalog.PriceIdentity(provider, candidate, requestType, &keyScopes); status > best {
+			if row, status := lookup(candidate, &keyScopes); status > best {
 				bestRow, best = row, status
 				if best == modelcatalog.PricePriced {
 					return bestRow, best

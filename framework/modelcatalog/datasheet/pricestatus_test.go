@@ -17,6 +17,40 @@ import (
 
 // PriceStatus tells a model a dollar budget cannot be charged for (no row, or a row that sets no
 // price) from a free one (prices set, all $0) and a priced one (TXE-7957).
+// A batch line is priced only by the rates batch settlement applies (CalculateBatchCostDetailsForUsage):
+// a row priced per image or per second has a synchronous price and no batch one.
+func TestBatchPriceStatus(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o", "openai", "chat"):                {Model: "gpt-4o", Provider: "openai", Mode: "chat", InputCostPerToken: schemas.Ptr(2.5e-06), OutputCostPerToken: schemas.Ptr(1e-05)},
+		makeKey("input-only", "openai", "chat"):            {Model: "input-only", Provider: "openai", Mode: "chat", InputCostPerToken: schemas.Ptr(2.5e-06)},
+		makeKey("free-model", "openai", "chat"):            {Model: "free-model", Provider: "openai", Mode: "chat", InputCostPerToken: schemas.Ptr(0.0), OutputCostPerToken: schemas.Ptr(0.0)},
+		makeKey("per-second", "openai", "chat"):            {Model: "per-second", Provider: "openai", Mode: "chat", InputCostPerSecond: schemas.Ptr(0.001)},
+		makeKey("embed", "openai", "embedding"):            {Model: "embed", Provider: "openai", Mode: "embedding", InputCostPerToken: schemas.Ptr(1e-07)},
+		makeKey("per-image", "openai", "image_generation"): {Model: "per-image", Provider: "openai", Mode: "image_generation", OutputCostPerImage: schemas.Ptr(0.04)},
+		makeKey("token-image", "openai", "image_generation"): {Model: "token-image", Provider: "openai", Mode: "image_generation",
+			InputCostPerToken: schemas.Ptr(5e-06), OutputCostPerImageToken: schemas.Ptr(4e-05)},
+	})
+	cases := []struct {
+		model       string
+		requestType schemas.RequestType
+		want        PriceStatus
+	}{
+		{"gpt-4o", schemas.ChatCompletionRequest, Priced},
+		{"gpt-4o", schemas.BatchResultsRequest, Priced}, // an endpoint-less batch settles as chat
+		{"input-only", schemas.ChatCompletionRequest, Unpriced},
+		{"free-model", schemas.ChatCompletionRequest, Free},
+		{"per-second", schemas.ChatCompletionRequest, Unpriced},
+		{"embed", schemas.EmbeddingRequest, Priced},
+		{"per-image", schemas.ImageGenerationRequest, Unpriced},
+		{"token-image", schemas.ImageGenerationRequest, Priced},
+		{"gpt-4o", schemas.SpeechRequest, Unpriced}, // no batch settlement for the mode
+		{"no-row", schemas.ChatCompletionRequest, Unpriced},
+	}
+	for _, tc := range cases {
+		assert.Equal(t, tc.want, s.BatchPriceStatus(schemas.OpenAI, tc.model, tc.requestType, nil), "%s %s", tc.model, tc.requestType)
+	}
+}
+
 func TestPriceStatus(t *testing.T) {
 	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"):                  {Model: "gpt-4o", Provider: "openai", Mode: "chat", InputCostPerToken: schemas.Ptr(2.5e-06)},
