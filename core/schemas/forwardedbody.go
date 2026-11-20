@@ -5,6 +5,7 @@ import (
 	"io"
 	"mime"
 	"mime/multipart"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -221,12 +222,22 @@ func multipartPartName(part *multipart.Part) (string, bool) {
 	default:
 		return "", false
 	}
+	if extendedNameParameter.MatchString(dispositions[0]) {
+		return "", false
+	}
 	disposition, params, err := mime.ParseMediaType(dispositions[0])
 	if err != nil || disposition != "form-data" || params["name"] == "" {
 		return "", false
 	}
 	return params["name"], true
 }
+
+// extendedNameParameter matches an RFC 2231 extended or continued name parameter (name*=,
+// name*0=, name*0*=). Go decodes it into "name" and lets it win over a plain name; a vendor
+// that ignores RFC 2231 reads the plain one. Form names are plain in every API this forwards
+// to, so a part carrying one is refused rather than read one way. It may also match inside a
+// quoted value, which refuses a body that is merely odd: the check fails closed.
+var extendedNameParameter = regexp.MustCompile(`(?i);\s*name\*`)
 
 // utf8ByteOrderMark opens some JSON documents; Python's json.loads, among others, skips it.
 var utf8ByteOrderMark = []byte{0xef, 0xbb, 0xbf}
@@ -368,6 +379,9 @@ func ambiguousMultipartField(body []byte, boundary string) (string, bool) {
 		}
 		if name == "" || strings.HasSuffix(name, "[]") {
 			continue
+		}
+		if gated := gatedBodyKey(name); gated != "" {
+			name = gated
 		}
 		if previous, repeated := seen[name]; repeated && (text || previous.text) {
 			return "multipart field " + name, true

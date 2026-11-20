@@ -141,11 +141,23 @@ func TestAmbiguousMultipartField(t *testing.T) {
 		"Content-Disposition: form-data; name=\"model\"\r\nContent-Disposition: form-data; name=\"prompt\"",
 		"Content-Disposition: form-data; name=\"model",
 		"Content-Disposition: form-data",
+		"Content-Disposition: form-data; name=\"prompt\"; name*=utf-8''model",
+		"Content-Disposition: form-data; name=\"prompt\"; NAME*0=\"model\"",
 	} {
 		raw := []byte("--b\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\na\r\n--b\r\n" + disposition + "\r\n\r\nb\r\n--b--\r\n")
 		if member, ambiguous := AmbiguousBodyMember(raw, "multipart/form-data; boundary=b"); !ambiguous || member != "multipart part with an unreadable Content-Disposition" {
 			t.Errorf("a part with %q = %q, %t; want it refused", disposition, member, ambiguous)
 		}
+	}
+	// A gated name repeated in another case is a repeat: a vendor may fold form names.
+	folded := []byte("--b\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\na\r\n--b\r\nContent-Disposition: form-data; name=\"Model\"\r\n\r\nb\r\n--b--\r\n")
+	if member, ambiguous := AmbiguousBodyMember(folded, "multipart/form-data; boundary=b"); !ambiguous || member != "multipart field model" {
+		t.Errorf("model then Model = %q, %t; want it refused", member, ambiguous)
+	}
+	// A filename* parameter is not a name parameter and stays admitted.
+	filenameStar := []byte("--b\r\nContent-Disposition: form-data; name=\"image\"; filename*=utf-8''a.png\r\n\r\nx\r\n--b--\r\n")
+	if member, ambiguous := AmbiguousBodyMember(filenameStar, "multipart/form-data; boundary=b"); ambiguous {
+		t.Errorf("a filename* part = %q, %t; want it admitted", member, ambiguous)
 	}
 	// A part with no Content-Disposition names no field and is not refused.
 	noDisposition := []byte("--b\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\na\r\n--b\r\nContent-Type: text/plain\r\n\r\nb\r\n--b--\r\n")
