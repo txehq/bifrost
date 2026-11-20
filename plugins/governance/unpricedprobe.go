@@ -49,6 +49,9 @@ type unpricedProbes struct {
 	confirmed map[string]*confirmedRows // scope -> rows confirmed priced
 	inflight  map[string]inflightHold   // scope + "\x00" + row -> the probe holding it
 	now       func() time.Time
+	// afterAcquire runs once a request has taken its hold, outside the lock; tests use it to land
+	// another request's settlement in the window before the gate reads the refusal record again.
+	afterAcquire func()
 }
 
 // inflightHold is one probe's hold on a (scope, row): which probe holds it, and since when. A hold
@@ -199,6 +202,9 @@ func (r *BudgetResolver) probeUnconfirmed(ctx *schemas.BifrostContext, requestTy
 	}
 	if probe != nil {
 		ctx.SetValue(unpricedProbeContextKey, probe)
+		if r.probes.afterAcquire != nil {
+			r.probes.afterAcquire()
+		}
 	}
 	return nil
 }

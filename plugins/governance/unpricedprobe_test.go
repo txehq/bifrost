@@ -80,6 +80,24 @@ func TestConcurrentRequestsTakeAtMostOneUnpricedAnswer(t *testing.T) {
 	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", probeImageRequest("token-image")), "after the one $0 answer the row is refused")
 }
 
+// A request that passes the refusal check and then takes the hold just after another request's $0
+// answer was recorded and its hold released is refused on the second read of the record, and
+// leaves no hold behind.
+func TestRefusalRecordedBeforeTheHoldIsTakenIsReadAgain(t *testing.T) {
+	plugin, _ := unpricedBudgetPlugin(t)
+	plugin.resolver.probes.afterAcquire = func() {
+		plugin.resolver.probes.afterAcquire = nil
+		require.True(t, plugin.resolver.noteUnpricedAnswer(schemas.OpenAI, "token-image", "", schemas.ImageGenerationRequest, schemas.ImageGenerationRequest, 0, nil, "settled-meanwhile", []string{"budget-unpriced"}, "vk:vk-budget"))
+	}
+	ctx := resolverCtx(plugin.store, "sk-bf-budget")
+	_, shortCircuit, err := plugin.PreLLMHook(ctx, probeImageRequest("token-image"))
+	require.NoError(t, err)
+	requireUnpricedRefusal(t, shortCircuit, "the refusal recorded while the hold was being taken")
+	assert.Nil(t, ctx.Value(unpricedProbeContextKey), "the refused request holds nothing")
+	_, busy := plugin.resolver.probes.acquire(unpricedScopes([]string{"budget-unpriced"}, "vk:vk-budget"), []string{"anything"})
+	assert.False(t, busy)
+}
+
 // An answer that priced above $0 confirms the row for the key: concurrent requests on it are then
 // admitted.
 func TestPricedAnswerLiftsTheProbe(t *testing.T) {

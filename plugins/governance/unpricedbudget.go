@@ -432,7 +432,10 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 	// Which key serves the request, and so which override prices it, is chosen after this runs:
 	// every row the request could be priced as is checked against what its budgets remember.
 	budgetIDs := unpricedScopes(limitIDs(budgets), unpricedHolder(ctx))
-	if r.unpriced.holdsAny(budgetIDs) {
+	rememberedRefusal := func() *EvaluationResult {
+		if !r.unpriced.holdsAny(budgetIDs) {
+			return nil
+		}
 		for _, mode := range checkedModes {
 			_, rows := r.priceIdentities(provider, model, mode, scopes)
 			for _, row := range rows {
@@ -445,8 +448,25 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 				}
 			}
 		}
+		return nil
 	}
-	return r.probeUnconfirmed(ctx, requestType, probeRow, limitIDs(budgets))
+	if refusal := rememberedRefusal(); refusal != nil {
+		return refusal
+	}
+	if probed := r.probeUnconfirmed(ctx, requestType, probeRow, limitIDs(budgets)); probed != nil {
+		return probed
+	}
+	// The request that held the row may have recorded its $0 answer and released the hold between
+	// the check above and this request taking the hold (the usage worker records before it
+	// releases): read the record again now that this request holds the row.
+	if held, ok := ctx.Value(unpricedProbeContextKey).(*unpricedProbe); ok && held != nil {
+		if refusal := rememberedRefusal(); refusal != nil {
+			held.release()
+			ctx.ClearValue(unpricedProbeContextKey)
+			return refusal
+		}
+	}
+	return nil
 }
 
 // noteUnpricedAnswer is called for an answer charged to the dollar budgets budgetIDs. When the
