@@ -2293,6 +2293,66 @@ func TestHybrid_MergeUploadFailureThatCannotRecoverIsNotRetried(t *testing.T) {
 	assert.Equal(t, "not json", string(data), "the stored object is left untouched")
 }
 
+// landThenFailStore stores the first Put whose key ends in suffix and still
+// reports an error for it, as a Put whose response is lost after the server
+// stored the object does.
+type landThenFailStore struct {
+	*objectstore.InMemoryObjectStore
+	suffix string
+	failed atomic.Bool
+}
+
+func (s *landThenFailStore) Put(ctx context.Context, key string, data []byte, tags map[string]string) error {
+	return s.PutWithOptions(ctx, key, data, tags, objectstore.PutOptions{})
+}
+
+func (s *landThenFailStore) PutWithOptions(ctx context.Context, key string, data []byte, tags map[string]string, opts objectstore.PutOptions) error {
+	err := s.InMemoryObjectStore.PutWithOptions(ctx, key, data, tags, opts)
+	if err == nil && strings.HasSuffix(key, s.suffix) && s.failed.CompareAndSwap(false, true) {
+		return fmt.Errorf("simulated timeout after the object was stored")
+	}
+	return err
+}
+
+// TestHybrid_MergeRetryStillDeletesReplacedFormatObject: a merge that replaces
+// an object in the other format must delete that copy even when its first Put
+// landed but reported an error. The retry then finds the new object; if it
+// forgot the old key, a later switch back would serve the old copy, which lacks
+// the late output.
+func TestHybrid_MergeRetryStillDeletesReplacedFormatObject(t *testing.T) {
+	jsonHybrid, inner, mem := newTestHybrid(t)
+	ctx := context.Background()
+	defer jsonHybrid.Close(ctx) // shares inner with the parquet hybrid; closed last
+	ts := time.Now().UTC()
+
+	input, output := "written as json", "answered after the switch"
+	require.NoError(t, jsonHybrid.CreateIfNotExists(ctx, &Log{
+		ID: "retry-format", Timestamp: ts, CreatedAt: ts, Object: "chat.completion", Provider: "openai", Model: "gpt-4o", Status: "processing",
+		InputHistoryParsed: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &input}}},
+	}))
+	waitForOffload(t, jsonHybrid, inner, "retry-format")
+	legacy := ObjectKey("test", ts, "retry-format")
+	require.Equal(t, []string{legacy}, mem.Keys())
+
+	objects := &landThenFailStore{InMemoryObjectStore: mem, suffix: parquetObjectExt}
+	hybrid := newHybridLogStore(inner, objects, "test", hybridTestLogger{}, nil, nil)
+	hybrid.setObjectFormat(objectstore.FormatParquet, objectstore.CompressionZstd)
+	hybrid.uploadRetryBackoff = []time.Duration{time.Millisecond, time.Millisecond}
+	defer hybrid.Close(ctx)
+
+	require.NoError(t, hybrid.BatchUpdate(ctx, []*Log{{ID: "retry-format", Status: "success", OutputMessageParsed: &schemas.ChatMessage{
+		Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &output},
+	}}}))
+	key := objectKey("test", "logs", ts, "retry-format", parquetObjectExt)
+	waitForUploads(t, hybrid, func() bool { return objects.failed.Load() })
+	require.True(t, objects.failed.Load(), "the first parquet Put reported an error")
+	assert.Equal(t, []string{key}, mem.Keys(), "the retried merge still removes the json object it replaced")
+	assert.Zero(t, hybrid.DroppedUploads())
+	stored := requireParquetObject(t, mem, key)
+	assert.Contains(t, stored, input)
+	assert.Contains(t, stored, output)
+}
+
 // TestHybrid_EveryUploadKindHasRetryPolicy fails when an uploadKind constant is
 // declared in hybrid.go without an entry in uploadKindRetries, so every new
 // upload kind gets a decision on whether its failed Puts are retried.

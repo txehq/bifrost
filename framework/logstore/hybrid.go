@@ -267,7 +267,11 @@ func (h *HybridLogStore) processUpload(work *uploadWork) {
 	// that copy: a later switch back must not find it first and serve or merge
 	// stale content.
 	if work.staleKey != "" {
-		if err := h.objects.Delete(ctx, work.staleKey); err != nil {
+		// A fresh deadline: retried attempts may have used up the one ctx carries.
+		delCtx, delCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		err := h.objects.Delete(delCtx, work.staleKey)
+		delCancel()
+		if err != nil {
 			h.logger.Warn("objectstore: failed to delete replaced object %s for log %s: %v", work.staleKey, work.logID, err)
 		}
 	}
@@ -416,9 +420,10 @@ func (h *HybridLogStore) mergeIntoStoredObject(ctx context.Context, work *upload
 	}
 	if foundKey != work.key {
 		// The stored copy is in the other format; the merged object replaces it.
+		// Never cleared by a later attempt: an earlier Put may have landed the new
+		// object before its error came back, so a retry finds the new key while the
+		// old copy still waits for deletion.
 		work.staleKey = foundKey
-	} else {
-		work.staleKey = ""
 	}
 	for k, v := range overlay {
 		if v != "" {
