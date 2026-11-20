@@ -923,7 +923,7 @@ func TestRepeatedBodyModelCannotRunAModelTheKeyIsNotAllowed(t *testing.T) {
 // content with no model in it. JSON naming a model under such a type is refused 400 by the guard
 // (a vendor parsing it would run a model no gate saw, past a model's own limits), so the body
 // that once ran a model the key forbids ({"model":"gpt-4o","model":"o1"} as text/plain) is still
-// refused. A text upload that only opens with "{" reaches governance, and a key restricted to
+// refused. Strict JSON naming no model reaches governance as content, and a key restricted to
 // some models refuses it as naming none.
 func TestBodyDeclaredAsAnotherTypeNamesNoModel(t *testing.T) {
 	vk := buildVirtualKeyWithProviders("vk-typed", "sk-bf-typed", "Typed VK", []configstoreTables.TableVirtualKeyProviderConfig{
@@ -949,7 +949,7 @@ func TestBodyDeclaredAsAnotherTypeNamesNoModel(t *testing.T) {
 	}{
 		{"repeated model as text/plain", "text/plain", `{"model":"gpt-4o","model":"o1"}`, true, ""},
 		{"allowed model as octet-stream", "application/octet-stream", `{"model":"gpt-4o"}`, true, ""},
-		{"text upload opening with a brace", "text/plain", `{hello`, false, DecisionModelBlocked},
+		{"text naming no model", "text/plain", `{"note":"hello"}`, false, DecisionModelBlocked},
 		{"allowed model as JSON", "application/json", `{"model":"gpt-4o"}`, false, DecisionAllow},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -961,7 +961,8 @@ func TestBodyDeclaredAsAnotherTypeNamesNoModel(t *testing.T) {
 				assert.Equal(t, 400, *preErr.StatusCode)
 				assert.Equal(t, schemas.ErrorTypeCallerInvalidRequest, preErr.ExtraFields.ErrorType)
 				require.NotNil(t, preErr.Error)
-				assert.Contains(t, preErr.Error.Message, "is JSON naming model but is declared "+tc.contentType)
+				assert.Contains(t, preErr.Error.Message, "model")
+				assert.Contains(t, preErr.Error.Message, "but is declared "+tc.contentType)
 			case tc.want == DecisionAllow:
 				assert.Nil(t, preErr)
 			default:

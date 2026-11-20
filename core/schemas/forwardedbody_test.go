@@ -334,59 +334,60 @@ func TestAmbiguousMultipartJSONPart(t *testing.T) {
 	}
 }
 
-// TestMislabeledJSONBody: a body declared as a non-JSON type that is strict JSON naming a gated
-// key at its root is reported (TXE-8012); uploads that only look like JSON are not.
+// TestMislabeledJSONBody: a body every reader calls content (or declared JSON Lines) that a vendor
+// could parse as JSON is refused unless it is strict JSON naming nothing gated (TXE-8012, option
+// E): what a lenient parser accepts is open-ended, so non-strict JSON is refused outright.
 func TestMislabeledJSONBody(t *testing.T) {
+	const naming, object, lenient = "is JSON naming model", "is JSON naming a provider object", "is JSON that does not parse strictly"
 	for _, tc := range []struct {
-		contentType, body, mediaType, key string
+		contentType, body, mediaType, problem string
 	}{
-		{"text/plain", `{"model":"gpt-4o"}`, "text/plain", "model"},
-		{"application/octet-stream", ` [{"task":1},{"Model":"x"}]`, "application/octet-stream", "model"},
-		{"text/plain; charset=utf-8", "\ufeff{\"MODEL\":\"x\"}", "text/plain", "model"},
-		{"text/plain", `{hello`, "", ""},
-		{"text/plain", `{"model":"a",}`, "text/plain", "model"},
-		// JSON Lines naming a model must be declared as JSON Lines; as octet-stream it is refused.
-		{"application/octet-stream", "{\"model\":\"a\"}\n{\"model\":\"b\"}\n", "application/octet-stream", "model"},
-		{"application/octet-stream", "{\"key\":\"a\"}\n{\"key\":\"b\"}\n", "", ""},
+		{"text/plain", `{"model":"gpt-4o"}`, "text/plain", naming},
+		{"application/octet-stream", ` [{"task":1},{"Model":"x"}]`, "application/octet-stream", naming},
+		{"text/plain; charset=utf-8", "\ufeff{\"MODEL\":\"x\"}", "text/plain", naming},
+		// Non-strict JSON under a non-JSON type: refused whatever it names.
+		{"text/plain", `{hello`, "text/plain", lenient},
+		{"text/plain", `{"model":"a",}`, "text/plain", lenient},
+		{"text/plain", `{"parameters":{"durationSeconds":4,"durationSeconds":8},}`, "text/plain", lenient},
+		{"text/plain", `{model: 'X'}`, "text/plain", lenient},
+		{"application/octet-stream", "{\"model\":\"a\"}\n{\"model\":\"b\"}\n", "application/octet-stream", lenient},
+		// Strict JSON repeating any member: every reader of it, a pricing field's included.
+		{"text/plain", `{"parameters":{"durationSeconds":4,"durationSeconds":8}}`, "text/plain", "is JSON that gives parameters.durationSeconds more than once"},
+		// Strict JSON naming nothing gated, once each, is content.
 		{"text/plain", `{"metadata":{"model":"a"}}`, "", ""},
 		{"text/plain", `["model"]`, "", ""},
+		{"text/plain", `{"note":"hello"}`, "", ""},
+		// Not content: JSON, or undeclared and opening like JSON, is the guard's.
 		{"application/json", `{"model":"a"}`, "", ""},
 		{"", `{"model":"a"}`, "", ""},
-		// Declared JSON Lines is no request document: a line naming a model at its root is refused
-		// (core exempts file upload routes, where batch files live).
-		{"application/x-ndjson", `{"model":"a"}`, "application/x-ndjson", "model"},
+		// Declared JSON Lines is no request document: a line naming a model or an object at its
+		// root is refused (core exempts file upload routes, where batch files live).
+		{"application/x-ndjson", `{"model":"a"}`, "application/x-ndjson", naming},
 		{"application/jsonl", "{\"custom_id\":\"1\",\"body\":{\"model\":\"a\"}}\n", "", ""},
+		{"application/x-ndjson", "{\"custom_id\":\"1\",\"file_id\":\"file-x\"}\n", "application/x-ndjson", object},
 		// Every encoding is read, whatever the charset claims.
-		{"text/plain; charset=utf-16le", `{"model":"X"}`, "text/plain", "model"},
+		{"text/plain; charset=utf-16le", `{"model":"X"}`, "text/plain", naming},
 		// Unicode space and comments before the opener.
-		{"text/plain", "\u00a0\u2028/* x */ // y\n{\"model\":\"X\"}", "text/plain", "model"},
-		// Any backslash in non-strict JSON could spell a key.
-		{"text/plain", "{\"mo\\\nde\\154\":\"X\",}", "text/plain", "model"},
-		{"text/plain", `{"a":"\\",}`, "text/plain", "model"},
+		{"text/plain", "\u00a0\u2028/* x */ // y\n{\"model\":\"X\"}", "text/plain", naming},
+		{"text/plain", strings.Repeat("\u3000", 342) + `{"model":"X"}`, "text/plain", naming},
+		{"text/plain", strings.Repeat(" ", 1023) + "/* c */" + `{"model":"X"}`, "text/plain", naming},
+		{"text/plain", strings.Repeat("[", maxForwardedBodyDepth+1) + `{"a":1}`, "text/plain", "is a JSON body nested more than 512 levels"},
+		// Media is never read as JSON text.
 		{"audio/wav", "RIFF\x00\x00\x00\x00WAVEfmt {\"model\"", "", ""},
-		// Content that may name a provider object: governance's object gate reads only JSON.
-		{"text/plain", `{"file_id":"file-foreign"}`, "text/plain", "a provider object"},
-		{"text/plain", `{"File_ID":"file-foreign",}`, "text/plain", "a provider object"},
-		{"application/octet-stream", `{"input":[{"fileUri":"gs://bucket/o"}]}`, "application/octet-stream", "a provider object"},
-		{"text/plain", `{"tools":[{"type":"code_interpreter"}]}`, "text/plain", "a provider object"},
-		{"text/plain", `{"note":"see s3://bucket/key"}`, "text/plain", "a provider object"},
-		{"application/x-ndjson", "{\"custom_id\":\"1\",\"file_id\":\"file-x\"}\n", "application/x-ndjson", "a provider object"},
-		{"text/plain", `{hello, nothing named here`, "", ""},
-		// The 1 KB prefix must not decide on a rune or a "/" it cut: ideographic spaces (3 bytes)
-		// to byte 1025, and spaces to a "/" at byte 1024 that opens a comment.
-		{"text/plain", strings.Repeat("\u3000", 342) + `{"model":"X"}`, "text/plain", "model"},
-		{"text/plain", strings.Repeat(" ", 1023) + "/* c */" + `{"model":"X"}`, "text/plain", "model"},
-		// JSON a lenient parser accepts: no strict reading places the key, so a mention is enough.
-		{"text/plain", `{"model":"X",}`, "text/plain", "model"},
-		{"text/plain", `{model: 'X'}`, "text/plain", "model"},
-		{"text/plain", `{"mod\u0065l":"X",}`, "text/plain", "model"},
-		{"text/plain", `{"m\x6fdel":"X"`, "text/plain", "model"},
-		{"text/plain", strings.Repeat("[", maxForwardedBodyDepth+1) + `{"MODEL":"x"}`, "text/plain", "model"},
-		{"text/plain", `{hello, a text file with no key`, "", ""},
+		{"audio/l16", "{\x00\"\x00m\x00", "", ""},
+		// Provider objects: governance's object gate reads only JSON.
+		{"text/plain", `{"file_id":"file-foreign"}`, "text/plain", object},
+		{"text/plain", `{"File_ID":"file-foreign"}`, "text/plain", object},
+		{"application/octet-stream", `{"input":[{"fileUri":"gs://bucket/o"}]}`, "application/octet-stream", object},
+		{"text/plain", `{"tools":[{"type":"code_interpreter"}]}`, "text/plain", object},
+		{"text/plain", `{"note":"see s3://bucket/key"}`, "text/plain", object},
+		{"text/plain", `{"mod\u0065l":"X"}`, "text/plain", naming},
+		// Prose is content.
+		{"text/plain", `hello {"model":"x"}`, "", ""},
 	} {
-		mediaType, key, mislabeled := MislabeledJSONBody([]byte(tc.body), tc.contentType)
-		if mislabeled != (tc.key != "") || mediaType != tc.mediaType || key != tc.key {
-			t.Errorf("MislabeledJSONBody(%q, %q) = %q, %q, %t; want %q, %q", tc.body, tc.contentType, mediaType, key, mislabeled, tc.mediaType, tc.key)
+		mediaType, problem, mislabeled := MislabeledJSONBody([]byte(tc.body), tc.contentType)
+		if mislabeled != (tc.problem != "") || mediaType != tc.mediaType || problem != tc.problem {
+			t.Errorf("MislabeledJSONBody(%q, %q) = %q, %q, %t; want %q, %q", tc.body, tc.contentType, mediaType, problem, mislabeled, tc.mediaType, tc.problem)
 		}
 	}
 }
@@ -426,23 +427,25 @@ func TestMislabeledJSONBodyInAnotherEncoding(t *testing.T) {
 	for _, tc := range []struct {
 		name, contentType string
 		body              []byte
-		key               string
+		problem           string
 	}{
-		{"UTF-16LE with a byte order mark", "text/plain", encode(naming, 2, false, true), "model"},
-		{"UTF-16BE with a byte order mark", "application/octet-stream", encode(naming, 2, true, true), "model"},
+		{"UTF-16LE with a byte order mark", "text/plain", encode(naming, 2, false, true), "is JSON naming model"},
+		{"UTF-16BE with a byte order mark", "application/octet-stream", encode(naming, 2, true, true), "is JSON naming model"},
 		// UTF-16LE with no mark opens with the byte "{", so undeclared it is read as JSON and
 		// refused for not parsing strictly; big-endian opens with NUL and is content until read here.
-		{"UTF-16BE by its NUL pattern, undeclared", "", encode(naming, 2, true, false), "model"},
-		{"UTF-16BE by its declared charset", "text/plain; charset=utf-16be", encode(naming, 2, true, false), "model"},
-		{"UTF-32BE with a byte order mark", "text/plain", encode(naming, 4, true, true), "model"},
-		{"UTF-32LE by its NUL pattern", "text/plain", encode(naming, 4, false, false), "model"},
+		{"UTF-16BE by its NUL pattern, undeclared", "", encode(naming, 2, true, false), "is JSON naming model"},
+		{"UTF-16BE by its declared charset", "text/plain; charset=utf-16be", encode(naming, 2, true, false), "is JSON naming model"},
+		{"UTF-32BE with a byte order mark", "text/plain", encode(naming, 4, true, true), "is JSON naming model"},
+		// Opens with the byte "{" read as UTF-8, where it is not strict: refused by that reading.
+		{"UTF-32LE by its NUL pattern", "text/plain", encode(naming, 4, false, false), "is JSON that does not parse strictly"},
 		{"UTF-16 JSON naming no gated key", "text/plain", encode(`{"a":1}`, 2, false, true), ""},
 		{"UTF-16 text", "text/plain", encode("hello", 2, false, true), ""},
+		{"UTF-16 non-strict JSON", "text/plain", encode(`{"a":1,}`, 2, false, true), "is JSON that does not parse strictly"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, key, mislabeled := MislabeledJSONBody(tc.body, tc.contentType)
-			if mislabeled != (tc.key != "") || key != tc.key {
-				t.Fatalf("MislabeledJSONBody = %q, %t; want %q", key, mislabeled, tc.key)
+			_, problem, mislabeled := MislabeledJSONBody(tc.body, tc.contentType)
+			if mislabeled != (tc.problem != "") || problem != tc.problem {
+				t.Fatalf("MislabeledJSONBody = %q, %t; want %q", problem, mislabeled, tc.problem)
 			}
 		})
 	}

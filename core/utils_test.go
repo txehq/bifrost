@@ -1105,15 +1105,23 @@ func TestRunLLMPreHooksRefusesAmbiguousForwardedBody(t *testing.T) {
 }
 
 // TestRunLLMPreHooksForwardsABodyDeclaredAsAnotherType: the declared type decides how a forwarded
-// body is read (TXE-8012). A text/plain or octet-stream upload opening with "{" is content and is
-// forwarded to the plugins, not refused as JSON that does not parse; a body declared JSON that
-// repeats a member is still refused.
+// body is read (TXE-8012). A text/plain or octet-stream upload opening with "{" is a file on an
+// upload route and is forwarded; on any other route a body that opens like JSON must be strict
+// JSON naming nothing gated, and a body declared JSON that repeats a member is still refused.
 func TestRunLLMPreHooksForwardsABodyDeclaredAsAnotherType(t *testing.T) {
 	typed := func(contentType, body string) *schemas.BifrostRequest {
 		return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
 			Provider: schemas.OpenAI, Method: "POST", Path: "/v1/chat/completions", Body: []byte(body),
 			SafeHeaders: map[string]string{"Content-Type": contentType},
 		}}
+	}
+	// Content uploads opening with "{" are files on an upload route: forwarded (the narrowed
+	// acceptance, TXE-8012). On an inference route the same bodies are refused, since a lenient
+	// vendor could read members no gate saw (option E).
+	upload := func(contentType, body string) *schemas.BifrostRequest {
+		req := typed(contentType, body)
+		req.PassthroughRequest.Provider, req.PassthroughRequest.Path = schemas.Gemini, "/upload/v1beta/files"
+		return req
 	}
 	for _, tc := range []struct{ contentType, body string }{
 		{"text/plain", "{hello, a text file"},
@@ -1122,13 +1130,24 @@ func TestRunLLMPreHooksForwardsABodyDeclaredAsAnotherType(t *testing.T) {
 		{"application/octet-stream", "{\"a\":1}\n{\"a\":2}\n"},
 	} {
 		gate := &bodyReadingGate{fakeRoutingPlugin: fakeRoutingPlugin{name: "gate"}}
-		pipeline := newRoutingCommitPipeline(gate)
-		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-		_, shortCircuit, _ := pipeline.RunLLMPreHooks(ctx, typed(tc.contentType, tc.body))
+		_, shortCircuit, _ := newRoutingCommitPipeline(gate).RunLLMPreHooks(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), upload(tc.contentType, tc.body))
 		if shortCircuit != nil && shortCircuit.Error != nil && shortCircuit.Error.Error != nil {
-			t.Errorf("%s body %q refused: %s", tc.contentType, tc.body, shortCircuit.Error.Error.Message)
+			t.Errorf("%s upload %q refused: %s", tc.contentType, tc.body, shortCircuit.Error.Error.Message)
 		}
-		assert.True(t, gate.ran, "%s body %q did not reach the plugins", tc.contentType, tc.body)
+		assert.True(t, gate.ran, "%s upload %q did not reach the plugins", tc.contentType, tc.body)
+
+		_, shortCircuit, _ = newRoutingCommitPipeline(&bodyReadingGate{fakeRoutingPlugin: fakeRoutingPlugin{name: "gate"}}).RunLLMPreHooks(
+			schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), typed(tc.contentType, tc.body))
+		require.NotNil(t, shortCircuit, "%s body %q to an inference route was admitted", tc.contentType, tc.body)
+		assert.Equal(t, 400, *shortCircuit.Error.StatusCode)
+		assert.Contains(t, shortCircuit.Error.Error.Message, "is JSON that does not parse strictly")
+	}
+	// Strict JSON naming nothing gated is content anywhere.
+	{
+		gate := &bodyReadingGate{fakeRoutingPlugin: fakeRoutingPlugin{name: "gate"}}
+		_, shortCircuit, _ := newRoutingCommitPipeline(gate).RunLLMPreHooks(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), typed("text/plain", `{"note":"hello"}`))
+		assert.Nil(t, shortCircuit)
+		assert.True(t, gate.ran)
 	}
 
 	pipeline := newRoutingCommitPipeline(&bodyReadingGate{fakeRoutingPlugin: fakeRoutingPlugin{name: "gate"}})
@@ -1142,7 +1161,6 @@ func TestRunLLMPreHooksForwardsABodyDeclaredAsAnotherType(t *testing.T) {
 	for _, tc := range []struct{ contentType, body string }{
 		{"text/plain", `{"model":"o1","messages":[]}`},
 		{"application/octet-stream", `{"model":"o1","messages":[]}`},
-		{"text/plain", `{"model":"gpt-4o","model":"o1",}`},
 	} {
 		contentType := tc.contentType
 		gate := &bodyReadingGate{fakeRoutingPlugin: fakeRoutingPlugin{name: "gate"}}
@@ -1558,7 +1576,7 @@ func TestRunLLMPreHooksForwardsABatchInputFileUpload(t *testing.T) {
 	// governance's object gate reads objects only from a body classified JSON.
 	_, refused, _ := newRoutingCommitPipeline(&bodyReadingGate{fakeRoutingPlugin: fakeRoutingPlugin{name: "gate"}}).RunLLMPreHooks(
 		schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
-		passthrough(schemas.OpenAI, "/v1/responses", "text/plain", `{"input":[{"type":"input_file","file_id":"file-foreign"}],}`))
+		passthrough(schemas.OpenAI, "/v1/responses", "text/plain", `{"input":[{"type":"input_file","file_id":"file-foreign"}]}`))
 	require.NotNil(t, refused, "content naming a file id to an inference route was admitted")
 	assert.Contains(t, refused.Error.Error.Message, "is JSON naming a provider object but is declared text/plain")
 	// A route that attaches an existing file by id is no upload: refused the same way.
