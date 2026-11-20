@@ -1102,7 +1102,7 @@ func (s *BifrostHTTPServer) RemoveModelConfig(ctx context.Context, id string) er
 // write that called it added the provider rather than edited one; the reload is the same either
 // way, and a server that wraps this one can tell an operator's edit apart by it.
 func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas.ModelProvider, isNew bool) (*tables.TableProvider, error) {
-	s.syncIgnoreProviderCost(provider)
+	s.syncProviderPricingSettings(provider)
 	if s.Config == nil || s.Config.ConfigStore == nil {
 		return nil, fmt.Errorf("config store not found")
 	}
@@ -1208,13 +1208,36 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 	return updatedProvider, nil
 }
 
-// syncIgnoreProviderCost pushes the provider's ignore_provider_cost setting into the model catalog.
-func (s *BifrostHTTPServer) syncIgnoreProviderCost(provider schemas.ModelProvider) {
+// syncProviderPricingSettings pushes the provider's settings that pricing reads into the model
+// catalog: ignore_provider_cost, and a custom provider's base provider (fork, TXE-7406), from whose
+// datasheet rows a request on it is priced when none is filed under its own name.
+func (s *BifrostHTTPServer) syncProviderPricingSettings(provider schemas.ModelProvider) {
 	if s.Config == nil || s.Config.ModelCatalog == nil {
 		return
 	}
 	pc, err := s.Config.GetProviderConfigRaw(provider)
 	s.Config.ModelCatalog.SetIgnoreProviderCost(provider, err == nil && pc != nil && pc.IgnoreProviderCost)
+	s.Config.ModelCatalog.SetCustomProviderBase(provider, customProviderBase(pc, err))
+}
+
+// customProviderBase is the base provider of a custom provider's config, or "" for any other.
+func customProviderBase(pc *configstore.ProviderConfig, err error) schemas.ModelProvider {
+	if err != nil || pc == nil || pc.CustomProviderConfig == nil {
+		return ""
+	}
+	return pc.CustomProviderConfig.BaseProviderType
+}
+
+// customProviderBases is the base provider of every custom provider in providers, which startup
+// records in the model catalog.
+func customProviderBases(providers map[schemas.ModelProvider]configstore.ProviderConfig) map[schemas.ModelProvider]schemas.ModelProvider {
+	bases := make(map[schemas.ModelProvider]schemas.ModelProvider)
+	for provider, providerConfig := range providers {
+		if base := customProviderBase(&providerConfig, nil); base != "" {
+			bases[provider] = base
+		}
+	}
+	return bases
 }
 
 // RemoveProvider removes a provider from the in-memory store
@@ -1240,6 +1263,7 @@ func (s *BifrostHTTPServer) RemoveProvider(ctx context.Context, provider schemas
 	s.Config.ModelCatalog.InvalidateLiveProvider(provider)
 	s.Config.ModelCatalog.RemoveKeyConfigForProvider(provider)
 	s.Config.ModelCatalog.SetIgnoreProviderCost(provider, false)
+	s.Config.ModelCatalog.SetCustomProviderBase(provider, "")
 
 	return nil
 }
@@ -3414,6 +3438,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		}
 		s.Config.ModelCatalog.ReplaceKeyConfig(snapshot, keyless...)
 		s.Config.ModelCatalog.ReplaceIgnoreProviderCost(ignoreProviderCost)
+		s.Config.ModelCatalog.ReplaceCustomProviderBases(customProviderBases(s.Config.Providers))
 
 		s.RefreshAllLiveModels(ctx)
 	}

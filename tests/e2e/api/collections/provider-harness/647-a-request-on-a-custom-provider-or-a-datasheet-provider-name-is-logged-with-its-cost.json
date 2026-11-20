@@ -1,0 +1,235 @@
+{
+  "name": "647. A request on a custom provider, or on a provider the datasheet names differently, is logged with its cost (custom provider and datasheet provider name cost)",
+  "description": "TXE-7406. Pricing looked rows up only by the name a request was sent to. A custom provider is named by its operator (Tokun's tkp_52), and the datasheet files glm under zai and qwen under dashscope, so 64,222 production requests were logged with no cost. The fixture's pricing sheet has rows only under openai, zai and dashscope. priced_custom is a custom provider over openai; glm and qwen are the fork's own providers. Each is answered by /pp/ownkey with 1 prompt and 1 completion token, $0.000009 at the row's rates. Against a gateway without the fix every row's log has no cost.",
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "if (pm.variables.get('videoSettlementFixture') !== '1') {",
+          "  pm.execution.skipRequest();",
+          "}"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "647.1 priced_custom/fixture-custom-priced POST /v1/chat/completions is logged at $0.000009 (custom provider and datasheet provider name cost)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.variables.set('pricedNameRequestId1', 'priced-name-1-' + Date.now() + '-' + Math.floor(Math.random() * 1e6));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var requestId = pm.variables.get('pricedNameRequestId1');",
+              "pm.test('the chat completion succeeds', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+              "var token = pm.variables.get('setupToken');",
+              "function check(attempt) {",
+              "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + requestId, method: 'GET', header: { 'X-Bifrost-Setup-Token': token } }, function (err, res) {",
+              "    if (!err && res.code === 200 && res.json().status === 'success') {",
+              "      var j = res.json();",
+              "      pm.test('a custom provider over openai is priced from its base provider row', function () {",
+              "        pm.expect(j.provider, JSON.stringify(j)).to.eql('priced_custom');",
+              "        pm.expect(j.cost, 'logged with no cost: ' + JSON.stringify(j)).to.be.a('number');",
+              "        pm.expect(j.cost, JSON.stringify(j)).to.be.closeTo(0.000009, 1e-12);",
+              "      });",
+              "      return;",
+              "    }",
+              "    if (attempt < 10) { setTimeout(function () { check(attempt + 1); }, 1000); return; }",
+              "    pm.test('the log row appeared', function () { pm.expect.fail('log ' + requestId + ' never appeared: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+              "  });",
+              "}",
+              "check(0);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-request-id",
+            "value": "{{pricedNameRequestId1}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"priced_custom/fixture-custom-priced\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "647.2 glm/fixture-glm-priced POST /v1/chat/completions is logged at $0.000009 (custom provider and datasheet provider name cost)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.variables.set('pricedNameRequestId2', 'priced-name-2-' + Date.now() + '-' + Math.floor(Math.random() * 1e6));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var requestId = pm.variables.get('pricedNameRequestId2');",
+              "pm.test('the chat completion succeeds', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+              "var token = pm.variables.get('setupToken');",
+              "function check(attempt) {",
+              "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + requestId, method: 'GET', header: { 'X-Bifrost-Setup-Token': token } }, function (err, res) {",
+              "    if (!err && res.code === 200 && res.json().status === 'success') {",
+              "      var j = res.json();",
+              "      pm.test('glm is priced from the row the datasheet files under zai', function () {",
+              "        pm.expect(j.provider, JSON.stringify(j)).to.eql('glm');",
+              "        pm.expect(j.cost, 'logged with no cost: ' + JSON.stringify(j)).to.be.a('number');",
+              "        pm.expect(j.cost, JSON.stringify(j)).to.be.closeTo(0.000009, 1e-12);",
+              "      });",
+              "      return;",
+              "    }",
+              "    if (attempt < 10) { setTimeout(function () { check(attempt + 1); }, 1000); return; }",
+              "    pm.test('the log row appeared', function () { pm.expect.fail('log ' + requestId + ' never appeared: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+              "  });",
+              "}",
+              "check(0);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-request-id",
+            "value": "{{pricedNameRequestId2}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"glm/fixture-glm-priced\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "647.3 qwen/fixture-qwen-priced POST /v1/chat/completions is logged at $0.000009 (custom provider and datasheet provider name cost)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.variables.set('pricedNameRequestId3', 'priced-name-3-' + Date.now() + '-' + Math.floor(Math.random() * 1e6));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var requestId = pm.variables.get('pricedNameRequestId3');",
+              "pm.test('the chat completion succeeds', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+              "var token = pm.variables.get('setupToken');",
+              "function check(attempt) {",
+              "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + requestId, method: 'GET', header: { 'X-Bifrost-Setup-Token': token } }, function (err, res) {",
+              "    if (!err && res.code === 200 && res.json().status === 'success') {",
+              "      var j = res.json();",
+              "      pm.test('qwen is priced from the row the datasheet files under dashscope', function () {",
+              "        pm.expect(j.provider, JSON.stringify(j)).to.eql('qwen');",
+              "        pm.expect(j.cost, 'logged with no cost: ' + JSON.stringify(j)).to.be.a('number');",
+              "        pm.expect(j.cost, JSON.stringify(j)).to.be.closeTo(0.000009, 1e-12);",
+              "      });",
+              "      return;",
+              "    }",
+              "    if (attempt < 10) { setTimeout(function () { check(attempt + 1); }, 1000); return; }",
+              "    pm.test('the log row appeared', function () { pm.expect.fail('log ' + requestId + ' never appeared: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+              "  });",
+              "}",
+              "check(0);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-request-id",
+            "value": "{{pricedNameRequestId3}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"qwen/fixture-qwen-priced\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    }
+  ]
+}

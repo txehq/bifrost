@@ -3531,7 +3531,6 @@ func markNoOutputImages(imageUsage *schemas.ImageUsage) {
 // applies.
 func (s *Store) resolvePricing(routingInfo schemas.RoutingInfo, requestType schemas.RequestType, scopes LookupScopes) *configstoreTables.TableModelPricing {
 	provider := string(routingInfo.Provider)
-	catalogProvider := normalizeProvider(provider)
 	var aliasModelID, aliasModelName string
 	if rka := routingInfo.ResolvedKeyAlias; rka != nil {
 		aliasModelID = rka.ModelID
@@ -3556,7 +3555,39 @@ func (s *Store) resolvePricing(routingInfo schemas.RoutingInfo, requestType sche
 		scopes.Provider = provider
 	}
 
-	for _, candidate := range []string{serverSideFallbackModel, aliasModelName, aliasModelID, routingInfo.Model} {
+	// Rows filed under the provider's own name win. That lookup is the whole path for an ordinary
+	// request and allocates nothing beyond the result; only when it misses are the fallback names
+	// built: the datasheet's name for the provider, then, for a custom provider, its base
+	// provider's (fork, TXE-7406, see pricingProviders).
+	candidates := [4]string{serverSideFallbackModel, aliasModelName, aliasModelID, routingInfo.Model}
+	catalogProvider := normalizeProvider(provider)
+	if result := s.priceUnder(catalogProvider, candidates, overrideKey, requestType, scopes); result != nil {
+		return result
+	}
+	for _, fallback := range s.pricingProviders(provider) {
+		if fallback == catalogProvider {
+			continue
+		}
+		if result := s.priceUnder(fallback, candidates, overrideKey, requestType, scopes); result != nil {
+			return result
+		}
+	}
+
+	// No base catalog entry found; still try overrides in case the user defined
+	// override-only pricing for a model not in the built-in catalog.
+	s.logger.Debug("pricing not found for any candidate (provider %s), trying override-only pricing keyed by %s", provider, overrideKey)
+	result, applied := s.applyPricingOverrides(overrideKey, requestType, configstoreTables.TableModelPricing{}, scopes)
+	if applied {
+		return &result
+	}
+	s.warnUnpriced(provider, overrideKey, requestType)
+	return nil
+}
+
+// priceUnder prices the first of candidates that has a base row under catalogProvider, with the
+// overrides keyed by overrideKey applied, or returns nil when none has one.
+func (s *Store) priceUnder(catalogProvider string, candidates [4]string, overrideKey string, requestType schemas.RequestType, scopes LookupScopes) *configstoreTables.TableModelPricing {
+	for _, candidate := range candidates {
 		if candidate == "" {
 			continue
 		}
@@ -3573,15 +3604,6 @@ func (s *Store) resolvePricing(routingInfo schemas.RoutingInfo, requestType sche
 		}
 		s.logger.Debug("pricing not found for %s, trying next candidate", candidate)
 	}
-
-	// No base catalog entry found; still try overrides in case the user defined
-	// override-only pricing for a model not in the built-in catalog.
-	s.logger.Debug("pricing not found for any candidate (provider %s), trying override-only pricing keyed by %s", provider, overrideKey)
-	result, applied := s.applyPricingOverrides(overrideKey, requestType, configstoreTables.TableModelPricing{}, scopes)
-	if applied {
-		return &result
-	}
-	s.logger.Debug("no pricing found for wire model %s and provider %s, skipping cost calculation", overrideKey, provider)
 	return nil
 }
 
