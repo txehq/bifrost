@@ -1,6 +1,7 @@
 package governance
 
 import (
+	"bytes"
 	"fmt"
 	"slices"
 	"strings"
@@ -720,10 +721,11 @@ func batchEnvelopeModel(batch *schemas.BifrostBatchCreateRequest) string {
 	return *batch.Model
 }
 
-// passthroughRead reports whether a request is a passthrough read (GET or HEAD): polling an
-// operation or fetching a resource runs no model, so it has nothing to price.
+// passthroughRead reports whether a request is a passthrough read (GET or HEAD with no body):
+// polling an operation or fetching a resource runs no model, so it has nothing to price. A GET
+// carrying a body is forwarded as sent, and an upstream accepting it could run one: it is priced.
 func passthroughRead(req *schemas.BifrostRequest) bool {
-	if req == nil || req.PassthroughRequest == nil {
+	if req == nil || req.PassthroughRequest == nil || len(bytes.TrimSpace(req.PassthroughRequest.Body)) > 0 {
 		return false
 	}
 	switch strings.ToUpper(req.PassthroughRequest.Method) {

@@ -625,6 +625,9 @@ func TestPassthroughReadIsNotPriced(t *testing.T) {
 	post := read("")
 	post.PassthroughRequest.Method = "POST"
 	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", post), "a model-less POST is still refused")
+	withBody := read("")
+	withBody.PassthroughRequest.Body = []byte(`{"prompt":"p"}`)
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", withBody), "a GET carrying a body is priced like any other request")
 
 	ctx := resolverCtx(plugin.store, "sk-bf-budget")
 	_, shortCircuit, err := plugin.PreLLMHook(ctx, read("gpt-4o"))
