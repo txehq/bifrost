@@ -2115,13 +2115,16 @@ func TestBytePlusImageUnsupportedFieldsAreRefusedBeforeArk(t *testing.T) {
 		{"negative_prompt", &schemas.ImageGenerationParameters{NegativePrompt: schemas.Ptr("blur")}, &schemas.ImageEditParameters{NegativePrompt: schemas.Ptr("blur")}},
 		{"num_inference_steps", &schemas.ImageGenerationParameters{NumInferenceSteps: schemas.Ptr(30)}, &schemas.ImageEditParameters{NumInferenceSteps: schemas.Ptr(30)}},
 		{"n", &schemas.ImageGenerationParameters{N: schemas.Ptr(16)}, &schemas.ImageEditParameters{N: schemas.Ptr(16)}},
-		{"n", &schemas.ImageGenerationParameters{N: schemas.Ptr(4)}, &schemas.ImageEditParameters{N: schemas.Ptr(4)}},
+		// n counts against Seedream's 15 images with the reference images: one reference leaves 14 (TXE-7304).
+		{"n", &schemas.ImageGenerationParameters{N: schemas.Ptr(15), InputImages: []string{"https://example.com/ref.png"}}, &schemas.ImageEditParameters{N: schemas.Ptr(15)}},
+		// "disabled" beside n above 1 contradicts it: several images come only from a group generation.
+		{"sequential_image_generation", &schemas.ImageGenerationParameters{N: schemas.Ptr(4), ExtraParams: map[string]interface{}{"sequential_image_generation": "disabled"}}, &schemas.ImageEditParameters{N: schemas.Ptr(4), ExtraParams: map[string]interface{}{"sequential_image_generation": "disabled"}}},
 		{"n", &schemas.ImageGenerationParameters{N: schemas.Ptr(0)}, &schemas.ImageEditParameters{N: schemas.Ptr(0)}},
 		{"mask", nil, &schemas.ImageEditParameters{Mask: []byte("mask")}},
 		{"resolution", &schemas.ImageGenerationParameters{Size: schemas.Ptr("2048x2048"), Resolution: "2K"}, &schemas.ImageEditParameters{Size: schemas.Ptr("2048x2048"), Resolution: "2K"}},
 		// A Go SDK caller may send the tier only as an extra param, which bytePlusImageSize also reads.
 		{"resolution", &schemas.ImageGenerationParameters{Size: schemas.Ptr("2048x2048"), ExtraParams: map[string]interface{}{"resolution": "2K"}}, &schemas.ImageEditParameters{Size: schemas.Ptr("2048x2048"), ExtraParams: map[string]interface{}{"resolution": "2K"}}},
-		// Seedream's group fields set how many images are made: the count is n alone, which must be 1 (TXE-6605 B3, TXE-7124).
+		// Seedream's group fields set how many images are made: the count is n alone (TXE-7124, TXE-7304).
 		{"sequential_image_generation", &schemas.ImageGenerationParameters{ExtraParams: map[string]interface{}{"sequential_image_generation": "auto"}}, &schemas.ImageEditParameters{ExtraParams: map[string]interface{}{"sequential_image_generation": "auto"}}},
 		{"sequential_image_generation", &schemas.ImageGenerationParameters{ExtraParams: map[string]interface{}{"sequential_image_generation": "auto", "sequential_image_generation_options": map[string]interface{}{"max_images": 3}}}, &schemas.ImageEditParameters{ExtraParams: map[string]interface{}{"sequential_image_generation": "auto", "sequential_image_generation_options": map[string]interface{}{"max_images": 3}}}},
 		{"sequential_image_generation_options.max_images", &schemas.ImageGenerationParameters{ExtraParams: map[string]interface{}{"sequential_image_generation_options": map[string]interface{}{"max_images": 4}}}, &schemas.ImageEditParameters{ExtraParams: map[string]interface{}{"sequential_image_generation_options": map[string]interface{}{"max_images": 4}}}},
@@ -2157,16 +2160,122 @@ func TestBytePlusImageUnsupportedFieldsAreRefusedBeforeArk(t *testing.T) {
 		t.Errorf("refused requests must not reach Ark, got %d calls", n)
 	}
 	// The converter refuses the same requests for a caller that skips the entry points.
-	if _, err := byteplus.ToBytePlusImageGenerationRequest(&schemas.BifrostImageGenerationRequest{Model: "m", Input: &schemas.ImageGenerationInput{Prompt: "a"}, Params: &schemas.ImageGenerationParameters{N: schemas.Ptr(3)}}); err == nil {
-		t.Error("converter should refuse n=3 rather than send up to 3 images")
+	if _, err := byteplus.ToBytePlusImageGenerationRequest(&schemas.BifrostImageGenerationRequest{Model: "m", Input: &schemas.ImageGenerationInput{Prompt: "a"}, Params: &schemas.ImageGenerationParameters{N: schemas.Ptr(16)}}); err == nil {
+		t.Error("converter should refuse n=16")
 	}
 	// Group generation switched off, or empty options, ask for no group and are taken.
-	if bifrostErr := byteplus.ValidateBytePlusImageParams(&schemas.ImageGenerationParameters{ExtraParams: map[string]interface{}{"sequential_image_generation": "disabled", "sequential_image_generation_options": map[string]interface{}{}}}, nil); bifrostErr != nil {
+	if bifrostErr := byteplus.ValidateBytePlusImageParams(&schemas.ImageGenerationParameters{ExtraParams: map[string]interface{}{"sequential_image_generation": "disabled", "sequential_image_generation_options": map[string]interface{}{}}}, nil, 0); bifrostErr != nil {
 		t.Errorf("sequential_image_generation disabled should pass, got %+v", bifrostErr.Error)
 	}
 	// n=1, seed and an "auto" size are taken.
-	if bifrostErr := byteplus.ValidateBytePlusImageParams(&schemas.ImageGenerationParameters{N: schemas.Ptr(1), Seed: schemas.Ptr(7), Size: schemas.Ptr("auto"), Resolution: "2K"}, nil); bifrostErr != nil {
+	if bifrostErr := byteplus.ValidateBytePlusImageParams(&schemas.ImageGenerationParameters{N: schemas.Ptr(1), Seed: schemas.Ptr(7), Size: schemas.Ptr("auto"), Resolution: "2K"}, nil, 0); bifrostErr != nil {
 		t.Errorf("n=1, seed, size auto with resolution should pass, got %+v", bifrostErr.Error)
+	}
+}
+
+// TXE-7304 (Connor, 20 Nov 2026, option B): Seedream group image generation is offered. n from
+// 2 to 15 reaches Ark as sequential_image_generation "auto" with max_images n, on every image
+// route; n itself never reaches Ark, and n of 1 or no n asks for no group. Ark returns up to n
+// images: a response with fewer is a 200 whose usage.output_images is the count delivered
+// (Ark's generated_images), which is what is billed. TXE-6605 B3 allows "up to n" for Seedream
+// only. Seedream's own group fields stay refused as extra params
+// (TestBytePlusImageUnsupportedFieldsAreRefusedBeforeArk).
+func TestBytePlusImageNIsAGroupGenerationOfUpToN(t *testing.T) {
+	const threeOfFour = `{"model":"seedream-4-5-251128","created":1,"data":[{"url":"https://cdn.example/0.png"},{"url":"https://cdn.example/1.png"},{"url":"https://cdn.example/2.png"}],"usage":{"generated_images":3,"output_tokens":49152,"total_tokens":49152}}`
+	provider, captured, _ := newMockBytePlus(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST /api/v3/images/generations": func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			if gjson.GetBytes(body, "stream").Bool() {
+				sseResponse(seedreamStreamImage0, seedreamStreamImage2, seedreamStreamDone)(w, r)
+				return
+			}
+			jsonResponse(http.StatusOK, threeOfFour)(w, r)
+		},
+	})
+	ctx := testContext(t)
+	ref := []schemas.ImageInput{{URL: "https://example.com/a.png"}}
+	routes := map[string]func(n *int) *schemas.BifrostError{
+		"generation": func(n *int) *schemas.BifrostError {
+			_, err := provider.ImageGeneration(ctx, testKey(), &schemas.BifrostImageGenerationRequest{Provider: schemas.BytePlus, Model: "seedream-4-5-251128", Input: &schemas.ImageGenerationInput{Prompt: "four seasons"}, Params: &schemas.ImageGenerationParameters{N: n}})
+			return err
+		},
+		"generation stream": func(n *int) *schemas.BifrostError {
+			stream, err := provider.ImageGenerationStream(ctx, passthroughPostHook, nil, testKey(), &schemas.BifrostImageGenerationRequest{Provider: schemas.BytePlus, Model: "seedream-4-5-251128", Input: &schemas.ImageGenerationInput{Prompt: "four seasons"}, Params: &schemas.ImageGenerationParameters{N: n}})
+			if err == nil {
+				drainStream(t, stream)
+			}
+			return err
+		},
+		"edit": func(n *int) *schemas.BifrostError {
+			_, err := provider.ImageEdit(ctx, testKey(), &schemas.BifrostImageEditRequest{Provider: schemas.BytePlus, Model: "seedream-4-5-251128", Input: &schemas.ImageEditInput{Prompt: "four seasons", Images: ref}, Params: &schemas.ImageEditParameters{N: n}})
+			return err
+		},
+		"edit stream": func(n *int) *schemas.BifrostError {
+			stream, err := provider.ImageEditStream(ctx, passthroughPostHook, nil, testKey(), &schemas.BifrostImageEditRequest{Provider: schemas.BytePlus, Model: "seedream-4-5-251128", Input: &schemas.ImageEditInput{Prompt: "four seasons", Images: ref}, Params: &schemas.ImageEditParameters{N: n}})
+			if err == nil {
+				drainStream(t, stream)
+			}
+			return err
+		},
+	}
+	for route, send := range routes {
+		// The edit sends one reference image, which Seedream counts in its 15: n can be 14 there.
+		most := 15
+		if strings.HasPrefix(route, "edit") {
+			most = 14
+		}
+		for _, n := range []int{2, 4, most} {
+			before := len(captured())
+			if err := send(schemas.Ptr(n)); err != nil {
+				t.Fatalf("%s n=%d: %+v", route, n, err.Error)
+			}
+			calls := captured()
+			if len(calls) != before+1 {
+				t.Fatalf("%s n=%d: want one call to Ark, got %d", route, n, len(calls)-before)
+			}
+			body := calls[len(calls)-1].body
+			if got := gjson.GetBytes(body, "sequential_image_generation").String(); got != "auto" {
+				t.Errorf("%s n=%d: sequential_image_generation = %q, want auto: %s", route, n, got, body)
+			}
+			if got := gjson.GetBytes(body, "sequential_image_generation_options.max_images").Int(); got != int64(n) {
+				t.Errorf("%s n=%d: max_images = %d, want n: %s", route, n, got, body)
+			}
+			if gjson.GetBytes(body, "n").Exists() {
+				t.Errorf("%s n=%d: n must not reach Ark: %s", route, n, body)
+			}
+		}
+		for _, n := range []*int{nil, schemas.Ptr(1)} {
+			if err := send(n); err != nil {
+				t.Fatalf("%s n=%v: %+v", route, n, err.Error)
+			}
+			calls := captured()
+			body := calls[len(calls)-1].body
+			if gjson.GetBytes(body, "sequential_image_generation").Exists() || gjson.GetBytes(body, "sequential_image_generation_options").Exists() {
+				t.Errorf("%s n=%v: one image asks for no group: %s", route, n, body)
+			}
+		}
+	}
+
+	// Up to n: three images for n=4 is a 200 billed for three.
+	resp, bifrostErr := provider.ImageGeneration(ctx, testKey(), &schemas.BifrostImageGenerationRequest{Provider: schemas.BytePlus, Model: "seedream-4-5-251128", Input: &schemas.ImageGenerationInput{Prompt: "four seasons"}, Params: &schemas.ImageGenerationParameters{N: schemas.Ptr(4)}})
+	if bifrostErr != nil {
+		t.Fatalf("fewer than n images should be a 200, got %+v", bifrostErr.Error)
+	}
+	if len(resp.Data) != 3 || resp.ContentFilter != nil {
+		t.Errorf("want the 3 delivered images and no content_filter, got %d images, filter %+v", len(resp.Data), resp.ContentFilter)
+	}
+	if resp.Usage == nil || resp.Usage.OutputImages == nil || *resp.Usage.OutputImages != 3 || resp.Usage.OutputTokensDetails == nil || resp.Usage.OutputTokensDetails.NImages != 3 {
+		t.Errorf("usage must count the 3 images delivered, not n=4: %+v", resp.Usage)
+	}
+
+	// Empty options beside n ask for nothing and do not clash with the options n sets.
+	_, bifrostErr = provider.ImageGeneration(ctx, testKey(), &schemas.BifrostImageGenerationRequest{Provider: schemas.BytePlus, Model: "seedream-4-5-251128", Input: &schemas.ImageGenerationInput{Prompt: "four seasons"}, Params: &schemas.ImageGenerationParameters{N: schemas.Ptr(3), ExtraParams: map[string]interface{}{"sequential_image_generation_options": map[string]interface{}{}}}})
+	if bifrostErr != nil {
+		t.Fatalf("n=3 with empty options: %+v", bifrostErr.Error)
+	}
+	calls := captured()
+	if got := gjson.GetBytes(calls[len(calls)-1].body, "sequential_image_generation_options").Raw; got != `{"max_images":3}` {
+		t.Errorf("options = %s, want n's max_images alone", got)
 	}
 }
 
@@ -2265,7 +2374,7 @@ func BenchmarkBytePlusImageGenerationRequestPath(b *testing.B) {
 	req := benchImageRequest()
 	b.ReportAllocs()
 	for b.Loop() {
-		if err := byteplus.ValidateBytePlusImageParams(req.Params, nil); err != nil {
+		if err := byteplus.ValidateBytePlusImageParams(req.Params, nil, 0); err != nil {
 			b.Fatal(err.Error.Message)
 		}
 		if _, err := byteplus.ToBytePlusImageGenerationRequest(req); err != nil {
