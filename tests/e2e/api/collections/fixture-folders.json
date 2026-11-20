@@ -48,7 +48,7 @@
       "reason": "live Kling [PREVIEW] row: it creates and polls a real Kling task, so it needs a vendor key and include_preview=1, which this runner never sets for folder 416"
     },
     {
-      "row": "406.1 gemini/gemini-embedding-001 embedding-batch: inline /v1/embeddings lines create one asyncBatchEmbedContent job, one request per input",
+      "row": "406.1 gemini/gemini-embedding-001 embedding-batch: inline /v1/embeddings lines create one asyncBatchEmbedContent job, one request per line",
       "reason": "live Gemini row: it creates a real asyncBatchEmbedContent job, so it needs a vendor key, and skips itself when providerErrorFixture=1; rows 406.5-406.8 cover create, retrieve and results on the fixture (TXE-6637)"
     },
     {

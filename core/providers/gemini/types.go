@@ -2910,11 +2910,12 @@ type GeminiBatchRequestItem struct {
 // (for example /v1/images/generations), so results can be converted back to the OpenAI
 // shape of that operation without the gateway storing anything about the batch.
 //
-// InputIndex and InputCount are set on the requests of an embedding line that carries
-// several inputs: one EmbedContentRequest embeds one content, so such a line is sent as
-// InputCount consecutive requests, and its results are put back together as one line. They
-// are decimal strings, like every other value in this metadata. GeminiBatchMetadata reads
-// the same four fields back from an inline response.
+// InputIndex and InputCount were set on the requests of an embedding line that carried
+// several inputs, sent as InputCount consecutive requests whose results are put back
+// together as one line. The gateway refuses such a line now (TXE-7033) and sets neither;
+// they are kept so the results of a job created before that still read. They are decimal
+// strings, like every other value in this metadata. GeminiBatchMetadata reads the same four
+// fields back from an inline response.
 type GeminiBatchRequestMetadata struct {
 	Key        string `json:"key,omitempty"`
 	Endpoint   string `json:"bifrost_endpoint,omitempty"`

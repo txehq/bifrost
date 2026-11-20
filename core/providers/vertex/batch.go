@@ -500,6 +500,11 @@ func vertexConvertRequestsToJSONL(ctx *schemas.BifrostContext, key schemas.Key, 
 			continue
 		}
 
+		// A Gemini embedding batch line embeds one input (TXE-7033, contract C8).
+		if err := gemini.CheckEmbeddingBatchLineHasOneInput(item, batchEndpoint, schemas.Vertex, model); err != nil {
+			return nil, withBatchLineIndex(err, i)
+		}
+
 		// OpenAI-shape bodies (chat "messages", image "prompt") are converted with the sync
 		// route's builder; native Gemini/Vertex bodies pass through verbatim so caller-supplied
 		// fields (tools, toolConfig, labels, cachedContent, ...) are not dropped.

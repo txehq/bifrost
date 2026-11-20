@@ -2874,8 +2874,8 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 				FileName: fileID,
 			}
 		} else if embeddingBatch {
-			// Inline embedding lines: each is converted with the sync embedding converter;
-			// a line with several inputs is sent as one request per input.
+			// Inline embedding lines: each is converted with the sync embedding converter
+			// into one request; a line with several inputs is refused (TXE-7033).
 			geminiRequests, bifrostErr := geminiEmbeddingBatchRequestItems(request, model, key.Aliases.Resolve)
 			if bifrostErr != nil {
 				return nil, bifrostErr

@@ -1360,3 +1360,47 @@ func TestVertexBatchCreateRefusesMoreLinesThanTheVendorTakes(t *testing.T) {
 		assert.Equal(t, "requests[199999].body", bifrostErr.Error.Param, "every line before the last was converted")
 	})
 }
+
+// TXE-7033 (contract C8): on Vertex, as on the Gemini API, an OpenAI-shape /v1/embeddings
+// batch line whose input holds several items is a 400 naming the line, before anything is
+// uploaded. A Gemini embedding request embeds one content, so such a line would be several
+// vendor requests behind one result line, which cannot report the usage of the requests that
+// succeeded when one failed.
+func TestVertexBatchRefusesAnEmbeddingLineWithSeveralInputs(t *testing.T) {
+	key := schemas.Key{VertexKeyConfig: &schemas.VertexKeyConfig{ProjectID: *schemas.NewSecretVar("my-project"), Region: *schemas.NewSecretVar("us-central1")}}
+	create := func(endpoint schemas.BatchEndpoint, lines ...schemas.BatchRequestItem) *schemas.BifrostError {
+		_, bifrostErr := (&VertexProvider{}).BatchCreate(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), key, &schemas.BifrostBatchCreateRequest{
+			Provider: schemas.Vertex, Model: schemas.Ptr("gemini-embedding-001"), Endpoint: endpoint,
+			OutputFolder: &schemas.BatchOutputFolder{URL: "gs://bucket/out/"}, Requests: lines,
+		})
+		return bifrostErr
+	}
+	single := schemas.BatchRequestItem{CustomID: "emb-ok", Method: "POST", URL: "/v1/embeddings", Body: map[string]any{"model": "gemini-embedding-001", "input": "hello"}}
+	for name, line := range map[string]schemas.BatchRequestItem{
+		"a line naming /v1/embeddings":                 {CustomID: "emb-multi", Method: "POST", URL: "/v1/embeddings", Body: map[string]any{"model": "gemini-embedding-001", "input": []any{"alpha", "beta"}}},
+		"a line inheriting the batch's /v1/embeddings": {CustomID: "emb-multi", Method: "POST", Body: map[string]any{"input": []any{"alpha", "beta"}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			bifrostErr := create(schemas.BatchEndpointEmbeddings, line)
+			require.NotNil(t, bifrostErr)
+			require.NotNil(t, bifrostErr.StatusCode)
+			assert.Equal(t, http.StatusBadRequest, *bifrostErr.StatusCode)
+			assert.Equal(t, "requests[0].body.input", bifrostErr.Error.Param)
+			assert.Equal(t, schemas.ErrorTypeCallerUnsupportedParameter, bifrostErr.ExtraFields.ErrorType)
+			assert.Contains(t, bifrostErr.Error.Message, `custom_id "emb-multi"`)
+			assert.Contains(t, bifrostErr.Error.Message, "input holds 2 items")
+			assert.Contains(t, bifrostErr.Error.Message, "send one input per line")
+		})
+	}
+	t.Run("a single-input line keeps the refusal it had", func(t *testing.T) {
+		// Vertex runs no embedding batch: a line naming /v1/embeddings is refused for its url
+		// (TXE-7058), whatever its input.
+		bifrostErr := create(schemas.BatchEndpointEmbeddings, single)
+		require.NotNil(t, bifrostErr)
+		assert.Equal(t, "requests[0].url", bifrostErr.Error.Param)
+	})
+	t.Run("chat lines are not counted", func(t *testing.T) {
+		chat := schemas.BatchRequestItem{CustomID: "chat", Method: "POST", URL: "/v1/chat/completions", Body: map[string]any{"messages": []any{map[string]any{"role": "user", "content": "hi"}}, "input": []any{"a", "b"}}}
+		require.NoError(t, gemini.CheckEmbeddingBatchLineHasOneInput(chat, schemas.BatchEndpointChatCompletions, schemas.Vertex, "gemini-2.5-flash"))
+	})
+}
