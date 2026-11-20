@@ -2,8 +2,10 @@ package governance
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/url"
+	"reflect"
 	"strings"
 
 	"github.com/capsohq/bifrost/core/schemas"
@@ -87,69 +89,114 @@ func (p *GovernancePlugin) ProviderJobAccountingEnabled() bool {
 	return p != nil && p.resolver != nil && p.resolver.providerJobAccounting.Load()
 }
 
-// isBackgroundResponsesCreate reports whether a request is a Responses create that may be sent with
-// background set: on the typed request (its field, forwarded extra params or raw body), or at the
-// top of a passthrough body.
-func isBackgroundResponsesCreate(req *schemas.BifrostRequest) bool {
+// isDeferredDelivery reports whether a request asks for its answer to be delivered later, where no
+// path through Bifrost charges it (TXE-7963, TXE-8013): a Responses create sent with background:
+// true, a Gemini/Vertex Interactions create in the background, a Runware task delivered async or to a
+// webhook, or any request charged on its answer that asks the provider to post the result to a
+// webhook or callback. It reads the typed request, its extra params (forwarded to the provider), and
+// a raw request body forwarded as sent (bifrost-use-raw-request-body). baseProvider is the provider
+// whose implementation serves the request (a custom provider's base type).
+//
+// A job priced at settlement (video, batch) and an image task priced at its create are charged
+// whatever their delivery, so a callback on them is not read here.
+func isDeferredDelivery(req *schemas.BifrostRequest, baseProvider schemas.ModelProvider) bool {
 	if req == nil {
 		return false
 	}
+	capable := deferredDeliveryProviders[baseProvider]
 	switch req.RequestType {
-	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest:
-		return responsesSendsBackground(req.ResponsesRequest)
 	case schemas.PassthroughRequest, schemas.PassthroughStreamRequest:
 		if req.PassthroughRequest == nil || len(req.PassthroughRequest.Body) == 0 {
 			return false
 		}
-		return passthroughIsBackground(req.PassthroughRequest.Path, req.PassthroughRequest.Body)
+		return passthroughDefersDelivery(req.PassthroughRequest.Path, req.PassthroughRequest.Body, capable)
+	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest:
+		if req.ResponsesRequest != nil && req.ResponsesRequest.Params != nil &&
+			req.ResponsesRequest.Params.Background != nil && *req.ResponsesRequest.Params.Background {
+			return true
+		}
+	}
+	if budgetPricingOf(req.RequestType) != budgetPricingAnswer || queuedAnswerRequestTypes[req.RequestType] == queuedAnswerPricedAtCreate {
+		return false
+	}
+	extra, raw := requestForwardedInputs(req)
+	// A raw body is read as a passthrough body to the request's own route.
+	route := ""
+	if queuedAnswerRequestTypes[req.RequestType] == queuedAnswerBackgroundRefused {
+		route = "/responses"
+	}
+	if len(raw) > 0 && passthroughDefersDelivery(route, raw, capable) {
+		return true
+	}
+	if extraNamesDelivery(extra) {
+		if encoded, err := json.Marshal(extra); err == nil {
+			return unitDefersDelivery(gjson.ParseBytes(encoded), capable || route != "")
+		}
+		return true // extra params that cannot be read are not judged foreground
 	}
 	return false
 }
 
-// responsesSendsBackground reports whether a typed Responses create may reach the provider with
-// background set. Besides the typed field, the provider receives Params.ExtraParams merged into its
-// body (BifrostContextKeyPassthroughExtraParams) and, when asked, RawRequestBody verbatim; both are
-// read failing closed, as a Responses passthrough body is: any background key, in any case, whose
-// value is not false or null counts. Neither is read unless present, so a plain
-// request pays only nil checks.
-func responsesSendsBackground(req *schemas.BifrostResponsesRequest) bool {
-	if req == nil {
-		return false
-	}
-	if params := req.Params; params != nil {
-		if params.Background != nil && *params.Background {
-			return true
+// requestForwardedInputs returns what a typed request forwards to the provider beyond its typed
+// fields: Params.ExtraParams and RawRequestBody of whichever request it carries. It is read by
+// reflection so a request type added later is covered without editing this function.
+func requestForwardedInputs(req *schemas.BifrostRequest) (map[string]interface{}, []byte) {
+	v := reflect.ValueOf(req).Elem()
+	for i := 0; i < v.NumField(); i++ {
+		field := v.Field(i)
+		if field.Kind() != reflect.Pointer || field.IsNil() || field.Elem().Kind() != reflect.Struct {
+			continue
 		}
-		for key, value := range params.ExtraParams {
-			if strings.EqualFold(key, "background") && value != nil && value != false {
-				return true
+		inner := field.Elem()
+		var extra map[string]interface{}
+		var raw []byte
+		if params := inner.FieldByName("Params"); params.IsValid() && params.Kind() == reflect.Pointer && !params.IsNil() && params.Elem().Kind() == reflect.Struct {
+			if e := params.Elem().FieldByName("ExtraParams"); e.IsValid() && e.Kind() == reflect.Map && !e.IsNil() {
+				extra, _ = e.Interface().(map[string]interface{})
 			}
 		}
+		if r := inner.FieldByName("RawRequestBody"); r.IsValid() && r.Kind() == reflect.Slice && r.Type().Elem().Kind() == reflect.Uint8 {
+			raw = r.Bytes()
+		}
+		if extra != nil || len(raw) > 0 {
+			return extra, raw
+		}
 	}
-	return len(req.RawRequestBody) > 0 && passthroughIsBackground("/responses", req.RawRequestBody)
+	return nil, nil
 }
 
 // backgroundCapablePaths name the passthrough APIs that run a create in the background when
 // asked: OpenAI-style Responses, and the Gemini/Vertex Interactions API (gemini.IsInteractionsPassthroughPath).
 var backgroundCapablePaths = []string{"responses", "/interactions"}
 
-// passthroughIsBackground reports whether a passthrough request may ask the upstream to run a create
-// in the background. Every path's body is read; the upstream's decoder, not gjson, decides what
-// runs, so every top-level key is read (gjson returns the first of a duplicated key, most decoders
-// keep the last) and key names compare case-insensitively, as Go's encoding/json matches them.
+// deferredDeliveryProviders are the providers whose every passthrough body may ask for deferred
+// delivery, whatever its path: Runware runs any task async (deliveryMethod) or posts it to a
+// webhook (webhookURL), and its answer is then a queued acknowledgment that governance does not
+// count as an answer (passthroughQueuedAcknowledgment), so nothing charges the task.
+var deferredDeliveryProviders = map[schemas.ModelProvider]bool{
+	schemas.Runware: true,
+}
+
+// passthroughDefersDelivery reports whether a passthrough body may ask the upstream to deliver its
+// answer later. It reads a JSON object, or each object of a JSON array (Runware's task list). The
+// upstream's decoder, not gjson, decides what runs, so every key is read (gjson returns the first of
+// a duplicated key, most decoders keep the last) and key names compare case-insensitively, as Go's
+// encoding/json matches them. A unit defers delivery when:
+//   - deliveryMethod is anything but "sync" or null (Runware: async);
+//   - webhookURL is a non-empty value (Runware posts the result to it);
+//   - background is true or "true"; or, on a capable path or provider, anything but false or null.
 //
-// On a path known to run background creates the check fails closed: any value other than false or
-// null counts, and so does a body gjson cannot read as JSON (compressed, UTF-16, malformed). On any
-// other path only true or "true" counts: there a top-level background can mean something else, such
-// as an image background ("transparent"), and a non-JSON body (a multipart upload) is not a create
-// that could run in the background.
-func passthroughIsBackground(path string, body []byte) bool {
+// On a capable path or provider (capableProvider) the check fails closed: a body gjson cannot read as
+// JSON (compressed, UTF-16, malformed) counts. Elsewhere a top-level background can mean something
+// else, such as an image background ("transparent"), and a non-JSON body (a multipart upload) is not
+// a create that could be deferred.
+func passthroughDefersDelivery(path string, body []byte, capableProvider bool) bool {
 	// The upstream decodes the path, so an escaped one (/v1/respons%65s) is read decoded too.
 	if decoded, err := url.PathUnescape(path); err == nil {
 		path = decoded
 	}
 	path = strings.ToLower(path)
-	capable := false
+	capable := capableProvider
 	for _, marker := range backgroundCapablePaths {
 		if strings.Contains(path, marker) {
 			capable = true
@@ -164,32 +211,105 @@ func passthroughIsBackground(path string, body []byte) bool {
 		return capable
 	}
 	root := gjson.ParseBytes(body)
-	if !root.IsObject() {
-		return false
+	switch {
+	case root.IsObject():
+		return unitDefersDelivery(root, capable)
+	case root.IsArray():
+		deferred := false
+		root.ForEach(func(_, unit gjson.Result) bool {
+			if unit.IsObject() && unitDefersDelivery(unit, capable) {
+				deferred = true
+				return false
+			}
+			return true
+		})
+		return deferred
 	}
-	background := false
-	root.ForEach(func(key, value gjson.Result) bool {
-		if !strings.EqualFold(key.Str, "background") {
+	return false
+}
+
+// deferredDeliveryKeys are the request keys, compared case-insensitively, that send a result to a
+// webhook or callback instead of the answer: Runware webhookURL, Replicate and ElevenLabs webhook,
+// BFL webhook_url, Kling, MiniMax and BytePlus callback_url, Gemini Interactions webhook_config.
+// TestEveryProviderDeliveryFieldIsReadOrExempt fails when a provider request type grows another.
+var deferredDeliveryKeys = []string{"webhookURL", "webhook", "webhook_url", "callback_url", "callbackURL", "webhook_config"}
+
+func deferredDeliveryKey(key string) bool {
+	for _, k := range deferredDeliveryKeys {
+		if strings.EqualFold(key, k) {
 			return true
 		}
-		truthy := value.Type == gjson.True || (value.Type == gjson.String && strings.EqualFold(value.Str, "true"))
-		if truthy || (capable && value.Type != gjson.False && value.Type != gjson.Null) {
-			background = true
-			return false
+	}
+	return false
+}
+
+// extraNamesDelivery reports whether extra params carry any key unitDefersDelivery reads. Only then
+// are they encoded and judged, so a request whose extra params name nothing about delivery (the
+// common case: service_tier, a vendor flag) pays a key scan and no allocation.
+func extraNamesDelivery(extra map[string]interface{}) bool {
+	for key := range extra {
+		if strings.EqualFold(key, "taskType") || strings.EqualFold(key, "deliveryMethod") ||
+			strings.EqualFold(key, "background") || deferredDeliveryKey(key) {
+			return true
 		}
-		return true
+	}
+	return false
+}
+
+func unitDefersDelivery(unit gjson.Result, capable bool) bool {
+	deferred := false
+	// On a capable provider a task that runs async by default (Runware's videoInference) defers
+	// delivery unless it asks for sync explicitly: a missing deliveryMethod is not sync for it.
+	asyncByDefault, explicitSync := false, false
+	unit.ForEach(func(key, value gjson.Result) bool {
+		switch {
+		case strings.EqualFold(key.Str, "taskType"):
+			asyncByDefault = asyncByDefault || (capable && value.Type == gjson.String && strings.Contains(strings.ToLower(value.Str), "video"))
+		case strings.EqualFold(key.Str, "deliveryMethod"):
+			explicitSync = value.Type == gjson.String && strings.EqualFold(strings.TrimSpace(value.Str), "sync")
+			deferred = value.Type != gjson.Null && !explicitSync
+		case deferredDeliveryKey(key.Str):
+			// A webhook or callback destination, or a webhook switch: the provider posts the result
+			// there, and the answer Bifrost relays carries none of it.
+			deferred = value.Type != gjson.Null && value.Type != gjson.False && !(value.Type == gjson.String && strings.TrimSpace(value.Str) == "")
+		case strings.EqualFold(key.Str, "background"):
+			truthy := value.Type == gjson.True || (value.Type == gjson.String && strings.EqualFold(value.Str, "true"))
+			deferred = truthy || (capable && value.Type != gjson.False && value.Type != gjson.Null)
+		}
+		return !deferred
 	})
-	return background
+	return deferred || (asyncByDefault && !explicitSync)
+}
+
+// passthroughEscapedQueue is the after-the-fact half of the deferred-delivery gate (TXE-8013): a
+// passthrough answered with only a queued acknowledgment (passthroughQueuedAcknowledgment) under a
+// dollar budget means the request asked for deferred delivery in a way the gate did not recognise,
+// and nothing will charge the work. It is logged, and the caller treats the answer as priced at $0,
+// so the model is refused under its budgets from now on (noteUnpricedAnswer).
+func passthroughEscapedQueue(result *schemas.BifrostResponse, logger schemas.Logger, requestID string) bool {
+	if result == nil || result.PassthroughResponse == nil {
+		return false
+	}
+	status := result.PassthroughResponse.StatusCode
+	if status < 200 || status >= 300 || !passthroughQueuedAcknowledgment(result.PassthroughResponse.Body) {
+		return false
+	}
+	if logger != nil {
+		logger.Warn("governance: a passthrough under a dollar budget was answered with a queued acknowledgment (TXE-8013): request %s asked for deferred delivery the gate did not recognise; its model is refused under the budget from now on",
+			requestID)
+	}
+	return true
 }
 
 // refuseUnsettledUnderBudget refuses a request under a dollar budget whose queued answer nothing
 // will charge. Nil when the request is allowed. The caller has checked that there is a budget.
 func (r *BudgetResolver) refuseUnsettledUnderBudget(evaluationRequest *EvaluationRequest) *EvaluationResult {
 	requestType := evaluationRequest.RequestType
-	if evaluationRequest.Background || isBackgroundResponsesCreate(evaluationRequest.request) {
+	if evaluationRequest.Background || (evaluationRequest.request != nil &&
+		isDeferredDelivery(evaluationRequest.request, configuredBaseProvider(r.governanceInMemoryStore, evaluationRequest.Provider))) {
 		return &EvaluationResult{
 			Decision: DecisionBackgroundUnsettled,
-			Reason: fmt.Sprintf("a background %s request cannot be charged to a dollar budget: its answer is delivered by a retrieve that is never priced; send it without background",
+			Reason: fmt.Sprintf("a %s request that asks for its answer later (background, async or webhook delivery) cannot be charged to a dollar budget: nothing charges the answer when it arrives; ask for it synchronously",
 				requestType),
 		}
 	}

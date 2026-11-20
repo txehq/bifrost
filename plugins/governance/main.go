@@ -1624,7 +1624,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 			// Use the requested model for usage tracking
 			p.postHookWorker(result, err, provider, requestedModel, requestType, requestID, billingNonce, isFinalChunk, attemptNumber, fallbackIndex, sessionContinuation, pricingScopes, accountedBudgets, accountedRateLimits, routingMetadata, bodyModel, read, holder)
 		}()
-	} else if bodyModel, _ := ctx.Value(passthroughBodyModelContextKey).(string); bodyModel != "" && (!bifrost.IsStreamRequestType(requestType) || isFinalChunk) && passthroughGenerated(result) {
+	} else if bodyModel, _ := ctx.Value(passthroughBodyModelContextKey).(string); bodyModel != "" && (!bifrost.IsStreamRequestType(requestType) || isFinalChunk) && (passthroughGenerated(result) || passthroughEscapedQueue(result, p.logger, requestID)) {
 		// A passthrough whose body named the model it runs, answered with no usage the provider
 		// could read (Runware without includeCost), is not charged and counts no request. It is
 		// still an answer under the budgets it was admitted against, priced at $0 (TXE-7957).
@@ -2136,7 +2136,7 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifro
 		// An answer charged to a dollar budget that priced at $0 spent nothing against it: logged,
 		// and the model refused under a budget from now on (TXE-7957, unpricedbudget.go).
 		// A passthrough naming no model of its own is judged by the models its body names.
-		if len(budgets) > 0 && budgetPricingOf(requestType) == budgetPricingAnswer && !passthroughRead && deliveredAnswer(result) {
+		if len(budgets) > 0 && budgetPricingOf(requestType) == budgetPricingAnswer && !passthroughRead && (deliveredAnswer(result) || passthroughEscapedQueue(result, p.logger, requestID)) {
 			priced := model
 			if priced == "" {
 				priced = bodyModel

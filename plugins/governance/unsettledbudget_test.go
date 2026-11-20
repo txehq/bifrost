@@ -4,6 +4,10 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -74,6 +78,16 @@ func TestBackgroundResponsesUnderADollarBudgetIsRefusedBeforeTheCall(t *testing.
 	raw := responsesOn(schemas.ResponsesStreamRequest, "gpt-4o", nil)
 	raw.ResponsesRequest.RawRequestBody = []byte(`{"model":"gpt-4o","input":"hi","background":true}`)
 	requireUnsettledRefusal(t, pre("sk-bf-budget", raw), "background_unsettled", "background in the raw request body")
+	runwareAsync := passthroughResponses(`[{"taskType":"imageInference","taskUUID":"u","model":"gpt-4o","deliveryMethod":"async"}]`)
+	runwareAsync.PassthroughRequest.Path = "/"
+	requireUnsettledRefusal(t, pre("sk-bf-budget", runwareAsync), "background_unsettled", "a Runware task delivered async (TXE-8013)")
+	runwareWebhook := passthroughResponses(`[{"taskType":"imageInference","taskUUID":"u","model":"gpt-4o","webhookURL":"https://hooks.example.invalid/r"}]`)
+	runwareWebhook.PassthroughRequest.Path = "/"
+	requireUnsettledRefusal(t, pre("sk-bf-budget", runwareWebhook), "background_unsettled", "a Runware task delivered to a webhook (TXE-8013)")
+	webhookTranscription := &schemas.BifrostRequest{RequestType: schemas.TranscriptionRequest, TranscriptionRequest: &schemas.BifrostTranscriptionRequest{
+		Provider: schemas.OpenAI, Model: "gpt-4o", Params: &schemas.TranscriptionParameters{ExtraParams: map[string]interface{}{"webhook": true}},
+	}}
+	requireUnsettledRefusal(t, pre("sk-bf-budget", webhookTranscription), "background_unsettled", "a transcription whose result is posted to a webhook (TXE-8013)")
 	interactions := passthroughResponses(`{"model":"gemini-omni","input":"hi","background":true}`)
 	interactions.PassthroughRequest.Path = "/v1beta/interactions"
 	requireUnsettledRefusal(t, pre("sk-bf-budget", interactions), "background_unsettled",
@@ -236,8 +250,8 @@ func TestEveryQueuedAnswerIsSettledOrRefusedUnderABudget(t *testing.T) {
 		case queuedAnswerBackgroundRefused:
 			require.Equal(t, budgetPricingAnswer, budgetPricingOf(requestType), "%s in the foreground is priced on its answer", requestType)
 			background := requestFor(requestType, true)
-			require.True(t, isBackgroundResponsesCreate(background), "%s sent in the background must be recognised as one", requestType)
-			assert.False(t, isBackgroundResponsesCreate(requestFor(requestType, false)), "%s in the foreground is not a background create", requestType)
+			require.True(t, isDeferredDelivery(background, schemas.OpenAI), "%s sent in the background must be recognised as one", requestType)
+			assert.False(t, isDeferredDelivery(requestFor(requestType, false), schemas.OpenAI), "%s in the foreground is not a background create", requestType)
 			refusal := r.refuseUnsettledUnderBudget(&EvaluationRequest{RequestType: requestType, Background: true})
 			if assert.NotNil(t, refusal, "a background %s is never charged, so it must be refused under a budget", requestType) {
 				assert.Equal(t, DecisionBackgroundUnsettled, refusal.Decision)
@@ -272,7 +286,7 @@ func TestProviderJobAccountingSwitchGatesSettledJobs(t *testing.T) {
 // A passthrough Responses body is judged as the upstream's decoder might read it, failing closed:
 // any occurrence of the key in any letter case, any value but false or null, an escaped key name, a
 // byte order mark, and a body gjson cannot read all count. Other paths are not Responses creates.
-func TestPassthroughIsBackground(t *testing.T) {
+func TestPassthroughDefersDelivery(t *testing.T) {
 	for body, want := range map[string]bool{
 		`{"model":"m","background":true}`:             true,
 		`{"model":"m","background":"true"}`:           true,
@@ -292,24 +306,165 @@ func TestPassthroughIsBackground(t *testing.T) {
 		`{"model":"m","background":null}`:             false,
 		`{"model":"m","input":"draw a background"}`:   false,
 		`{"model":"m","tools":[{"background":true}]}`: false, // not top level
-		`[{"model":"m","background":true}]`:           false, // an array is not a Responses create
+		`[{"model":"m","background":true}]`:           true,  // each unit of a task list is read
 		``:                                            false,
 		`   `:                                         false,
 	} {
-		assert.Equal(t, want, passthroughIsBackground("/v1/responses", []byte(body)), "%q", body)
+		assert.Equal(t, want, passthroughDefersDelivery("/v1/responses", []byte(body), false), "%q", body)
 	}
 	for _, path := range []string{"/v1/responses", "/openai/v1/responses", "/openai/RESPONSES", "/v1/responses/", "/v1/respons%65s"} {
-		assert.True(t, passthroughIsBackground(path, []byte(`{"background":true}`)), path)
+		assert.True(t, passthroughDefersDelivery(path, []byte(`{"background":true}`), false), path)
 	}
 	for _, path := range []string{"/v1beta/interactions", "/v1/projects/p/locations/l/interactions"} {
-		assert.True(t, passthroughIsBackground(path, []byte(`{"model":"m","background":true}`)), "%s runs background interactions", path)
-		assert.True(t, passthroughIsBackground(path, []byte(`{"background":1}`)), "%s fails closed on a coercible value", path)
-		assert.True(t, passthroughIsBackground(path, []byte("\x1f\x8bgzip")), "%s fails closed on an unreadable body", path)
+		assert.True(t, passthroughDefersDelivery(path, []byte(`{"model":"m","background":true}`), false), "%s runs background interactions", path)
+		assert.True(t, passthroughDefersDelivery(path, []byte(`{"background":1}`), false), "%s fails closed on a coercible value", path)
+		assert.True(t, passthroughDefersDelivery(path, []byte("\x1f\x8bgzip"), false), "%s fails closed on an unreadable body", path)
 	}
 	for _, path := range []string{"/v1/files", "/v1/fine_tuning/jobs", "/v1/images/generations", "/v1/some/new/api"} {
-		assert.True(t, passthroughIsBackground(path, []byte(`{"background":true}`)), "%s: an explicit background true is refused on any path", path)
-		assert.True(t, passthroughIsBackground(path, []byte(`{"Background":"TRUE"}`)), "%s: in any letter case", path)
-		assert.False(t, passthroughIsBackground(path, []byte(`{"model":"gpt-image-1","background":"transparent"}`)), "%s: an image background is not a background run", path)
-		assert.False(t, passthroughIsBackground(path, []byte("--multipart-boundary")), "%s with a non-JSON body is not a background create", path)
+		assert.True(t, passthroughDefersDelivery(path, []byte(`{"background":true}`), false), "%s: an explicit background true is refused on any path", path)
+		assert.True(t, passthroughDefersDelivery(path, []byte(`{"Background":"TRUE"}`), false), "%s: in any letter case", path)
+		assert.False(t, passthroughDefersDelivery(path, []byte(`{"model":"gpt-image-1","background":"transparent"}`), false), "%s: an image background is not a background run", path)
+		assert.False(t, passthroughDefersDelivery(path, []byte("--multipart-boundary"), false), "%s with a non-JSON body is not a background create", path)
+	}
+}
+
+// A Runware passthrough task asks for deferred delivery with deliveryMethod (async) or webhookURL;
+// its answer is then a queued acknowledgment nothing charges (TXE-8013). Every task of the list is
+// read, in any key case, and on Runware a body gjson cannot read counts.
+func TestRunwarePassthroughDefersDelivery(t *testing.T) {
+	for body, want := range map[string]bool{
+		`[{"taskType":"imageInference","model":"runware:101@1","deliveryMethod":"async"}]`:                                                       true,
+		`[{"taskType":"imageInference","model":"m","deliveryMethod":"sync"},{"taskType":"videoInference","model":"m","deliveryMethod":"async"}]`: true,
+		`[{"taskType":"imageInference","model":"m","webhookURL":"https://hooks.example.invalid/r"}]`:                                             true,
+		`[{"taskType":"imageInference","model":"m","WebhookUrl":"https://hooks.example.invalid/r"}]`:                                             true,
+		`[{"taskType":"imageInference","model":"m","DeliveryMethod":"ASYNC"}]`:                                                                   true,
+		`[{"taskType":"imageInference","model":"m","deliveryMethod":"sync","deliveryMethod":"async"}]`:                                           true,
+		`[{"taskType":"imageInference","model":"m","deliveryMethod":1}]`:                                                                         true,
+		`{"taskType":"imageInference","model":"m","deliveryMethod":"async"}`:                                                                     true,
+		"\x1f\x8bgzip": true,
+		`[{"taskType":"imageInference","model":"m"}]`:                                       false,
+		`[{"taskType":"imageInference","model":"m","deliveryMethod":"sync"}]`:               false,
+		`[{"taskType":"imageInference","model":"m","deliveryMethod":null,"webhookURL":""}]`: false,
+		`[{"taskType":"imageInference","model":"m","deliveryMethod":" Sync "}]`:             false,
+		`[{"taskType":"videoInference","model":"m"}]`:                                       true, // video runs async by default
+		`[{"taskType":"videoInference","model":"m","deliveryMethod":null}]`:                 true,
+		`[{"TaskType":"VideoInference","model":"m"}]`:                                       true,
+		`[{"taskType":"videoInference","model":"m","deliveryMethod":"sync"}]`:               false,
+	} {
+		assert.Equal(t, want, passthroughDefersDelivery("/", []byte(body), true), "%q", body)
+	}
+	runware := &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+		Path: "/", Body: []byte("\x1f\x8bgzip"),
+	}}
+	assert.True(t, isDeferredDelivery(runware, schemas.Runware), "a Runware body gjson cannot read fails closed")
+	assert.False(t, isDeferredDelivery(runware, schemas.OpenAI), "elsewhere a non-JSON body off a Responses path is not deferred")
+	video := &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+		Path: "/", Body: []byte(`[{"taskType":"videoInference","model":"m"}]`),
+	}}
+	assert.True(t, isDeferredDelivery(video, schemas.Runware), "a Runware video task with no deliveryMethod runs async")
+	assert.False(t, isDeferredDelivery(video, schemas.OpenAI), "the async default is Runware's")
+}
+
+// Every passthrough answer governance does not count as an answer because it only acknowledges queued
+// work (passthroughQueuedAcknowledgment) must come from a request the gate refuses under a dollar
+// budget before the call: otherwise the work runs and nothing ever charges it (TXE-8013).
+func TestEveryQueuedAcknowledgmentIsRefusedBeforeTheCall(t *testing.T) {
+	for _, tc := range []struct {
+		name, request, answer string
+		provider              schemas.ModelProvider
+	}{
+		{"runware async", `[{"taskType":"imageInference","taskUUID":"u","model":"m","deliveryMethod":"async"}]`,
+			`{"data":[{"taskType":"imageInference","taskUUID":"u","status":"processing"}]}`, schemas.Runware},
+		{"runware webhook", `[{"taskType":"imageInference","taskUUID":"u","model":"m","webhookURL":"https://hooks.example.invalid/r"}]`,
+			`{"data":[{"taskType":"imageInference","taskUUID":"u","deliveryMethod":"webhook"}]}`, schemas.Runware},
+		{"runware video", `[{"taskType":"videoInference","taskUUID":"u","model":"m","deliveryMethod":"async"}]`,
+			`{"data":[{"taskType":"videoInference","taskUUID":"u"}]}`, schemas.Runware},
+	} {
+		require.True(t, passthroughQueuedAcknowledgment([]byte(tc.answer)), "%s: the fixture answer must be a queued acknowledgment", tc.name)
+		req := &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{Path: "/", Body: []byte(tc.request)}}
+		assert.True(t, isDeferredDelivery(req, tc.provider), "%s: a request answered with a queued acknowledgment must be refused under a dollar budget", tc.name)
+	}
+	// The other side: a synchronous Runware task is answered with its result and priced on it.
+	require.False(t, passthroughQueuedAcknowledgment([]byte(`{"data":[{"taskType":"imageInference","taskUUID":"u","imageURL":"https://x.invalid/i.png","cost":0.004}]}`)))
+}
+
+// A typed request forwards its extra params and, in raw-body mode, its body as sent: a webhook or
+// callback, or a background flag, there defers delivery as it would in a passthrough body. A job
+// priced at settlement and an image task priced at create are charged whatever their delivery.
+func TestTypedRequestForwardedInputsDeferDelivery(t *testing.T) {
+	transcription := func(extra map[string]interface{}) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.TranscriptionRequest, TranscriptionRequest: &schemas.BifrostTranscriptionRequest{
+			Provider: schemas.Elevenlabs, Model: "scribe_v1", Params: &schemas.TranscriptionParameters{ExtraParams: extra},
+		}}
+	}
+	assert.True(t, isDeferredDelivery(transcription(map[string]interface{}{"webhook": true}), schemas.Elevenlabs), "ElevenLabs speech-to-text posted to a webhook")
+	assert.True(t, isDeferredDelivery(transcription(map[string]interface{}{"Webhook": "true"}), schemas.Elevenlabs), "in any key case")
+	assert.False(t, isDeferredDelivery(transcription(map[string]interface{}{"webhook": false}), schemas.Elevenlabs), "webhook false is synchronous")
+	assert.False(t, isDeferredDelivery(transcription(map[string]interface{}{"diarize": true}), schemas.Elevenlabs), "other extra params are not read")
+	assert.False(t, isDeferredDelivery(transcription(nil), schemas.Elevenlabs))
+
+	chat := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI, Model: "gpt-4o", RawRequestBody: []byte(`{"model":"gpt-4o","messages":[],"callback_url":"https://hooks.example.invalid/c"}`),
+	}}
+	assert.True(t, isDeferredDelivery(chat, schemas.OpenAI), "a raw body forwarded as sent is read")
+	responses := &schemas.BifrostRequest{RequestType: schemas.ResponsesRequest, ResponsesRequest: &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI, Model: "gpt-4o", RawRequestBody: []byte(`{"model":"gpt-4o","input":"hi","background":1}`),
+	}}
+	assert.True(t, isDeferredDelivery(responses, schemas.OpenAI), "a raw Responses body is read as a Responses route, failing closed")
+	responses.ResponsesRequest.RawRequestBody = []byte(`{"model":"gpt-4o","input":"hi"}`)
+	assert.False(t, isDeferredDelivery(responses, schemas.OpenAI))
+
+	video := &schemas.BifrostRequest{RequestType: schemas.VideoGenerationRequest, VideoGenerationRequest: &schemas.BifrostVideoGenerationRequest{
+		Provider: schemas.Kling, Model: "kling-v2", Params: &schemas.VideoGenerationParameters{ExtraParams: map[string]interface{}{"callback_url": "https://hooks.example.invalid/k"}},
+	}}
+	assert.False(t, isDeferredDelivery(video, schemas.Kling), "a video is charged when its job settles, whatever its delivery")
+}
+
+// deliveryFieldExemptions are provider request fields whose names look like deferred delivery but
+// do not send a result anywhere but the answer, each with the reason.
+var deliveryFieldExemptions = map[string]string{
+	"background":              "read by the detector (Responses, Interactions); elsewhere an image backdrop",
+	"backgroundremovalparams": "Bedrock image background removal: an image edit, not a delivery",
+	"delivery":                "Gemini Interactions response_format.delivery: inline or a URI in the answer, not a deferral",
+	"deliverymethod":          "read by the detector (Runware)",
+	"webhook_id":              "names the ElevenLabs webhook that the webhook switch, which the detector reads, selects",
+	"webhook_metadata":        "rides with the ElevenLabs webhook switch, which the detector reads",
+	"webhook_events_filter":   "rides with the Replicate webhook, which the detector reads",
+	"webhook_completed":       "a Replicate response field, not a request field",
+}
+
+// TestEveryProviderDeliveryFieldIsReadOrExempt is the provider half of the TXE-8013 class check: every
+// JSON field a provider sends or reads whose name asks for delivery elsewhere (a webhook, a callback,
+// a delivery method, background) is either a key the deferred-delivery detector reads, or exempt
+// with a reason. A provider that gains a new async or webhook route fails here until governance
+// either refuses it under a dollar budget or says why its answer is still charged.
+func TestEveryProviderDeliveryFieldIsReadOrExempt(t *testing.T) {
+	pattern := regexp.MustCompile(`json:"([A-Za-z_]*(?:[Bb]ackground|[Dd]eliver|[Ww]ebhook|[Cc]allback)[A-Za-z_]*)`)
+	found := map[string][]string{}
+	require.NoError(t, filepath.WalkDir("../../core/providers", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return err
+		}
+		src, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for _, m := range pattern.FindAllSubmatch(src, -1) {
+			name := strings.ToLower(string(m[1]))
+			found[name] = append(found[name], path)
+		}
+		return nil
+	}))
+	require.NotEmpty(t, found, "the scan found no delivery fields in core/providers; the pattern no longer matches")
+	for name, paths := range found {
+		if deferredDeliveryKey(name) {
+			continue
+		}
+		_, exempt := deliveryFieldExemptions[name]
+		assert.True(t, exempt, "provider field %q (%v) looks like deferred delivery: add it to deferredDeliveryKeys so the gate refuses it under a dollar budget, or to deliveryFieldExemptions with the reason its answer is still charged", name, paths)
+	}
+	for name := range deliveryFieldExemptions {
+		_, ok := found[name]
+		assert.True(t, ok, "deliveryFieldExemptions lists %q, which no provider declares any more", name)
 	}
 }
