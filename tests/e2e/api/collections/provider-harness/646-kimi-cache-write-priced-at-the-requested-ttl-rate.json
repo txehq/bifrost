@@ -1,5 +1,5 @@
 {
-  "name": "645. Kimi cache write priced at the requested TTL rate (kimi cache ttl pricing)",
+  "name": "646. Kimi cache write priced at the requested TTL rate (kimi cache ttl pricing)",
   "item": [
     {
       "name": "/v1/chat/completions - prompt_cache_options.ttl 1h: logged cost takes the 1-hour cache-write rate, usage unchanged - moonshot/kimi-k3",

@@ -9727,8 +9727,6 @@ func (bifrost *Bifrost) dispatchResponsesStream(ctx *schemas.BifrostContext, pro
 	return provider.ResponsesStream(ctx, providerUtils.WrapNamespaceRestorePostHookRunner(postHookRunner, preparedRequest.NamespaceToolAliases), postHookSpanFinalizer, key, preparedRequest)
 }
 
-// handleProviderRequest handles the request to the provider based on the request type
-// key is used for single-key operations, keys is used for batch/file operations that need multiple keys
 // stampRequestedPromptCacheTTL records the prompt_cache_options.ttl of the request this attempt
 // sends, after pre-hooks ran, on the request's context, and clears it when the request carries
 // none, so a value a caller or an earlier attempt left there is never priced. Pricing reads it
@@ -9741,6 +9739,8 @@ func stampRequestedPromptCacheTTL(req *ChannelMessage) {
 	req.Context.SetValue(schemas.BifrostContextKeyRequestedPromptCacheTTL, req.BifrostRequest.RequestedPromptCacheTTL())
 }
 
+// handleProviderRequest handles the request to the provider based on the request type
+// key is used for single-key operations, keys is used for batch/file operations that need multiple keys
 func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config *schemas.ProviderConfig, req *ChannelMessage, key schemas.Key, keys []schemas.Key) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	stampRequestedPromptCacheTTL(req)
 	response := &schemas.BifrostResponse{}

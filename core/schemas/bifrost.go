@@ -1101,7 +1101,6 @@ func (br *BifrostRequest) GetRequestFields() (provider ModelProvider, model stri
 	return "", "", nil
 }
 
-// SetProvider sets the provider on the active request variant.
 // RequestedPromptCacheTTL returns the prompt_cache_options.ttl the request carries, or "" when
 // it carries none. Bifrost stamps it on the context of every provider attempt
 // (BifrostContextKeyRequestedPromptCacheTTL) so pricing can cost a cache write a vendor prices by
@@ -1140,6 +1139,7 @@ var PricingContextKeys = []BifrostContextKey{
 	BifrostContextKeyRequestedPromptCacheTTL,
 }
 
+// SetProvider sets the provider on the active request variant.
 func (br *BifrostRequest) SetProvider(provider ModelProvider) {
 	switch {
 	case br.ListModelsRequest != nil:
