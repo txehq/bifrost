@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	openaiprovider "github.com/capsohq/bifrost/core/providers/openai"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 )
@@ -238,16 +239,26 @@ func BenchmarkCheckAllowedRequest(b *testing.B) {
 			CustomProviderKey: "custom-bench", BaseProviderType: schemas.OpenAI, AllowedRequests: allowed,
 		}}
 	}
+	// The OpenAI provider implements schemas.UpstreamOperationConverter (TXE-7027): a Responses
+	// request on a custom provider that allows chat but not responses is checked as chat.
+	responses := &schemas.BifrostRequest{RequestType: schemas.ResponsesRequest, ResponsesRequest: &schemas.BifrostResponsesRequest{}}
+	chatOnly := custom(&schemas.AllowedRequests{ChatCompletion: true})
+	chatOnly.NetworkConfig = schemas.DefaultNetworkConfig
+	chatOnly.ConcurrencyAndBufferSize = schemas.DefaultConcurrencyAndBufferSize
+	var openAIProvider schemas.Provider = openaiprovider.NewOpenAIProvider(chatOnly, NewNoOpLogger())
 	cases := []struct {
-		name   string
-		config *schemas.ProviderConfig
-		req    *schemas.BifrostRequest
+		name     string
+		provider schemas.Provider
+		config   *schemas.ProviderConfig
+		req      *schemas.BifrostRequest
 	}{
-		{"built-in provider", &schemas.ProviderConfig{}, chat},
-		{"custom provider without allowed_requests", custom(nil), chat},
-		{"custom provider, chat allowed", custom(&schemas.AllowedRequests{ChatCompletion: true}), chat},
-		{"custom provider, chat with reasoning.mode checked as responses", custom(&schemas.AllowedRequests{Responses: true}), chatWithMode},
-		{"custom provider, chat refused", custom(&schemas.AllowedRequests{}), chat},
+		{"built-in provider", provider, &schemas.ProviderConfig{}, chat},
+		{"custom provider without allowed_requests", provider, custom(nil), chat},
+		{"custom provider, chat allowed", provider, custom(&schemas.AllowedRequests{ChatCompletion: true}), chat},
+		{"custom provider, chat with reasoning.mode checked as responses", provider, custom(&schemas.AllowedRequests{Responses: true}), chatWithMode},
+		{"custom provider, chat refused", provider, custom(&schemas.AllowedRequests{}), chat},
+		{"openai custom provider, chat allowed", openAIProvider, chatOnly, chat},
+		{"openai custom provider, responses converted and checked as chat", openAIProvider, chatOnly, responses},
 	}
 	for _, tc := range cases {
 		b.Run(tc.name, func(b *testing.B) {
@@ -256,7 +267,9 @@ func BenchmarkCheckAllowedRequest(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				_ = checkAllowedRequest(ctx, provider, tc.config, tc.req)
+				if err := checkAllowedRequest(ctx, tc.provider, tc.config, tc.req); err != nil && tc.provider == openAIProvider {
+					b.Fatalf("checkAllowedRequest refused %s: %v", tc.req.RequestType, err.Error)
+				}
 			}
 		})
 	}
