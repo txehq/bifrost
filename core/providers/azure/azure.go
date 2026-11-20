@@ -1160,6 +1160,10 @@ func (provider *AzureProvider) ImageGeneration(ctx *schemas.BifrostContext, key 
 	if endpoint == "" {
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
 	}
+	// Microsoft MAI-Image has its own images API on Azure AI Foundry (TXE-6543).
+	if request != nil && isMAIImageRequest(ctx, request.Model) {
+		return provider.maiImageGeneration(ctx, key, endpoint, request)
+	}
 
 	authHeader, bifrostErr := provider.getAzureAuthHeaders(ctx, key, false)
 	if bifrostErr != nil {
@@ -1199,6 +1203,11 @@ func (provider *AzureProvider) ImageGenerationStream(
 	endpoint := resolveAzureEndpoint(ctx, key)
 	if endpoint == "" {
 		return nil, providerUtils.NewConfigurationError("endpoint not set")
+	}
+
+	// MAI-Image documents no stream (TXE-6543).
+	if request != nil && isMAIImageRequest(ctx, request.Model) {
+		return nil, maiImageStreamRefusal()
 	}
 
 	url := fmt.Sprintf("%s/openai/v1/images/generations", endpoint)

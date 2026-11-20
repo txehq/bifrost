@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -4325,4 +4326,95 @@ func TestValidateConfigSchema_MCPOpenAPIClient(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TXE-6543: the model families a config may name are listed in five places: core's
+// schemas.ModelFamilies (which routing and IsValid read), transports/config.schema.json, the Helm
+// chart's values schema, and the UI's ModelFamily values and zod schema. They had drifted (the two
+// JSON schemas lacked gemma, llama, imagen and veo, so a config naming one failed validation). Each
+// must equal core's list, in core's order, so a family added in core fails here until every list
+// has it.
+func TestModelFamilyListsMatchCore(t *testing.T) {
+	// go test runs in the package directory, transports/bifrost-http/lib.
+	root := filepath.Join("..", "..", "..")
+	var want []string
+	for _, family := range schemas.ModelFamilies() {
+		want = append(want, string(family))
+	}
+	read := func(rel string) string {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(root, rel))
+		if err != nil {
+			t.Fatalf("read %s: %v", rel, err)
+		}
+		return string(data)
+	}
+	// jsonEnums returns the enum of every "model_family" property in a JSON schema.
+	jsonEnums := func(rel string) [][]string {
+		t.Helper()
+		var doc any
+		if err := json.Unmarshal([]byte(read(rel)), &doc); err != nil {
+			t.Fatalf("parse %s: %v", rel, err)
+		}
+		var found [][]string
+		var walk func(node any)
+		walk = func(node any) {
+			switch v := node.(type) {
+			case map[string]any:
+				if prop, ok := v["model_family"].(map[string]any); ok {
+					if enum, ok := prop["enum"].([]any); ok {
+						var values []string
+						for _, e := range enum {
+							values = append(values, fmt.Sprint(e))
+						}
+						found = append(found, values)
+					}
+				}
+				for _, child := range v {
+					walk(child)
+				}
+			case []any:
+				for _, child := range v {
+					walk(child)
+				}
+			}
+		}
+		walk(doc)
+		if len(found) == 0 {
+			t.Fatalf("%s has no model_family enum; the check is not seeing it", rel)
+		}
+		return found
+	}
+	// tsStrings returns the quoted strings between start and the first end after it.
+	tsStrings := func(rel, start, end string) []string {
+		t.Helper()
+		source := read(rel)
+		i := strings.Index(source, start)
+		if i < 0 {
+			t.Fatalf("%s has no %q", rel, start)
+		}
+		j := strings.Index(source[i:], end)
+		if j < 0 {
+			t.Fatalf("%s: no %q after %q", rel, end, start)
+		}
+		var values []string
+		for _, m := range regexp.MustCompile(`"([^"]+)"`).FindAllStringSubmatch(source[i+len(start):i+j], -1) {
+			values = append(values, m[1])
+		}
+		return values
+	}
+	check := func(where string, got []string) {
+		t.Helper()
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("%s lists model families %v, want core's schemas.ModelFamilies() %v", where, got, want)
+		}
+	}
+	for _, rel := range []string{"transports/config.schema.json", "helm-charts/bifrost/values.schema.json"} {
+		for _, enum := range jsonEnums(rel) {
+			check(rel, enum)
+		}
+	}
+	check("ui/lib/types/config.ts ModelFamily", tsStrings("ui/lib/types/config.ts", "export type ModelFamily =", ";"))
+	check("ui/lib/types/config.ts ModelFamilyValues", tsStrings("ui/lib/types/config.ts", "export const ModelFamilyValues: ModelFamily[] = [", "];"))
+	check("ui/lib/types/schemas.ts modelFamilySchema", tsStrings("ui/lib/types/schemas.ts", "export const modelFamilySchema = z.enum([", "]);"))
 }

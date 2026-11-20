@@ -233,6 +233,9 @@ var vendorPriceFieldNames = func() []VendorPriceFieldName {
 		{BFL, "height", "size", imageTask},
 		{MiniMax, "width", "size", imageGeneration},
 		{MiniMax, "height", "size", imageGeneration},
+		// MAI-Image on Azure AI Foundry writes width and height from size (TXE-6543).
+		{Azure, "width", "size", imageGeneration},
+		{Azure, "height", "size", imageGeneration},
 		{Nebius, "width", "size", imageGeneration},
 		{Nebius, "height", "size", imageGeneration},
 		{Nebius, "response_extension", "output_format", imageGeneration},

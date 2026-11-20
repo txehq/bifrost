@@ -7153,8 +7153,13 @@
                       "mistral",
                       "cohere",
                       "gemini",
+                      "gemma",
+                      "llama",
+                      "imagen",
+                      "veo",
                       "nova",
-                      "titan"
+                      "titan",
+                      "mai-image"
                     ],
                     "description": "Underlying model family. Used by provider routing without substring-sniffing the wire model ID."
                   },

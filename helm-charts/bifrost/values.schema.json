@@ -7699,7 +7699,7 @@
                   },
                   "model_family": {
                     "type": "string",
-                    "enum": ["anthropic", "openai", "mistral", "cohere", "gemini", "nova", "titan"],
+                    "enum": ["anthropic", "openai", "mistral", "cohere", "gemini", "gemma", "llama", "imagen", "veo", "nova", "titan", "mai-image"],
                     "description": "Underlying model family. Used by provider routing without substring-sniffing the wire model ID."
                   },
                   "description": {

@@ -237,6 +237,18 @@
           "azure_key_config": {
             "endpoint": "http://127.0.0.1:8791/sora-b"
           }
+        },
+        {
+          "name": "azure-mai",
+          "value": "azure-mai-secret",
+          "models": [
+            "MAI-Image-2.5",
+            "MAI-Image-2.6"
+          ],
+          "weight": 1,
+          "azure_key_config": {
+            "endpoint": "http://127.0.0.1:8791/mai-a"
+          }
         }
       ],
       "network_config": {

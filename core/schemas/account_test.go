@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -717,9 +718,9 @@ func TestResolveCanonicalModelPrecedence(t *testing.T) {
 }
 
 func TestModelFamilyIsValid(t *testing.T) {
-	valid := []ModelFamily{
-		ModelFamilyAnthropic, ModelFamilyOpenAI, ModelFamilyMistral,
-		ModelFamilyCohere, ModelFamilyGemini, ModelFamilyNova, ModelFamilyTitan,
+	valid := ModelFamilies()
+	if !slices.Contains(valid, ModelFamilyMAIImage) || !slices.Contains(valid, ModelFamilyVeo) {
+		t.Fatalf("ModelFamilies() = %v, missing a family", valid)
 	}
 	for _, mf := range valid {
 		v := mf
@@ -844,5 +845,38 @@ func TestKeySigningSecretsHaveADestinationAllowlist(t *testing.T) {
 	}
 	if found != len(KeySigningSecretDestinations) {
 		t.Errorf("found %d key-held signing secrets, KeySigningSecretDestinations lists %d: a listed entry names a field that does not exist", found, len(KeySigningSecretDestinations))
+	}
+}
+
+// TXE-6543: MAI-Image names, in any case, resolve to the mai-image family, from the request's
+// model or from the alias; other image models do not.
+func TestResolveFamilyMAIImage(t *testing.T) {
+	ctx := NewBifrostContext(context.Background(), NoDeadline)
+	for model, want := range map[string]ModelFamily{
+		"MAI-Image-2.5": ModelFamilyMAIImage, "mai-image-2-6-flash": ModelFamilyMAIImage, "MAI-Image-2.7": ModelFamilyMAIImage,
+		"gpt-image-1.5": ModelFamilyOpenAI, "imagen-4.0-generate-001": ModelFamilyImagen, "MAI-Voice-1": "", "dall-e-3": "",
+	} {
+		if got := ResolveFamily(ctx, model); got != want {
+			t.Errorf("ResolveFamily(%q) = %q, want %q", model, got, want)
+		}
+	}
+	aliased := NewBifrostContext(context.Background(), NoDeadline)
+	aliased.SetValue(BifrostContextKeyResolvedAlias, &ResolvedAlias{Key: "house-image", Config: &AliasConfig{ModelID: "dep-1", ModelName: Ptr("MAI-Image-2.6")}})
+	if got := ResolveFamily(aliased, "dep-1"); got != ModelFamilyMAIImage {
+		t.Fatalf("ResolveFamily with alias model_name MAI-Image-2.6 = %q, want mai-image", got)
+	}
+}
+
+// BenchmarkResolveFamilyImageModel is the cost TXE-6543 adds to every Azure image generation:
+// one ResolveFamily on the request's model, with no alias on the context.
+func BenchmarkResolveFamilyImageModel(b *testing.B) {
+	ctx := NewBifrostContext(context.Background(), NoDeadline)
+	for _, model := range []string{"gpt-image-1.5", "MAI-Image-2.5", "my-deployment"} {
+		b.Run(model, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = ResolveFamily(ctx, model)
+			}
+		})
 	}
 }
