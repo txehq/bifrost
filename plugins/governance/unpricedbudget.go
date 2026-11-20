@@ -260,17 +260,22 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 	// (the object, or every task of an array): each was gated as its own model before the envelope
 	// (PreLLMHook). One with a task naming no model runs the provider's default, which cannot be
 	// priced, and is gated as the envelope, which names none.
-	if (requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest) && evaluationRequest.Model == "" && evaluationRequest.BodyModelsComplete {
+	if (requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest) && evaluationRequest.Model == "" &&
+		evaluationRequest.request != nil && passthroughBodyNamesEveryModel(evaluationRequest.request) {
 		// One answer is priced for the whole body, so a body mixing models cannot say which of them
 		// a $0 answer was not priced for. Under a dollar budget it sends one model per request, as
 		// refuseUnchargedBodyModelLimits asks of a body whose models carry their own limits.
-		if evaluationRequest.BodyModelCount > 1 {
+		bodyModel, count := r.distinctBodyModels(provider, evaluationRequest.request)
+		if count > 1 {
 			return &EvaluationResult{
 				Decision: DecisionModelUnpriced,
 				Reason: fmt.Sprintf("the request body names %d models, and one answer priced for all of them cannot be charged to a dollar budget model by model; send one model per request",
-					evaluationRequest.BodyModelCount),
+					count),
 			}
 		}
+		// The answer is charged under no model of its own: the body's model, named as it was
+		// evaluated, is what an unpriced answer refuses.
+		ctx.SetValue(passthroughBodyModelContextKey, bodyModel)
 		return nil
 	}
 	if requestType == schemas.BatchCreateRequest {
@@ -278,7 +283,7 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 		// the envelope (PreLLMHook), so the envelope has nothing left to price, provided every
 		// request names one. A request naming none runs a model nothing priced.
 		if evaluationRequest.Model == "" && !evaluationRequest.OpaqueBatchInput {
-			if evaluationRequest.InlineBatchModelsComplete {
+			if evaluationRequest.request != nil && inlineBatchNamesEveryModel(evaluationRequest.request) {
 				return nil
 			}
 			return &EvaluationResult{
@@ -365,6 +370,9 @@ func deliveredAnswer(result *schemas.BifrostResponse) bool {
 	// An image request the provider's content filter answered with no image delivered nothing to
 	// price (extractCostInput charges such an answer no output).
 	if image := result.ImageGenerationResponse; image != nil && image.ContentFilter != nil && len(image.Data) == 0 {
+		return false
+	}
+	if passthrough := result.PassthroughResponse; passthrough != nil && passthroughQueuedAcknowledgment(passthrough.Body) {
 		return false
 	}
 	if result.ResponsesResponse != nil && result.ResponsesResponse.Status != nil {
@@ -508,7 +516,7 @@ func passthroughGenerated(result *schemas.BifrostResponse) bool {
 		return false
 	}
 	status := result.PassthroughResponse.StatusCode
-	return status >= 200 && status < 300
+	return status >= 200 && status < 300 && !passthroughQueuedAcknowledgment(result.PassthroughResponse.Body)
 }
 
 // passthroughBodyNamesEveryModel reports whether a passthrough body names a model for every unit
@@ -561,4 +569,56 @@ func inlineBatchNamesEveryModel(req *schemas.BifrostRequest) bool {
 		}
 	}
 	return true
+}
+
+// distinctBodyModels returns the first of the distinct models a passthrough body names, named as
+// PreLLMHook evaluates them (a Gemini or Vertex resource name reduced to its bare id), and how many
+// there are.
+func (r *BudgetResolver) distinctBodyModels(provider schemas.ModelProvider, req *schemas.BifrostRequest) (string, int) {
+	base := configuredBaseProvider(r.governanceInMemoryStore, provider)
+	resourceNamed := base == schemas.Gemini || base == schemas.Vertex
+	var first string
+	distinct := make(map[string]struct{})
+	for _, bodyModel := range passthroughBodyModels(req) {
+		if resourceNamed {
+			bodyModel = bareResourceModel(bodyModel)
+		}
+		if _, seen := distinct[bodyModel]; !seen {
+			distinct[bodyModel] = struct{}{}
+			if first == "" {
+				first = bodyModel
+			}
+		}
+	}
+	return first, len(distinct)
+}
+
+// passthroughQueuedAcknowledgment reports whether a passthrough answer only acknowledges queued
+// work: a JSON body whose "data" items carry nothing but task bookkeeping (Runware's taskType and
+// taskUUID, a status), so no generation has finished and nothing is priced yet.
+func passthroughQueuedAcknowledgment(body []byte) bool {
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return false
+	}
+	data := gjson.GetBytes(body, "data")
+	if !data.IsArray() || len(data.Array()) == 0 {
+		return false
+	}
+	queued := true
+	data.ForEach(func(_, item gjson.Result) bool {
+		if !item.IsObject() {
+			queued = false
+			return false
+		}
+		item.ForEach(func(key, _ gjson.Result) bool {
+			switch key.Str {
+			case "taskType", "taskUUID", "status", "deliveryMethod":
+				return true
+			}
+			queued = false
+			return false
+		})
+		return queued
+	})
+	return queued
 }

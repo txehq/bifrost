@@ -412,9 +412,15 @@ func BenchmarkUnpricedBudgetGate(b *testing.B) {
 		{"no_budget", "sk-bf-open", "gpt-4o"},
 		{"budget_priced", "sk-bf-budget", "gpt-4o"},
 		{"budget_key_scoped_override", "sk-bf-budget", "key-priced"},
+		{"no_budget_passthrough_task_array", "sk-bf-open", ""},
 	} {
 		b.Run(bc.name, func(b *testing.B) {
 			req := chatOn(bc.model)
+			if bc.model == "" {
+				req = &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+					Provider: schemas.OpenAI, Method: "POST", Path: "/v1/tasks", Body: []byte(`[{"model":"gpt-4o"},{"model":"free-chat"},{"model":"gpt-4o"}]`),
+				}}
+			}
 			b.ReportAllocs()
 			for b.Loop() {
 				if shortCircuit := preLLM(b, plugin, bc.vk, req); shortCircuit != nil {
@@ -567,4 +573,52 @@ func TestAnswerFreeUnderTheServingAliasDoesNotRefuseTheModel(t *testing.T) {
 	require.NoError(t, err)
 	plugin.wg.Wait()
 	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", chatOn("alias-label")), "an answer free under the serving alias does not refuse the label")
+}
+
+// A queued acknowledgment (Runware's taskType and taskUUID only) and a stream chunk before the last
+// are not answers yet: neither refuses the model, and a later stream's final chunk is judged.
+func TestQueuedPassthroughAcknowledgmentDoesNotRefuseTheModel(t *testing.T) {
+	assert.True(t, passthroughQueuedAcknowledgment([]byte(`{"data":[{"taskType":"imageInference","taskUUID":"a"}]}`)))
+	assert.False(t, passthroughQueuedAcknowledgment([]byte(`{"data":[{"taskType":"imageInference","taskUUID":"a","imageURL":"https://example.invalid/1.png"}]}`)))
+	assert.False(t, passthroughQueuedAcknowledgment([]byte(`{"data":[]}`)))
+	assert.False(t, passthroughQueuedAcknowledgment([]byte(`not json`)))
+
+	plugin, _ := unpricedBudgetPlugin(t)
+	answer := func(requestType schemas.RequestType, body string) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{PassthroughResponse: &schemas.BifrostPassthroughResponse{
+			StatusCode: 200, Body: []byte(body),
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: requestType, Provider: schemas.OpenAI,
+				RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenAI},
+			},
+		}}
+	}
+	request := func(requestType schemas.RequestType) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: requestType, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+			Provider: schemas.OpenAI, Method: "POST", Path: "/v1/images", Body: []byte(`[{"model":"token-image"}]`),
+		}}
+	}
+
+	ctx := resolverCtx(plugin.store, "sk-bf-budget")
+	_, shortCircuit, err := plugin.PreLLMHook(ctx, request(schemas.PassthroughRequest))
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit)
+	_, _, err = plugin.PostLLMHook(ctx, answer(schemas.PassthroughRequest, `{"data":[{"taskType":"imageInference","taskUUID":"a"}]}`), nil)
+	require.NoError(t, err)
+	plugin.wg.Wait()
+	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", request(schemas.PassthroughRequest)), "a queued acknowledgment does not refuse the model")
+
+	ctx = resolverCtx(plugin.store, "sk-bf-budget")
+	_, shortCircuit, err = plugin.PreLLMHook(ctx, request(schemas.PassthroughStreamRequest))
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit)
+	_, _, err = plugin.PostLLMHook(ctx, answer(schemas.PassthroughStreamRequest, `data: chunk`), nil)
+	require.NoError(t, err)
+	plugin.wg.Wait()
+	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", request(schemas.PassthroughStreamRequest)), "a chunk before the last does not refuse the model")
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	_, _, err = plugin.PostLLMHook(ctx, answer(schemas.PassthroughStreamRequest, `data: last`), nil)
+	require.NoError(t, err)
+	plugin.wg.Wait()
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", request(schemas.PassthroughStreamRequest)), "the stream's final chunk, answered with no usage")
 }

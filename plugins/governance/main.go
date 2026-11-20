@@ -1219,8 +1219,7 @@ func (p *GovernancePlugin) preLLMHook(ctx *schemas.BifrostContext, req *schemas.
 		Provider:         provider,
 		Model:            model,
 		OpaqueBatchInput: isOpaqueBatchInput(req),
-		// TXE-7957: an inline batch naming no model of its own is priced by its items' models.
-		InlineBatchModelsComplete: inlineBatchNamesEveryModel(req),
+		request:          req,
 	}
 	// A passthrough body is forwarded as the provider reads it, and a task array (Runware) names a
 	// model per task that the request itself may not carry. Every model the body names is
@@ -1232,29 +1231,7 @@ func (p *GovernancePlugin) preLLMHook(ctx *schemas.BifrostContext, req *schemas.
 	if req.RequestType == schemas.PassthroughRequest || req.RequestType == schemas.PassthroughStreamRequest {
 		bodyModels := passthroughBodyModels(req)
 		evaluationRequest.ModelUnseen = model == "" && len(bodyModels) == 0
-		evaluationRequest.BodyModelsComplete = passthroughBodyNamesEveryModel(req)
 		resourceNamed := p.namesModelsAsResources(provider)
-		if model == "" && len(bodyModels) > 0 {
-			// The answer is charged under no model of its own; the body's models, named as they are
-			// evaluated below, are what prices it and what an unpriced answer refuses (TXE-7957,
-			// unpricedbudget.go).
-			distinct := make(map[string]struct{}, len(bodyModels))
-			for _, bodyModel := range bodyModels {
-				if resourceNamed {
-					bodyModel = bareResourceModel(bodyModel)
-				}
-				if _, seen := distinct[bodyModel]; !seen {
-					distinct[bodyModel] = struct{}{}
-					if evaluationRequest.BodyModel == "" {
-						evaluationRequest.BodyModel = bodyModel
-					}
-				}
-			}
-			evaluationRequest.BodyModelCount = len(distinct)
-			if len(distinct) == 1 {
-				ctx.SetValue(passthroughBodyModelContextKey, evaluationRequest.BodyModel)
-			}
-		}
 		for _, bodyModel := range bodyModels {
 			if resourceNamed {
 				bodyModel = bareResourceModel(bodyModel)
@@ -1624,7 +1601,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 			// Use the requested model for usage tracking
 			p.postHookWorker(result, err, provider, requestedModel, requestType, requestID, billingNonce, isFinalChunk, attemptNumber, fallbackIndex, sessionContinuation, pricingScopes, accountedBudgets, accountedRateLimits, routingMetadata, bodyModel)
 		}()
-	} else if bodyModel, _ := ctx.Value(passthroughBodyModelContextKey).(string); bodyModel != "" && passthroughGenerated(result) {
+	} else if bodyModel, _ := ctx.Value(passthroughBodyModelContextKey).(string); bodyModel != "" && (!bifrost.IsStreamRequestType(requestType) || isFinalChunk) && passthroughGenerated(result) {
 		// A passthrough whose body named the model it runs, answered with no usage the provider
 		// could read (Runware without includeCost), is not charged and counts no request. It is
 		// still an answer under the budgets it was admitted against, priced at $0 (TXE-7957).

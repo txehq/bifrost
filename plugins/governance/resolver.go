@@ -48,17 +48,10 @@ type EvaluationRequest struct {
 	// ModelUnseen marks a passthrough request that names no model anywhere governance can read:
 	// not on the request and not in its body.
 	ModelUnseen bool `json:"model_unseen,omitempty"`
-	// BodyModelsComplete marks a passthrough request whose body names a model for every unit of
-	// work it carries (the object, or every task of an array), each of which was evaluated on its
-	// own before the request's pass (TXE-7957).
-	BodyModelsComplete bool `json:"body_models_complete,omitempty"`
-	// BodyModel is the first, and BodyModelCount the number, of the distinct models a passthrough
-	// body names when the request names none of its own, as each was evaluated.
-	BodyModel      string `json:"body_model,omitempty"`
-	BodyModelCount int    `json:"body_model_count,omitempty"`
-	// InlineBatchModelsComplete marks an inline batch create every request of which names its
-	// model, each evaluated on its own before the request's pass (TXE-7957).
-	InlineBatchModelsComplete bool `json:"inline_batch_models_complete,omitempty"`
+	// request is the request being evaluated, when a hook has it. The dollar-budget gate reads a
+	// passthrough body or an inline batch from it only when a budget applies, so a request with
+	// no budget pays nothing for it (TXE-7957, unpricedbudget.go).
+	request *schemas.BifrostRequest
 }
 
 // EvaluationResult is a governance verdict: whether the request may proceed, and why not when it
