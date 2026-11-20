@@ -2126,9 +2126,11 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifro
 				priced = bodyModel
 			}
 			// A provider's server-side fallback served the answer on another model, and accounting
-			// priced it as that model (resolvePricing): it is judged and refused as that model.
-			if extra := result.GetExtraFields(); extra != nil && extra.RoutingInfo.ServerSideFallbackModel != nil && *extra.RoutingInfo.ServerSideFallbackModel != "" {
-				priced = *extra.RoutingInfo.ServerSideFallbackModel
+			// priced it as that model (resolvePricing). A $0 answer free on that model is not unpriced;
+			// any other is refused on the requested model's rows, which the next request reaches it by.
+			fallback := ""
+			if extra := result.GetExtraFields(); extra != nil && extra.RoutingInfo.ServerSideFallbackModel != nil {
+				fallback = *extra.RoutingInfo.ServerSideFallbackModel
 			}
 			// A container is priced from the memory tier it was created with, as accounting reads it.
 			if container := result.ContainerCreateResponse; container != nil && container.MemoryLimit != "" {
@@ -2154,7 +2156,9 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifro
 			if passthrough := result.PassthroughResponse; passthrough != nil {
 				pricedAs = modelcatalog.PassthroughPricingRequestType(provider, result.GetExtraFields().PassthroughPath, passthrough.PassthroughUsage)
 			}
-			p.resolver.noteUnpricedAnswer(provider, priced, requestType, pricedAs, answerCost, pricingScopes, requestID, limitIDs(budgets))
+			if fallback == "" || answerCost > 0 || p.resolver.servedPriceStatus(provider, fallback, pricedAs, pricingScopes) != modelcatalog.PriceFree {
+				p.resolver.noteUnpricedAnswer(provider, priced, requestType, pricedAs, answerCost, pricingScopes, requestID, limitIDs(budgets))
+			}
 		}
 
 		// Create usage update for tracker (business logic)
