@@ -19,7 +19,11 @@ func TestAmbiguousBodyMember(t *testing.T) {
 	}{
 		{"empty", ``, ""},
 		{"plain text", `hello`, ""},
-		{"invalid JSON", `{"model":"a","model"`, ""},
+		{"invalid JSON", `{"model":"a","model"`, "a JSON body that does not parse strictly"},
+		{"lenient JSON a vendor might accept", `{"model":"a",}`, "a JSON body that does not parse strictly"},
+		{"byte order mark", "\xef\xbb\xbf{\"model\":\"a\",\"model\":\"b\"}", "model"},
+		{"model in two casings", `{"model":"a","Model":"b"}`, "Model"},
+		{"nested model in two casings", `[{"MODEL":"a","model":"b"}]`, "[0].model"},
 		{"object naming its model once", `{"model":"a","messages":[{"role":"user","content":"x"}]}`, ""},
 		{"same key in sibling objects", `{"messages":[{"role":"user"},{"role":"assistant"}]}`, ""},
 		{"keys differing in case", `{"properties":{"Name":{},"name":{}}}`, ""},
@@ -34,7 +38,7 @@ func TestAmbiguousBodyMember(t *testing.T) {
 		{"many distinct keys", `{"a":1,"b":1,"c":1,"d":1,"e":1,"f":1,"g":1,"h":1,"i":1,"j":1,"k":1,"l":1,"m":1,"n":1,"o":1,"p":1,"q":1,"r":1,"s":1}`, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			member, ambiguous := AmbiguousBodyMember([]byte(tc.body))
+			member, ambiguous := AmbiguousBodyMember([]byte(tc.body), "")
 			if ambiguous != (tc.member != "") || member != tc.member {
 				t.Fatalf("AmbiguousBodyMember(%s) = %q, %t; want %q", tc.body, member, ambiguous, tc.member)
 			}
@@ -42,12 +46,26 @@ func TestAmbiguousBodyMember(t *testing.T) {
 	}
 
 	deep := strings.Repeat("[", maxForwardedBodyDepth+1) + strings.Repeat("]", maxForwardedBodyDepth+1)
-	if member, ambiguous := AmbiguousBodyMember([]byte(deep)); !ambiguous || !strings.Contains(member, "nested more than") {
+	if member, ambiguous := AmbiguousBodyMember([]byte(deep), ""); !ambiguous || !strings.Contains(member, "nested more than") {
 		t.Fatalf("a body nested past the bound = %q, %t; want it refused", member, ambiguous)
 	}
 	shallow := strings.Repeat("[", maxForwardedBodyDepth-1) + strings.Repeat("]", maxForwardedBodyDepth-1)
-	if member, ambiguous := AmbiguousBodyMember([]byte(shallow)); ambiguous {
+	if member, ambiguous := AmbiguousBodyMember([]byte(shallow), ""); ambiguous {
 		t.Fatalf("a body nested within the bound = %q, refused", member)
+	}
+
+	// A declared JSON body is read strictly whatever it opens with; a non-JSON type is not read.
+	for _, tc := range []struct {
+		body, contentType, member string
+	}{
+		{`not json`, "application/json; charset=utf-8", "a JSON body that does not parse strictly"},
+		{`{"model":"a","model":"b"}`, "application/vnd.api+json", "model"},
+		{`not json`, "text/plain", ""},
+		{`{"model":"a","model":"b"}`, "text/plain", "model"},
+	} {
+		if member, ambiguous := AmbiguousBodyMember([]byte(tc.body), tc.contentType); ambiguous != (tc.member != "") || member != tc.member {
+			t.Errorf("AmbiguousBodyMember(%s, %s) = %q, %t; want %q", tc.body, tc.contentType, member, ambiguous, tc.member)
+		}
 	}
 }
 
@@ -55,9 +73,12 @@ func TestAmbiguousBodyMember(t *testing.T) {
 // (the router keeps the last model field, a vendor may keep the first); repeated files and
 // "name[]" list fields are how lists are sent, and are not.
 func TestAmbiguousMultipartField(t *testing.T) {
+	var contentType string
 	build := func(parts ...[2]string) []byte {
 		var buf bytes.Buffer
 		w := multipart.NewWriter(&buf)
+		w.SetBoundary("txe-7994-boundary")
+		contentType = w.FormDataContentType()
 		for _, p := range parts {
 			if strings.HasPrefix(p[0], "file:") {
 				fw, _ := w.CreateFormFile(strings.TrimPrefix(p[0], "file:"), "a.png")
@@ -79,13 +100,44 @@ func TestAmbiguousMultipartField(t *testing.T) {
 		{"list field", build([2]string{"timestamp_granularities[]", "word"}, [2]string{"timestamp_granularities[]", "segment"}), ""},
 		{"model repeated", build([2]string{"model", "a"}, [2]string{"prompt", "p"}, [2]string{"model", "b"}), "multipart field model"},
 		{"size repeated", build([2]string{"size", "256x256"}, [2]string{"size", "4096x4096"}), "multipart field size"},
+		{"a file and a text field of one name", build([2]string{"file:model", "x"}, [2]string{"model", "b"}), "multipart field model"},
+		{"a text field then a file of one name", build([2]string{"model", "a"}, [2]string{"file:model", "x"}), "multipart field model"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			member, ambiguous := AmbiguousBodyMember(tc.body)
-			if ambiguous != (tc.member != "") || member != tc.member {
-				t.Fatalf("AmbiguousBodyMember = %q, %t; want %q", member, ambiguous, tc.member)
+			// Read by the declared boundary, and by the boundary line when no type is declared.
+			for _, declared := range []string{contentType, ""} {
+				member, ambiguous := AmbiguousBodyMember(tc.body, declared)
+				if ambiguous != (tc.member != "") || member != tc.member {
+					t.Fatalf("AmbiguousBodyMember(declared %q) = %q, %t; want %q", declared, member, ambiguous, tc.member)
+				}
 			}
 		})
+	}
+
+	// A preamble before the first boundary hides nothing from the declared boundary.
+	body := build([2]string{"model", "a"}, [2]string{"model", "b"})
+	withPreamble := append([]byte("preamble text\r\n"), body...)
+	if member, ambiguous := AmbiguousBodyMember(withPreamble, contentType); !ambiguous || member != "multipart field model" {
+		t.Errorf("a repeat behind a preamble = %q, %t; want it refused", member, ambiguous)
+	}
+	// A declared multipart body that does not parse, or names no boundary, is refused.
+	if member, ambiguous := AmbiguousBodyMember(body[:len(body)/2], contentType); !ambiguous || member != "multipart body that does not parse" {
+		t.Errorf("a truncated multipart body = %q, %t; want it refused", member, ambiguous)
+	}
+	if member, ambiguous := AmbiguousBodyMember(body, "multipart/form-data"); !ambiguous || member != "multipart body with no boundary" {
+		t.Errorf("a multipart body with no boundary = %q, %t; want it refused", member, ambiguous)
+	}
+}
+
+// TestForwardedBodyContentType: a passthrough request's declared type is read from its forwarded
+// headers in any casing; a raw request body declares none.
+func TestForwardedBodyContentType(t *testing.T) {
+	req := BifrostRequest{PassthroughRequest: &BifrostPassthroughRequest{SafeHeaders: map[string]string{"Content-Type": "multipart/form-data; boundary=x"}}}
+	if got := req.ForwardedBodyContentType(); got != "multipart/form-data; boundary=x" {
+		t.Fatalf("ForwardedBodyContentType = %q", got)
+	}
+	if got := (&BifrostRequest{ChatRequest: &BifrostChatRequest{}}).ForwardedBodyContentType(); got != "" {
+		t.Fatalf("a raw request body declared %q", got)
 	}
 }
 
@@ -144,7 +196,7 @@ func BenchmarkAmbiguousBodyMember(b *testing.B) {
 			b.SetBytes(int64(len(tc.body)))
 			b.ReportAllocs()
 			for b.Loop() {
-				if _, ambiguous := AmbiguousBodyMember(tc.body); ambiguous {
+				if _, ambiguous := AmbiguousBodyMember(tc.body, ""); ambiguous {
 					b.Fatal("ambiguous")
 				}
 			}

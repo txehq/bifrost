@@ -1200,7 +1200,7 @@ func refuseAmbiguousForwardedBody(req *schemas.BifrostRequest) *schemas.LLMPlugi
 	if req == nil {
 		return nil
 	}
-	member, ambiguous := schemas.AmbiguousBodyMember(req.ForwardedBody())
+	member, ambiguous := schemas.AmbiguousBodyMember(req.ForwardedBody(), req.ForwardedBodyContentType())
 	if !ambiguous {
 		return nil
 	}

@@ -2,7 +2,10 @@ package schemas
 
 import (
 	"bytes"
+	"io"
+	"mime"
 	"mime/multipart"
+	"slices"
 	"strconv"
 	"strings"
 	"unsafe"
@@ -113,36 +116,93 @@ func (br *BifrostRequest) ForwardedBody() []byte {
 	return nil
 }
 
+// ForwardedBodyContentType returns the media type the caller declared for the forwarded body: the
+// Content-Type a passthrough request forwards. A raw request body is always JSON (the native
+// routes that set one decode it as JSON first), so it declares none and is read as JSON.
+func (br *BifrostRequest) ForwardedBodyContentType() string {
+	if br.PassthroughRequest == nil {
+		return ""
+	}
+	for name, value := range br.PassthroughRequest.SafeHeaders {
+		if strings.EqualFold(name, "content-type") {
+			return value
+		}
+	}
+	return ""
+}
+
 // AmbiguousBodyMember reports the first member of a forwarded body that two parsers can read
 // differently, as a path ("model", "tasks[0].model", "multipart field size"), and true; or "" and
-// false for a body every parser reads the same way.
+// false for a body every parser reads the same way. contentType is the caller's declared
+// Content-Type, "" when none is known.
 //
-//   - JSON: an object anywhere in the document that gives one key twice. Keys are compared as
-//     decoded, so "model" and "model" are the same key, as they are to every parser. A
-//     document nested deeper than maxForwardedBodyDepth is refused too.
-//   - multipart/form-data (recognised by its opening boundary line): a text field given twice,
-//     unless its name ends in "[]", the form encoding of a list. A file part may repeat: a list
-//     of images is sent that way.
+//   - JSON (declared, or a body opening with "{" or "[" after a UTF-8 byte order mark and
+//     whitespace): an object anywhere in the document that gives one key twice, compared as
+//     decoded, so "model" and "mod\u0065l" are the same key. A gated key (gatedBodyKeys) is also
+//     compared without case, since encoding/json and sonic fill a struct field from any casing.
+//     A document nested deeper than maxForwardedBodyDepth is refused, and so is one that does not
+//     parse strictly: a lenient vendor parser might read members gjson does not see.
+//   - multipart/form-data (declared, read by the declared boundary; or, with no declared type, a
+//     body opening with a boundary line): a name given twice when any of its parts is a text
+//     field, unless the name ends in "[]", the form encoding of a list. A name only ever given as
+//     a file may repeat: a list of images is sent that way. A body that does not parse as
+//     multipart is refused.
 //
-// Anything else (an empty body, plain text, binary audio, JSON that does not parse) is not
-// ambiguous: either nothing reads it, or the route has already refused it as malformed.
-func AmbiguousBodyMember(body []byte) (string, bool) {
-	trimmed := bytes.TrimLeft(body, " \t\r\n")
+// Anything else (an empty body, plain text, binary audio) is not ambiguous: nothing reads it as
+// structured data.
+func AmbiguousBodyMember(body []byte, contentType string) (string, bool) {
+	trimmed := bytes.TrimPrefix(bytes.TrimLeft(body, " \t\r\n"), utf8ByteOrderMark)
+	trimmed = bytes.TrimLeft(trimmed, " \t\r\n")
+	mediaType, params, mimeErr := mime.ParseMediaType(contentType)
+	if mimeErr == nil && strings.HasPrefix(mediaType, "multipart/") {
+		boundary := params["boundary"]
+		if boundary == "" {
+			return "multipart body with no boundary", true
+		}
+		return ambiguousMultipartField(trimmed, boundary)
+	}
+	declaredJSON := mimeErr == nil && (mediaType == "application/json" || strings.HasSuffix(mediaType, "+json"))
 	if len(trimmed) == 0 {
 		return "", false
 	}
-	switch trimmed[0] {
-	case '{', '[':
+	switch {
+	case declaredJSON || trimmed[0] == '{' || trimmed[0] == '[':
 		if !gjson.ValidBytes(trimmed) {
-			return "", false
+			if !declaredJSON && trimmed[0] != '{' && trimmed[0] != '[' {
+				return "", false
+			}
+			return "a JSON body that does not parse strictly", true
 		}
 		// The body is not written while it is read, so it is viewed as a string, not copied.
 		path := make([]bodyPathSegment, 0, 8)
 		return ambiguousJSONMember(gjson.Parse(unsafe.String(unsafe.SliceData(trimmed), len(trimmed))), &path, 0)
-	case '-':
-		return ambiguousMultipartField(trimmed)
+	case contentType == "" && bytes.HasPrefix(trimmed, []byte("--")):
+		line, _, _ := bytes.Cut(trimmed, []byte("\n"))
+		line = bytes.TrimRight(line, "\r")
+		if len(line) <= 2 {
+			return "", false
+		}
+		return ambiguousMultipartField(trimmed, string(line[2:]))
 	}
 	return "", false
+}
+
+// utf8ByteOrderMark opens some JSON documents; Python's json.loads, among others, skips it.
+var utf8ByteOrderMark = []byte{0xef, 0xbb, 0xbf}
+
+// gatedBodyKeys are the members an access gate or the router reads from a forwarded body by
+// name. Two of them that differ only in case are ambiguous too: a typed decoder fills the field
+// from either, gjson and the vendor read the exact spelling.
+var gatedBodyKeys = []string{"model"}
+
+// gatedBodyKey returns the gated key name folds to, or "".
+func gatedBodyKey(name string) string {
+	for _, key := range gatedBodyKeys {
+		if strings.EqualFold(name, key) {
+			return key
+		}
+	}
+	return ""
 }
 
 // bodyPathSegment is one step from the document root: an object member or a list index.
@@ -179,8 +239,16 @@ func ambiguousJSONMember(value gjson.Result, path *[]bodyPathSegment, depth int)
 	var keys [16]string
 	small := keys[:0]
 	var large map[string]struct{}
+	var gated []string // gated keys (folded) this object has given
 	value.ForEach(func(key, member gjson.Result) bool {
 		name := key.Str
+		if folded := gatedBodyKey(name); folded != "" {
+			if slices.Contains(gated, folded) {
+				found, ambiguous = renderBodyPath(*path, name), true
+				return false
+			}
+			gated = append(gated, folded)
+		}
 		if large != nil {
 			if _, seen := large[name]; seen {
 				found, ambiguous = renderBodyPath(*path, name), true
@@ -237,29 +305,28 @@ func renderBodyPath(path []bodyPathSegment, key string) string {
 	return b.String()
 }
 
-// ambiguousMultipartField reads a multipart/form-data body by the boundary its first line opens
-// with and reports a text field given twice.
-func ambiguousMultipartField(body []byte) (string, bool) {
-	line, _, _ := bytes.Cut(body, []byte("\n"))
-	line = bytes.TrimRight(line, "\r")
-	if !bytes.HasPrefix(line, []byte("--")) || len(line) <= 2 {
-		return "", false
-	}
-	reader := multipart.NewReader(bytes.NewReader(body), string(line[2:]))
-	seen := map[string]struct{}{}
+// ambiguousMultipartField reads a multipart body by its boundary and reports a name given twice
+// when any of its parts is a text field. A body that does not parse is refused.
+func ambiguousMultipartField(body []byte, boundary string) (string, bool) {
+	reader := multipart.NewReader(bytes.NewReader(body), boundary)
+	type seenName struct{ text bool }
+	seen := map[string]seenName{}
 	for {
 		part, err := reader.NextPart()
-		if err != nil {
+		if err == io.EOF {
 			return "", false
 		}
-		name, file := part.FormName(), part.FileName() != ""
+		if err != nil {
+			return "multipart body that does not parse", true
+		}
+		name, text := part.FormName(), part.FileName() == ""
 		part.Close()
-		if name == "" || file || strings.HasSuffix(name, "[]") {
+		if name == "" || strings.HasSuffix(name, "[]") {
 			continue
 		}
-		if _, repeated := seen[name]; repeated {
+		if previous, repeated := seen[name]; repeated && (text || previous.text) {
 			return "multipart field " + name, true
 		}
-		seen[name] = struct{}{}
+		seen[name] = seenName{text: text || seen[name].text}
 	}
 }

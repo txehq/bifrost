@@ -870,6 +870,11 @@ func TestRepeatedBodyModelCannotRunAModelTheKeyIsNotAllowed(t *testing.T) {
 			Provider: schemas.OpenAI, Model: model, Method: "POST", Path: "/v1/chat/completions", Body: []byte(body),
 		}}
 	}
+	// The router keeps the last model field of a multipart body; a vendor may keep the first.
+	multipartBody := "preamble\r\n--b7994\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\ngpt-4o\r\n" +
+		"--b7994\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\no1\r\n--b7994--\r\n"
+	multipartReq := passthrough("gpt-4o", multipartBody)
+	multipartReq.PassthroughRequest.SafeHeaders = map[string]string{"content-type": "multipart/form-data; boundary=b7994"}
 	rawChat := func(model, body string) *schemas.BifrostRequest {
 		return &schemas.BifrostRequest{RequestType: schemas.ChatCompletionStreamRequest, ChatRequest: &schemas.BifrostChatRequest{
 			Provider: schemas.OpenAI, Model: model, RawRequestBody: []byte(body),
@@ -886,6 +891,8 @@ func TestRepeatedBodyModelCannotRunAModelTheKeyIsNotAllowed(t *testing.T) {
 		{"object body, escaped repeat", passthrough("", `{"model":"gpt-4o","model":"o1"}`), "model", ""},
 		{"task array body", passthrough("", `[{"model":"gpt-4o"},{"model":"gpt-4o","model":"o1"}]`), "[1].model", ""},
 		{"raw request body mode", rawChat("gpt-4o", `{"model":"gpt-4o","model":"o1"}`), "model", ""},
+		{"multipart body behind a preamble", multipartReq, "multipart field model", ""},
+		{"model in two casings", passthrough("gpt-4o", `{"model":"gpt-4o","Model":"o1"}`), "Model", ""},
 		{"nested member", passthrough("gpt-4o", `{"model":"gpt-4o","metadata":{"tier":"a","tier":"b"}}`), "metadata.tier", ""},
 		{"allowed model named once", passthrough("gpt-4o", `{"model":"gpt-4o"}`), "", DecisionAllow},
 		{"other model named once", passthrough("", `{"model":"o1"}`), "", DecisionModelBlocked},
