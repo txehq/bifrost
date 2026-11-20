@@ -138,7 +138,8 @@ func unpricedBudgetPlugin(t testing.TB) (*GovernancePlugin, *LocalGovernanceStor
 		"alias-label":{"provider":"openai","mode":"chat","input_cost_per_token":0.000001,"output_cost_per_token":0.000002},
 		"container-4g":{"provider":"openai","mode":"container_create","code_interpreter_cost_per_session":0.12},
 		"responses-free":{"provider":"openai","mode":"chat","input_cost_per_token":0.000001,"output_cost_per_token":0.000002},
-		"seconds-chat":{"provider":"openai","mode":"chat","input_cost_per_second":0.001}
+		"seconds-chat":{"provider":"openai","mode":"chat","input_cost_per_second":0.001},
+		"dual-1":{"provider":"openai","mode":"chat","input_cost_per_token":0.000001,"output_cost_per_token":0.000002}
 	}`), 0o600))
 	ds := datasheet.New(nil, NewMockLogger(), datasheet.Config{URL: "file://" + sheet})
 	require.NoError(t, ds.LoadFromURLIntoMemory(context.Background()))
@@ -155,6 +156,10 @@ func unpricedBudgetPlugin(t testing.TB) (*GovernancePlugin, *LocalGovernanceStor
 		ID: "responses-free-override", ScopeKind: string(datasheet.ScopeKindGlobal),
 		MatchType: string(datasheet.MatchTypeExact), Pattern: "responses-free", RequestTypes: []schemas.RequestType{schemas.ResponsesRequest},
 		PricingPatchJSON: `{"input_cost_per_token":0,"output_cost_per_token":0}`,
+	}, {
+		ID: "dual-embedding-override", ScopeKind: string(datasheet.ScopeKindGlobal),
+		MatchType: string(datasheet.MatchTypeExact), Pattern: "dual-1", RequestTypes: []schemas.RequestType{schemas.EmbeddingRequest},
+		PricingPatchJSON: `{"input_cost_per_token":0.0000001}`,
 	}}))
 	catalog := modelcatalog.NewTestCatalogWithDatasheet(ds)
 
@@ -250,6 +255,9 @@ func TestUnpricedModelUnderADollarBudgetIsRefusedBeforeTheCall(t *testing.T) {
 	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", endpointBatch(schemas.BatchEndpointChatCompletions, "", "gpt-4o")), "a chat batch on a model priced for chat is served")
 	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", endpointBatch(schemas.BatchEndpointEmbeddings, "", "embed-1")), "an embeddings batch on a model priced for embeddings is served")
 	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", endpointBatch(schemas.BatchEndpointChatCompletions, "/v1/embeddings", "gpt-4o")), "a request whose own url is embeddings is priced as one")
+	// A batch naming no endpoint is settled as chat (Anthropic's Messages, Gemini's generateContent).
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", endpointBatch("", "", "embed-1")), "an endpoint-less batch on a model priced only for embeddings")
+	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", endpointBatch("", "", "gpt-4o")), "an endpoint-less batch on a chat-priced model is served")
 	envelopeModel := "gpt-4o"
 	envelope := endpointBatch(schemas.BatchEndpointEmbeddings, "", "embed-1")
 	envelope.BatchCreateRequest.Model = &envelopeModel
@@ -289,6 +297,16 @@ func TestUnpricedModelUnderADollarBudgetIsRefusedBeforeTheCall(t *testing.T) {
 	matched := passthrough(`{"model":"gpt-4o"}`)
 	matched.PassthroughRequest.Model = "gpt-4o"
 	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", matched), "a request whose body names the same model is served")
+
+	// An OpenAI container create sent through passthrough names no model and is priced as the
+	// container it creates.
+	containerPassthrough := func(body string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+			Provider: schemas.OpenAI, Method: "POST", Path: "/v1/containers", Body: []byte(body),
+		}}
+	}
+	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", containerPassthrough(`{"name":"sandbox","memory_limit":"4g"}`)), "a container passthrough on a priced memory tier is served")
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", containerPassthrough(`{"name":"sandbox"}`)), "a container passthrough with no priced row (no base container row)")
 
 	// Creating Gemini cached content is charged by the vendor but priced by no Bifrost answer.
 	cachedContent := &schemas.BifrostRequest{RequestType: schemas.CachedContentCreateRequest, CachedContentCreateRequest: &schemas.BifrostCachedContentCreateRequest{
@@ -785,6 +803,38 @@ func TestLiveUnitsArePricedInTheirAccountingMode(t *testing.T) {
 	closeUnit("seconds-chat", &schemas.ResponsesResponseUsage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15})
 	requireUnpricedRefusal(t, unit("backend", "seconds-chat"), "a backend unit with tokens the model's price does not cover refuses it")
 	assert.False(t, emptyResponsesUsage(&schemas.ResponsesResponseUsage{AudioSeconds: new(3.0)}), "a voice window with seconds is not empty")
+}
+
+// A model priced in two modes whose embedding row was refused after a $0 answer: an inline
+// embeddings batch on it is refused, while chat on it is still served.
+func TestRefusedRowIsCheckedInEachInlineBatchMode(t *testing.T) {
+	plugin, _ := unpricedBudgetPlugin(t)
+	require.True(t, plugin.resolver.noteUnpricedAnswer(schemas.OpenAI, "dual-1", "", schemas.EmbeddingRequest, schemas.EmbeddingRequest, 0, nil, "r", []string{"budget-unpriced"}))
+	batch := &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{
+		Provider: schemas.OpenAI, Endpoint: schemas.BatchEndpointEmbeddings,
+		Requests: []schemas.BatchRequestItem{{CustomID: "1", Body: map[string]any{"model": "dual-1"}}},
+	}}
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", batch), "an embeddings batch on the refused embedding row")
+	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "dual-1"},
+	}), "chat on the model's other row is still served")
+}
+
+// An inline batch's modes are indexed once for all the distinct models PreLLMHook evaluates.
+func TestInlineBatchModesAreIndexedOnce(t *testing.T) {
+	requests := make([]schemas.BatchRequestItem, 0, 3)
+	for i, model := range []string{"a", "b", "a"} {
+		requests = append(requests, schemas.BatchRequestItem{CustomID: strconv.Itoa(i), Body: map[string]any{"model": model}})
+	}
+	requests[2].URL = string(schemas.BatchEndpointEmbeddings)
+	req := &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{
+		Endpoint: schemas.BatchEndpointChatCompletions, Requests: requests,
+	}}
+	modes := &inlineBatchModes{}
+	assert.Equal(t, []schemas.RequestType{schemas.ChatCompletionRequest, schemas.EmbeddingRequest}, modes.of(req, "a"))
+	req.BatchCreateRequest.Requests = nil // a second lookup reads the index, not the batch
+	assert.Equal(t, []schemas.RequestType{schemas.ChatCompletionRequest}, modes.of(req, "b"))
+	assert.Nil(t, modes.of(req, "c"))
 }
 
 // A provider's server-side fallback answers on another model, which accounting prices: an answer

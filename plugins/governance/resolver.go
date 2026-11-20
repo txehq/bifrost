@@ -52,6 +52,9 @@ type EvaluationRequest struct {
 	// passthrough body or an inline batch from it only when a budget applies, so a request with
 	// no budget pays nothing for it (TXE-7957, unpricedbudget.go).
 	request *schemas.BifrostRequest
+	// batchModes indexes an inline batch's pricing modes by model once for every pass PreLLMHook
+	// makes over the batch's models (copies of this request share it); nil for any other request.
+	batchModes *inlineBatchModes
 }
 
 // EvaluationResult is a governance verdict: whether the request may proceed, and why not when it

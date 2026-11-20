@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/capsohq/bifrost/core/providers/openai"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/jobaccounting"
 	"github.com/capsohq/bifrost/framework/modelcatalog"
@@ -267,6 +268,17 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 	// priced, and is gated as the envelope, which names none.
 	// A body naming a model twice never gets here: core refuses a forwarded body that repeats a
 	// member before any plugin reads it (TXE-7994).
+	// An OpenAI-shaped container create sent through passthrough names no model: accounting prices it
+	// as the container it creates (passthrough_usage.go), so it is gated as a container create.
+	if (requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest) && evaluationRequest.Model == "" &&
+		passthroughContainerCreate(configuredBaseProvider(r.governanceInMemoryStore, provider), evaluationRequest.request) {
+		containerRequest := &EvaluationRequest{RequestType: schemas.ContainerCreateRequest, Provider: provider, request: &schemas.BifrostRequest{
+			RequestType: schemas.ContainerCreateRequest, ContainerCreateRequest: &schemas.BifrostContainerCreateRequest{
+				Provider: provider, MemoryLimit: gjson.GetBytes(evaluationRequest.request.PassthroughRequest.Body, "memory_limit").String(),
+			},
+		}}
+		return r.refuseUnpricedUnderBudget(ctx, containerRequest, budgets)
+	}
 	// A passthrough naming its model on the request whose body names another: the answer is priced
 	// as the request's model while the body's runs, so one answer cannot be charged model by model.
 	if (requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest) && evaluationRequest.Model != "" && evaluationRequest.request != nil {
@@ -319,23 +331,25 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 			}
 		}
 	}
+	containerMemory := ""
+	if requestType == schemas.ContainerCreateRequest && evaluationRequest.request != nil && evaluationRequest.request.ContainerCreateRequest != nil {
+		containerMemory = evaluationRequest.request.ContainerCreateRequest.MemoryLimit
+	}
 	model := pricedModel(requestType, evaluationRequest.Model)
 	scopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(provider))
 	pricedAs := liveUnitPricingMode(ctx, requestType)
 	// A container is priced from its memory tier's row ("container-4g") when it asks for one, as
 	// accounting prices the container it creates, and from the base row otherwise.
-	if requestType == schemas.ContainerCreateRequest && evaluationRequest.request != nil && evaluationRequest.request.ContainerCreateRequest != nil {
-		if memory := evaluationRequest.request.ContainerCreateRequest.MemoryLimit; memory != "" {
-			if _, status := r.priceIdentity(provider, "container-"+memory, pricedAs, scopes); status != modelcatalog.PriceUnpriced {
-				model = "container-" + memory
-			}
+	if requestType == schemas.ContainerCreateRequest && containerMemory != "" {
+		if _, status := r.priceIdentity(provider, "container-"+containerMemory, pricedAs, scopes); status != modelcatalog.PriceUnpriced {
+			model = "container-" + containerMemory
 		}
 	}
 	// An inline batch is settled in the mode of each request's endpoint (jobaccounting.BatchRequestType):
 	// a model is priced in each mode the requests naming it run in, not in whichever mode prices it.
 	checkedModes := []schemas.RequestType{pricedAs}
 	if requestType == schemas.BatchCreateRequest {
-		if modes := inlineBatchPricingModes(evaluationRequest.request, evaluationRequest.Model); len(modes) > 0 {
+		if modes := evaluationRequest.batchModes.of(evaluationRequest.request, evaluationRequest.Model); len(modes) > 0 {
 			checkedModes = modes
 		}
 	}
@@ -352,13 +366,15 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 	// every row the request could be priced as is checked against what its budgets remember.
 	budgetIDs := limitIDs(budgets)
 	if r.unpriced.holdsAny(budgetIDs) {
-		_, rows := r.priceIdentities(provider, model, pricedAs, scopes)
-		for _, row := range rows {
-			if _, refused := r.unpriced.refused(budgetIDs, row); refused {
-				return &EvaluationResult{
-					Decision: DecisionModelUnpriced,
-					Reason: fmt.Sprintf("model %q on provider %q delivered an answer the price book could not price against this request's dollar budget, so it cannot be charged to it; add a pricing override for it",
-						model, provider),
+		for _, mode := range checkedModes {
+			_, rows := r.priceIdentities(provider, model, mode, scopes)
+			for _, row := range rows {
+				if _, refused := r.unpriced.refused(budgetIDs, row); refused {
+					return &EvaluationResult{
+						Decision: DecisionModelUnpriced,
+						Reason: fmt.Sprintf("model %q on provider %q delivered an answer the price book could not price against this request's dollar budget, so it cannot be charged to it; add a pricing override for it",
+							model, provider),
+					}
 				}
 			}
 		}
@@ -686,43 +702,57 @@ func passthroughBodyNamesEveryModel(req *schemas.BifrostRequest) bool {
 	return false
 }
 
-// inlineBatchPricingModes returns the request types settlement prices the inline batch requests
-// naming model as: jobaccounting.BatchRequestType of each request's url, else of the batch's
-// endpoint. Empty when neither names an endpoint, and the model is priced in any mode as before.
-func inlineBatchPricingModes(req *schemas.BifrostRequest, model string) []schemas.RequestType {
+// inlineBatchModes indexes, once per request, the request types settlement prices an inline batch's
+// requests as, by the model each runs: jobaccounting.BatchRequestType of the request's url, else of
+// the batch's endpoint, an empty one included (settlement prices it as chat, as Anthropic's and
+// Gemini's batches run Messages and generateContent). A request naming no model runs the batch's
+// own. PreLLMHook evaluates every distinct model of the batch, and each pass reads the one index.
+type inlineBatchModes struct {
+	once    sync.Once
+	byModel map[string][]schemas.RequestType
+}
+
+// of returns the request types the requests running model are priced as; nil when none runs it.
+func (m *inlineBatchModes) of(req *schemas.BifrostRequest, model string) []schemas.RequestType {
+	if m == nil {
+		return nil
+	}
+	m.once.Do(func() { m.byModel = indexInlineBatchModes(req) })
+	return m.byModel[model]
+}
+
+func indexInlineBatchModes(req *schemas.BifrostRequest) map[string][]schemas.RequestType {
 	if req == nil || req.RequestType != schemas.BatchCreateRequest || req.BatchCreateRequest == nil || len(req.BatchCreateRequest.Requests) == 0 {
 		return nil
 	}
 	batch := req.BatchCreateRequest
-	var modes []schemas.RequestType
-	add := func(endpoint schemas.BatchEndpoint) {
-		if endpoint == "" {
-			return
-		}
-		mode := jobaccounting.BatchRequestType(endpoint)
-		if !slices.Contains(modes, mode) {
-			modes = append(modes, mode)
-		}
-	}
+	byModel := make(map[string][]schemas.RequestType)
 	for _, item := range batch.Requests {
-		named := ""
+		model := batchEnvelopeModel(batch)
 		for _, body := range []map[string]any{item.Body, item.Params} {
 			if m, ok := body["model"].(string); ok {
-				named = m
+				model = m
 				break
 			}
 		}
-		// The envelope's model runs the requests naming none (BatchCreateModels).
-		if named != model && (named != "" || model != batchEnvelopeModel(batch)) {
-			continue
-		}
+		endpoint := batch.Endpoint
 		if item.URL != "" {
-			add(schemas.BatchEndpoint(item.URL))
-		} else {
-			add(batch.Endpoint)
+			endpoint = schemas.BatchEndpoint(item.URL)
+		}
+		if mode := jobaccounting.BatchRequestType(endpoint); !slices.Contains(byModel[model], mode) {
+			byModel[model] = append(byModel[model], mode)
 		}
 	}
-	return modes
+	return byModel
+}
+
+// passthroughContainerCreate reports whether a passthrough on an OpenAI-shaped provider creates a
+// container (POST .../containers), classified as the provider classifies it for usage extraction.
+func passthroughContainerCreate(base schemas.ModelProvider, req *schemas.BifrostRequest) bool {
+	if req == nil || req.PassthroughRequest == nil || (base != schemas.OpenAI && base != schemas.Azure) {
+		return false
+	}
+	return openai.ClassifyPassthroughPath(req.PassthroughRequest.Method, req.PassthroughRequest.Path) == schemas.ContainerCreateRequest
 }
 
 // batchEnvelopeModel is the model a batch create names on itself.

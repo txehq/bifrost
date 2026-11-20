@@ -1227,6 +1227,9 @@ func (p *GovernancePlugin) preLLMHook(ctx *schemas.BifrostContext, req *schemas.
 	if passthroughRead(req) {
 		ctx.SetValue(passthroughReadContextKey, true)
 	}
+	if req.RequestType == schemas.BatchCreateRequest && req.BatchCreateRequest != nil && len(req.BatchCreateRequest.Requests) > 0 {
+		evaluationRequest.batchModes = &inlineBatchModes{}
+	}
 	// A passthrough body is forwarded as the provider reads it, and a task array (Runware) names a
 	// model per task that the request itself may not carry. Every model the body names is
 	// evaluated the way inline batch items are, before the request's own pass; a request naming
