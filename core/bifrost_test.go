@@ -15969,3 +15969,140 @@ func BenchmarkMarkRetrieve(b *testing.B) {
 		})
 	}
 }
+
+// TestNoProviderChangesAReasoningSettingOutsideTheChatConverter: a reasoning setting reaches the
+// vendor as sent, converted as documented, or is refused (contract C4; fork, TXE-7954 and
+// TXE-8011). Every standard provider is built as Bifrost builds it and sent each case, unary and
+// streamed, against a recording upstream. The body that reaches /chat/completions is judged by
+// openai.ChatReasoningChangeOnWire, whatever code built it; a request refused with 400
+// caller_unsupported_parameter must reach nothing. Before TXE-8011 the DeepSeek provider turned
+// thinking off before the converter ran, so a caller's effort was dropped unjudged, and
+// Perplexity's own converter dropped a reasoning budget; a rule added to any provider's own code
+// fails here the same way.
+func TestNoProviderChangesAReasoningSettingOutsideTheChatConverter(t *testing.T) {
+	tools := []schemas.ChatTool{{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "lookup"}}}
+	user := schemas.ChatMessage{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: Ptr("hi")}}
+	toolTurn := []schemas.ChatMessage{
+		user,
+		{Role: schemas.ChatMessageRoleAssistant, ChatAssistantMessage: &schemas.ChatAssistantMessage{ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+			ID: Ptr("call_1"), Type: Ptr("function"), Function: schemas.ChatAssistantMessageToolCallFunction{Name: Ptr("lookup"), Arguments: "{}"},
+		}}}},
+		{Role: schemas.ChatMessageRoleTool, Content: &schemas.ChatMessageContent{ContentStr: Ptr("42")}, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: Ptr("call_1")}},
+	}
+	required := &schemas.ChatToolChoice{ChatToolChoiceStr: Ptr(string(schemas.ChatToolChoiceTypeRequired))}
+	cases := []struct {
+		name   string
+		input  []schemas.ChatMessage
+		params func() *schemas.ChatParameters
+	}{
+		{"effort high", []schemas.ChatMessage{user}, func() *schemas.ChatParameters {
+			return &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: Ptr("high")}}
+		}},
+		{"effort none", []schemas.ChatMessage{user}, func() *schemas.ChatParameters {
+			return &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: Ptr("none")}}
+		}},
+		{"budget", []schemas.ChatMessage{user}, func() *schemas.ChatParameters {
+			return &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{MaxTokens: Ptr(2048)}}
+		}},
+		{"effort high with a forced tool choice", []schemas.ChatMessage{user}, func() *schemas.ChatParameters {
+			return &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: Ptr("high")}, Tools: tools, ToolChoice: required}
+		}},
+		{"no reasoning with a forced tool choice", []schemas.ChatMessage{user}, func() *schemas.ChatParameters {
+			return &schemas.ChatParameters{Tools: tools, ToolChoice: required}
+		}},
+		{"effort low after a tool turn without reasoning", toolTurn, func() *schemas.ChatParameters {
+			return &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: Ptr("low")}, Tools: tools}
+		}},
+		{"caller thinking enabled with a forced tool choice", []schemas.ChatMessage{user}, func() *schemas.ChatParameters {
+			return &schemas.ChatParameters{Tools: tools, ToolChoice: required,
+				ExtraParams: map[string]interface{}{"thinking": map[string]interface{}{"type": "enabled"}}}
+		}},
+	}
+
+	covered := map[schemas.ModelProvider]bool{}
+	for _, providerKey := range schemas.StandardProviders {
+		for _, c := range cases {
+			for _, stream := range []bool{false, true} {
+				name := fmt.Sprintf("%s/%s/stream=%v", providerKey, c.name, stream)
+				t.Run(name, func(t *testing.T) {
+					var mu sync.Mutex
+					var bodies [][]byte
+					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						body, _ := io.ReadAll(r.Body)
+						if strings.HasSuffix(r.URL.Path, "/chat/completions") {
+							mu.Lock()
+							bodies = append(bodies, body)
+							mu.Unlock()
+						}
+						w.Header().Set("Content-Type", "application/json")
+						w.WriteHeader(http.StatusBadRequest)
+						_, _ = w.Write([]byte(`{"error":{"message":"recorded","type":"invalid_request_error"}}`))
+					}))
+					defer server.Close()
+					provider, err := (&Bifrost{logger: NewNoOpLogger()}).createBaseProvider(providerKey, &schemas.ProviderConfig{
+						NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 5, AllowPrivateNetwork: true},
+					})
+					if err != nil || provider == nil {
+						t.Skipf("not constructible without more configuration: %v", err)
+					}
+					request := func() *schemas.BifrostChatRequest {
+						return &schemas.BifrostChatRequest{Provider: providerKey, Model: "txe-8011-model", Input: c.input, Params: c.params()}
+					}
+					ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(10*time.Second))
+					defer ctx.Cancel()
+					ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, providerKey)
+					// The caller's extra params are sent, so a thinking type the caller set is judged too.
+					ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+					key := schemas.Key{ID: "k", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 1}
+					var bifrostErr *schemas.BifrostError
+					func() {
+						defer func() {
+							if r := recover(); r != nil {
+								t.Skipf("provider needs more configuration: %v", r)
+							}
+						}()
+						if stream {
+							var ch chan *schemas.BifrostStreamChunk
+							ch, bifrostErr = provider.ChatCompletionStream(ctx,
+								func(_ *schemas.BifrostContext, r *schemas.BifrostResponse, e *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+									return r, e
+								}, nil, key, request())
+							if ch != nil {
+								for range ch {
+								}
+							}
+						} else {
+							_, bifrostErr = provider.ChatCompletion(ctx, key, request())
+						}
+					}()
+					mu.Lock()
+					defer mu.Unlock()
+					if bifrostErr != nil && bifrostErr.ExtraFields.ErrorType == schemas.ErrorTypeCallerUnsupportedParameter {
+						if len(bodies) != 0 {
+							t.Fatalf("refused (%s) but the request reached the upstream: %s", bifrostErr.Error.Message, bodies[0])
+						}
+						return
+					}
+					if len(bodies) == 0 {
+						return // not an OpenAI-shape chat body on this provider
+					}
+					covered[providerKey] = true
+					req := request()
+					field, sent, err := openaiprovider.ChatReasoningChangeOnWire(ctx, providerKey, req.Model, req.Params.Reasoning, req.Params.ExtraParams, true, bodies[0])
+					if err != nil {
+						t.Fatalf("decode the wire body: %v", err)
+					}
+					if field != "" {
+						t.Errorf("%s was sent %s: the provider changed a reasoning setting outside the documented conversions\nwire: %s", field, sent, bodies[0])
+					}
+				})
+			}
+		}
+	}
+	// The providers whose chat goes out in the OpenAI shape; each must have been compared.
+	for _, p := range []schemas.ModelProvider{schemas.OpenAI, schemas.DeepSeek, schemas.Groq, schemas.Mistral, schemas.XAI, schemas.Moonshot, schemas.MiniMax, schemas.Cerebras} {
+		if !covered[p] {
+			t.Errorf("%s sent no OpenAI-shape chat body; the check did not cover it", p)
+		}
+	}
+}

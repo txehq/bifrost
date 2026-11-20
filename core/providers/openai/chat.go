@@ -173,6 +173,7 @@ func applyChatProviderCompatibility(ctx *schemas.BifrostContext, bifrostReq *sch
 			openaiReq.MaxCompletionTokens = nil
 		}
 		openaiReq.applyDeepseekCompatibility()
+		openaiReq.applyDeepSeekThinkingOff(bifrostReq)
 		// DeepSeek rejects reasoning_content on ordinary assistant turns but
 		// requires it on assistant tool-call turns.
 		openaiReq.stripReasoningDetailsExceptToolCalls()
@@ -264,10 +265,16 @@ func applyChatProviderCompatibility(ctx *schemas.BifrostContext, bifrostReq *sch
 			// and still needs the json_schema downgrade DeepSeek's endpoint requires.
 			if schemas.ResolveBaseProvider(ctx, bifrostReq.Provider) == schemas.DeepSeek {
 				openaiReq.downgradeJSONSchemaToJSONObject()
+				openaiReq.applyDeepSeekThinkingOff(bifrostReq)
 			}
 			return
 		}
 		openaiReq.filterOpenAISpecificParameters(caps)
+		// A custom provider on the DeepSeek base reports its own name and lands here; it is
+		// served by DeepSeek's endpoint and has the same thinking rule.
+		if schemas.ResolveBaseProvider(ctx, bifrostReq.Provider) == schemas.DeepSeek {
+			openaiReq.applyDeepSeekThinkingOff(bifrostReq)
+		}
 		return
 	}
 }
@@ -626,6 +633,37 @@ func chatReasoningConversion(provider schemas.ModelProvider, caps schemas.ModelC
 	return effortField, "as \"" + *got.Effort + "\""
 }
 
+// ChatReasoningChangeOnWire judges the request body a provider sent upstream against the reasoning
+// setting the caller asked for, with the same documented conversions as chatReasoningRefusal. It
+// returns "" when the body carries the setting as sent or converted as documented, and otherwise
+// the field that was changed and what was sent. A check across every provider uses it to catch a
+// reasoning rule in provider code outside this converter (fork, TXE-8011).
+//
+// A thinking type the caller set as an extra param is a reasoning setting too: when the extra
+// params are sent (passthroughExtraParams), the body must carry it as set.
+func ChatReasoningChangeOnWire(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, asked *schemas.ChatReasoning, callerExtra map[string]interface{}, passthroughExtraParams bool, wire []byte) (field, sent string, err error) {
+	var out OpenAIChatRequest
+	if err := schemas.Unmarshal(wire, &out); err != nil {
+		return "", "", err
+	}
+	if callerThinking, ok := schemas.ExtraParamObject(callerExtra["thinking"]); ok && passthroughExtraParams {
+		want, _ := callerThinking["type"].(string)
+		got := ""
+		if out.Thinking != nil {
+			got = out.Thinking.Type
+		}
+		if want != "" && got != want {
+			return "thinking.type", "as \"" + got + "\"", nil
+		}
+	}
+	if asked == nil || (asked.Effort == nil && asked.MaxTokens == nil) {
+		return "", "", nil
+	}
+	caps := schemas.ResolveModelCaps(provider, schemas.ResolveCanonicalModel(ctx, model))
+	field, sent = chatReasoningConversion(provider, caps, asked, callerExtra, &out)
+	return field, sent, nil
+}
+
 // reasoningEffortIsOff reports the effort values a thinking-switch vendor reads as thinking disabled.
 func reasoningEffortIsOff(effort string) bool {
 	switch strings.ToLower(strings.TrimSpace(effort)) {
@@ -771,6 +809,87 @@ func (req *OpenAIChatRequest) applyDeepseekCompatibility() {
 		return
 	}
 	req.ChatParameters.Reasoning = nil
+}
+
+// applyDeepSeekThinkingOff turns thinking off when DeepSeek's OpenAI-compatible endpoint would
+// reject the request with thinking on (deepSeekThinkingMustBeOff): DeepSeek answers 400 "Thinking
+// mode does not support this tool_choice" and requires reasoning_content replayed on every
+// assistant tool-call turn (api-docs.deepseek.com/guides/thinking_mode). It runs inside the
+// converter, so chatReasoningRefusal judges it like every other branch rule (fork, TXE-8011): a
+// request that asked for no reasoning level has thinking turned off, one that asked for a level
+// is refused with 400 rather than billed without reasoning, and a thinking type the caller set
+// as an extra param is left for DeepSeek to answer.
+func (req *OpenAIChatRequest) applyDeepSeekThinkingOff(bifrostReq *schemas.BifrostChatRequest) {
+	if !deepSeekThinkingMustBeOff(bifrostReq) {
+		return
+	}
+	if _, set := req.ExtraParams["thinking"]; set {
+		return
+	}
+	req.Thinking = &OpenAIThinkingMode{Type: "disabled"}
+	req.ChatParameters.Reasoning = nil
+}
+
+// deepSeekThinkingMustBeOff reports whether DeepSeek's OpenAI-compatible endpoint
+// would reject this request with thinking on (moved from core/providers/deepseek, TXE-8011). Two cases qualify:
+//
+//  1. A forced tool_choice ("required"/"any", or the struct form pinning a specific
+//     function/custom/allowed_tools call) — DeepSeek returns 400 "Thinking mode does not
+//     support this tool_choice" while thinking is enabled.
+//  2. A history containing an assistant tool_call turn that carries no replayable
+//     reasoning. DeepSeek requires reasoning_content to be replayed on tool_call turns and
+//     400s without it; when the caller cannot supply it, thinking has to stay off. Only
+//     ChatAssistantMessage.Reasoning counts here - reasoning_details is inbound-only and
+//     never reaches the wire - and this is judged from the messages alone, since a caller
+//     may replay tool_call turns without re-declaring Params.Tools.
+//
+// Everything else keeps thinking on. In particular, a plain multi-turn conversation needs no
+// reasoning replay whatsoever — per DeepSeek's thinking-mode guide, "the intermediate
+// assistant's reasoning_content does not need to participate in the context concatenation"
+// when there is no tool call. Assistant turns without reasoning are therefore expected and
+// must not disable thinking (issue #5887).
+func deepSeekThinkingMustBeOff(request *schemas.BifrostChatRequest) bool {
+	if request == nil || request.Params == nil {
+		return false
+	}
+	if tc := request.Params.ToolChoice; tc != nil {
+		switch {
+		case tc.ChatToolChoiceStr != nil:
+			switch schemas.ChatToolChoiceType(*tc.ChatToolChoiceStr) {
+			case schemas.ChatToolChoiceTypeRequired, schemas.ChatToolChoiceTypeAny:
+				return true
+			}
+		case tc.ChatToolChoiceStruct != nil:
+			switch tc.ChatToolChoiceStruct.Type {
+			case schemas.ChatToolChoiceTypeRequired, schemas.ChatToolChoiceTypeAny,
+				schemas.ChatToolChoiceTypeFunction, schemas.ChatToolChoiceTypeCustom,
+				schemas.ChatToolChoiceTypeAllowedTools:
+				return true
+			}
+		}
+	}
+
+	// The replay requirement follows the messages, not the tool declarations: a caller that
+	// drops Params.Tools on a final summarizing turn still replays the assistant tool_call
+	// turns, and DeepSeek still demands reasoning_content on them.
+	for _, msg := range request.Input {
+		if msg.Role != schemas.ChatMessageRoleAssistant || msg.ChatAssistantMessage == nil {
+			continue
+		}
+		if len(msg.ChatAssistantMessage.ToolCalls) == 0 {
+			continue
+		}
+		// Only Reasoning can satisfy the replay requirement: it is the sole field
+		// ConvertBifrostMessagesToOpenAIMessages copies onto the outbound assistant
+		// message, as reasoning_content. ReasoningDetails is inbound-only and never
+		// reaches the wire (see core/providers/openai/types.go), so a details-only turn
+		// would keep thinking on and then 400 for the missing reasoning_content.
+		if msg.ChatAssistantMessage.Reasoning == nil {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (req *OpenAIChatRequest) applyQwenCompatibility() {

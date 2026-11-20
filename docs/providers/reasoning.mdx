@@ -178,6 +178,8 @@ Refused, because each would bill a different level from the one asked for:
 - an effort on an xAI model that rejects it, which would be dropped
 - `none` on `MiniMax-M3.1-Flash-Preview`, and `none` on BytePlus when `thinking` is not disabled, which would be dropped
 - `reasoning.max_tokens` on DeepSeek, GLM and Qwen, none of which documents a thinking budget
+- a DeepSeek reasoning level with a forced `tool_choice`, or after an assistant tool-call turn with no reasoning to replay, where DeepSeek requires thinking off (with no level asked, thinking is turned off)
+- `reasoning.max_tokens` without an effort on Perplexity, which takes an effort only
 
 ### OpenAI
 

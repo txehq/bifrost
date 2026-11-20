@@ -172,6 +172,9 @@ func (provider *PerplexityProvider) ChatCompletion(ctx *schemas.BifrostContext, 
 				if tierErr := providerUtils.UndeliverableServiceTierError(request.Params.ServiceTier, schemas.Perplexity); tierErr != nil {
 					return nil, providerUtils.ConverterBifrostError(tierErr)
 				}
+				if budgetErr := perplexityReasoningBudgetError(request.Params.Reasoning); budgetErr != nil {
+					return nil, providerUtils.ConverterBifrostError(budgetErr)
+				}
 			}
 			return ToPerplexityChatCompletionRequest(request), nil
 		})
@@ -223,6 +226,9 @@ func (provider *PerplexityProvider) ChatCompletionStream(ctx *schemas.BifrostCon
 		if request != nil && request.Params != nil {
 			if tierErr := providerUtils.UndeliverableServiceTierError(request.Params.ServiceTier, schemas.Perplexity); tierErr != nil {
 				return nil, providerUtils.ConverterBifrostError(tierErr)
+			}
+			if budgetErr := perplexityReasoningBudgetError(request.Params.Reasoning); budgetErr != nil {
+				return nil, providerUtils.ConverterBifrostError(budgetErr)
 			}
 		}
 		reqBody := ToPerplexityChatCompletionRequest(request)

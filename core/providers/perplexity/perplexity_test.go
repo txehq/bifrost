@@ -1473,3 +1473,55 @@ func TestChatCompletion_RefusesAServiceTierPerplexityCannotTake(t *testing.T) {
 		})
 	}
 }
+
+// TestPerplexityChatRefusesAReasoningBudget: Perplexity's request takes reasoning_effort only, and
+// the converter used to drop a reasoning budget sent without an effort, billing the model's default
+// reasoning. It is refused with 400 caller_unsupported_parameter on reasoning.max_tokens, unary and
+// streamed, before anything reaches Perplexity; with an effort, the effort is sent (contract C4;
+// fork, TXE-8011).
+func TestPerplexityChatRefusesAReasoningBudget(t *testing.T) {
+	var calls []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		calls = append(calls, fmt.Sprint(body["reasoning_effort"]))
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"c1","object":"chat.completion","created":1,"model":"sonar-reasoning","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer server.Close()
+	provider := newTestProvider(t, server.URL)
+	request := func(reasoning *schemas.ChatReasoning) *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Provider: schemas.Perplexity, Model: "sonar-reasoning",
+			Input:  []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+			Params: &schemas.ChatParameters{Reasoning: reasoning},
+		}
+	}
+	requireRefused := func(t *testing.T, bifrostErr *schemas.BifrostError) {
+		t.Helper()
+		if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest ||
+			bifrostErr.Error.Param != "reasoning.max_tokens" || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter {
+			t.Fatalf("want 400 caller_unsupported_parameter on reasoning.max_tokens, got %+v", bifrostErr)
+		}
+	}
+	ctx := func() *schemas.BifrostContext {
+		return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	}
+	budget := &schemas.ChatReasoning{MaxTokens: schemas.Ptr(2048)}
+	_, bifrostErr := provider.ChatCompletion(ctx(), newTestKey(), request(budget))
+	requireRefused(t, bifrostErr)
+	_, bifrostErr = provider.ChatCompletionStream(ctx(),
+		func(_ *schemas.BifrostContext, r *schemas.BifrostResponse, e *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+			return r, e
+		}, nil, newTestKey(), request(budget))
+	requireRefused(t, bifrostErr)
+	if len(calls) != 0 {
+		t.Fatalf("a refused request reached Perplexity %d times", len(calls))
+	}
+	if _, bifrostErr := provider.ChatCompletion(ctx(), newTestKey(), request(&schemas.ChatReasoning{Effort: schemas.Ptr("high"), MaxTokens: schemas.Ptr(2048)})); bifrostErr != nil {
+		t.Fatalf("an effort with a budget was refused: %+v", bifrostErr)
+	}
+	if len(calls) != 1 || calls[0] != "high" {
+		t.Fatalf("reasoning_effort sent = %v, want [high]", calls)
+	}
+}

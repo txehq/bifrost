@@ -208,7 +208,7 @@ Configure detailed search behavior including location:
 - `reasoning.effort` → `reasoning_effort`
 - Supported efforts: `"low"`, `"medium"`, `"high"`
 - Special conversion: `"minimal"` → `"low"` (Perplexity normalizes to low/medium/high)
-- `reasoning.max_tokens` is silently dropped (Perplexity doesn't support token budget control)
+- `reasoning.max_tokens` without an effort is refused with 400 `caller_unsupported_parameter` on `reasoning.max_tokens`, because Perplexity takes no reasoning budget; with an effort, the effort is sent
 
 ### Example
 

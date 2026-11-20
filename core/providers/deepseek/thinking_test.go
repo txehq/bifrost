@@ -414,3 +414,79 @@ func TestChatCompletion_DoesNotMutateCallerExtraParams(t *testing.T) {
 		t.Fatalf("caller ChatParameters must not be mutated, got ExtraParams=%#v", params.ExtraParams)
 	}
 }
+
+// TestChatCompletion_OpenAIEndpointRefusesAReasoningLevelItWouldTurnOff: DeepSeek rejects thinking
+// with a forced tool_choice, or after an assistant tool-call turn whose reasoning cannot be
+// replayed, so thinking is turned off there. That is a documented conversion only when the caller
+// asked for no reasoning level; with one, the request is refused with 400 caller_unsupported_parameter
+// on reasoning.effort and nothing reaches DeepSeek, unary and streamed (contract C4; fork, TXE-8011).
+// Before, the provider turned thinking off before the converter ran and the level was lost silently.
+func TestChatCompletion_OpenAIEndpointRefusesAReasoningLevelItWouldTurnOff(t *testing.T) {
+	var bodies []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		bodies = append(bodies, body)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, newOpenAIChatResponse())
+	}))
+	defer server.Close()
+	provider, err := newTestDeepSeekProvider(server.URL)
+	if err != nil {
+		t.Fatalf("NewDeepSeekProvider: %v", err)
+	}
+	key := schemas.Key{Value: schemas.SecretVar{Val: "test-api-key"}}
+	tools := []schemas.ChatTool{{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "lookup"}}}
+	user := schemas.ChatMessage{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}
+	forced := func(reasoning *schemas.ChatReasoning) *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Provider: schemas.DeepSeek, Model: "deepseek-v4-flash", Input: []schemas.ChatMessage{user},
+			Params: &schemas.ChatParameters{Reasoning: reasoning, Tools: tools, ToolChoice: &schemas.ChatToolChoice{ChatToolChoiceStr: schemas.Ptr("required")}},
+		}
+	}
+	afterToolTurn := &schemas.BifrostChatRequest{
+		Provider: schemas.DeepSeek, Model: "deepseek-v4-flash",
+		Input: []schemas.ChatMessage{
+			user,
+			{Role: schemas.ChatMessageRoleAssistant, ChatAssistantMessage: &schemas.ChatAssistantMessage{ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+				ID: schemas.Ptr("call_1"), Type: schemas.Ptr("function"), Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("lookup"), Arguments: "{}"},
+			}}}},
+			{Role: schemas.ChatMessageRoleTool, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("42")}, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_1")}},
+		},
+		Params: &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr("low")}, Tools: tools},
+	}
+	requireRefused := func(t *testing.T, bifrostErr *schemas.BifrostError) {
+		t.Helper()
+		if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest ||
+			bifrostErr.Error.Param != "reasoning.effort" || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter {
+			t.Fatalf("want 400 caller_unsupported_parameter on reasoning.effort, got %+v", bifrostErr)
+		}
+	}
+	ctx := func() *schemas.BifrostContext {
+		return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	}
+	for _, request := range []*schemas.BifrostChatRequest{forced(&schemas.ChatReasoning{Effort: schemas.Ptr("high")}), afterToolTurn} {
+		_, bifrostErr := provider.ChatCompletion(ctx(), key, request)
+		requireRefused(t, bifrostErr)
+		_, bifrostErr = provider.ChatCompletionStream(ctx(),
+			func(_ *schemas.BifrostContext, r *schemas.BifrostResponse, e *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				return r, e
+			}, nil, key, request)
+		requireRefused(t, bifrostErr)
+	}
+	if len(bodies) != 0 {
+		t.Fatalf("a refused request reached DeepSeek: %v", bodies[0])
+	}
+
+	// No level asked: thinking is turned off, as DeepSeek requires with a forced tool choice.
+	if _, bifrostErr := provider.ChatCompletion(ctx(), key, forced(nil)); bifrostErr != nil {
+		t.Fatalf("ChatCompletion: %+v", bifrostErr)
+	}
+	if len(bodies) != 1 {
+		t.Fatalf("want one request, got %d", len(bodies))
+	}
+	thinking, _ := bodies[0]["thinking"].(map[string]any)
+	if thinking["type"] != "disabled" {
+		t.Fatalf("thinking = %v, want disabled", bodies[0]["thinking"])
+	}
+}
