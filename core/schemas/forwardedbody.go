@@ -175,11 +175,12 @@ func AmbiguousBodyMember(body []byte, contentType string) (string, bool) {
 	switch {
 	case declaredJSON || trimmed[0] == '{' || trimmed[0] == '[':
 		if !gjson.ValidBytes(trimmed) {
-			// Under another declared type (a text/plain or octet-stream file upload, a JSONL
-			// file), a body that is not JSON is just content. Valid JSON under such a type is
-			// still checked above and below: a vendor sniffing it reads it as JSON.
-			if !declaredJSON && contentType != "" {
-				return "", false
+			// A declared JSON Lines file (a batch input upload) is read line by line. Any other
+			// body opening with "{" or "[" that is not strict JSON is refused whatever type it
+			// declares: a lenient vendor parser, or one sniffing past the declared type, could
+			// read members no gate saw.
+			if mimeErr == nil && jsonLinesMediaTypes[mediaType] {
+				return ambiguousJSONLinesMember(trimmed)
 			}
 			return "a JSON body that does not parse strictly", true
 		}
@@ -201,6 +202,40 @@ func AmbiguousBodyMember(body []byte, contentType string) (string, bool) {
 			return "", false
 		}
 		return member, ambiguous
+	}
+	return "", false
+}
+
+// jsonLinesMediaTypes are the declared types under which a body is read as JSON Lines: one JSON
+// value per line, as a batch input file is uploaded.
+var jsonLinesMediaTypes = map[string]bool{
+	"application/jsonl":       true,
+	"application/x-jsonl":     true,
+	"application/jsonlines":   true,
+	"application/x-jsonlines": true,
+	"application/json-lines":  true,
+	"application/ndjson":      true,
+	"application/x-ndjson":    true,
+}
+
+// ambiguousJSONLinesMember checks each non-blank line of a JSON Lines body as a JSON document:
+// a line that does not parse strictly, or that repeats a member, makes the body ambiguous.
+func ambiguousJSONLinesMember(body []byte) (string, bool) {
+	for number := 1; len(body) > 0; number++ {
+		var line []byte
+		line, body, _ = bytes.Cut(body, []byte("\n"))
+		line = bytes.Trim(line, " \t\r")
+		if len(line) == 0 {
+			continue
+		}
+		prefix := "line " + strconv.Itoa(number) + ": "
+		if !gjson.ValidBytes(line) {
+			return prefix + "a JSON body that does not parse strictly", true
+		}
+		path := make([]bodyPathSegment, 0, 8)
+		if member, ambiguous := ambiguousJSONMember(gjson.ParseBytes(line), &path, 0); ambiguous {
+			return prefix + member, true
+		}
 	}
 	return "", false
 }
