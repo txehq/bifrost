@@ -53,7 +53,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"mime"
 	"mime/multipart"
 	"strconv"
 	"strings"
@@ -3616,22 +3615,31 @@ func extractModelFromPath(path string) string {
 // last duplicate wins, whole decode dropped on an unrelated field) is exactly what
 // would let one model be checked while another runs. Bodies with no model key are
 // fine; many passthrough endpoints have none.
+//
+// How the body is read is schemas.ClassifyForwardedBody's call, the same one core's guard and
+// governance make (TXE-8012): contentType must be the Content-Type forwarded upstream. A body
+// declared as another type (a text/plain or octet-stream upload, a JSON Lines file) is content:
+// no model or stream flag is read from it, so a key restricted to some models refuses it as
+// naming none.
 func parsePassthroughBody(contentType string, body []byte) (model string, isStream bool, err error) {
 	if len(body) == 0 {
 		return
 	}
-	mediaType, params, mimeErr := mime.ParseMediaType(contentType)
-	if mimeErr == nil && strings.HasPrefix(mediaType, "multipart/") {
-		if boundary := params["boundary"]; boundary != "" {
-			model, isStream = parseMultipartPassthroughBody(body, boundary)
-			return
-		}
+	class := schemas.ClassifyForwardedBody(contentType, body)
+	switch class.Format {
+	case schemas.ForwardedBodyMultipart:
+		model, isStream = parseMultipartPassthroughBody(body, class.Boundary)
+		return
+	case schemas.ForwardedBodyJSON:
+	default:
+		// Content, or a type core's guard refuses: nothing here to govern or stream on.
+		return
 	}
 	if !gjson.ValidBytes(body) {
-		if mimeErr == nil && isJSONMediaType(mediaType) {
+		if class.Declared {
 			return "", false, errors.New("passthrough request body is not valid JSON")
 		}
-		// Not JSON and not declared as JSON: nothing here to govern or stream on.
+		// Undeclared and not valid JSON: core's guard refuses it.
 		return
 	}
 	root := gjson.ParseBytes(body)
@@ -3708,10 +3716,6 @@ func passthroughObjectModel(object gjson.Result) (string, error) {
 }
 
 // isJSONMediaType reports whether a parsed media type declares a JSON body.
-func isJSONMediaType(mediaType string) bool {
-	return mediaType == "application/json" || strings.HasSuffix(mediaType, "+json")
-}
-
 // parseMultipartPassthroughBody scans multipart parts and extracts model and stream.
 //   - Form fields (Content-Disposition name="model"/"stream"): read as plain text.
 func parseMultipartPassthroughBody(body []byte, boundary string) (model string, isStream bool) {
@@ -3831,9 +3835,9 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 	// }
 
 	body := ctx.Request.Body()
-	// Parse body once to get both model and stream flag.
-	contentType := string(ctx.Request.Header.ContentType())
-	bodyModel, bodyStream, err := parsePassthroughBody(contentType, body)
+	// Parse body once to get both model and stream flag, by the Content-Type forwarded upstream:
+	// the one core's guard and governance classify the body by (TXE-8012).
+	bodyModel, bodyStream, err := parsePassthroughBody(safeHeaders["content-type"], body)
 	if err != nil {
 		g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(err, err.Error(), fasthttp.StatusBadRequest))
 		return

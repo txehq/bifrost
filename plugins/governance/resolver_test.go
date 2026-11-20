@@ -918,6 +918,52 @@ func TestRepeatedBodyModelCannotRunAModelTheKeyIsNotAllowed(t *testing.T) {
 	}
 }
 
+// TestBodyDeclaredAsAnotherTypeNamesNoModel: core's guard reads a forwarded body by its declared
+// type (TXE-8012), and so does governance, so JSON sent as text/plain or octet-stream is content
+// with no model in it. A key restricted to some models refuses it as naming none, so the body
+// that once ran a model the key forbids ({"model":"gpt-4o","model":"o1"} as text/plain) is still
+// refused, by the model gate rather than by the guard.
+func TestBodyDeclaredAsAnotherTypeNamesNoModel(t *testing.T) {
+	vk := buildVirtualKeyWithProviders("vk-typed", "sk-bf-typed", "Typed VK", []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"gpt-4o"}),
+	})
+	plugin := newAccessTestPlugin(t, vk, nil)
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: emptyAccount{}, Logger: NewMockLogger(), LLMPlugins: []schemas.LLMPlugin{plugin},
+	})
+	require.NoError(t, err)
+	t.Cleanup(client.Shutdown)
+
+	passthrough := func(contentType, body string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.PassthroughStreamRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+			Provider: schemas.OpenAI, Method: "POST", Path: "/v1/chat/completions", Body: []byte(body),
+			SafeHeaders: map[string]string{"content-type": contentType},
+		}}
+	}
+	for _, tc := range []struct {
+		name, contentType, body string
+		want                    Decision
+	}{
+		{"repeated model as text/plain", "text/plain", `{"model":"gpt-4o","model":"o1"}`, DecisionModelBlocked},
+		{"allowed model as octet-stream", "application/octet-stream", `{"model":"gpt-4o"}`, DecisionModelBlocked},
+		{"text upload opening with a brace", "text/plain", `{hello`, DecisionModelBlocked},
+		{"allowed model as JSON", "application/json", `{"model":"gpt-4o"}`, DecisionAllow},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, preErr := client.RunStreamPreHooks(presentCtx("sk-bf-typed"), passthrough(tc.contentType, tc.body))
+			if tc.want == DecisionAllow {
+				assert.Nil(t, preErr)
+				return
+			}
+			require.NotNil(t, preErr, "a body declared %s was admitted under a model restriction", tc.contentType)
+			require.NotNil(t, preErr.Type)
+			assert.Equal(t, string(tc.want), *preErr.Type)
+			require.NotNil(t, preErr.Error)
+			assert.Contains(t, preErr.Error.Message, "names none that can be checked")
+		})
+	}
+}
+
 // TestBudgetResolver_EvaluateVirtualKey_ActiveNoExpiry verifies that a VK
 // with no expiry is allowed.
 // A mixed Runware task array leaves the request model empty, so the request is charged against

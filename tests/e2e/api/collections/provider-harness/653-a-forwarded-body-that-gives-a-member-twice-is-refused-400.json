@@ -1,6 +1,6 @@
 {
   "name": "653. A forwarded body that gives a member twice is refused 400 before any plugin reads it (repeated body member refused)",
-  "description": "TXE-7994. A body forwarded to the provider as written (a passthrough body, or a raw request body) was read by Bifrost's gates with gjson, which keeps the first of two equal keys, while encoding/json, sonic and the vendor keep the last. A virtual key restricted to model A could send {\"model\":\"A\",\"model\":\"B\"}: governance checked A and the provider ran B. Core now refuses, with 400 caller_invalid_request naming the member's path and before any plugin runs (PluginPipeline.RunLLMPreHooks): a JSON key given twice in one object at any depth (model also when only its case differs, in the root object or an object of a root array), a JSON body that does not parse strictly (a declared JSON Lines file is read line by line), a JSON body that nests past 512 levels, and a multipart name given twice when any of its parts is a text field (read by the declared boundary; a multipart body that does not parse is refused). The rows use the native Anthropic Messages passthrough to DeepSeek's Anthropic endpoint on tests/e2e/api/runners/provider-error-fixture.mjs (providerErrorFixture=1, the gateway of provider-error-fixture.config.json, as folder 311). Rows 1 and 2 are red on a gateway without the fix: the body is forwarded and answered 200. Row 3 is the control: the same body naming each member once is still forwarded. Each row finds its own request at the fixture by a metadata.user_id marker, so no fixture reset is needed. Go-level coverage: TestRepeatedBodyModelCannotRunAModelTheKeyIsNotAllowed (plugins/governance), TestRunLLMPreHooksRefusesAmbiguousForwardedBody and TestEveryPluginGateRunsBehindTheForwardedBodyGuard (core), TestAmbiguousBodyMember and TestForwardedBodyCoversEveryRawBodyField (core/schemas).",
+  "description": "TXE-7994. A body forwarded to the provider as written (a passthrough body, or a raw request body) was read by Bifrost's gates with gjson, which keeps the first of two equal keys, while encoding/json, sonic and the vendor keep the last. A virtual key restricted to model A could send {\"model\":\"A\",\"model\":\"B\"}: governance checked A and the provider ran B. Core now refuses, with 400 caller_invalid_request naming the member's path and before any plugin runs (PluginPipeline.RunLLMPreHooks): a JSON key given twice in one object at any depth (model also when only its case differs, in the root object or an object of a root array), a JSON body that does not parse strictly (a declared JSON Lines file is read line by line), a JSON body that nests past 512 levels, and a multipart name given twice when any of its parts is a text field (read by the declared boundary; a multipart body that does not parse is refused). The rows use the native Anthropic Messages passthrough to DeepSeek's Anthropic endpoint on tests/e2e/api/runners/provider-error-fixture.mjs (providerErrorFixture=1, the gateway of provider-error-fixture.config.json, as folder 311). Rows 1 and 2 are red on a gateway without the fix: the body is forwarded and answered 200. Row 3 is the control: the same body naming each member once is still forwarded. TXE-8012: the declared Content-Type decides how a body is read, never its first byte; row 4 sends a text/plain body opening with \"{\" through the OpenAI passthrough and it is forwarded (the fixture answers it), row 5 sends the same body declared application/json and Bifrost refuses it 400. Rows 4 and 5 are red on a gateway without TXE-8012 (row 4 is refused 400). Each row finds its own request at the fixture by a metadata.user_id marker, so no fixture reset is needed. Go-level coverage: TestRepeatedBodyModelCannotRunAModelTheKeyIsNotAllowed (plugins/governance), TestRunLLMPreHooksRefusesAmbiguousForwardedBody and TestEveryPluginGateRunsBehindTheForwardedBodyGuard (core), TestAmbiguousBodyMember and TestForwardedBodyCoversEveryRawBodyField (core/schemas).",
   "event": [],
   "item": [
     {
@@ -184,6 +184,117 @@
         "url": "{{baseUrl}}/anthropic/v1/messages"
       },
       "response": []
+    },
+    {
+      "name": "653.4 openai passthrough text/plain body opening with { is forwarded, not refused as JSON (repeated body member refused)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var text = pm.response.text();",
+              "pm.test('Bifrost did not refuse the body as JSON', function () {",
+              "  pm.expect(text, 'Bifrost refused a text/plain body').to.not.include('does not parse strictly');",
+              "  pm.expect(text).to.not.include('more than once');",
+              "});",
+              "pm.test('the body reached the provider, which answered it', function () {",
+              "  pm.expect(text, 'status ' + pm.response.code + ': ' + text.slice(0, 300)).to.include('unknown fixture model');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "text/plain"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/openai_passthrough/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai_passthrough",
+            "v1",
+            "chat",
+            "completions"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{this is a text file that opens with a brace"
+        }
+      }
+    },
+    {
+      "name": "653.5 openai passthrough the same body declared application/json is refused [EXPECT-400] (repeated body member refused)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var text = pm.response.text();",
+              "pm.test('a body declared JSON that does not parse is refused 400 by Bifrost', function () {",
+              "  pm.expect(pm.response.code, text.slice(0, 300)).to.equal(400);",
+              "  pm.expect(text).to.include('does not parse strictly');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/openai_passthrough/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai_passthrough",
+            "v1",
+            "chat",
+            "completions"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{this is a text file that opens with a brace"
+        }
+      }
     }
   ]
 }

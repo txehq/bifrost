@@ -1104,6 +1104,40 @@ func TestRunLLMPreHooksRefusesAmbiguousForwardedBody(t *testing.T) {
 	}
 }
 
+// TestRunLLMPreHooksForwardsABodyDeclaredAsAnotherType: the declared type decides how a forwarded
+// body is read (TXE-8012). A text/plain or octet-stream upload opening with "{" is content and is
+// forwarded to the plugins, not refused as JSON that does not parse; a body declared JSON that
+// repeats a member is still refused.
+func TestRunLLMPreHooksForwardsABodyDeclaredAsAnotherType(t *testing.T) {
+	typed := func(contentType, body string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+			Provider: schemas.Gemini, Method: "POST", Path: "/upload/v1beta/files", Body: []byte(body),
+			SafeHeaders: map[string]string{"Content-Type": contentType},
+		}}
+	}
+	for _, tc := range []struct{ contentType, body string }{
+		{"text/plain", "{hello, a text file"},
+		{"text/plain; charset=utf-8", `{"model":"a","model":"b",}`},
+		{"application/octet-stream", "[1, 2"},
+		{"application/octet-stream", "{\"a\":1}\n{\"a\":2}\n"},
+	} {
+		gate := &bodyReadingGate{fakeRoutingPlugin: fakeRoutingPlugin{name: "gate"}}
+		pipeline := newRoutingCommitPipeline(gate)
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		_, shortCircuit, _ := pipeline.RunLLMPreHooks(ctx, typed(tc.contentType, tc.body))
+		if shortCircuit != nil && shortCircuit.Error != nil && shortCircuit.Error.Error != nil {
+			t.Errorf("%s body %q refused: %s", tc.contentType, tc.body, shortCircuit.Error.Error.Message)
+		}
+		assert.True(t, gate.ran, "%s body %q did not reach the plugins", tc.contentType, tc.body)
+	}
+
+	pipeline := newRoutingCommitPipeline(&bodyReadingGate{fakeRoutingPlugin: fakeRoutingPlugin{name: "gate"}})
+	_, shortCircuit, _ := pipeline.RunLLMPreHooks(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+		typed("application/json", `{"model":"a","model":"b"}`))
+	require.NotNil(t, shortCircuit, "a body declared JSON that repeats a member was admitted")
+	assert.Contains(t, shortCircuit.Error.Error.Message, "gives model more than once")
+}
+
 // TestEveryPluginGateRunsBehindTheForwardedBodyGuard is the class check for TXE-7994: plugin
 // gates read forwarded bodies with whatever parser suits them, so they are safe only behind
 // refuseAmbiguousForwardedBody. It fails when production code outside RunLLMPreHooks calls a
@@ -1240,4 +1274,79 @@ func TestNoProductionCodeStreamsABodyPastTheForwardedBodyGuard(t *testing.T) {
 	assert.Empty(t, unguardedSetters, "a SetLargePayloadHook installs a hook without refusing it; large-payload bodies stream past refuseAmbiguousForwardedBody")
 	assert.Empty(t, assignments, "a largePayloadHook field is set outside setLargePayloadHookForTest")
 	assert.Empty(t, staged, "production code stages a streamed request body on the context, past refuseAmbiguousForwardedBody")
+}
+
+// TestEveryForwardedBodyReaderUsesTheSharedClassifier is the class check for TXE-8012: a body the
+// guard does not read as JSON must be a body no gate reads as JSON, so every reader decides how
+// to read a forwarded body through schemas.ClassifyForwardedBody (or AmbiguousBodyMember, which
+// does). It fails when production code reads a passthrough body (".PassthroughRequest.Body",
+// ".ForwardedBody()", or a function named for parsing one) without classifying it in the same
+// function. Each exemption names why the function reads no member a gate acts on.
+func TestEveryForwardedBodyReaderUsesTheSharedClassifier(t *testing.T) {
+	exempt := map[string]string{
+		// Stores the bytes for the log view by its own Content-Type check; reads no member a gate acts on.
+		"../plugins/logging/main.go:captureRequestInput": "log display only",
+		// Called only by parsePassthroughBody, after it classified the body as multipart.
+		"../transports/bifrost-http/integrations/router.go:parseMultipartPassthroughBody": "classified by its caller",
+		// Rewrites project and region placeholders in the bytes of a body its callers check is
+		// declared application/json; reads no member a gate acts on.
+		"providers/vertex/utils.go:rewritePassthroughBody": "byte rewrite after the vendor call is built",
+	}
+	var readers, unclassified []string
+	for _, root := range []string{".", "../transports", "../framework", "../plugins"} {
+		require.NoError(t, filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				if name := d.Name(); name == "node_modules" || name == "vendor" || name == "testdata" || (strings.HasPrefix(name, ".") && path != root) {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") || filepath.ToSlash(path) == "schemas/forwardedbody.go" {
+				return nil
+			}
+			file, parseErr := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+			require.NoError(t, parseErr, path)
+			for _, decl := range file.Decls {
+				fn, ok := decl.(*ast.FuncDecl)
+				if !ok || fn.Body == nil {
+					continue
+				}
+				reads := strings.Contains(strings.ToLower(fn.Name.Name), "passthroughbody")
+				classifies := false
+				ast.Inspect(fn.Body, func(n ast.Node) bool {
+					switch node := n.(type) {
+					case *ast.SelectorExpr:
+						if inner, ok := node.X.(*ast.SelectorExpr); ok && node.Sel.Name == "Body" && inner.Sel.Name == "PassthroughRequest" {
+							reads = true
+						}
+						switch node.Sel.Name {
+						case "ForwardedBody":
+							reads = true
+						case "ClassifyForwardedBody", "AmbiguousBodyMember":
+							classifies = true
+						}
+					}
+					return true
+				})
+				if !reads {
+					continue
+				}
+				site := filepath.ToSlash(path) + ":" + fn.Name.Name
+				readers = append(readers, site)
+				if !classifies && exempt[site] == "" {
+					unclassified = append(unclassified, site)
+				}
+			}
+			return nil
+		}))
+	}
+	assert.Contains(t, readers, "../plugins/governance/main.go:passthroughBodyModels", "the check no longer finds governance's body reader; it is not looking where readers are")
+	assert.Contains(t, readers, "../transports/bifrost-http/integrations/router.go:parsePassthroughBody", "the check no longer finds the router's body reader")
+	assert.Empty(t, unclassified, "a forwarded-body reader decides how to read the body without schemas.ClassifyForwardedBody; route it through the classifier so it reads what the guard checked (TXE-8012)")
+	for site := range exempt {
+		assert.Contains(t, readers, site, "exemption %s names no reader; drop it", site)
+	}
 }

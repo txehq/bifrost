@@ -1352,7 +1352,13 @@ func refuseUnchargedBodyModelLimits(ctx *schemas.BifrostContext, bodyModelLimits
 // JSON object body, or of each task in a JSON array body (Runware). The router has already
 // refused malformed model keys, so a model that is not a string is simply not one here.
 func passthroughBodyModels(req *schemas.BifrostRequest) []string {
-	if req.PassthroughRequest == nil || len(req.PassthroughRequest.Body) == 0 || !gjson.ValidBytes(req.PassthroughRequest.Body) {
+	if req.PassthroughRequest == nil || len(req.PassthroughRequest.Body) == 0 {
+		return nil
+	}
+	// Only a body classified as JSON is read for models: the classification core's guard checked
+	// it by (TXE-8012). A body declared as another type names no model here.
+	if schemas.ClassifyForwardedBody(req.ForwardedBodyContentType(), req.PassthroughRequest.Body).Format != schemas.ForwardedBodyJSON ||
+		!gjson.ValidBytes(req.PassthroughRequest.Body) {
 		return nil
 	}
 	root := gjson.ParseBytes(req.PassthroughRequest.Body)

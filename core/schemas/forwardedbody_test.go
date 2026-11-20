@@ -67,17 +67,22 @@ func TestAmbiguousBodyMember(t *testing.T) {
 		t.Fatalf("a body nested within the bound = %q, refused", member)
 	}
 
-	// A declared JSON body is read strictly whatever it opens with; a non-JSON type is not read.
+	// The declared type decides how a body is read, never what it opens with (TXE-8012): a
+	// declared JSON body is read strictly; a text/plain or octet-stream upload is content, even
+	// when it opens with "{" or a boundary line. Only an undeclared body is read by its first bytes.
 	for _, tc := range []struct {
 		body, contentType, member string
 	}{
 		{`not json`, "application/json; charset=utf-8", "a JSON body that does not parse strictly"},
 		{`{"model":"a","model":"b"}`, "application/vnd.api+json", "model"},
 		{`not json`, "text/plain", ""},
-		{`{"model":"a","model":"b"}`, "text/plain", "model"},
-		{"{hello", "text/plain", "a JSON body that does not parse strictly"},
-		{`{"model":"a","model":"b",}`, "text/plain", "a JSON body that does not parse strictly"},
-		{"{\"model\":\"a\"}\n{\"model\":\"b\"}\n", "application/octet-stream", "a JSON body that does not parse strictly"},
+		{`{"model":"a","model":"b"}`, "text/plain", ""},
+		{"{hello", "text/plain", ""},
+		{"{hello", "text/plain; charset=utf-8", ""},
+		{"[1, 2", "application/octet-stream", ""},
+		{`{"model":"a","model":"b",}`, "text/plain", ""},
+		{"{\"model\":\"a\"}\n{\"model\":\"b\"}\n", "application/octet-stream", ""},
+		{`{"model":"a","model":"b"}`, "application/problem+json", "model"},
 		{"{\"model\":\"a\"}\r\n\n{\"model\":\"b\"}\n", "application/jsonl", ""},
 		{"{\"model\":\"a\"}\n{\"model\":\"b\",\"model\":\"c\"}\n", "application/x-ndjson", "line 2: model"},
 		{"{\"model\":\"a\"}\n[1,\n", "application/jsonl; charset=utf-8", "line 2: a JSON body that does not parse strictly"},
@@ -86,7 +91,8 @@ func TestAmbiguousBodyMember(t *testing.T) {
 		{`{"model":"a"}`, "multipart/form-data; boundary=a; boundary=b", "a Content-Type that does not parse"},
 		{`{"model":"a"}`, "not a type", "a Content-Type that does not parse"},
 		{``, "not a type", ""},
-		{"--b\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\na\r\n--b\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nb\r\n--b--\r\n", "text/plain", "multipart field model"},
+		{"--b\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\na\r\n--b\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nb\r\n--b--\r\n", "text/plain", ""},
+		{"--b\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\na\r\n--b\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nb\r\n--b--\r\n", "", "multipart field model"},
 		{"-- a line of text that is not multipart", "text/plain", ""},
 		{"-- a line of text that is not multipart", "", "multipart body that does not parse"},
 	} {
@@ -266,6 +272,62 @@ func BenchmarkAmbiguousBodyMember(b *testing.B) {
 				if _, ambiguous := AmbiguousBodyMember(tc.body, ""); ambiguous {
 					b.Fatal("ambiguous")
 				}
+			}
+		})
+	}
+}
+
+// TestClassifyForwardedBody: the declared type alone decides the format (TXE-8012); an
+// undeclared body is read by its first bytes.
+func TestClassifyForwardedBody(t *testing.T) {
+	for _, tc := range []struct {
+		contentType, body string
+		want              ForwardedBodyFormat
+	}{
+		{"application/json", "not json", ForwardedBodyJSON},
+		{"application/json; charset=utf-8", "{}", ForwardedBodyJSON},
+		{"application/vnd.api+json", "{}", ForwardedBodyJSON},
+		{"text/plain", `{"model":"a"}`, ForwardedBodyOpaque},
+		{"application/octet-stream", "[1]", ForwardedBodyOpaque},
+		{"audio/wav", "{", ForwardedBodyOpaque},
+		{"application/x-ndjson", "{}\n{}", ForwardedBodyJSONLines},
+		{"multipart/form-data; boundary=x", "--x", ForwardedBodyMultipart},
+		{"multipart/form-data", "--x", ForwardedBodyUnreadable},
+		{"not a type", "{}", ForwardedBodyUnreadable},
+		{"", " \ufeff{\"model\":\"a\"}", ForwardedBodyJSON},
+		{"", "[1]", ForwardedBodyJSON},
+		{"", "--x\r\n", ForwardedBodyMultipart},
+		{"", "hello", ForwardedBodyOpaque},
+		{"application/json", "", ForwardedBodyOpaque},
+	} {
+		if got := ClassifyForwardedBody(tc.contentType, []byte(tc.body)).Format; got != tc.want {
+			t.Errorf("ClassifyForwardedBody(%q, %q) = %d; want %d", tc.contentType, tc.body, got, tc.want)
+		}
+	}
+}
+
+// TestAmbiguousMultipartJSONPart: a multipart part is read as JSON only when it declares a JSON
+// type (TXE-8012); a part with no type, or another type, is content whatever it looks like.
+func TestAmbiguousMultipartJSONPart(t *testing.T) {
+	part := func(header, content string) []byte {
+		return []byte("--b\r\nContent-Disposition: form-data; name=\"metadata\"\r\n" + header + "\r\n" + content + "\r\n--b--\r\n")
+	}
+	const contentType = "multipart/form-data; boundary=b"
+	for _, tc := range []struct {
+		name, header, content, member string
+	}{
+		{"JSON part repeating model", "Content-Type: application/json\r\n", `{"model":"a","model":"b"}`, "multipart field metadata: model"},
+		{"JSON part that does not parse", "Content-Type: application/json; charset=utf-8\r\n", `{"model":"a",}`, "multipart field metadata: a JSON body that does not parse strictly"},
+		{"JSON part naming each member once", "Content-Type: application/json\r\n", `{"model":"a"}`, ""},
+		{"untyped part that looks like JSON", "", `{"model":"a","model":"b"}`, ""},
+		{"text part that looks like JSON", "Content-Type: text/plain\r\n", `{hello`, ""},
+		{"two Content-Type headers", "Content-Type: text/plain\r\nContent-Type: application/json\r\n", `{}`, "multipart field metadata: a part with two Content-Type headers"},
+		{"part type that does not parse", "Content-Type: not a type\r\n", `{}`, "multipart field metadata: a Content-Type that does not parse"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			member, ambiguous := AmbiguousBodyMember(part(tc.header, tc.content), contentType)
+			if ambiguous != (tc.member != "") || member != tc.member {
+				t.Fatalf("AmbiguousBodyMember = %q, %t; want %q", member, ambiguous, tc.member)
 			}
 		})
 	}

@@ -132,80 +132,138 @@ func (br *BifrostRequest) ForwardedBodyContentType() string {
 	return ""
 }
 
+// ForwardedBodyFormat is how a forwarded body is read: by the guard, the router and every gate
+// alike (TXE-8012). ClassifyForwardedBody is the one place it is decided.
+type ForwardedBodyFormat int
+
+const (
+	// ForwardedBodyOpaque is content: a declared non-JSON, non-multipart type (text/plain,
+	// application/octet-stream, audio), an empty body, or an undeclared body that opens like
+	// neither. It is forwarded unchanged and no reader reads a member from it.
+	ForwardedBodyOpaque ForwardedBodyFormat = iota
+	// ForwardedBodyJSON is one JSON document: declared application/json or a +json type, or
+	// undeclared and opening with "{" or "[".
+	ForwardedBodyJSON
+	// ForwardedBodyJSONLines is a declared JSON Lines file (jsonLinesMediaTypes), one JSON value
+	// per line, as a batch input file is uploaded.
+	ForwardedBodyJSONLines
+	// ForwardedBodyMultipart is declared multipart (read by its boundary), or undeclared and
+	// opening with a boundary line.
+	ForwardedBodyMultipart
+	// ForwardedBodyUnreadable is a body whose declared type does not parse, or multipart that
+	// names no boundary: a vendor may still read it, so the guard refuses it.
+	ForwardedBodyUnreadable
+)
+
+// ForwardedBodyClass is the result of ClassifyForwardedBody.
+type ForwardedBodyClass struct {
+	Format   ForwardedBodyFormat
+	Declared bool   // a Content-Type was given
+	Boundary string // ForwardedBodyMultipart
+	Reason   string // ForwardedBodyUnreadable: what the guard reports
+}
+
+// ClassifyForwardedBody decides how a forwarded body is read from its declared Content-Type,
+// never from what the body looks like under a declaration: a text/plain or octet-stream upload
+// that opens with "{" is content, not JSON (TXE-8012). Only an undeclared body (a raw request
+// body Bifrost decoded itself, or a passthrough caller that sent no type) is read by its first
+// bytes, since there is nothing else to read it by. Every reader of a forwarded body classifies
+// through here, so a body the guard does not check as JSON is a body no gate reads as JSON:
+// TestEveryForwardedBodyReaderUsesTheSharedClassifier fails when one does not.
+func ClassifyForwardedBody(contentType string, body []byte) ForwardedBodyClass {
+	trimmed := trimForwardedBody(body)
+	if len(trimmed) == 0 {
+		return ForwardedBodyClass{Format: ForwardedBodyOpaque, Declared: contentType != ""}
+	}
+	if contentType == "" {
+		switch {
+		case trimmed[0] == '{' || trimmed[0] == '[':
+			return ForwardedBodyClass{Format: ForwardedBodyJSON}
+		case bytes.HasPrefix(trimmed, []byte("--")):
+			line, _, _ := bytes.Cut(trimmed, []byte("\n"))
+			if line = bytes.TrimRight(line, "\r"); len(line) > 2 {
+				return ForwardedBodyClass{Format: ForwardedBodyMultipart, Boundary: string(line[2:])}
+			}
+		}
+		return ForwardedBodyClass{Format: ForwardedBodyOpaque}
+	}
+	mediaType, params, err := mime.ParseMediaType(contentType)
+	switch {
+	case err != nil:
+		// Go rejects a type a vendor may still read (two boundary parameters, say), so a body
+		// under one is not judged by a guess at what the vendor makes of it.
+		return ForwardedBodyClass{Format: ForwardedBodyUnreadable, Declared: true, Reason: "a Content-Type that does not parse"}
+	case strings.HasPrefix(mediaType, "multipart/"):
+		if params["boundary"] == "" {
+			return ForwardedBodyClass{Format: ForwardedBodyUnreadable, Declared: true, Reason: "multipart body with no boundary"}
+		}
+		return ForwardedBodyClass{Format: ForwardedBodyMultipart, Declared: true, Boundary: params["boundary"]}
+	case IsJSONMediaType(mediaType):
+		return ForwardedBodyClass{Format: ForwardedBodyJSON, Declared: true}
+	case jsonLinesMediaTypes[mediaType]:
+		return ForwardedBodyClass{Format: ForwardedBodyJSONLines, Declared: true}
+	}
+	return ForwardedBodyClass{Format: ForwardedBodyOpaque, Declared: true}
+}
+
+// IsJSONMediaType reports a parsed media type that declares one JSON document.
+func IsJSONMediaType(mediaType string) bool {
+	return mediaType == "application/json" || strings.HasSuffix(mediaType, "+json")
+}
+
+// trimForwardedBody drops leading whitespace and a UTF-8 byte order mark.
+func trimForwardedBody(body []byte) []byte {
+	trimmed := bytes.TrimPrefix(bytes.TrimLeft(body, " \t\r\n"), utf8ByteOrderMark)
+	return bytes.TrimLeft(trimmed, " \t\r\n")
+}
+
 // AmbiguousBodyMember reports the first member of a forwarded body that two parsers can read
 // differently, as a path ("model", "tasks[0].model", "multipart field size"), and true; or "" and
 // false for a body every parser reads the same way. contentType is the caller's declared
-// Content-Type, "" when none is known.
+// Content-Type, "" when none is known. How the body is read is ClassifyForwardedBody's call:
 //
-//   - JSON (declared, or a body opening with "{" or "[" after a UTF-8 byte order mark and
-//     whitespace): an object anywhere in the document that gives one key twice, compared as
-//     decoded, so "model" and "mod\u0065l" are the same key. In the root object and the objects
-//     of a root array, a gated key (gatedBodyKeys) is also compared without case, since
-//     encoding/json and sonic fill a struct field from any casing.
-//     A document nested deeper than maxForwardedBodyDepth is refused, and so is one that does not
-//     parse strictly: a lenient vendor parser might read members gjson does not see.
-//   - multipart/form-data (declared, read by the declared boundary; or, with no declared type, a
-//     body opening with a boundary line): a name given twice when any of its parts is a text
-//     field, unless the name ends in "[]", the form encoding of a list. A name only ever given as
-//     a file may repeat: a list of images is sent that way. A body that does not parse as
-//     multipart is refused.
+//   - JSON: an object anywhere in the document that gives one key twice, compared as decoded,
+//     so "model" and "mod\u0065l" are the same key. In the root object and the objects of a
+//     root array, a gated key (gatedBodyKeys) is also compared without case, since
+//     encoding/json and sonic fill a struct field from any casing. A document nested deeper
+//     than maxForwardedBodyDepth is refused, and so is one that does not parse strictly: a
+//     lenient vendor parser might read members gjson does not see.
+//   - JSON Lines: each non-blank line as a JSON document.
+//   - multipart: a name given twice when any of its parts is a text field, unless the name ends
+//     in "[]", the form encoding of a list. A name only ever given as a file may repeat: a list
+//     of images is sent that way. A part that declares a JSON type is checked as JSON. A body
+//     that does not parse as multipart is refused.
+//   - unreadable (a declared type that does not parse, multipart with no boundary): refused.
 //
-// Anything else (an empty body, plain text, binary audio) is not ambiguous: nothing reads it as
-// structured data.
+// An opaque body (empty, or declared as another type: text/plain, octet-stream, audio) is not
+// ambiguous: no reader reads a member from it.
 func AmbiguousBodyMember(body []byte, contentType string) (string, bool) {
-	trimmed := bytes.TrimPrefix(bytes.TrimLeft(body, " \t\r\n"), utf8ByteOrderMark)
-	trimmed = bytes.TrimLeft(trimmed, " \t\r\n")
-	if len(trimmed) == 0 {
-		return "", false
-	}
-	mediaType, params, mimeErr := mime.ParseMediaType(contentType)
-	if contentType != "" && mimeErr != nil {
-		// Go rejects a type a vendor may still read (two boundary parameters, say), so a body
-		// under one is not judged by a guess at what the vendor makes of it.
-		return "a Content-Type that does not parse", true
-	}
-	if mimeErr == nil && strings.HasPrefix(mediaType, "multipart/") {
-		boundary := params["boundary"]
-		if boundary == "" {
-			return "multipart body with no boundary", true
-		}
-		return ambiguousMultipartField(trimmed, boundary)
-	}
-	declaredJSON := mimeErr == nil && (mediaType == "application/json" || strings.HasSuffix(mediaType, "+json"))
-	switch {
-	case declaredJSON || trimmed[0] == '{' || trimmed[0] == '[':
-		// The depth is bounded before gjson validates: its validator recurses once per level.
-		if member, deep := jsonNestedTooDeep(trimmed); deep {
-			return member, true
-		}
-		if !gjson.ValidBytes(trimmed) {
-			// A declared JSON Lines file (a batch input upload) is read line by line. Any other
-			// body opening with "{" or "[" that is not strict JSON is refused whatever type it
-			// declares: a lenient vendor parser, or one sniffing past the declared type, could
-			// read members no gate saw.
-			if mimeErr == nil && jsonLinesMediaTypes[mediaType] {
-				return ambiguousJSONLinesMember(trimmed)
-			}
-			return "a JSON body that does not parse strictly", true
-		}
-		return ambiguousJSONMember(trimmed)
-	case bytes.HasPrefix(trimmed, []byte("--")):
-		// A body opening with a boundary line is read as multipart whatever type it declares: a
-		// vendor sniffing it, or a type rewritten on the way, must not find a repeat unchecked.
-		// Only an undeclared body is refused for not parsing; under another declared type, text
-		// opening with "--" is just text.
-		line, _, _ := bytes.Cut(trimmed, []byte("\n"))
-		line = bytes.TrimRight(line, "\r")
-		if len(line) <= 2 {
-			return "", false
-		}
-		member, ambiguous := ambiguousMultipartField(trimmed, string(line[2:]))
-		if ambiguous && member == multipartUnparsable && contentType != "" {
-			return "", false
-		}
-		return member, ambiguous
+	class := ClassifyForwardedBody(contentType, body)
+	trimmed := trimForwardedBody(body)
+	switch class.Format {
+	case ForwardedBodyUnreadable:
+		return class.Reason, true
+	case ForwardedBodyJSON:
+		return ambiguousJSONDocument(trimmed)
+	case ForwardedBodyJSONLines:
+		return ambiguousJSONLinesMember(trimmed)
+	case ForwardedBodyMultipart:
+		return ambiguousMultipartField(trimmed, class.Boundary)
 	}
 	return "", false
+}
+
+// ambiguousJSONDocument checks one JSON document: nested no deeper than maxForwardedBodyDepth
+// (counted before gjson's validator, which recurses once per level, sees it), strictly valid,
+// and repeating no member.
+func ambiguousJSONDocument(doc []byte) (string, bool) {
+	if member, deep := jsonNestedTooDeep(doc); deep {
+		return member, true
+	}
+	if !gjson.ValidBytes(doc) {
+		return "a JSON body that does not parse strictly", true
+	}
+	return ambiguousJSONMember(doc)
 }
 
 // jsonLinesMediaTypes are the declared types under which a body is read as JSON Lines: one JSON
@@ -230,15 +288,8 @@ func ambiguousJSONLinesMember(body []byte) (string, bool) {
 		if len(line) == 0 {
 			continue
 		}
-		prefix := "line " + strconv.Itoa(number) + ": "
-		if member, deep := jsonNestedTooDeep(line); deep {
-			return prefix + member, true
-		}
-		if !gjson.ValidBytes(line) {
-			return prefix + "a JSON body that does not parse strictly", true
-		}
-		if member, ambiguous := ambiguousJSONMember(line); ambiguous {
-			return prefix + member, true
+		if member, ambiguous := ambiguousJSONDocument(line); ambiguous {
+			return "line " + strconv.Itoa(number) + ": " + member, true
 		}
 	}
 	return "", false
@@ -559,10 +610,21 @@ func ambiguousMultipartField(body []byte, boundary string) (string, bool) {
 		}
 		name, readable := multipartPartName(part)
 		text := part.FileName() == ""
-		part.Close()
 		if !readable {
+			part.Close()
 			return multipartUnreadableDisposition, true
 		}
+		// A part is read as JSON only when it declares a JSON type; a part with no type is a
+		// form field or a file, whatever its content looks like.
+		if member, ambiguous := ambiguousMultipartPartContent(part); ambiguous {
+			part.Close()
+			label := name
+			if label == "" {
+				label = "(unnamed part)"
+			}
+			return "multipart field " + label + ": " + member, true
+		}
+		part.Close()
 		if name == "" || strings.HasSuffix(name, "[]") {
 			continue
 		}
@@ -574,4 +636,31 @@ func ambiguousMultipartField(body []byte, boundary string) (string, bool) {
 		}
 		seen[name] = seenName{text: text || seen[name].text}
 	}
+}
+
+// ambiguousMultipartPartContent checks a part's content by the part's own declared type: a part
+// declaring a JSON or JSON Lines type is checked as one, any other part is content. A part with
+// two Content-Type headers, or one that does not parse, is refused like such a body.
+func ambiguousMultipartPartContent(part *multipart.Part) (string, bool) {
+	types := part.Header.Values("Content-Type")
+	switch len(types) {
+	case 0:
+		return "", false
+	case 1:
+	default:
+		return "a part with two Content-Type headers", true
+	}
+	class := ClassifyForwardedBody(types[0], []byte{'{'}) // the format is the declared type's alone
+	switch class.Format {
+	case ForwardedBodyUnreadable:
+		return class.Reason, true
+	case ForwardedBodyJSON, ForwardedBodyJSONLines:
+	default:
+		return "", false
+	}
+	content, err := io.ReadAll(part)
+	if err != nil {
+		return multipartUnparsable, true
+	}
+	return AmbiguousBodyMember(content, types[0])
 }

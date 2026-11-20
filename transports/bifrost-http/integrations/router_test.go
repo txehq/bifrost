@@ -80,6 +80,14 @@ func TestParsePassthroughBody_JSONModelIsStrict(t *testing.T) {
 		{name: "invalid JSON declared as JSON", contentType: "application/json; charset=utf-8", body: `{"model":"gpt-4o",`, wantErr: "not valid JSON"},
 		{name: "invalid JSON with another content type is ignored", contentType: "text/plain", body: `model=gpt-4o`},
 		{name: "valid JSON with no content type is still read", contentType: "", body: `{"model":"gpt-4o"}`, wantModel: "gpt-4o"},
+		// The declared type decides, never the body's first byte (TXE-8012): JSON sent as another
+		// type is content, so no model or stream flag is read from it, as core's guard and
+		// governance do not read it either.
+		{name: "valid JSON declared text/plain is content", contentType: "text/plain", body: `{"model":"gpt-4o","stream":true}`},
+		{name: "valid JSON declared octet-stream is content", contentType: "application/octet-stream", body: `{"model":"gpt-4o"}`},
+		{name: "JSON Lines file names no model", contentType: "application/jsonl", body: "{\"model\":\"gpt-4o\"}\n"},
+		{name: "a +json type is JSON", contentType: "application/vnd.api+json", body: `{"model":"gpt-4o","stream":true}`, wantModel: "gpt-4o", wantStream: true},
+		{name: "multipart with no boundary is not read as JSON", contentType: "multipart/form-data", body: `{"model":"gpt-4o"}`},
 		// A task array (Runware) names a model per task. One agreed model is the request's; tasks
 		// naming different models leave it empty, and governance reads them from the body instead.
 		{name: "single-task array names its model", contentType: "application/json", body: `[{"taskType":"imageInference","model":"runware:101@1"}]`, wantModel: "runware:101@1"},
