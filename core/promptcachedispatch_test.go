@@ -1187,3 +1187,147 @@ func TestChatReasoningModeDispatch(t *testing.T) {
 		}
 	}
 }
+
+// ttlCaptureProvider records the requested prompt-cache TTL on the context each call ran with.
+type ttlCaptureProvider struct {
+	stubProvider
+	seen []any
+}
+
+func (p *ttlCaptureProvider) record(ctx *schemas.BifrostContext) {
+	p.seen = append(p.seen, ctx.Value(requestedPromptCacheTTLKey))
+}
+
+func (p *ttlCaptureProvider) ChatCompletion(ctx *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	p.record(ctx)
+	return &schemas.BifrostChatResponse{}, nil
+}
+
+func (p *ttlCaptureProvider) Responses(ctx *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	p.record(ctx)
+	return &schemas.BifrostResponsesResponse{}, nil
+}
+
+func (p *ttlCaptureProvider) ChatCompletionStream(ctx *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	p.record(ctx)
+	ch := make(chan *schemas.BifrostStreamChunk)
+	close(ch)
+	return ch, nil
+}
+
+func (p *ttlCaptureProvider) ResponsesStream(ctx *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	p.record(ctx)
+	ch := make(chan *schemas.BifrostStreamChunk)
+	close(ch)
+	return ch, nil
+}
+
+// requestedPromptCacheTTLKey is schemas.BifrostContextKeyRequestedPromptCacheTTL spelled out, so
+// the dispatch tests below build on a tree without the key and fail there by assertion, not by
+// compilation (TestRequestedPromptCacheTTLKeyIsStable in core/schemas pins the spelling).
+const requestedPromptCacheTTLKey = schemas.BifrostContextKey("bifrost-requested-prompt-cache-ttl")
+
+// TXE-7069: Kimi prices a cache write by the request's prompt_cache_options.ttl and reports no
+// tier, so pricing reads the TTL from the context of the attempt that sent it. Every chat and
+// responses dispatch, streamed or not, stamps it; a request without one clears whatever an
+// earlier attempt or the caller left, so a stale TTL is never priced.
+func TestProviderDispatchStampsRequestedPromptCacheTTL(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		for _, chat := range []bool{false, true} {
+			for _, ttl := range []string{"1h", ""} {
+				t.Run(fmt.Sprintf("stream=%t/chat=%t/ttl=%q", stream, chat, ttl), func(t *testing.T) {
+					ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+					ctx.SetValue(requestedPromptCacheTTLKey, "24h") // stale
+					var opts *schemas.PromptCacheOptions
+					if ttl != "" {
+						opts = &schemas.PromptCacheOptions{TTL: &ttl}
+					}
+					message := &ChannelMessage{Context: ctx}
+					switch {
+					case chat && stream:
+						message.RequestType = schemas.ChatCompletionStreamRequest
+					case chat:
+						message.RequestType = schemas.ChatCompletionRequest
+					case stream:
+						message.RequestType = schemas.ResponsesStreamRequest
+					default:
+						message.RequestType = schemas.ResponsesRequest
+					}
+					if chat {
+						message.ChatRequest = &schemas.BifrostChatRequest{Provider: schemas.Moonshot, Model: "kimi-k3", Params: &schemas.ChatParameters{PromptCacheOptions: opts}}
+					} else {
+						message.ResponsesRequest = &schemas.BifrostResponsesRequest{Provider: schemas.Moonshot, Model: "kimi-k3", Params: &schemas.ResponsesParameters{PromptCacheOptions: opts}}
+					}
+					provider := &ttlCaptureProvider{stubProvider: stubProvider{key: schemas.Moonshot}}
+					client := &Bifrost{}
+					if stream {
+						_, bifrostErr := client.handleProviderStreamRequest(provider, &schemas.ProviderConfig{}, message, schemas.Key{}, nil, nil)
+						require.Nil(t, bifrostErr)
+					} else {
+						_, bifrostErr := client.handleProviderRequest(provider, &schemas.ProviderConfig{}, message, schemas.Key{}, nil)
+						require.Nil(t, bifrostErr)
+					}
+					require.Equal(t, []any{ttl}, provider.seen)
+				})
+			}
+		}
+	}
+}
+
+// The request path's added dispatch cost (TXE-7069): one context write per provider attempt.
+func BenchmarkStampRequestedPromptCacheTTL(b *testing.B) {
+	ttl := "1h"
+	for _, tc := range []struct {
+		name string
+		opts *schemas.PromptCacheOptions
+	}{{"no-ttl", nil}, {"ttl", &schemas.PromptCacheOptions{TTL: &ttl}}} {
+		b.Run(tc.name, func(b *testing.B) {
+			message := &ChannelMessage{
+				Context: schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+				BifrostRequest: schemas.BifrostRequest{
+					RequestType: schemas.ChatCompletionRequest,
+					ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.Moonshot, Model: "kimi-k3", Params: &schemas.ChatParameters{PromptCacheOptions: tc.opts}},
+				},
+			}
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				stampRequestedPromptCacheTTL(message)
+			}
+		})
+	}
+}
+
+// TXE-7069: a TTL a caller sends as an extra param reaches Kimi when the extra-params merge is on,
+// so it is priced then, and not when the merge is off. A typed TTL is never replaced by an extra one,
+// as the merge only fills what the converter left unset.
+func TestProviderDispatchStampsAPassthroughPromptCacheTTL(t *testing.T) {
+	cases := []struct {
+		name        string
+		passthrough bool
+		typed       *schemas.PromptCacheOptions
+		extra       interface{}
+		want        string
+	}{
+		{"merge on, map", true, nil, map[string]interface{}{"ttl": "1h"}, "1h"},
+		{"merge on, Go caller's typed map", true, nil, map[string]string{"ttl": "1h"}, "1h"},
+		{"merge off", false, nil, map[string]interface{}{"ttl": "1h"}, ""},
+		{"typed wins", true, &schemas.PromptCacheOptions{TTL: schemas.Ptr("5m")}, map[string]interface{}{"ttl": "1h"}, "5m"},
+		{"not an object", true, nil, "1h", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, tc.passthrough)
+			message := &ChannelMessage{Context: ctx}
+			message.RequestType = schemas.ChatCompletionRequest
+			message.ChatRequest = &schemas.BifrostChatRequest{Provider: schemas.Moonshot, Model: "kimi-k3", Params: &schemas.ChatParameters{
+				PromptCacheOptions: tc.typed,
+				ExtraParams:        map[string]interface{}{"prompt_cache_options": tc.extra},
+			}}
+			provider := &ttlCaptureProvider{stubProvider: stubProvider{key: schemas.Moonshot}}
+			_, bifrostErr := (&Bifrost{}).handleProviderRequest(provider, &schemas.ProviderConfig{}, message, schemas.Key{}, nil)
+			require.Nil(t, bifrostErr)
+			require.Equal(t, []any{tc.want}, provider.seen)
+		})
+	}
+}

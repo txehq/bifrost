@@ -11242,3 +11242,177 @@ func TestEntry_OlderNamesForCacheReadAndPerRequestFee(t *testing.T) {
 	require.NotNil(t, fee.CostPerRequest)
 	assert.Equal(t, 0.005, *fee.CostPerRequest)
 }
+
+// TXE-7069: Kimi bills a cache write by the request's prompt_cache_options.ttl and reports one
+// cache_write_tokens figure, so the TTL comes from the request (LookupScopes, stamped by core), not
+// from usage. Rates are the datasheet's moonshot/kimi-k3 row read on 20 Nov 2026. Every provider in
+// RequestTTLPricedCacheWrites runs, so a new entry is covered without a new test.
+func TestRequestTTLPricedCacheWritesCostTheRequestedTier(t *testing.T) {
+	const (
+		input     = 0.0000006
+		output    = 0.0000025
+		baseWrite = 0.000003
+		hourWrite = 0.000006
+	)
+	cases := []struct {
+		ttl       string
+		writeRate float64
+	}{
+		{"", baseWrite},
+		{"5m", baseWrite},
+		{"30m", baseWrite},
+		{"1h", hourWrite},
+		{"24h", hourWrite}, // the 12h tier, which falls back to the above-1hr rate on this row
+		{"one hour", baseWrite},
+	}
+	require.NotEmpty(t, RequestTTLPricedCacheWrites)
+	for provider := range RequestTTLPricedCacheWrites {
+		pricing := chatPricing(input, output)
+		pricing.Model, pricing.Provider = "kimi-k3", string(provider)
+		pricing.CacheCreationInputTokenCost = bifrost.Ptr(baseWrite)
+		pricing.CacheCreationInputTokenCostAbove1hr = bifrost.Ptr(hourWrite)
+		s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{makeKey(pricing.Model, pricing.Provider, pricing.Mode): pricing})
+		for _, tc := range cases {
+			t.Run(fmt.Sprintf("%s/ttl=%q", provider, tc.ttl), func(t *testing.T) {
+				resp := makeChatResponse(provider, "kimi-k3", &schemas.BifrostLLMUsage{
+					PromptTokens: 3000, CompletionTokens: 200, TotalTokens: 3200,
+					PromptTokensDetails: &schemas.ChatPromptTokensDetails{CachedWriteTokens: 2000},
+				})
+				before, err := json.Marshal(resp)
+				require.NoError(t, err)
+
+				cost := s.CalculateCost(resp, &LookupScopes{RequestedPromptCacheTTL: tc.ttl})
+				assert.InDelta(t, 1000*input+2000*tc.writeRate+200*output, cost, 1e-12)
+
+				// usage carries nothing derived from the request: the response is byte-for-byte
+				// what it was, and still reports no cache-write tier.
+				after, err := json.Marshal(resp)
+				require.NoError(t, err)
+				assert.Equal(t, string(before), string(after))
+				assert.Nil(t, resp.ChatResponse.Usage.PromptTokensDetails.CachedWriteTokenDetails)
+			})
+		}
+	}
+}
+
+// A provider that reports the tier keeps its reported split whatever the request asked for, and a
+// provider not in RequestTTLPricedCacheWrites never takes a tier from the request: its vendor may
+// not have received the TTL at all (TXE-7063 tracks the converters that still strip it).
+func TestRequestedCacheTTLNeverOverridesAReportedTierOrAnUnlistedProvider(t *testing.T) {
+	pricing := chatPricing(0.000001, 0.000002)
+	pricing.CacheCreationInputTokenCost = bifrost.Ptr(0.000003)
+	pricing.CacheCreationInputTokenCostAbove1hr = bifrost.Ptr(0.000006)
+
+	reported := &schemas.BifrostLLMUsage{
+		PromptTokens: 1000, TotalTokens: 1000,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+			CachedWriteTokens:       1000,
+			CachedWriteTokenDetails: &schemas.ChatCachedWriteTokenDetails{CachedWriteTokens5m: 1000},
+		},
+	}
+	assert.Same(t, reported, usageWithRequestedCacheWriteTier(reported, schemas.Moonshot, "1h"))
+
+	untiered := &schemas.BifrostLLMUsage{
+		PromptTokens: 1000, TotalTokens: 1000,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{CachedWriteTokens: 1000},
+	}
+	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.Anthropic, schemas.Bedrock, schemas.Groq} {
+		_, listed := RequestTTLPricedCacheWrites[provider]
+		require.False(t, listed, "%s reports its tier or may not deliver the TTL; it is not listed", provider)
+		assert.Same(t, untiered, usageWithRequestedCacheWriteTier(untiered, provider, "1h"))
+	}
+	assert.InDelta(t, 1000*0.000003, computeTextCostTotal(&pricing, untiered, serviceTier{}), 1e-12)
+}
+
+// Pricing reads its request-time inputs from the context through LookupScopesFromContext, and the
+// tracer's stream accumulator copies exactly schemas.PricingContextKeys into a fresh context. A
+// scope field read from a key missing from that list would price a streamed total differently from
+// the request's breakdown (fork, TXE-7069: the requested prompt-cache TTL). Every scope field is
+// set here, so a new field read from an unlisted key fails the comparison.
+func TestLookupScopesFromContextReadsOnlyPricingContextKeys(t *testing.T) {
+	values := map[schemas.BifrostContextKey]any{
+		schemas.BifrostContextKeySelectedKeyID:           "key-1",
+		schemas.BifrostContextKeyGovernanceVirtualKeyID:  "vk-1",
+		schemas.BifrostContextKeyUserID:                  "user-1",
+		schemas.BifrostContextKeyRequestStartTime:        time.Date(2026, 11, 20, 8, 0, 0, 0, time.UTC),
+		schemas.BifrostContextKeyRequestedPromptCacheTTL: "1h",
+	}
+	src := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	for _, key := range schemas.PricingContextKeys {
+		value, ok := values[key]
+		require.True(t, ok, "PricingContextKeys lists %q; give it a value here", key)
+		src.SetValue(key, value)
+	}
+	require.Len(t, values, len(schemas.PricingContextKeys), "a key valued here is missing from schemas.PricingContextKeys")
+
+	want := LookupScopesFromContext(src, "moonshot")
+	scopeValue := reflect.ValueOf(*want)
+	for i := 0; i < scopeValue.NumField(); i++ {
+		require.False(t, scopeValue.Field(i).IsZero(), "LookupScopes.%s is not set by any key in this test; read it from a key in schemas.PricingContextKeys", scopeValue.Type().Field(i).Name)
+	}
+
+	// The tracer's copy (framework/tracing ProcessStreamingChunk).
+	dst := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	for _, key := range schemas.PricingContextKeys {
+		dst.SetValue(key, src.Value(key))
+	}
+	assert.Equal(t, want, LookupScopesFromContext(dst, "moonshot"))
+}
+
+// The request path's added pricing cost (TXE-7069): a response with no requested TTL returns at the
+// first check; a Kimi write under a 1h TTL copies usage once.
+func BenchmarkUsageWithRequestedCacheWriteTier(b *testing.B) {
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens: 3000, CompletionTokens: 200, TotalTokens: 3200,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{CachedWriteTokens: 2000},
+	}
+	b.Run("no-ttl", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = usageWithRequestedCacheWriteTier(usage, schemas.Moonshot, "")
+		}
+	})
+	b.Run("unlisted-provider", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = usageWithRequestedCacheWriteTier(usage, schemas.OpenAI, "1h")
+		}
+	})
+	b.Run("kimi-1h", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = usageWithRequestedCacheWriteTier(usage, schemas.Moonshot, "1h")
+		}
+	})
+}
+
+// TXE-7069, end to end through pricing's own entry points: the TTL core stamps on the request's
+// context (spelled out here, so the test fails on a tree without the stamp by assertion) reaches
+// LookupScopesFromContext, and a Kimi write reported without a tier is priced at the 1-hour rate.
+// Before the fix every such write cost the base 5-minute rate.
+func TestKimiCacheWriteFromTheRequestContextIsPricedAtTheRequestedTTL(t *testing.T) {
+	const (
+		input     = 0.0000006
+		output    = 0.0000025
+		baseWrite = 0.000003
+		hourWrite = 0.000006
+	)
+	pricing := chatPricing(input, output)
+	pricing.Model, pricing.Provider = "kimi-k3", string(schemas.Moonshot)
+	pricing.CacheCreationInputTokenCost = bifrost.Ptr(baseWrite)
+	pricing.CacheCreationInputTokenCostAbove1hr = bifrost.Ptr(hourWrite)
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{makeKey(pricing.Model, pricing.Provider, pricing.Mode): pricing})
+	for ttl, writeRate := range map[string]float64{"1h": hourWrite, "5m": baseWrite, "": baseWrite} {
+		t.Run("ttl="+ttl, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKey("bifrost-requested-prompt-cache-ttl"), ttl)
+			resp := makeChatResponse(schemas.Moonshot, "kimi-k3", &schemas.BifrostLLMUsage{
+				PromptTokens: 3000, CompletionTokens: 200, TotalTokens: 3200,
+				PromptTokensDetails: &schemas.ChatPromptTokensDetails{CachedWriteTokens: 2000},
+			})
+			cost := s.CalculateCost(resp, LookupScopesFromContext(ctx, string(schemas.Moonshot)))
+			assert.InDelta(t, 1000*input+2000*writeRate+200*output, cost, 1e-12)
+			assert.Nil(t, resp.ChatResponse.Usage.PromptTokensDetails.CachedWriteTokenDetails, "usage is not changed")
+		})
+	}
+}

@@ -1091,10 +1091,11 @@ func (t *Tracer) ProcessStreamingChunk(ctx *schemas.BifrostContext, traceID stri
 		if g := ctx.Grant(); g != nil {
 			accumCtx.SetGrant(g)
 		}
-		accumCtx.SetValue(schemas.BifrostContextKeySelectedKeyID, ctx.Value(schemas.BifrostContextKeySelectedKeyID))
-		accumCtx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID))
-		accumCtx.SetValue(schemas.BifrostContextKeyUserID, ctx.Value(schemas.BifrostContextKeyUserID))
-		accumCtx.SetValue(schemas.BifrostContextKeyRequestStartTime, ctx.Value(schemas.BifrostContextKeyRequestStartTime))
+		// One list for every key pricing reads (fork, TXE-7069: the requested prompt-cache TTL
+		// was the first one added after this copy was written by hand).
+		for _, key := range schemas.PricingContextKeys {
+			accumCtx.SetValue(key, ctx.Value(key))
+		}
 	}
 
 	processedResp, processErr := t.accumulator.ProcessStreamingResponse(accumCtx, result, err)

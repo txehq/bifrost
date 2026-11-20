@@ -9727,9 +9727,23 @@ func (bifrost *Bifrost) dispatchResponsesStream(ctx *schemas.BifrostContext, pro
 	return provider.ResponsesStream(ctx, providerUtils.WrapNamespaceRestorePostHookRunner(postHookRunner, preparedRequest.NamespaceToolAliases), postHookSpanFinalizer, key, preparedRequest)
 }
 
+// stampRequestedPromptCacheTTL records the prompt_cache_options.ttl the request this attempt
+// sends carries on the wire (typed, or an extra param the passthrough merge sends), after pre-hooks ran, on the request's context, and clears it when the request carries
+// none, so a value a caller or an earlier attempt left there is never priced. Pricing reads it
+// through datasheet.LookupScopesFromContext to cost a cache write for a vendor that prices it by
+// the TTL and reports no tier (Kimi; fork, TXE-7069). usage is left as the vendor reported it.
+func stampRequestedPromptCacheTTL(req *ChannelMessage) {
+	if req == nil || req.Context == nil {
+		return
+	}
+	merged, _ := req.Context.Value(schemas.BifrostContextKeyPassthroughExtraParams).(bool)
+	req.Context.SetValue(schemas.BifrostContextKeyRequestedPromptCacheTTL, req.BifrostRequest.RequestedPromptCacheTTLOnWire(merged))
+}
+
 // handleProviderRequest handles the request to the provider based on the request type
 // key is used for single-key operations, keys is used for batch/file operations that need multiple keys
 func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config *schemas.ProviderConfig, req *ChannelMessage, key schemas.Key, keys []schemas.Key) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	stampRequestedPromptCacheTTL(req)
 	response := &schemas.BifrostResponse{}
 	switch req.RequestType {
 	case schemas.ListModelsRequest:
@@ -10212,6 +10226,7 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 
 // handleProviderStreamRequest handles the stream request to the provider based on the request type
 func (bifrost *Bifrost) handleProviderStreamRequest(provider schemas.Provider, config *schemas.ProviderConfig, req *ChannelMessage, key schemas.Key, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context)) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	stampRequestedPromptCacheTTL(req)
 	switch req.RequestType {
 	case schemas.TextCompletionStreamRequest:
 		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ChatCompletionRequest {
