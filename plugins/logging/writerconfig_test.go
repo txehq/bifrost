@@ -124,13 +124,13 @@ func TestPendingLogTTLDefaultsAndSweepInterval(t *testing.T) {
 	if got := cleanupInterval(pendingLogTTL); got != maxCleanupInterval {
 		t.Fatalf("cleanupInterval(default) = %v, want %v", got, maxCleanupInterval)
 	}
-	if got := cleanupInterval(time.Second); got != 500*time.Millisecond {
+	if got := cleanupInterval(time.Second); got != 500*time.Millisecond { // literal-timing: pure arithmetic on a config value, never waited on
 		t.Fatalf("cleanupInterval(1s) = %v, want 500ms", got)
 	}
 	if got := (&LoggerPlugin{}).pendingIdleTTL(); got != pendingLogTTL {
 		t.Fatalf("pendingIdleTTL without Init = %v, want %v", got, pendingLogTTL)
 	}
-	if got := (&LoggerPlugin{pendingTTL: time.Second}).pendingIdleTTL(); got != time.Second {
+	if got := (&LoggerPlugin{pendingTTL: time.Second}).pendingIdleTTL(); got != time.Second { // literal-timing: a config value read back, never waited on
 		t.Fatalf("pendingIdleTTL = %v, want 1s", got)
 	}
 }
