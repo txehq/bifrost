@@ -1708,6 +1708,10 @@ const wireAnswer = (path, body, bytes) => {
 	// A custom provider is served with its own keys (folder 487, TXE-7097): one custom provider on each of the deepseek,
 	// glm, moonshot and qwen bases points at /pp/ownkey, where each base posts chat to its own path. The call is kept in
 	// /__wire with the bearer that arrived, which is what the row reads.
+	// Folder 654 (TXE-7996): Kimi's Responses API reports a cache write as one figure, with no TTL tier.
+	if (path.startsWith("/pp/ownkey/") && path.endsWith("/responses") && body.model === "fixture-kimi-ttl-priced") {
+		return { status: 200, body: JSON.stringify({ id: "resp_ownkey_ttl", object: "response", created_at: 1, status: "completed", model: body.model, output: [{ type: "message", id: "msg_ownkey_ttl", role: "assistant", status: "completed", content: [{ type: "output_text", text: "hello", annotations: [] }] }], usage: { input_tokens: 3000, input_tokens_details: { cached_tokens: 0, cache_write_tokens: 2000 }, output_tokens: 200, total_tokens: 3200 } }) };
+	}
 	if (path.startsWith("/pp/ownkey/") && path.endsWith("/chat/completions")) {
 		// Folder 654 (TXE-7996): Kimi reports a cache write as one figure, with no TTL tier.
 		if (body.model === "fixture-kimi-ttl-priced") {

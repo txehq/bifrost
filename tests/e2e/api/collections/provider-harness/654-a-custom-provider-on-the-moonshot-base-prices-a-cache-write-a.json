@@ -1,6 +1,6 @@
 {
   "name": "654. A custom provider on the moonshot base prices a cache write at the requested TTL (custom provider on moonshot cache ttl pricing)",
-  "description": "TXE-7996, a follow-up to TXE-7069 (folder 646). Kimi bills a cache write by the request's prompt_cache_options.ttl and reports one cached_write_tokens figure. Pricing applied the requested tier only when the request's provider was moonshot itself, so a custom provider on the moonshot base (kimi_custom) had its 1-hour write priced at the base rate. The fixture's pricing sheet has one Kimi row, moonshot/fixture-kimi-ttl-priced: $1/M input, $2/M output, $3/M cache write and $6/M cache write above an hour. /pp/ownkey answers with 3,000 prompt tokens, 2,000 of them written to the cache, and 200 completion tokens. At 1h that is $0.0134, and at 5m or no TTL $0.0074. Against a gateway without the fix, row 654.1 is logged at $0.0074.",
+  "description": "TXE-7996, a follow-up to TXE-7069 (folder 646). Kimi bills a cache write by the request's prompt_cache_options.ttl and reports one cached_write_tokens figure. Pricing applied the requested tier only when the request's provider was moonshot itself, so a custom provider on the moonshot base (kimi_custom) had its 1-hour write priced at the base rate. The fixture's pricing sheet has one Kimi row, moonshot/fixture-kimi-ttl-priced: $1/M input, $2/M output, $3/M cache write and $6/M cache write above an hour. /pp/ownkey answers with 3,000 prompt tokens, 2,000 of them written to the cache, and 200 completion tokens. At 1h that is $0.0134, and at 5m or no TTL $0.0074. Rows 654.1 to 654.3 send /v1/chat/completions; 654.4 and 654.5 send /v1/responses, which /pp/ownkey answers with the same usage in the Responses shape (input_tokens_details.cache_write_tokens). Against a gateway without the fix, row 654.1 is logged at $0.0074.",
   "event": [
     {
       "listen": "prerequest",
@@ -243,6 +243,156 @@
         "body": {
           "mode": "raw",
           "raw": "{\"model\": \"kimi_custom/fixture-kimi-ttl-priced\", \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}"
+        }
+      }
+    },
+    {
+      "name": "654.4 kimi_custom/fixture-kimi-ttl-priced POST /v1/responses with prompt_cache_options.ttl 1h is logged at $0.0134 (custom provider on moonshot cache ttl pricing)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.variables.set('kimiTtlRequestId4', 'kimi-ttl-4-' + Date.now() + '-' + Math.floor(Math.random() * 1e6));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var requestId = pm.variables.get('kimiTtlRequestId4');",
+              "pm.test('the response succeeds', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "pm.test('usage carries the write as Kimi reported it, with no tier derived from the request', function () {",
+              "  var u = pm.response.json().usage || {};",
+              "  pm.expect(JSON.stringify(u), JSON.stringify(u)).to.not.include('cached_write_token_details');",
+              "});",
+              "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+              "var token = pm.variables.get('setupToken');",
+              "function check(attempt) {",
+              "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + requestId, method: 'GET', header: { 'X-Bifrost-Setup-Token': token } }, function (err, res) {",
+              "    if (!err && res.code === 200 && res.json().status === 'success') {",
+              "      var j = res.json();",
+              "      pm.test('the 2,000-token cache write is priced at the 1-hour rate', function () {",
+              "        pm.expect(j.provider, JSON.stringify(j)).to.eql('kimi_custom');",
+              "        pm.expect(j.cost, 'logged with no cost: ' + JSON.stringify(j)).to.be.a('number');",
+              "        pm.expect(j.cost, JSON.stringify(j)).to.be.closeTo(0.0134, 1e-12);",
+              "      });",
+              "      return;",
+              "    }",
+              "    if (attempt < 10) { setTimeout(function () { check(attempt + 1); }, 1000); return; }",
+              "    pm.test('the log row appeared', function () { pm.expect.fail('log ' + requestId + ' never appeared: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+              "  });",
+              "}",
+              "check(0);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-request-id",
+            "value": "{{kimiTtlRequestId4}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"kimi_custom/fixture-kimi-ttl-priced\", \"input\": \"hi\", \"prompt_cache_options\": {\"ttl\": \"1h\"}}"
+        }
+      }
+    },
+    {
+      "name": "654.5 kimi_custom/fixture-kimi-ttl-priced POST /v1/responses with prompt_cache_options.ttl 5m is logged at $0.0074 (custom provider on moonshot cache ttl pricing)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.variables.set('kimiTtlRequestId5', 'kimi-ttl-5-' + Date.now() + '-' + Math.floor(Math.random() * 1e6));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var requestId = pm.variables.get('kimiTtlRequestId5');",
+              "pm.test('the response succeeds', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "pm.test('usage carries the write as Kimi reported it, with no tier derived from the request', function () {",
+              "  var u = pm.response.json().usage || {};",
+              "  pm.expect(JSON.stringify(u), JSON.stringify(u)).to.not.include('cached_write_token_details');",
+              "});",
+              "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+              "var token = pm.variables.get('setupToken');",
+              "function check(attempt) {",
+              "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + requestId, method: 'GET', header: { 'X-Bifrost-Setup-Token': token } }, function (err, res) {",
+              "    if (!err && res.code === 200 && res.json().status === 'success') {",
+              "      var j = res.json();",
+              "      pm.test('the 2,000-token cache write is priced at the base rate', function () {",
+              "        pm.expect(j.provider, JSON.stringify(j)).to.eql('kimi_custom');",
+              "        pm.expect(j.cost, 'logged with no cost: ' + JSON.stringify(j)).to.be.a('number');",
+              "        pm.expect(j.cost, JSON.stringify(j)).to.be.closeTo(0.0074, 1e-12);",
+              "      });",
+              "      return;",
+              "    }",
+              "    if (attempt < 10) { setTimeout(function () { check(attempt + 1); }, 1000); return; }",
+              "    pm.test('the log row appeared', function () { pm.expect.fail('log ' + requestId + ' never appeared: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+              "  });",
+              "}",
+              "check(0);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-request-id",
+            "value": "{{kimiTtlRequestId5}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"kimi_custom/fixture-kimi-ttl-priced\", \"input\": \"hi\", \"prompt_cache_options\": {\"ttl\": \"5m\"}}"
         }
       }
     }
