@@ -210,6 +210,34 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 EOF
 
+# Rule 5 (TXE-8021): the wrapper's GOPROXY write is GitHub-hosted only, and it is there.
+wrapper() {
+  local name="$1" cond="$2"
+  {
+    printf 'name: Set up Go\nruns:\n  using: composite\n  steps:\n'
+    printf '    - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0\n'
+    if [[ "$cond" != absent ]]; then
+      printf '    - name: Make module fetches retry\n'
+      [[ -n "$cond" ]] && printf '      if: %s\n' "$cond"
+      printf '      shell: bash\n      run: |\n'
+      printf '        list="$("$GITHUB_ACTION_PATH/goproxy-list.sh")"\n'
+      printf '        echo "GOPROXY=$list" >> "$GITHUB_ENV"\n'
+    fi
+  } | put "$name" .github/actions/setup-go/action.yml
+}
+checkout_only() {
+  printf 'jobs:\n  build:\n    runs-on: ubuntu-24.04\n    steps:\n'
+  printf '      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2\n'
+}
+wrapper wrapper-hosted-only "runner.environment == 'github-hosted'"
+checkout_only | case_ wrapper-hosted-only pass
+wrapper wrapper-unguarded ""
+checkout_only | case_ wrapper-unguarded 'rule 5'
+wrapper wrapper-other-condition "runner.environment != 'self-hosted' || github.event_name == 'push'"
+checkout_only | case_ wrapper-other-condition 'rule 5'
+wrapper wrapper-without-list absent
+checkout_only | case_ wrapper-without-list 'rule 5'
+
 # The repository itself.
 n=$((n + 1))
 if out="$(python3 "$CHECK" 2>&1)"; then

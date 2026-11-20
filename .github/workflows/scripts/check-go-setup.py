@@ -14,6 +14,9 @@ A job that installs Go itself, or sets its own GOPROXY, gets no retries, so this
      read from the checked-out tree);
   4. GOPROXY set in a workflow, job or step env, or assigned in a step's script. GOPROXY=off
      (the offline guard some test scripts set) is allowed.
+  5. .github/actions/setup-go without a step that writes the GOPROXY list into $GITHUB_ENV, or
+     with one whose `if:` is not exactly `runner.environment == 'github-hosted'` (TXE-8021). A
+     self-hosted (on-prem) runner keeps the GOPROXY its own environment sets.
 
 Usage: check-go-setup.py [--root DIR] [workflow.yml ...]
   With no files, checks every workflow in DIR/.github/workflows and every composite action in
@@ -28,6 +31,7 @@ import sys
 import yaml
 
 WRAPPER = "./.github/actions/setup-go"
+HOSTED_ONLY = "runner.environment == 'github-hosted'"
 
 # Command position: the start of a line, after && || ; | ( or then/do, behind VAR=value
 # assignments. A go command inside a quoted string or prose is not run.
@@ -176,13 +180,27 @@ def check_workflow(root, path):
             yield f"{where}: {WRAPPER} runs before actions/checkout, so the runner cannot read it (rule 3)"
 
 
+def check_wrapper(rel, steps):
+    """Rule 5: the wrapper's GOPROXY write into $GITHUB_ENV exists and is GitHub-hosted only."""
+    writes = [s for s in steps if "GOPROXY" in str(s.get("run") or "") and "GITHUB_ENV" in str(s.get("run") or "")]
+    if not writes:
+        yield f"{rel}: no step writes the GOPROXY retry list into $GITHUB_ENV (rule 5)"
+    for i, step in enumerate(writes):
+        if str(step.get("if") or "").strip() != HOSTED_ONLY:
+            label = step.get("name") or f"step {i + 1}"
+            yield (f"{rel}: step '{label}' writes GOPROXY into $GITHUB_ENV without `if: {HOSTED_ONLY}`, "
+                   "so it would replace a self-hosted runner's own GOPROXY (rule 5)")
+
+
 def check_action(root, path):
     rel = os.path.relpath(path, root)
-    if os.path.dirname(rel) == ".github/actions/setup-go":
-        return
     with open(path) as fh:
         doc = yaml.safe_load(fh) or {}
-    for step in ((doc.get("runs") or {}).get("steps") or []):
+    steps = [s for s in ((doc.get("runs") or {}).get("steps") or []) if isinstance(s, dict)]
+    if os.path.dirname(rel) == ".github/actions/setup-go":
+        yield from check_wrapper(rel, steps)
+        return
+    for step in steps:
         if isinstance(step, dict) and (step.get("uses") or "").startswith("actions/setup-go@"):
             yield f"{rel}: uses actions/setup-go; only {WRAPPER} may (rule 1)"
 

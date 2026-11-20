@@ -21,6 +21,7 @@
 # ⚠️ GITHUB-HOSTED ONLY (TXE-8021). The list is set on GitHub-hosted runners only. A self-hosted
 # runner (every on-prem ARC runner) skips that step and keeps the GOPROXY its own environment sets;
 # the org workflow lint's goproxy-from-runner rule (TXE-8008) reads this `if:` as hosted-only.
+# check-go-setup.py rule 5 fails when the step loses that `if:`, or when the list is gone.
 name: Set up Go
 description: Install the repository's Go version and make module fetches retry a transient proxy failure.
 runs:
