@@ -748,4 +748,47 @@ func TestLiveUnitsArePricedInTheirAccountingMode(t *testing.T) {
 	assert.Nil(t, unit("backend", "gpt-4o"), "a backend unit is priced in the Responses mode (from the model's chat row)")
 	requireUnpricedRefusal(t, unit("voice", "gpt-4o"), "a voice unit on a model with no live (realtime) price")
 	requireUnpricedRefusal(t, unit("backend", "house-llm"), "a backend unit on a model with no price")
+
+	// A session ending before its backend turn closes the admitted unit with no usage and no status:
+	// a record of no work, which refuses nothing for the budget's other callers.
+	ctx := resolverCtx(plugin.store, "sk-bf-budget")
+	ctx.SetValue(schemas.BifrostContextKeyLiveUnit, "backend")
+	_, shortCircuit, err := plugin.PreLLMHook(ctx, live("gpt-4o"))
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit)
+	_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{
+		Object: "response", Model: "gpt-4o", Usage: &schemas.ResponsesResponseUsage{},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.LiveRequest, Provider: schemas.OpenAI, PricingRequestType: schemas.ResponsesRequest,
+			RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenAI, Model: "gpt-4o"},
+		},
+	}}, nil)
+	require.NoError(t, err)
+	plugin.wg.Wait()
+	assert.Nil(t, unit("backend", "gpt-4o"), "an empty backend unit does not refuse the model")
+	assert.False(t, emptyResponsesUsage(&schemas.ResponsesResponseUsage{AudioSeconds: new(3.0)}), "a voice window with seconds is not empty")
+}
+
+// A provider's server-side fallback answers on another model, which accounting prices: an answer
+// free on the model that served it refuses nothing, though the requested model is priced.
+func TestServerSideFallbackAnswerIsJudgedAsTheServingModel(t *testing.T) {
+	plugin, store := unpricedBudgetPlugin(t)
+	chat := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o"}}
+	ctx := resolverCtx(plugin.store, "sk-bf-budget")
+	_, shortCircuit, err := plugin.PreLLMHook(ctx, chat)
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit)
+	fallback := "free-chat"
+	_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		Model: "gpt-4o",
+		Usage: &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.ChatCompletionRequest, Provider: schemas.OpenAI,
+			RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenAI, Model: "gpt-4o", ServerSideFallbackModel: &fallback},
+		},
+	}}, nil)
+	require.NoError(t, err)
+	plugin.wg.Wait()
+	require.Zero(t, store.GetGovernanceData(context.Background()).Budgets["budget-unpriced"].CurrentUsage, "accounting priced the answer as the free model that served it")
+	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", chat), "a free fallback answer does not refuse the requested model")
 }

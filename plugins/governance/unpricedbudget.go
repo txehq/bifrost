@@ -442,6 +442,11 @@ func deliveredAnswer(result *schemas.BifrostResponse) bool {
 			return false
 		}
 	}
+	// A Live billing unit closed with nothing in it (a session ended before its backend turn or with
+	// no voice seconds) is a synthetic record of no work, not an answer.
+	if response := result.ResponsesResponse; response != nil && response.ExtraFields.RequestType == schemas.LiveRequest && emptyResponsesUsage(response.Usage) {
+		return false
+	}
 	if result.ResponsesResponse != nil && result.ResponsesResponse.Status != nil {
 		switch *result.ResponsesResponse.Status {
 		case "queued", "in_progress", "failed", "cancelled":
@@ -719,6 +724,13 @@ func batchEnvelopeModel(batch *schemas.BifrostBatchCreateRequest) string {
 		return ""
 	}
 	return *batch.Model
+}
+
+// emptyResponsesUsage reports whether a Responses usage record counts nothing at all.
+func emptyResponsesUsage(usage *schemas.ResponsesResponseUsage) bool {
+	return usage == nil || (usage.InputTokens == 0 && usage.OutputTokens == 0 && usage.TotalTokens == 0 &&
+		(usage.AudioSeconds == nil || *usage.AudioSeconds == 0) && (usage.TextMessages == nil || *usage.TextMessages == 0) &&
+		usage.GuardrailUnits == nil && usage.Cost == nil && len(usage.Iterations) == 0)
 }
 
 // passthroughRead reports whether a request is a passthrough read (GET or HEAD with no body):

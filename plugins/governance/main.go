@@ -2125,6 +2125,11 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifro
 			if priced == "" {
 				priced = bodyModel
 			}
+			// A provider's server-side fallback served the answer on another model, and accounting
+			// priced it as that model (resolvePricing): it is judged and refused as that model.
+			if extra := result.GetExtraFields(); extra != nil && extra.RoutingInfo.ServerSideFallbackModel != nil && *extra.RoutingInfo.ServerSideFallbackModel != "" {
+				priced = *extra.RoutingInfo.ServerSideFallbackModel
+			}
 			// A container is priced from the memory tier it was created with, as accounting reads it.
 			if container := result.ContainerCreateResponse; container != nil && container.MemoryLimit != "" {
 				priced = "container-" + container.MemoryLimit
