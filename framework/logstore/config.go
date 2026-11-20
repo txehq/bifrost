@@ -32,7 +32,8 @@ const (
 	// DefaultWriterPendingLogTTL is how long a request may sit idle (no chunk or
 	// other activity) before the logging plugin evicts its in-memory pending
 	// entry, persisting the input as a partial row that a late completion
-	// reconciles onto.
+	// reconciles onto. WriterConfig.PendingLogTTL overrides it; the provider
+	// harness shortens it to reach that path (TXE-7328).
 	DefaultWriterPendingLogTTL = "15m"
 )
 
@@ -43,11 +44,7 @@ type WriterConfig struct {
 	MaxBatchBytes            int    `json:"max_batch_bytes,omitempty"`
 	WriteQueueCapacity       int    `json:"write_queue_capacity,omitempty"`
 	DeferredUsageConcurrency int    `json:"deferred_usage_concurrency,omitempty"`
-	// PendingLogTTL is the idle time, as a Go duration, after which a request's
-	// pending log entry is evicted and persisted as a partial row (default 15m).
-	// A completion that arrives later is reconciled onto that row. The provider
-	// harness shortens it to reach that path (TXE-7328).
-	PendingLogTTL string `json:"pending_log_ttl,omitempty"`
+	PendingLogTTL            string `json:"pending_log_ttl,omitempty"` // Go duration; see DefaultWriterPendingLogTTL
 }
 
 // WithDefaults returns a copy of WriterConfig with zero-value fields filled.

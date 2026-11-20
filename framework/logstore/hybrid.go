@@ -84,22 +84,17 @@ type uploadWork struct {
 //   - Intercepted: Create, CreateIfNotExists, BatchCreateIfNotExists, FindByID,
 //     Update, DeleteLog, DeleteLogs, DeleteLogsBatch, Close
 type HybridLogStore struct {
-	inner          LogStore
-	objects        objectstore.ObjectStore
-	prefix         string
-	logger         schemas.Logger
-	uploadQueues   []chan *uploadWork // one per worker, sharded by log id so a row's uploads run in enqueue order
-	wg             sync.WaitGroup
-	closed         atomic.Bool
-	droppedUploads atomic.Int64
-	// droppedMergeUploads counts merge uploads lost for good: dropped before they
-	// were queued, or failed on every attempt. Each one is a late output that no
-	// read can serve (TXE-7328). They are counted in droppedUploads too.
-	droppedMergeUploads atomic.Int64
-	// uploadRetryBackoff is the wait before each retry of a retried upload kind;
-	// its length is the number of retries. Tests shorten it.
-	uploadRetryBackoff []time.Duration
-	pendingBytes       atomic.Int64
+	inner               LogStore
+	objects             objectstore.ObjectStore
+	prefix              string
+	logger              schemas.Logger
+	uploadQueues        []chan *uploadWork // one per worker, sharded by log id so a row's uploads run in enqueue order
+	wg                  sync.WaitGroup
+	closed              atomic.Bool
+	droppedUploads      atomic.Int64
+	droppedMergeUploads atomic.Int64    // merge uploads lost for good; see DroppedMergeUploads
+	uploadRetryBackoff  []time.Duration // waits before each retry; see defaultUploadRetryBackoff
+	pendingBytes        atomic.Int64
 	// outstanding counts uploads accepted onto a queue and not yet finished: queued,
 	// or taken by a worker and still uploading or setting has_object.
 	outstanding atomic.Int64
