@@ -143,6 +143,8 @@ func TestAmbiguousMultipartField(t *testing.T) {
 		"Content-Disposition: form-data",
 		"Content-Disposition: form-data; name=\"prompt\"; name*=utf-8''model",
 		"Content-Disposition: form-data; name=\"prompt\"; NAME*0=\"model\"",
+		"Content-Disposition: form-data; name=\"prompt\";\u00a0name*=utf-8''model",
+		"Content-Disposition: form-data; name=\"prompt\";\u2003name*=utf-8''model",
 	} {
 		raw := []byte("--b\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\na\r\n--b\r\n" + disposition + "\r\n\r\nb\r\n--b--\r\n")
 		if member, ambiguous := AmbiguousBodyMember(raw, "multipart/form-data; boundary=b"); !ambiguous || member != "multipart part with an unreadable Content-Disposition" {

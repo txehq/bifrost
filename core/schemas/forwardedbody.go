@@ -222,7 +222,7 @@ func multipartPartName(part *multipart.Part) (string, bool) {
 	default:
 		return "", false
 	}
-	if extendedNameParameter.MatchString(dispositions[0]) {
+	if !plainHeaderValue(dispositions[0]) || extendedNameParameter.MatchString(dispositions[0]) {
 		return "", false
 	}
 	disposition, params, err := mime.ParseMediaType(dispositions[0])
@@ -238,6 +238,19 @@ func multipartPartName(part *multipart.Part) (string, bool) {
 // to, so a part carrying one is refused rather than read one way. It may also match inside a
 // quoted value, which refuses a body that is merely odd: the check fails closed.
 var extendedNameParameter = regexp.MustCompile(`(?i);\s*name\*`)
+
+// plainHeaderValue reports whether a header value holds only printable ASCII, space and tab.
+// mime.ParseMediaType trims any Unicode space around a parameter, which extendedNameParameter's
+// \s does not match; with only space and tab allowed, the two agree on where a parameter starts.
+// A form-data disposition in any API this forwards to is plain ASCII.
+func plainHeaderValue(value string) bool {
+	for i := 0; i < len(value); i++ {
+		if c := value[i]; (c < 0x20 || c > 0x7e) && c != '\t' {
+			return false
+		}
+	}
+	return true
+}
 
 // utf8ByteOrderMark opens some JSON documents; Python's json.loads, among others, skips it.
 var utf8ByteOrderMark = []byte{0xef, 0xbb, 0xbf}
