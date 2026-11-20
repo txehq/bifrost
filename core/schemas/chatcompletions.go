@@ -1987,6 +1987,10 @@ type BifrostLLMUsage struct {
 	// next to usage.billed_units). Absent when the vendor reports only one set (contract C5).
 	ProcessedTokens  *ProcessedTokenUsage `json:"processed_tokens,omitempty"`
 	BilledCharacters *int                 `json:"billed_characters,omitempty"` // Vendor-billed character count; nil when unreported
+	// EstimatedBilledCharacters is Bifrost's estimate of the characters a vendor that reports no
+	// count bills (SpeechUsage.EstimatedBilledCharacters, fork TXE-7073). It is carried here so
+	// an interrupted or empty speech stream is billed on the same estimate as a finished one.
+	EstimatedBilledCharacters *int `json:"estimated_billed_characters,omitempty"`
 	// TextMessages counts the text messages a client sent into a realtime voice session during
 	// this turn: conversation.item.create events carrying a user input_text item (fork, TXE-7363).
 	// xAI bills them per message on top of audio; nil when the turn received none.
@@ -2534,6 +2538,7 @@ func MergeBifrostLLMUsage(base, add *BifrostLLMUsage) *BifrostLLMUsage {
 	merged.InputImages = sumOptionalInts(base.InputImages, add.InputImages)
 	merged.ProcessedTokens = base.ProcessedTokens.Add(add.ProcessedTokens)
 	merged.BilledCharacters = sumOptionalInts(base.BilledCharacters, add.BilledCharacters)
+	merged.EstimatedBilledCharacters = sumOptionalInts(base.EstimatedBilledCharacters, add.EstimatedBilledCharacters)
 	merged.TextMessages = sumOptionalInts(base.TextMessages, add.TextMessages)
 	merged.GuardrailUnits = base.GuardrailUnits.Add(add.GuardrailUnits)
 	merged.ToolUsage = base.ToolUsage.Add(add.ToolUsage)
@@ -3084,6 +3089,7 @@ func (u *BifrostLLMUsage) DeepCopy() *BifrostLLMUsage {
 	c.InputImages = copyIntPtr(u.InputImages)
 	c.ProcessedTokens = u.ProcessedTokens.Add(nil)
 	c.BilledCharacters = copyIntPtr(u.BilledCharacters)
+	c.EstimatedBilledCharacters = copyIntPtr(u.EstimatedBilledCharacters)
 	c.TextMessages = copyIntPtr(u.TextMessages)
 	c.GuardrailUnits = u.GuardrailUnits.Add(nil)
 	c.ToolUsage = u.ToolUsage.DeepCopy()

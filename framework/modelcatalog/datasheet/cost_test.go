@@ -11081,6 +11081,53 @@ func TestCalculateCostForUsage_CancelledSpeechStreamPricesItsCharacters(t *testi
 		"a usage with no characters and no tokens still costs nothing")
 }
 
+// TXE-7073: Azure AI Speech reports no character count and bills the SSML markup Bifrost
+// adds and each Han character twice, so azurespeech reports estimated_billed_characters.
+// Bifrost prices a speech response on the vendor's billed_characters, else that estimate,
+// else input_chars, buffered, streamed and interrupted alike. The ticket's case: input "你"
+// with speed 1 is input_chars 1 and 30 estimated billed characters.
+func TestCalculateCost_SpeechPricesBilledThenEstimatedThenInputChars(t *testing.T) {
+	const rate = 0.000016
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("mai-voice-2.1-flash", "azurespeech", "audio_speech"): {
+			Model: "mai-voice-2.1-flash", Provider: "azurespeech", Mode: "audio_speech",
+			InputCostPerToken:     bifrost.Ptr(0.0),
+			InputCostPerCharacter: bifrost.Ptr(rate),
+		},
+	})
+	billed, estimate := 13, 30
+	cases := []struct {
+		name  string
+		usage schemas.SpeechUsage
+		chars int
+	}{
+		{"input chars only", schemas.SpeechUsage{InputChars: 1}, 1},
+		{"the estimate over input chars", schemas.SpeechUsage{InputChars: 1, EstimatedBilledCharacters: &estimate}, 30},
+		{"the vendor's count over the estimate", schemas.SpeechUsage{InputChars: 1, BilledCharacters: &billed, EstimatedBilledCharacters: &estimate}, 13},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			extra := schemas.BifrostResponseExtraFields{RoutingInfo: routingInfoFor(schemas.AzureSpeech, "mai-voice-2.1-flash")}
+			buffered := tc.usage
+			extra.RequestType = schemas.SpeechRequest
+			assert.InDelta(t, float64(tc.chars)*rate, s.CalculateCost(&schemas.BifrostResponse{
+				SpeechResponse: &schemas.BifrostSpeechResponse{Usage: &buffered, ExtraFields: extra},
+			}, nil), 1e-12, "buffered")
+			streamed := tc.usage
+			extra.RequestType = schemas.SpeechStreamRequest
+			assert.InDelta(t, float64(tc.chars)*rate, s.CalculateCost(&schemas.BifrostResponse{
+				SpeechStreamResponse: &schemas.BifrostSpeechStreamResponse{Usage: &streamed, ExtraFields: extra},
+			}, nil), 1e-12, "streamed")
+			interrupted := &schemas.BifrostLLMUsage{
+				SpeechInputChars:          tc.usage.InputChars,
+				BilledCharacters:          tc.usage.BilledCharacters,
+				EstimatedBilledCharacters: tc.usage.EstimatedBilledCharacters,
+			}
+			assert.InDelta(t, float64(tc.chars)*rate, s.CalculateCostForUsage(interrupted, schemas.AzureSpeech, "mai-voice-2.1-flash", schemas.SpeechStreamRequest, nil), 1e-12, "interrupted")
+		})
+	}
+}
+
 // A token-priced speech model (Gemini, Vertex) whose interrupted stream already carries the
 // vendor's input tokens is billed on those tokens, not on Bifrost's character count at the
 // token rate (TXE-7072, review on PR 322).

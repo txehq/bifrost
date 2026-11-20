@@ -220,8 +220,9 @@ func requireUnsupportedParameter(t *testing.T, err *schemas.BifrostError, param 
 }
 
 // The acceptance case of the vendor sheet: voice en-US-Harper:MAI-Voice-2.1-Flash, a speed
-// and response_format mp3 send the expected SSML and X-Microsoft-OutputFormat, once, and
-// the audio comes back with no usage (real-time synthesis reports none).
+// and response_format mp3 send the expected SSML and X-Microsoft-OutputFormat, once. The
+// audio comes back with Bifrost's estimate of the characters Azure bills for that SSML
+// (TXE-7073) and no billed_characters: real-time synthesis reports no count.
 func TestAzureSpeechSpeechSendsSSMLAndOutputFormat(t *testing.T) {
 	audio := []byte("ID3fake-mp3-bytes")
 	provider, captured := newMockAzureSpeech(t, map[string]http.HandlerFunc{
@@ -238,8 +239,11 @@ func TestAzureSpeechSpeechSendsSSMLAndOutputFormat(t *testing.T) {
 	if !bytes.Equal(response.Audio, audio) {
 		t.Errorf("audio = %q, want %q", response.Audio, audio)
 	}
-	if response.Usage != nil {
-		t.Errorf("usage = %+v, want none: the vendor reports no character count", response.Usage)
+	// <prosody rate="1.25"> (21) + "I'm excited to try text to speech!" (34, the &#39; Bifrost
+	// wrote counted as the apostrophe it stands for) + </prosody> (10). input_chars (34) is
+	// filled by core's BackfillParams, which a direct provider call does not run.
+	if response.Usage == nil || response.Usage.EstimatedBilledCharacters == nil || *response.Usage.EstimatedBilledCharacters != 65 || response.Usage.BilledCharacters != nil {
+		t.Errorf("usage = %+v, want estimated_billed_characters 65 and no billed_characters: the vendor reports no count", response.Usage)
 	}
 
 	requests := captured()
@@ -369,6 +373,72 @@ func TestToAzureSpeechSSML(t *testing.T) {
 				t.Errorf("output format = %q, want %q", format, tt.wantFormat)
 			}
 		})
+	}
+}
+
+// TXE-7073: the characters Azure bills for the SSML Bifrost sends, by Azure's documented rule
+// (https://learn.microsoft.com/en-us/azure/ai-services/Speech-Service/text-to-speech#pricing-note):
+// every code point of the body except the <speak> and <voice> tags, markup included, and each
+// Han character (Chinese hanzi, Japanese kanji, Korean hanja) counted twice. Each want is
+// worked by hand from that rule, never from the estimator.
+func TestEstimateBilledCharactersFollowsAzureRule(t *testing.T) {
+	cases := []struct {
+		name   string
+		voice  string
+		input  string
+		speed  *float64
+		want   int
+		inputN int // input_chars, for contrast: what the estimate replaces
+	}{
+		// The ticket's case: <prosody rate="1"> (18) + 你 (2) + </prosody> (10).
+		{name: "one hanzi with speed", voice: "zh-CN-XiaoxiaoNeural", input: "你", speed: schemas.Ptr(1.0), want: 30, inputN: 1},
+		// <prosody rate="0.5"> (20) + 你好 (4) + ，(1) + 世界 (4) + </prosody> (10).
+		{name: "hanzi and CJK punctuation with speed", voice: "zh-CN-XiaoxiaoNeural", input: "你好，世界", speed: schemas.Ptr(0.5), want: 39, inputN: 5},
+		// No speed sends no prosody: only the text is billed.
+		{name: "hanzi without speed", voice: "zh-CN-XiaoxiaoNeural", input: "你好", want: 4, inputN: 2},
+		// Kanji count twice, kana once: 東京 (4) + へ (1) + 行 (2) + く (1).
+		{name: "kanji and kana", voice: "ja-JP-NanamiNeural", input: "東京へ行く", want: 8, inputN: 5},
+		// Hangul is not hanja: once each. 漢字 written in hanja counts twice.
+		{name: "hangul and hanja", voice: "ko-KR-SunHiNeural", input: "안녕 漢字", want: 7, inputN: 5},
+		// Latin text, spaces and punctuation count once; an escape Bifrost wrote counts as the
+		// character it stands for: a < b & "c" is 11.
+		{name: "escaped markup in the input", voice: maiVoice, input: `a < b & "c"`, want: 11, inputN: 11},
+		// <prosody rate="2"> (18) + Hi (2) + </prosody> (10).
+		{name: "latin with speed", voice: maiVoice, input: "Hi", speed: schemas.Ptr(2.0), want: 30, inputN: 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			request := speechRequest(tc.voice, &schemas.SpeechParameters{Speed: tc.speed})
+			request.Input.Input = tc.input
+			ssml, _, bifrostErr := azurespeech.ToAzureSpeechSSML(request)
+			if bifrostErr != nil {
+				t.Fatalf("ToAzureSpeechSSML error: %+v", bifrostErr.Error)
+			}
+			if got := azurespeech.EstimateBilledCharacters(ssml); got != tc.want {
+				t.Errorf("EstimateBilledCharacters(%s) = %d, want %d", ssml, got, tc.want)
+			}
+			if got := utf8.RuneCountInString(tc.input); got != tc.inputN {
+				t.Errorf("input_chars of %q = %d, want %d", tc.input, got, tc.inputN)
+			}
+		})
+	}
+}
+
+// The <speak> and <voice> tags are unbilled whatever they carry: a long voice name or a
+// locale changes nothing, and only those two element names are exempt.
+func TestEstimateBilledCharactersExemptsOnlySpeakAndVoiceTags(t *testing.T) {
+	short := []byte(`<speak version="1.0" xml:lang="en-US"><voice name="a">Hi</voice></speak>`)
+	long := []byte(`<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="zh-CN"><voice name="zh-CN-XiaoxiaoMultilingualNeural">Hi</voice></speak>`)
+	if got := azurespeech.EstimateBilledCharacters(short); got != 2 {
+		t.Errorf("short document = %d, want 2", got)
+	}
+	if got := azurespeech.EstimateBilledCharacters(long); got != 2 {
+		t.Errorf("long document = %d, want 2", got)
+	}
+	// <voiceover> is not <voice>, and <break/> is billed markup (8 + 2 + 12 = 22).
+	other := []byte(`<speak><voice name="a"><break/>Hi<voiceover/></voice></speak>`)
+	if got := azurespeech.EstimateBilledCharacters(other); got != 22 {
+		t.Errorf("other markup = %d, want 22", got)
 	}
 }
 
@@ -567,12 +637,23 @@ func TestAzureSpeechSpeechEmptyAudioIsProviderEmptyResult(t *testing.T) {
 		if bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeProviderEmptyResult {
 			t.Errorf("error_type = %q, want %q", bifrostErr.ExtraFields.ErrorType, schemas.ErrorTypeProviderEmptyResult)
 		}
+		// Azure bills a processed request whether or not audio came out (TXE-7073): the
+		// error is billed on the estimate for "你" at speed 1, 30, next to input_chars 1.
+		billed := bifrostErr.ExtraFields.BilledUsage
+		if billed == nil || billed.EstimatedBilledCharacters == nil || *billed.EstimatedBilledCharacters != 30 || billed.SpeechInputChars != 1 || billed.BilledCharacters != nil {
+			t.Errorf("BilledUsage = %+v, want estimated_billed_characters 30, input characters 1, no billed_characters", billed)
+		}
+	}
+	cjkRequest := func() *schemas.BifrostSpeechRequest {
+		request := speechRequest("zh-CN-XiaoxiaoNeural", &schemas.SpeechParameters{Speed: schemas.Ptr(1.0)})
+		request.Input.Input = "你"
+		return request
 	}
 
-	_, bifrostErr := provider.Speech(testContext(t), testKey(), speechRequest(maiVoice, nil))
+	_, bifrostErr := provider.Speech(testContext(t), testKey(), cjkRequest())
 	requireEmptyResult(t, bifrostErr)
 
-	stream, bifrostErr := provider.SpeechStream(testContext(t), passthroughPostHook, func(context.Context) {}, testKey(), speechRequest(maiVoice, nil))
+	stream, bifrostErr := provider.SpeechStream(testContext(t), passthroughPostHook, func(context.Context) {}, testKey(), cjkRequest())
 	if bifrostErr != nil {
 		t.Fatalf("SpeechStream setup error: %+v", bifrostErr.Error)
 	}
@@ -634,12 +715,14 @@ func TestAzureSpeechSpeechStreamForwardsChunksOnArrival(t *testing.T) {
 			response := chunk.BifrostSpeechStreamResponse
 			types = append(types, response.Type)
 			audio = append(audio, response.Audio...)
-			// Only the final chunk carries usage: Bifrost's own input_chars, as on a buffered
-			// response, so a streamed call is priced the same. The vendor reports no count.
+			// Only the final chunk carries usage: Bifrost's own input_chars and its estimate of
+			// the characters Azure bills, as on a buffered response, so a streamed call is
+			// priced the same. The vendor reports no count.
 			if response.Type == schemas.SpeechStreamResponseTypeDone {
 				wantChars := utf8.RuneCountInString(speechInput)
-				if response.Usage == nil || response.Usage.InputChars != wantChars || response.Usage.BilledCharacters != nil {
-					t.Errorf("final chunk usage = %+v, want input_chars %d and no billed_characters", response.Usage, wantChars)
+				if response.Usage == nil || response.Usage.InputChars != wantChars || response.Usage.BilledCharacters != nil ||
+					response.Usage.EstimatedBilledCharacters == nil || *response.Usage.EstimatedBilledCharacters != 65 {
+					t.Errorf("final chunk usage = %+v, want input_chars %d, estimated_billed_characters 65 and no billed_characters", response.Usage, wantChars)
 				}
 			} else if response.Usage != nil {
 				t.Errorf("usage on an audio chunk = %+v, want none", response.Usage)
@@ -1133,6 +1216,24 @@ func BenchmarkToAzureSpeechSSML(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		if _, _, bifrostErr := azurespeech.ToAzureSpeechSSML(request); bifrostErr != nil {
 			b.Fatal(bifrostErr.Error.Message)
+		}
+	}
+}
+
+// BenchmarkEstimateBilledCharacters measures what TXE-7073 adds to every speech request: one
+// pass over the SSML sent, here a 1,000-character mixed Chinese and Latin input with speed.
+func BenchmarkEstimateBilledCharacters(b *testing.B) {
+	request := speechRequest("zh-CN-XiaoxiaoNeural", &schemas.SpeechParameters{Speed: schemas.Ptr(1.25)})
+	request.Input.Input = strings.Repeat("你好，世界 & hello world. ", 50)
+	ssml, _, bifrostErr := azurespeech.ToAzureSpeechSSML(request)
+	if bifrostErr != nil {
+		b.Fatal(bifrostErr.Error.Message)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if azurespeech.EstimateBilledCharacters(ssml) == 0 {
+			b.Fatal("no characters counted")
 		}
 	}
 }

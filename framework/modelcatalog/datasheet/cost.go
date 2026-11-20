@@ -250,7 +250,7 @@ func (s *Store) CalculateCostBreakdownForUsage(usage *schemas.BifrostLLMUsage, p
 	// token-priced model (Gemini, Vertex) would otherwise bill the character count at the
 	// token rate instead of the tokens it reported.
 	if usage.PromptTokens == 0 {
-		input.audioTextInputChars = usage.SpeechInputChars
+		input.audioTextInputChars = interruptedSpeechBilledChars(usage)
 	}
 	input.tier = tierFromResponse(usage.ServiceTier, usage.Speed, usage.InferenceGeo)
 
@@ -973,11 +973,11 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 
 	case result.SpeechResponse != nil && result.SpeechResponse.Usage != nil:
 		input.usage = speechUsageToBifrostUsage(result.SpeechResponse.Usage)
-		input.audioTextInputChars = result.SpeechResponse.Usage.InputChars
+		input.audioTextInputChars = result.SpeechResponse.Usage.BilledInputChars()
 
 	case result.SpeechStreamResponse != nil && result.SpeechStreamResponse.Usage != nil:
 		input.usage = speechUsageToBifrostUsage(result.SpeechStreamResponse.Usage)
-		input.audioTextInputChars = result.SpeechStreamResponse.Usage.InputChars
+		input.audioTextInputChars = result.SpeechStreamResponse.Usage.BilledInputChars()
 
 	case result.TranscriptionResponse != nil && result.TranscriptionResponse.Usage != nil:
 		input.usage, input.audioSeconds, input.audioTokenDetails = extractTranscriptionUsage(result.TranscriptionResponse.Usage)
@@ -1122,6 +1122,20 @@ func responsesUsageToBifrostUsage(u *schemas.ResponsesResponseUsage) *schemas.Bi
 	usage.ToolUsage = u.ToolUsage
 	usage.BillingTurns = u.BillingTurns
 	return usage
+}
+
+// interruptedSpeechBilledChars is the input character count an interrupted or empty speech
+// stream is priced on, in the order a finished one uses (SpeechUsage.BilledInputChars): the
+// vendor's count, else Bifrost's estimate of it (azurespeech, TXE-7073), else Bifrost's
+// code-point count of the input.
+func interruptedSpeechBilledChars(usage *schemas.BifrostLLMUsage) int {
+	if usage.BilledCharacters != nil && *usage.BilledCharacters > 0 {
+		return *usage.BilledCharacters
+	}
+	if usage.EstimatedBilledCharacters != nil && *usage.EstimatedBilledCharacters > 0 {
+		return *usage.EstimatedBilledCharacters
+	}
+	return usage.SpeechInputChars
 }
 
 // speechUsageToBifrostUsage normalizes speech token usage for shared pricing.

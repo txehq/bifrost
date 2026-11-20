@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	schemas "github.com/capsohq/bifrost/core/schemas"
@@ -32,6 +34,10 @@ const (
 	// relative rate of 0.5 to 2 times the original audio.
 	minSpeechRate = 0.5
 	maxSpeechRate = 2.0
+
+	// maxCharacterReferenceLen bounds the distance from '&' to ';' of a character reference
+	// EstimateBilledCharacters counts as one character.
+	maxCharacterReferenceLen = 8
 )
 
 // regionPattern matches an Azure region name (eastus, swedencentral, westus3). A location
@@ -168,6 +174,92 @@ func voiceLocale(voice string) string {
 		return ""
 	}
 	return language + "-" + region
+}
+
+// EstimateBilledCharacters applies Azure AI Speech's billable-character rule to the SSML
+// document Bifrost sent, since Azure reports no count of its own (fork, TXE-7073). The rule
+// (https://learn.microsoft.com/en-us/azure/ai-services/Speech-Service/text-to-speech#pricing-note):
+// every Unicode code point of the SSML body is billed, markup included, except the <speak>
+// and <voice> tags; each Chinese character, including kanji in Japanese and hanja in Korean,
+// counts as two. Han script code points are the ones counted twice.
+//
+// A character reference (&amp;, &#39;) counts as the one character it stands for. Azure
+// does not say whether it counts a reference or the character, and the reference is an
+// escape Bifrost added (ToAzureSpeechSSML escapes the caller's text), not text the caller
+// sent. Because every '<' and '&' of the caller's text is escaped, each '<' in the document
+// opens a tag and each '>' closes one.
+func EstimateBilledCharacters(ssml []byte) int {
+	count := 0
+	for i := 0; i < len(ssml); {
+		switch ssml[i] {
+		case '<':
+			end := bytes.IndexByte(ssml[i:], '>')
+			if end < 0 {
+				end = len(ssml) - i - 1
+			}
+			tag := ssml[i : i+end+1]
+			i += end + 1
+			if !isUnbilledSSMLTag(tag) {
+				count += billedCharacters(tag)
+			}
+			continue
+		case '&':
+			// The longest reference xml.EscapeText writes is &#xD; or &quot;.
+			if end := bytes.IndexByte(ssml[i:], ';'); end > 0 && end <= maxCharacterReferenceLen {
+				count++
+				i += end + 1
+				continue
+			}
+		}
+		if ssml[i] < utf8.RuneSelf {
+			count++
+			i++
+			continue
+		}
+		r, size := utf8.DecodeRune(ssml[i:])
+		i += size
+		count += billedRune(r)
+	}
+	return count
+}
+
+// isUnbilledSSMLTag reports whether tag, from '<' to '>', is an opening or closing <speak>
+// or <voice> tag: the only markup Azure does not bill.
+func isUnbilledSSMLTag(tag []byte) bool {
+	name := bytes.TrimPrefix(tag[1:], []byte("/"))
+	nameEnd := bytes.IndexAny(name, " \t\r\n/>")
+	if nameEnd < 0 {
+		nameEnd = len(name)
+	}
+	switch string(name[:nameEnd]) {
+	case "speak", "voice":
+		return true
+	}
+	return false
+}
+
+// billedCharacters counts markup the way EstimateBilledCharacters counts text. Bifrost's
+// tags carry no character references: their attribute values are numbers.
+func billedCharacters(b []byte) int {
+	count := 0
+	for len(b) > 0 {
+		if b[0] < utf8.RuneSelf {
+			count++
+			b = b[1:]
+			continue
+		}
+		r, size := utf8.DecodeRune(b)
+		b = b[size:]
+		count += billedRune(r)
+	}
+	return count
+}
+
+func billedRune(r rune) int {
+	if unicode.Is(unicode.Han, r) {
+		return 2
+	}
+	return 1
 }
 
 // writeXMLEscaped writes s with the XML special characters escaped, for use as text or as
