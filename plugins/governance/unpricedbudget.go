@@ -3,10 +3,12 @@ package governance
 import (
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/modelcatalog"
+	"github.com/tidwall/gjson"
 )
 
 // A dollar budget is charged what the price book says an answer cost. An answer the price book
@@ -254,9 +256,11 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 			Reason:   fmt.Sprintf("Bifrost has no price for %s requests, so they cannot be charged to a dollar budget", requestType),
 		}
 	}
-	// A passthrough naming no model on the request whose body names models: each was gated as its
-	// own model before the envelope (PreLLMHook). One naming none anywhere cannot be priced.
-	if (requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest) && evaluationRequest.Model == "" && !evaluationRequest.ModelUnseen {
+	// A passthrough naming no model on the request whose body names a model for every unit of work
+	// (the object, or every task of an array): each was gated as its own model before the envelope
+	// (PreLLMHook). One with a task naming no model runs the provider's default, which cannot be
+	// priced, and is gated as the envelope, which names none.
+	if (requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest) && evaluationRequest.Model == "" && evaluationRequest.BodyModelsComplete {
 		return nil
 	}
 	if requestType == schemas.BatchCreateRequest {
@@ -473,4 +477,35 @@ func (r *BudgetResolver) servedPriceStatus(provider schemas.ModelProvider, model
 		}
 	}
 	return best
+}
+
+// passthroughBodyNamesEveryModel reports whether a passthrough body names a model for every unit
+// of work it carries, read as passthroughBodyModels reads it: a JSON object with a non-empty
+// string "model", or a non-empty JSON array every element of which is such an object. A task
+// naming no model runs whatever the provider defaults to, which governance cannot price.
+func passthroughBodyNamesEveryModel(req *schemas.BifrostRequest) bool {
+	if req.PassthroughRequest == nil || len(req.PassthroughRequest.Body) == 0 || !gjson.ValidBytes(req.PassthroughRequest.Body) {
+		return false
+	}
+	names := func(object gjson.Result) bool {
+		value := object.Get("model")
+		return object.IsObject() && value.Type == gjson.String && strings.TrimSpace(value.Str) != ""
+	}
+	root := gjson.ParseBytes(req.PassthroughRequest.Body)
+	switch {
+	case root.IsObject():
+		return names(root)
+	case root.IsArray():
+		tasks := root.Array()
+		if len(tasks) == 0 {
+			return false
+		}
+		for _, task := range tasks {
+			if !names(task) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }

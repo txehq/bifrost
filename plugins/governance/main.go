@@ -29,6 +29,9 @@ const PluginName = "governance"
 
 const (
 	governanceRejectedContextKey schemas.BifrostContextKey = "bf-governance-rejected"
+	// passthroughBodyModelsContextKey holds the models a passthrough body names when the request
+	// names none of its own ([]string), so the post-hook can judge its answer by them.
+	passthroughBodyModelsContextKey schemas.BifrostContextKey = "bf-governance-passthrough-body-models"
 
 	VirtualKeyPrefix = "sk-bf-"
 )
@@ -1226,6 +1229,12 @@ func (p *GovernancePlugin) preLLMHook(ctx *schemas.BifrostContext, req *schemas.
 	if req.RequestType == schemas.PassthroughRequest || req.RequestType == schemas.PassthroughStreamRequest {
 		bodyModels := passthroughBodyModels(req)
 		evaluationRequest.ModelUnseen = model == "" && len(bodyModels) == 0
+		evaluationRequest.BodyModelsComplete = passthroughBodyNamesEveryModel(req)
+		if model == "" && len(bodyModels) > 0 {
+			// The answer is charged under no model of its own; the body's models are what an
+			// unpriced answer refuses (TXE-7957, unpricedbudget.go).
+			ctx.SetValue(passthroughBodyModelsContextKey, bodyModels)
+		}
 		resourceNamed := p.namesModelsAsResources(provider)
 		for _, bodyModel := range bodyModels {
 			if resourceNamed {
@@ -1581,6 +1590,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		routingMetadata, _ := schemas.InitialAttemptRoutingMetadataFromContext(ctx)
 		// A live session's continuation bills its usage but was already counted as a request at admission.
 		sessionContinuation := isLiveSessionContinuation(ctx)
+		bodyModels, _ := ctx.Value(passthroughBodyModelsContextKey).([]string)
 
 		p.wg.Add(1)
 		go func() {
@@ -1593,7 +1603,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 				}
 			}()
 			// Use the requested model for usage tracking
-			p.postHookWorker(result, err, provider, requestedModel, requestType, requestID, billingNonce, isFinalChunk, attemptNumber, fallbackIndex, sessionContinuation, pricingScopes, accountedBudgets, accountedRateLimits, routingMetadata)
+			p.postHookWorker(result, err, provider, requestedModel, requestType, requestID, billingNonce, isFinalChunk, attemptNumber, fallbackIndex, sessionContinuation, pricingScopes, accountedBudgets, accountedRateLimits, routingMetadata, bodyModels)
 		}()
 	}
 
@@ -2030,7 +2040,7 @@ func responseTokensUsed(result *schemas.BifrostResponse) int {
 //   - isFinalChunk: Whether the request is the final chunk
 //   - skipRequestCount: Whether this is a session continuation that must not count as a request
 //   - pricingScopes: Prebuilt pricing lookup scopes using governance VK ID (nil if not applicable)
-func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, provider schemas.ModelProvider, model string, requestType schemas.RequestType, requestID string, billingNonce string, isFinalChunk bool, attemptNumber int, fallbackIndex int, skipRequestCount bool, pricingScopes *modelcatalog.PricingLookupScopes, budgets, rateLimits []schemas.Limit, routingMetadata *schemas.BifrostRoutingMetadata) {
+func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, provider schemas.ModelProvider, model string, requestType schemas.RequestType, requestID string, billingNonce string, isFinalChunk bool, attemptNumber int, fallbackIndex int, skipRequestCount bool, pricingScopes *modelcatalog.PricingLookupScopes, budgets, rateLimits []schemas.Limit, routingMetadata *schemas.BifrostRoutingMetadata, bodyModels []string) {
 	// Determine if request was successful
 	success := (result != nil)
 	billedReason := "success"
@@ -2092,8 +2102,15 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifro
 
 		// An answer charged to a dollar budget that priced at $0 spent nothing against it: logged,
 		// and the model refused under a budget from now on (TXE-7957, unpricedbudget.go).
+		// A passthrough naming no model of its own is judged by the models its body names.
 		if len(budgets) > 0 && budgetPricingOf(requestType) == budgetPricingAnswer && deliveredAnswer(result) {
-			p.resolver.noteUnpricedAnswer(provider, model, requestType, cost, pricingScopes, requestID, limitIDs(budgets))
+			models := []string{model}
+			if model == "" && len(bodyModels) > 0 {
+				models = bodyModels
+			}
+			for _, priced := range models {
+				p.resolver.noteUnpricedAnswer(provider, priced, requestType, cost, pricingScopes, requestID, limitIDs(budgets))
+			}
 		}
 
 		// Create usage update for tracker (business logic)

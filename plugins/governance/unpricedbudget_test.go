@@ -246,6 +246,7 @@ func TestUnpricedModelUnderADollarBudgetIsRefusedBeforeTheCall(t *testing.T) {
 	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", passthrough(`[{"model":"gpt-4o"},{"model":"free-chat"}]`)), "a passthrough whose body models are all priced is served")
 	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", passthrough(`[{"model":"gpt-4o"},{"model":"house-llm"}]`)), "a passthrough with a body model that has no row")
 	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", passthrough(`{"prompt":"no model anywhere"}`)), "a passthrough naming no model anywhere")
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", passthrough(`[{"model":"gpt-4o"},{"prompt":"runs the provider's default model"}]`)), "a task array with a task naming no model")
 
 	// Creating Gemini cached content is charged by the vendor but priced by no Bifrost answer.
 	cachedContent := &schemas.BifrostRequest{RequestType: schemas.CachedContentCreateRequest, CachedContentCreateRequest: &schemas.BifrostCachedContentCreateRequest{
@@ -414,4 +415,27 @@ func BenchmarkUnpricedBudgetGate(b *testing.B) {
 			}
 		})
 	}
+}
+
+// A passthrough answer charged under no model of its own is judged by the models its body names:
+// a $0 answer refuses them under the budget it was charged to.
+func TestUnpricedPassthroughAnswerRefusesItsBodyModels(t *testing.T) {
+	plugin, _ := unpricedBudgetPlugin(t)
+	req := &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+		Provider: schemas.OpenAI, Method: "POST", Path: "/v1/images", Body: []byte(`[{"model":"token-image"}]`),
+	}}
+	ctx := resolverCtx(plugin.store, "sk-bf-budget")
+	_, shortCircuit, err := plugin.PreLLMHook(ctx, req)
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit, "a passthrough whose body model is priced is admitted")
+	_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{PassthroughResponse: &schemas.BifrostPassthroughResponse{
+		PassthroughUsage: &schemas.BifrostPassthroughUsage{},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.PassthroughRequest, Provider: schemas.OpenAI,
+			RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenAI},
+		},
+	}}, nil)
+	require.NoError(t, err)
+	plugin.wg.Wait()
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", req), "the same passthrough after its answer priced at $0")
 }

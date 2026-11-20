@@ -48,6 +48,10 @@ type EvaluationRequest struct {
 	// ModelUnseen marks a passthrough request that names no model anywhere governance can read:
 	// not on the request and not in its body.
 	ModelUnseen bool `json:"model_unseen,omitempty"`
+	// BodyModelsComplete marks a passthrough request whose body names a model for every unit of
+	// work it carries (the object, or every task of an array), each of which was evaluated on its
+	// own before the request's pass (TXE-7957).
+	BodyModelsComplete bool `json:"body_models_complete,omitempty"`
 }
 
 // EvaluationResult is a governance verdict: whether the request may proceed, and why not when it
