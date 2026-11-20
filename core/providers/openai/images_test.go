@@ -1119,3 +1119,41 @@ func TestImageStreamRefusesMoreThanOneImage(t *testing.T) {
 		})
 	}
 }
+
+// BenchmarkImageStreamCountCheck is the cost TXE-7116 adds to every image generation and edit
+// stream on the shared handlers, before any upstream call: the n lookup on the parsed params and,
+// for a raw body sent as is, the read of that body's n. Before TXE-7116 the handlers did no such
+// work (0 ns, 0 allocs).
+func BenchmarkImageStreamCountCheck(b *testing.B) {
+	plain := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	raw := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	raw.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+	rawBody := []byte(`{"model":"gpt-image-1.5","prompt":"a lighthouse at dusk","size":"1024x1024","quality":"low","stream":true,"partial_images":1}`)
+	for _, tc := range []struct {
+		name string
+		ctx  *schemas.BifrostContext
+		req  *schemas.BifrostImageGenerationRequest
+	}{
+		{"no params", plain, &schemas.BifrostImageGenerationRequest{Provider: schemas.OpenAI}},
+		{"n=1", plain, &schemas.BifrostImageGenerationRequest{Provider: schemas.OpenAI, Params: &schemas.ImageGenerationParameters{N: schemas.Ptr(1), Size: schemas.Ptr("1024x1024")}}},
+		{"raw body without n", raw, &schemas.BifrostImageGenerationRequest{Provider: schemas.OpenAI, RawRequestBody: rawBody}},
+	} {
+		b.Run("generation "+tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if err := checkOpenAIImageStreamCount(imageGenerationN(tc.req), imageGenerationRawBody(tc.ctx, tc.req)); err != nil {
+					b.Fatal(err.Error)
+				}
+			}
+		})
+	}
+	editParams := &schemas.ImageEditParameters{N: schemas.Ptr(1)}
+	b.Run("edit n=1", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if err := checkOpenAIImageStreamCount(editParams.N, nil); err != nil {
+				b.Fatal(err.Error)
+			}
+		}
+	})
+}
