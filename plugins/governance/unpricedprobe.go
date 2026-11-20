@@ -255,5 +255,10 @@ func takeUnpricedProbe(ctx *schemas.BifrostContext, err *schemas.BifrostError, i
 		return nil
 	}
 	ctx.ClearValue(unpricedProbeContextKey)
+	// The taker owns the hold from here: the request's context ending (an HTTP handler returning
+	// before the usage worker settles) no longer frees it, so it lasts until the answer is recorded.
+	if probe.stop != nil {
+		probe.stop()
+	}
 	return probe
 }

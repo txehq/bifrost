@@ -270,6 +270,30 @@ func TestProbeIsReleasedWhenTheRequestContextEnds(t *testing.T) {
 	}, testtime.Scale(time.Second), testtime.Scale(10*time.Millisecond))
 }
 
+// Once the post-hook has taken the hold for settlement, the request's context ending (its HTTP
+// handler returning first) does not free it: it lasts until the usage worker records the answer.
+func TestTakenProbeOutlivesTheRequestContext(t *testing.T) {
+	plugin, _ := unpricedBudgetPlugin(t)
+	parent, cancel := context.WithCancel(context.Background())
+	ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
+	g := grant.New()
+	g.SetIdentity(grant.NewIdentity(grant.NewCredential(grant.CredentialVirtualKey, "v"), nil, &schemas.EntityRef{ID: "vk-taken"}, nil, nil, nil, nil))
+	ctx.SetGrant(g)
+	budgets := []string{"budget-unpriced"}
+	require.Nil(t, plugin.resolver.probeUnconfirmed(ctx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, nil, budgets))
+	taken := takeUnpricedProbe(ctx, nil, false, true)
+	require.NotNil(t, taken)
+	cancel()
+	time.Sleep(testtime.Scale(50 * time.Millisecond))
+	scopes := unpricedScopes(budgets, "vk:vk-taken")
+	_, rows := plugin.resolver.priceIdentities(schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, nil)
+	_, busy := plugin.resolver.probes.acquire(scopes, rows)
+	assert.True(t, busy, "still held after the request's context ended")
+	taken.release()
+	_, busy = plugin.resolver.probes.acquire(scopes, rows)
+	assert.False(t, busy, "released by settlement")
+}
+
 // Confirming the row one key priced an answer on leaves the request's other candidate rows (another
 // key's override) held one request at a time.
 func TestConfirmingOneRowLeavesTheOthersProbed(t *testing.T) {
