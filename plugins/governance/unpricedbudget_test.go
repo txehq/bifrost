@@ -721,6 +721,19 @@ func TestPassthroughReadIsNotPriced(t *testing.T) {
 	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", chat), "a POST's $0 answer refuses the model it names")
 }
 
+// A 200 that reports only task errors (Runware) delivered nothing; one with data did.
+func TestPassthroughErrorEnvelopeIsNotAnAnswer(t *testing.T) {
+	assert.True(t, passthroughErrorEnvelope([]byte(`{"errors":[{"code":"invalidModel","taskUUID":"a"}]}`)))
+	assert.True(t, passthroughErrorEnvelope([]byte(`{"data":[],"errors":[{"code":"x"}]}`)))
+	assert.False(t, passthroughErrorEnvelope([]byte(`{"data":[{"taskUUID":"b","imageURL":"https://example.invalid/1.png"}],"errors":[{"code":"x","taskUUID":"a"}]}`)), "a partial success delivered data")
+	assert.False(t, passthroughErrorEnvelope([]byte(`{"errors":[]}`)))
+	assert.False(t, passthroughErrorEnvelope([]byte(`{"data":[{"taskUUID":"b"}]}`)))
+	assert.False(t, passthroughErrorEnvelope([]byte(`not json`)))
+	failed := &schemas.BifrostResponse{PassthroughResponse: &schemas.BifrostPassthroughResponse{StatusCode: 200, Body: []byte(`{"errors":[{"code":"invalidModel"}]}`)}}
+	assert.False(t, deliveredAnswer(failed))
+	assert.False(t, passthroughGenerated(failed))
+}
+
 func TestQueuedPassthroughAcknowledgmentDoesNotRefuseTheModel(t *testing.T) {
 	assert.True(t, passthroughQueuedAcknowledgment([]byte(`{"data":[{"taskType":"imageInference","taskUUID":"a"}]}`)))
 	assert.False(t, passthroughQueuedAcknowledgment([]byte(`{"data":[{"taskType":"imageInference","taskUUID":"a","imageURL":"https://example.invalid/1.png"}]}`)))

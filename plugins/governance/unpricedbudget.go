@@ -482,7 +482,7 @@ func deliveredAnswer(result *schemas.BifrostResponse) bool {
 		if passthrough.StatusCode != 0 && (passthrough.StatusCode < 200 || passthrough.StatusCode >= 300) {
 			return false
 		}
-		if passthroughQueuedAcknowledgment(passthrough.Body) {
+		if passthroughQueuedAcknowledgment(passthrough.Body) || passthroughErrorEnvelope(passthrough.Body) {
 			return false
 		}
 	}
@@ -702,7 +702,23 @@ func passthroughGenerated(result *schemas.BifrostResponse) bool {
 		return false
 	}
 	status := result.PassthroughResponse.StatusCode
-	return status >= 200 && status < 300 && !passthroughQueuedAcknowledgment(result.PassthroughResponse.Body)
+	return status >= 200 && status < 300 && !passthroughQueuedAcknowledgment(result.PassthroughResponse.Body) &&
+		!passthroughErrorEnvelope(result.PassthroughResponse.Body)
+}
+
+// passthroughErrorEnvelope reports whether a 2xx passthrough body reports only failure: a
+// non-empty top-level "errors" array and no "data" item (Runware answers a failed task with 200).
+// A body with any data delivered something and is judged as an answer.
+func passthroughErrorEnvelope(body []byte) bool {
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return false
+	}
+	errs := gjson.GetBytes(body, "errors")
+	if !errs.IsArray() || len(errs.Array()) == 0 {
+		return false
+	}
+	data := gjson.GetBytes(body, "data")
+	return !data.Exists() || (data.IsArray() && len(data.Array()) == 0)
 }
 
 // passthroughBodyNamesEveryModel reports whether a passthrough body names a model for every unit
