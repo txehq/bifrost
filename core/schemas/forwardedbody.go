@@ -323,7 +323,7 @@ func MislabeledJSONBody(body []byte, contentType string) (mediaType, problem str
 	for _, decode := range decodings {
 		// Most content opens like JSON under no encoding: decide from a short prefix before
 		// decoding a large body. A prefix holding only space and comments reads on.
-		if opens, decided := opensLikeJSON(decode(body[:min(len(body), 1024)])); decided && !opens {
+		if opens, decided := opensLikeJSON(decode(body[:min(len(body), 256)])); decided && !opens {
 			continue
 		}
 		doc := decode(body)

@@ -1,6 +1,7 @@
 package bifrost
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"go/ast"
@@ -1616,5 +1617,48 @@ func TestRefuseAmbiguousForwardedBodyCostsNothingWithoutABody(t *testing.T) {
 	req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o"}}
 	if allocs := testing.AllocsPerRun(100, func() { refuseAmbiguousForwardedBody(req) }); allocs != 0 {
 		t.Errorf("the guard allocates %v times for a request with no forwarded body", allocs)
+	}
+}
+
+// BenchmarkRefuseAmbiguousForwardedBody measures the whole forwarded-body guard core runs before
+// any plugin (TXE-7994, TXE-8012) on the bodies it meets: none, an ordinary JSON chat, opaque
+// media, a text upload and an undeclared JSON body.
+func BenchmarkRefuseAmbiguousForwardedBody(b *testing.B) {
+	var chat strings.Builder
+	chat.WriteString(`{"model":"gpt-4o","stream":true,"messages":[`)
+	for i := 0; i < 2000; i++ {
+		if i > 0 {
+			chat.WriteString(",")
+		}
+		chat.WriteString(`{"role":"user","content":[{"type":"text","text":"` + strings.Repeat("lorem ipsum ", 40) + `"}]}`)
+	}
+	chat.WriteString(`],"temperature":0.2}`)
+	wav := append([]byte("RIFF\x24\x00\x10\x00WAVEfmt \x10\x00\x00\x00"), bytes.Repeat([]byte{0x12, 0xf3}, 1<<19)...)
+	passthrough := func(path, contentType string, body []byte) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+			Provider: schemas.OpenAI, Method: "POST", Path: path, Body: body,
+			SafeHeaders: map[string]string{"content-type": contentType},
+		}}
+	}
+	for _, tc := range []struct {
+		name string
+		req  *schemas.BifrostRequest
+	}{
+		{"no_body", &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o"}}},
+		{"json_chat_1MB", passthrough("/v1/chat/completions", "application/json", []byte(chat.String()))},
+		{"undeclared_json_1MB", passthrough("/v1/chat/completions", "", []byte(chat.String()))},
+		{"audio_wav_1MB", passthrough("/v1/audio/transcriptions", "audio/wav", wav)},
+		{"octet_binary_1MB", passthrough("/v1/audio/transcriptions", "application/octet-stream", wav[len("RIFF"):])},
+		{"text_upload_1MB", passthrough("/v1/files", "text/plain", []byte("{"+strings.Repeat("a text file line\n", 60000)))},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.SetBytes(int64(len(tc.req.ForwardedBody())))
+			b.ReportAllocs()
+			for b.Loop() {
+				if refuseAmbiguousForwardedBody(tc.req) != nil {
+					b.Fatal("refused")
+				}
+			}
+		})
 	}
 }

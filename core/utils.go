@@ -1235,7 +1235,10 @@ func refuseAmbiguousForwardedBody(req *schemas.BifrostRequest) *schemas.LLMPlugi
 	var message string
 	if member, ambiguous := schemas.AmbiguousBodyMember(body, contentType); ambiguous {
 		message = fmt.Sprintf("request body gives %s more than once; Bifrost and the provider could read different values, so give each member once", member)
-	} else if mediaType, problem, mislabeled := schemas.MislabeledJSONBody(body, contentType); mislabeled && !forwardsAFile(req) {
+	} else if forwardsAFile(req) {
+		// An upload route stores the body as a file: content there is never read as JSON.
+		return nil
+	} else if mediaType, problem, mislabeled := schemas.MislabeledJSONBody(body, contentType); mislabeled {
 		// Bifrost reads a body by its declared type (TXE-8012), so a JSON body naming a model under
 		// another type would run a model no gate saw.
 		declared := "declared " + mediaType
