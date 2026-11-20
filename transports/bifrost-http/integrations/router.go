@@ -630,10 +630,28 @@ type modelCatalogProvider interface {
 	GetModelCatalog() *modelcatalog.ModelCatalog
 }
 
-// SetLargePayloadHook sets the hook for large payload detection and streaming.
-// This is used by enterprise to inject large payload optimization without
-// embedding the logic in the OSS router.
+// ErrLargePayloadHookUnguarded is the panic SetLargePayloadHook raises for a non-nil hook.
+const ErrLargePayloadHookUnguarded = "large-payload hook refused: a large-payload request streams its body to the provider " +
+	"unread, past core's forwarded-body guard (schemas.AmbiguousBodyMember, TXE-7994), so a body that repeats " +
+	"a member would reach the vendor while the gates read routing metadata; this fork does not run that guard " +
+	"over a streamed body (TXE-8012)"
+
+// SetLargePayloadHook would install the hook for large payload detection and streaming
+// (upstream's enterprise build injects one). In this fork it refuses a non-nil hook, loudly and
+// at startup, where hooks are installed: a streamed body is never held in memory, so core's
+// forwarded-body guard cannot read it, and a hook installed without that coverage would let a
+// body that repeats a member reach the vendor unchecked (TXE-8012). Supporting large-payload
+// mode means running the guard over the stream first; then this refusal goes.
 func (g *GenericRouter) SetLargePayloadHook(hook LargePayloadHook) {
+	if hook != nil {
+		panic(ErrLargePayloadHookUnguarded)
+	}
+	g.largePayloadHook = nil
+}
+
+// setLargePayloadHookForTest installs a hook without the refusal, for tests of the router's
+// large-payload branch, which stays as upstream wrote it.
+func (g *GenericRouter) setLargePayloadHookForTest(hook LargePayloadHook) {
 	g.largePayloadHook = hook
 }
 

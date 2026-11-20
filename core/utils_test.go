@@ -1159,3 +1159,85 @@ func TestEveryPluginGateRunsBehindTheForwardedBodyGuard(t *testing.T) {
 	assert.Less(t, guard, skip, "the guard must run before the skip-pipeline early return")
 	assert.Less(t, guard, firstHook, "the guard must run before the first plugin")
 }
+
+// TestNoProductionCodeStreamsABodyPastTheForwardedBodyGuard: large-payload mode streams a request
+// body to the provider unread, so core's forwarded-body guard never sees it (TXE-8012). The fork
+// keeps that mode unreachable, and this check fails when production code gains a way in: a
+// SetLargePayloadHook that does not panic on a hook, an assignment to a largePayloadHook field
+// outside the test-only setter, or code that stages a streamed body on the context itself.
+func TestNoProductionCodeStreamsABodyPastTheForwardedBodyGuard(t *testing.T) {
+	streamKeys := map[string]bool{
+		"BifrostContextKeyLargePayloadMode":   true,
+		"BifrostContextKeyLargePayloadReader": true,
+	}
+	var setters, unguardedSetters, assignments, staged []string
+	for _, root := range []string{".", "../transports", "../framework", "../plugins"} {
+		require.NoError(t, filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				if name := d.Name(); name == "node_modules" || name == "vendor" || name == "testdata" || (strings.HasPrefix(name, ".") && path != root) {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			file, parseErr := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+			require.NoError(t, parseErr, path)
+			for _, decl := range file.Decls {
+				fn, ok := decl.(*ast.FuncDecl)
+				if !ok || fn.Body == nil {
+					continue
+				}
+				site := filepath.ToSlash(path) + ":" + fn.Name.Name
+				if fn.Name.Name == "SetLargePayloadHook" {
+					setters = append(setters, site)
+					panics := false
+					ast.Inspect(fn.Body, func(n ast.Node) bool {
+						if call, ok := n.(*ast.CallExpr); ok {
+							if ident, ok := call.Fun.(*ast.Ident); ok && ident.Name == "panic" {
+								panics = true
+							}
+						}
+						return true
+					})
+					if !panics {
+						unguardedSetters = append(unguardedSetters, site)
+					}
+				}
+				ast.Inspect(fn.Body, func(n ast.Node) bool {
+					switch node := n.(type) {
+					case *ast.AssignStmt:
+						for i, lhs := range node.Lhs {
+							sel, ok := lhs.(*ast.SelectorExpr)
+							if !ok || sel.Sel.Name != "largePayloadHook" || fn.Name.Name == "setLargePayloadHookForTest" {
+								continue
+							}
+							if i < len(node.Rhs) {
+								if ident, ok := node.Rhs[i].(*ast.Ident); ok && ident.Name == "nil" {
+									continue
+								}
+							}
+							assignments = append(assignments, site)
+						}
+					case *ast.CallExpr:
+						if sel, ok := node.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "SetValue" && len(node.Args) > 0 {
+							if key, ok := node.Args[0].(*ast.SelectorExpr); ok && streamKeys[key.Sel.Name] {
+								staged = append(staged, site)
+							}
+						}
+					}
+					return true
+				})
+			}
+			return nil
+		}))
+	}
+	assert.NotEmpty(t, setters, "no SetLargePayloadHook found; the check is not looking where the hook is installed")
+	assert.Empty(t, unguardedSetters, "a SetLargePayloadHook installs a hook without refusing it; large-payload bodies stream past refuseAmbiguousForwardedBody")
+	assert.Empty(t, assignments, "a largePayloadHook field is set outside setLargePayloadHookForTest")
+	assert.Empty(t, staged, "production code stages a streamed request body on the context, past refuseAmbiguousForwardedBody")
+}

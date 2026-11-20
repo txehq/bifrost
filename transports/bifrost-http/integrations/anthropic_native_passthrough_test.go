@@ -411,7 +411,7 @@ func TestAnthropicMessagesRouteXAIForwardsBodyByteExact(t *testing.T) {
 
 			router := NewGenericRouter(client, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
 			if tc.largePayload {
-				router.SetLargePayloadHook(func(_ *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, _ RouteConfigType) (bool, error) {
+				router.setLargePayloadHookForTest(func(_ *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, _ RouteConfigType) (bool, error) {
 					bifrostCtx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
 					bifrostCtx.SetValue(schemas.BifrostContextKeyLargePayloadReader, io.Reader(bytes.NewReader(requestBody)))
 					bifrostCtx.SetValue(schemas.BifrostContextKeyLargePayloadContentLength, len(requestBody))
@@ -945,7 +945,7 @@ func TestAnthropicNativeMessagesLargePayloadIsRefusedWhenAGuardrailMustRewriteIt
 				defer client.Shutdown()
 
 				router := NewGenericRouter(client, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
-				router.SetLargePayloadHook(func(_ *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, _ RouteConfigType) (bool, error) {
+				router.setLargePayloadHookForTest(func(_ *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, _ RouteConfigType) (bool, error) {
 					bifrostCtx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
 					bifrostCtx.SetValue(schemas.BifrostContextKeyLargePayloadReader, io.Reader(bytes.NewReader(requestBody)))
 					bifrostCtx.SetValue(schemas.BifrostContextKeyLargePayloadContentLength, len(requestBody))
