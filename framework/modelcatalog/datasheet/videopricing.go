@@ -336,24 +336,38 @@ func (d VideoPricingDimensions) BandResolution() string {
 // as rendered.
 func (d VideoPricingDimensions) requestedTier(renderer schemas.ModelProvider) (string, bool) {
 	reader := schemas.VideoTierReaderFor(renderer)
-	typed := ""
-	if videoResolutionBand(d.Resolution) > 0 {
-		typed = d.Resolution
-	}
-	extra := ""
-	if resolution, ok := d.Extra["resolution"].(string); ok && videoResolutionBand(resolution) > 0 {
-		extra = resolution
-	}
+	typed, typedKnown := tierFor(reader, d.Resolution)
+	extraTier, _ := d.Extra["resolution"].(string)
+	extra, extraKnown := tierFor(reader, extraTier)
 	switch {
-	case typed != "" && reader.Typed:
+	case typed != "" && reader.Typed && typedKnown:
 		return typed, true
-	case extra != "" && reader.Extra:
+	case extra != "" && reader.Extra && extraKnown:
 		return extra, true
 	case typed != "":
 		return typed, false
 	default:
 		return extra, false
 	}
+}
+
+// tierFor is the tier label a requested tier names a rate band by, or "" when it names none,
+// and whether it is one the provider documents (VideoTierReader.Tiers; any band tier when the
+// provider declares none). A tier the provider does not document is returned with false, so it
+// is priced by the rule for a tier the provider may ignore (TXE-7101).
+func tierFor(reader schemas.VideoTierReader, requested string) (string, bool) {
+	if requested == "" {
+		return "", false
+	}
+	if reader.Tiers != nil {
+		if tier, ok := reader.Tiers[strings.ToLower(strings.TrimSpace(requested))]; ok {
+			return tier, true
+		}
+	}
+	if videoResolutionBand(requested) > 0 {
+		return requested, reader.Tiers == nil
+	}
+	return "", false
 }
 
 func (d VideoPricingDimensions) renderer(provider schemas.ModelProvider) schemas.ModelProvider {

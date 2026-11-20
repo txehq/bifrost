@@ -17,6 +17,12 @@ package schemas
 // standard provider's converter and fails when what lands in the body disagrees with this table.
 type VideoTierReader struct {
 	Typed, Extra bool
+	// Tiers, when set, are the tiers the provider documents, keyed by the lower-case spelling a
+	// caller may send, each to the tier label its rate band is read from. A tier outside it is
+	// not trusted to be what the provider rendered, so it never lowers the price. Set it for a
+	// provider whose converter forwards the tier string unchecked, or accepts its own spellings.
+	// Nil means any tier the rate bands know.
+	Tiers map[string]string
 	// Source names the code that reads the tier.
 	Source string
 }
@@ -31,8 +37,15 @@ var videoTierReaders = map[ModelProvider]VideoTierReader{
 	// VolcEngine and ModelArk run BytePlus's Ark video converter (TXE-7493).
 	Volcengine: {Typed: true, Extra: true, Source: "volcengine runs byteplus.toBytePlusVideoGenerationRequest"},
 	ModelArk:   {Typed: true, Extra: true, Source: "modelark runs byteplus.toBytePlusVideoGenerationRequest"},
-	XAI:        {Typed: true, Extra: true, Source: "xai.ToXAIVideoGenerationRequest: resolution from the typed field; extra_params.resolution is merged into the body when the typed field is empty"},
-	BFL:        {Typed: true, Source: "bfl.toBFLVideoBody: resolution from the typed field, as BFL's hd/fhd/qhd/uhd"},
+	// xAI's converter sends the tier string as given; only the tiers xAI documents
+	// (xai.xaiVideoResolutions) are trusted.
+	XAI: {Typed: true, Extra: true, Tiers: map[string]string{"480p": "480p", "720p": "720p", "1080p": "1080p"},
+		Source: "xai.ToXAIVideoGenerationRequest: resolution from the typed field; extra_params.resolution is merged into the body when the typed field is empty"},
+	// BFL's converter refuses any other tier (bfl.videoResolutions); its own names are aliases.
+	BFL: {Typed: true, Tiers: map[string]string{
+		"720p": "720p", "hd": "720p", "1080p": "1080p", "fhd": "1080p",
+		"1440p": "1440p", "qhd": "1440p", "2160p": "2160p", "4k": "2160p", "uhd": "2160p",
+	}, Source: "bfl.toBFLVideoBody: resolution from the typed field, as BFL's hd/fhd/qhd/uhd"},
 }
 
 // VideoTierReaderFor returns where provider's video converter reads the resolution tier from.
@@ -46,6 +59,13 @@ func VideoTierReaderFor(provider ModelProvider) VideoTierReader {
 func VideoTierReaders() map[ModelProvider]VideoTierReader {
 	out := make(map[ModelProvider]VideoTierReader, len(videoTierReaders))
 	for provider, reader := range videoTierReaders {
+		if reader.Tiers != nil {
+			tiers := make(map[string]string, len(reader.Tiers))
+			for spelling, tier := range reader.Tiers {
+				tiers[spelling] = tier
+			}
+			reader.Tiers = tiers
+		}
 		out[provider] = reader
 	}
 	return out

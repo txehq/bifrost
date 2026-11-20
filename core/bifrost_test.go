@@ -13630,6 +13630,9 @@ func TestVideoTierReadersMatchConverters(t *testing.T) {
 				t.Fatalf("construct: %v", err)
 			}
 			var reader schemas.VideoTierReader
+			// A documented tier (VideoTierReader.Tiers) is trusted to be what the provider renders,
+			// so each spelling must reach the upstream: one the converter refuses or drops is not.
+			documented := map[string]bool{}
 			for _, model := range append([]string{guardModel(providerKey)}, nestedPriceProbeModels[providerKey]...) {
 				key := guardKey(providerKey)
 				bare := signature(provider, key, model, schemas.VideoGenerationParameters{})
@@ -13640,6 +13643,11 @@ func TestVideoTierReadersMatchConverters(t *testing.T) {
 				if again := signature(provider, key, model, schemas.VideoGenerationParameters{}); again != bare {
 					t.Fatalf("model %s: two identical creates sent different requests, so a tier cannot be told apart; blank what varies in signature.\nfirst:  %s\nsecond: %s", model, bare, again)
 				}
+				for spelling := range schemas.VideoTierReaderFor(providerKey).Tiers {
+					if sent := signature(provider, key, model, schemas.VideoGenerationParameters{Resolution: schemas.TolerantString(spelling)}); sent != "" && sent != bare {
+						documented[spelling] = true
+					}
+				}
 				for _, tier := range videoTierProbeTiers {
 					if typed := signature(provider, key, model, schemas.VideoGenerationParameters{Resolution: schemas.TolerantString(tier)}); typed != "" && typed != bare {
 						reader.Typed = true
@@ -13647,6 +13655,11 @@ func TestVideoTierReadersMatchConverters(t *testing.T) {
 					if extra := signature(provider, key, model, schemas.VideoGenerationParameters{ExtraParams: map[string]any{"resolution": tier}}); extra != "" && extra != bare {
 						reader.Extra = true
 					}
+				}
+			}
+			for spelling := range schemas.VideoTierReaderFor(providerKey).Tiers {
+				if !documented[spelling] {
+					t.Errorf("schemas.VideoTierReaderFor(%s).Tiers lists %q, but a create naming it sent nothing different to the upstream; the converter refuses or drops it, so remove it", providerKey, spelling)
 				}
 			}
 			probed++
