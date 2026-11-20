@@ -10281,6 +10281,11 @@ func (bifrost *Bifrost) handleProviderStreamRequest(provider schemas.Provider, c
 
 // RunLLMPreHooks executes PreHooks in order, tracks how many ran, and returns the final request, any short-circuit decision, and the count.
 func (p *PluginPipeline) RunLLMPreHooks(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, int) {
+	// A forwarded body that repeats a member is read one way by the gates below and another by
+	// the vendor, so it is refused before any plugin reads it, with or without a plugin pipeline.
+	if shortCircuit := refuseAmbiguousForwardedBody(req); shortCircuit != nil {
+		return req, shortCircuit, 0
+	}
 	// If the skip plugin pipeline flag is set, skip the plugin pipeline
 	if skipPluginPipeline, ok := ctx.Value(schemas.BifrostContextKeySkipPluginPipeline).(bool); ok && skipPluginPipeline {
 		return req, nil, 0
