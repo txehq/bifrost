@@ -2121,15 +2121,16 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifro
 			if model == "" && len(bodyModels) > 0 {
 				models = bodyModels
 			}
-			// The answer's own cost, without the routing and guardrail calls priced beside it: a
-			// classifier's cost must not hide a $0 answer.
+			// The answer's own cost, without the calls Bifrost prices beside it (routing classifiers,
+			// guardrail judges, MCP tools, the semantic cache's embedding lookup): none of them may
+			// hide a $0 answer.
 			answerCost := cost
 			if answerCost > 0 && result != nil && p.modelCatalog != nil {
 				answerCost = 0
 				if breakdown := p.modelCatalog.CalculateCostBreakdown(result, pricingScopes); breakdown != nil {
 					answerCost = breakdown.TotalCost
 					if sidecars := breakdown.AdditionalCostDetails; sidecars != nil {
-						answerCost -= sidecars.GuardrailCost + sidecars.RoutingCost
+						answerCost -= sidecars.GuardrailCost + sidecars.RoutingCost + sidecars.MCPCost + sidecars.SemanticCacheCost
 					}
 				}
 			}

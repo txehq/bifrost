@@ -131,7 +131,8 @@ func unpricedBudgetPlugin(t testing.TB) (*GovernancePlugin, *LocalGovernanceStor
 		"free-chat":{"provider":"openai","mode":"chat","input_cost_per_token":0,"output_cost_per_token":0},
 		"token-image":{"provider":"openai","mode":"image_generation","output_cost_per_image_token":0.00004},
 		"clip-1":{"provider":"openai","mode":"video_generation","output_cost_per_second":0.1},
-		"free-on-key":{"provider":"openai","mode":"chat","input_cost_per_token":0.000001,"output_cost_per_token":0.000002}
+		"free-on-key":{"provider":"openai","mode":"chat","input_cost_per_token":0.000001,"output_cost_per_token":0.000002},
+		"embed-1":{"provider":"openai","mode":"embedding","input_cost_per_token":0.0000001}
 	}`), 0o600))
 	ds := datasheet.New(nil, NewMockLogger(), datasheet.Config{URL: "file://" + sheet})
 	require.NoError(t, ds.LoadFromURLIntoMemory(context.Background()))
@@ -444,6 +445,31 @@ func TestUnpricedPassthroughAnswerRefusesItsBodyModels(t *testing.T) {
 	require.NoError(t, err)
 	plugin.wg.Wait()
 	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", req), "the same passthrough after its answer priced at $0")
+}
+
+// A semantic-cache lookup priced beside a $0 answer (a cache miss) does not hide it either.
+func TestUnpricedAnswerBesideAPricedCacheLookupRefusesTheModelAfter(t *testing.T) {
+	plugin, _ := unpricedBudgetPlugin(t)
+	image := &schemas.BifrostRequest{
+		RequestType:            schemas.ImageGenerationRequest,
+		ImageGenerationRequest: &schemas.BifrostImageGenerationRequest{Provider: schemas.OpenAI, Model: "token-image"},
+	}
+	ctx := resolverCtx(plugin.store, "sk-bf-budget")
+	_, shortCircuit, err := plugin.PreLLMHook(ctx, image)
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit)
+	embedProvider, embedModel, tokens := "openai", "embed-1", 1000
+	_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{ImageGenerationResponse: &schemas.BifrostImageGenerationResponse{
+		Data: []schemas.ImageData{{URL: "https://example.invalid/1.png"}},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.ImageGenerationRequest, Provider: schemas.OpenAI, OriginalModelRequested: "token-image",
+			RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenAI, Model: "token-image"},
+			CacheDebug:  &schemas.BifrostCacheMetadata{CacheHit: false, ProviderUsed: &embedProvider, ModelUsed: &embedModel, InputTokens: &tokens},
+		},
+	}}, nil)
+	require.NoError(t, err)
+	plugin.wg.Wait()
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", image), "the model whose answer priced at $0 beside a priced cache lookup")
 }
 
 // A routing classifier priced beside a $0 answer does not hide it: the answer is judged by its
