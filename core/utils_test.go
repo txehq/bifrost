@@ -3,8 +3,14 @@ package bifrost
 import (
 	"context"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io/fs"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -1053,4 +1059,103 @@ func TestReclassifyingARefusalClearsUpstreamSentFalse(t *testing.T) {
 	if e.ExtraFields.UpstreamSent != nil {
 		t.Errorf("upstream_sent %v after reclassifying as bifrost_internal, want untold", *e.ExtraFields.UpstreamSent)
 	}
+}
+
+// bodyReadingGate is a stand-in for a plugin gate: it records that it ran.
+type bodyReadingGate struct {
+	fakeRoutingPlugin
+	ran bool
+}
+
+func (g *bodyReadingGate) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	g.ran = true
+	return req, nil, nil
+}
+
+// TestRunLLMPreHooksRefusesAmbiguousForwardedBody (TXE-7994): a forwarded body that repeats a
+// member is refused 400 caller_invalid_request before any plugin reads it, also when the plugin
+// pipeline is skipped, and without fallbacks; a body naming each member once reaches the plugins.
+func TestRunLLMPreHooksRefusesAmbiguousForwardedBody(t *testing.T) {
+	passthrough := func(body string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+			Provider: schemas.OpenAI, Method: "POST", Path: "/v1/chat/completions", Body: []byte(body),
+		}}
+	}
+	for _, skip := range []bool{false, true} {
+		gate := &bodyReadingGate{fakeRoutingPlugin: fakeRoutingPlugin{name: "gate"}}
+		pipeline := newRoutingCommitPipeline(gate)
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if skip {
+			ctx.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
+		}
+		_, shortCircuit, ran := pipeline.RunLLMPreHooks(ctx, passthrough(`{"model":"gpt-4o","model":"o1"}`))
+		require.NotNil(t, shortCircuit, "skip=%t: an ambiguous body was admitted", skip)
+		require.NotNil(t, shortCircuit.Error)
+		assert.Equal(t, 400, *shortCircuit.Error.StatusCode)
+		assert.Equal(t, schemas.ErrorTypeCallerInvalidRequest, shortCircuit.Error.ExtraFields.ErrorType)
+		assert.False(t, *shortCircuit.Error.AllowFallbacks)
+		assert.Contains(t, shortCircuit.Error.Error.Message, "gives model more than once")
+		assert.Zero(t, ran)
+		assert.False(t, gate.ran, "skip=%t: a plugin read the ambiguous body", skip)
+
+		_, shortCircuit, _ = pipeline.RunLLMPreHooks(ctx, passthrough(`{"model":"gpt-4o"}`))
+		assert.Nil(t, shortCircuit)
+		assert.Equal(t, !skip, gate.ran)
+	}
+}
+
+// TestEveryPluginGateRunsBehindTheForwardedBodyGuard is the class check for TXE-7994: plugin
+// gates read forwarded bodies with whatever parser suits them, so they are safe only behind
+// refuseAmbiguousForwardedBody. It fails when production code outside RunLLMPreHooks calls a
+// plugin's PreLLMHook (a new entry point that would skip the guard), or when RunLLMPreHooks
+// stops calling the guard before its first plugin.
+func TestEveryPluginGateRunsBehindTheForwardedBodyGuard(t *testing.T) {
+	var sites []string
+	for _, root := range []string{".", "../transports", "../framework", "../plugins"} {
+		require.NoError(t, filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				if name := d.Name(); name == "node_modules" || name == "vendor" || name == "testdata" || (strings.HasPrefix(name, ".") && path != root) {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			file, parseErr := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+			require.NoError(t, parseErr, path)
+			for _, decl := range file.Decls {
+				fn, ok := decl.(*ast.FuncDecl)
+				if !ok || fn.Body == nil {
+					continue
+				}
+				ast.Inspect(fn.Body, func(n ast.Node) bool {
+					if call, ok := n.(*ast.CallExpr); ok {
+						if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "PreLLMHook" {
+							sites = append(sites, filepath.ToSlash(path)+":"+fn.Name.Name)
+						}
+					}
+					return true
+				})
+			}
+			return nil
+		}))
+	}
+	assert.Equal(t, []string{"bifrost.go:RunLLMPreHooks"}, sites,
+		"a plugin's PreLLMHook is called outside RunLLMPreHooks; route the call through RunLLMPreHooks so refuseAmbiguousForwardedBody runs first")
+
+	source, err := os.ReadFile("bifrost.go")
+	require.NoError(t, err)
+	body := string(source)
+	start := strings.Index(body, "func (p *PluginPipeline) RunLLMPreHooks(")
+	require.GreaterOrEqual(t, start, 0)
+	guard := strings.Index(body[start:], "refuseAmbiguousForwardedBody(req)")
+	firstHook := strings.Index(body[start:], ".PreLLMHook(")
+	skip := strings.Index(body[start:], "BifrostContextKeySkipPluginPipeline")
+	require.Greater(t, guard, 0, "RunLLMPreHooks no longer calls refuseAmbiguousForwardedBody")
+	assert.Less(t, guard, skip, "the guard must run before the skip-pipeline early return")
+	assert.Less(t, guard, firstHook, "the guard must run before the first plugin")
 }

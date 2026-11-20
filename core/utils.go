@@ -1191,3 +1191,22 @@ func setAssistantRoleOnce(resp *schemas.BifrostChatResponse, roleSent bool) bool
 	}
 	return true
 }
+
+// refuseAmbiguousForwardedBody refuses a request whose forwarded body (a passthrough body, or a
+// raw request body sent as written) repeats a member: gjson keeps the first of two equal keys,
+// encoding/json, sonic and most vendors the last, so a gate would judge one model, storage URI or
+// price dimension while the vendor ran another (TXE-7994). See schemas.AmbiguousBodyMember.
+func refuseAmbiguousForwardedBody(req *schemas.BifrostRequest) *schemas.LLMPluginShortCircuit {
+	if req == nil {
+		return nil
+	}
+	member, ambiguous := schemas.AmbiguousBodyMember(req.ForwardedBody(), req.ForwardedBodyContentType())
+	if !ambiguous {
+		return nil
+	}
+	bifrostErr := newBifrostErrorFromMsg(schemas.ErrorTypeCallerInvalidRequest,
+		fmt.Sprintf("request body gives %s more than once; Bifrost and the provider could read different values, so give each member once", member))
+	bifrostErr.StatusCode = schemas.Ptr(400)
+	bifrostErr.AllowFallbacks = schemas.Ptr(false)
+	return &schemas.LLMPluginShortCircuit{Error: bifrostErr}
+}
