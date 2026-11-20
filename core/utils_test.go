@@ -1117,7 +1117,7 @@ func TestRunLLMPreHooksForwardsABodyDeclaredAsAnotherType(t *testing.T) {
 	}
 	for _, tc := range []struct{ contentType, body string }{
 		{"text/plain", "{hello, a text file"},
-		{"text/plain; charset=utf-8", `{"model":"a","model":"b",}`},
+		{"text/plain; charset=utf-8", `{"note":"a","note":"b",}`},
 		{"application/octet-stream", "[1, 2"},
 		{"application/octet-stream", "{\"a\":1}\n{\"a\":2}\n"},
 	} {
@@ -1137,17 +1137,33 @@ func TestRunLLMPreHooksForwardsABodyDeclaredAsAnotherType(t *testing.T) {
 	require.NotNil(t, shortCircuit, "a body declared JSON that repeats a member was admitted")
 	assert.Contains(t, shortCircuit.Error.Error.Message, "gives model more than once")
 
-	// JSON naming a model under another type would run a model no gate read: refused, 400.
-	for _, contentType := range []string{"text/plain", "application/octet-stream"} {
+	// JSON naming a model under another type would run a model no gate read: refused, 400. So is
+	// JSON a lenient parser accepts that mentions one.
+	for _, tc := range []struct{ contentType, body string }{
+		{"text/plain", `{"model":"o1","messages":[]}`},
+		{"application/octet-stream", `{"model":"o1","messages":[]}`},
+		{"text/plain", `{"model":"gpt-4o","model":"o1",}`},
+	} {
+		contentType := tc.contentType
 		gate := &bodyReadingGate{fakeRoutingPlugin: fakeRoutingPlugin{name: "gate"}}
 		_, shortCircuit, _ = newRoutingCommitPipeline(gate).RunLLMPreHooks(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
-			typed(contentType, `{"model":"o1","messages":[]}`))
+			typed(contentType, tc.body))
 		require.NotNil(t, shortCircuit, "JSON naming a model declared %s was admitted", contentType)
 		assert.Equal(t, 400, *shortCircuit.Error.StatusCode)
 		assert.Equal(t, schemas.ErrorTypeCallerInvalidRequest, shortCircuit.Error.ExtraFields.ErrorType)
 		assert.Contains(t, shortCircuit.Error.Error.Message, "is JSON naming model but is declared "+contentType)
 		assert.False(t, gate.ran)
 	}
+	// UTF-16 JSON with no declared type is content to every reader, but a vendor detecting the
+	// encoding parses it: refused too.
+	utf16Body := []byte{0xff, 0xfe}
+	for _, r := range `{"model":"o1"}` {
+		utf16Body = append(utf16Body, byte(r), 0)
+	}
+	_, shortCircuit, _ = newRoutingCommitPipeline(&bodyReadingGate{fakeRoutingPlugin: fakeRoutingPlugin{name: "gate"}}).RunLLMPreHooks(
+		schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), typed("", string(utf16Body)))
+	require.NotNil(t, shortCircuit, "UTF-16 JSON naming a model with no Content-Type was admitted")
+	assert.Contains(t, shortCircuit.Error.Error.Message, "is JSON naming model but is sent with no Content-Type")
 }
 
 // TestEveryPluginGateRunsBehindTheForwardedBodyGuard is the class check for TXE-7994: plugin

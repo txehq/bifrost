@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf16"
+	"unicode/utf8"
 	"unsafe"
 
 	"github.com/tidwall/gjson"
@@ -253,27 +255,44 @@ func AmbiguousBodyMember(body []byte, contentType string) (string, bool) {
 	return "", false
 }
 
-// MislabeledJSONBody reports a forwarded body declared as a non-JSON type that is nonetheless a
-// strict JSON document naming a gated key (GatedBodyKeys, compared without case) in its root
-// object or an object of a root array: the media type it declares and the key it names. No
-// reader reads such a body as JSON (ClassifyForwardedBody calls it content), so the gates see no
-// model, while a vendor that parses its declared type as JSON would run the one it names, past a
-// model's own budget or rate limit. Core refuses it and asks for application/json (TXE-8012).
-// A text upload opening with "{", a JSON Lines file, and JSON naming no gated key at the root
-// are not refused: nothing in them selects a model.
+// MislabeledJSONBody reports a forwarded body that ClassifyForwardedBody calls content (declared
+// as a non-JSON type, or undeclared and not opening like JSON) but that a vendor could still parse
+// as JSON naming a gated key (GatedBodyKeys, compared without case): the media type it declares
+// ("" when none) and the key. No reader reads such a body as JSON, so the gates see no model,
+// while a vendor that parses it would run the one it names, past a model's own budget or rate
+// limit. Core refuses it and asks for application/json (TXE-8012).
+//
+// The body is first read as text the way a JSON parser would: a UTF-16 or UTF-32 body (by its
+// byte order mark, its declared charset, or the NUL pattern of its first bytes, as RFC 4627 and
+// Python's json module detect it) is transcoded to UTF-8. Then, when it opens with "{" or "[":
+//   - strict JSON is reported when its root object, or an object of a root array, names a gated
+//     key;
+//   - anything else (JSON a lenient parser accepts: a trailing comma, single quotes, bare keys,
+//     nesting past maxForwardedBodyDepth) is reported when it mentions a gated key anywhere, or
+//     holds a \u or \x escape that could spell one: there is no strict reading to place the key.
+//
+// A text upload opening with "{" that never mentions a gated key, a JSON Lines file (declared as
+// such, it is not content), and strict JSON naming no gated key at its root are not reported.
 func MislabeledJSONBody(body []byte, contentType string) (mediaType, key string, mislabeled bool) {
-	class := ClassifyForwardedBody(contentType, body)
-	if class.Format != ForwardedBodyOpaque || !class.Declared {
+	if ClassifyForwardedBody(contentType, body).Format != ForwardedBodyOpaque {
 		return "", "", false
 	}
-	trimmed := trimForwardedBody(body)
-	if len(trimmed) == 0 || (trimmed[0] != '{' && trimmed[0] != '[') {
+	mediaType, params, _ := mime.ParseMediaType(contentType)
+	// Most content (audio, images, text) opens with neither: decide that from a short prefix
+	// before transcoding a large body. A prefix of only whitespace reads on to the full body.
+	if prefix := trimForwardedBody(utf8ForJSON(body[:min(len(body), 256)], params["charset"])); len(prefix) > 0 && prefix[0] != '{' && prefix[0] != '[' {
 		return "", "", false
 	}
-	if _, deep := jsonNestedTooDeep(trimmed); deep || !gjson.ValidBytes(trimmed) {
+	doc := trimForwardedBody(utf8ForJSON(body, params["charset"]))
+	if len(doc) == 0 || (doc[0] != '{' && doc[0] != '[') {
 		return "", "", false
 	}
-	mediaType, _, _ = mime.ParseMediaType(contentType)
+	if _, deep := jsonNestedTooDeep(doc); deep || !gjson.ValidBytes(doc) {
+		if key = gatedKeyMentioned(doc); key == "" {
+			return "", "", false
+		}
+		return mediaType, key, true
+	}
 	named := func(object gjson.Result) bool {
 		object.ForEach(func(member, _ gjson.Result) bool {
 			if gated := gatedBodyKey(member.Str); gated != "" {
@@ -284,7 +303,7 @@ func MislabeledJSONBody(body []byte, contentType string) (mediaType, key string,
 		})
 		return key != ""
 	}
-	root := gjson.ParseBytes(trimmed)
+	root := gjson.ParseBytes(doc)
 	if root.IsObject() {
 		named(root)
 	} else {
@@ -296,6 +315,97 @@ func MislabeledJSONBody(body []byte, contentType string) (mediaType, key string,
 		return "", "", false
 	}
 	return mediaType, key, true
+}
+
+// gatedKeyMentioned returns the gated key a non-strict JSON text mentions in any case, or the
+// first gated key when it holds an escape (\u, \x) that could spell one.
+func gatedKeyMentioned(doc []byte) string {
+	lower := bytes.ToLower(doc)
+	for _, key := range GatedBodyKeys {
+		if bytes.Contains(lower, []byte(key)) {
+			return key
+		}
+	}
+	if bytes.Contains(lower, []byte(`\u`)) || bytes.Contains(lower, []byte(`\x`)) {
+		return GatedBodyKeys[0]
+	}
+	return ""
+}
+
+// utf8ForJSON returns body as UTF-8 when it is UTF-16 or UTF-32, detected the way JSON parsers
+// detect it: a byte order mark, then the declared charset, then the NUL pattern of the first four
+// bytes (a JSON text opens with ASCII). Any other body is returned as it is.
+func utf8ForJSON(body []byte, charset string) []byte {
+	type encoding struct {
+		width     int
+		bigEndian bool
+	}
+	var enc *encoding
+	bomLen := 0
+	b := body
+	switch {
+	case bytes.HasPrefix(b, []byte{0x00, 0x00, 0xfe, 0xff}):
+		enc, bomLen = &encoding{4, true}, 4
+	case bytes.HasPrefix(b, []byte{0xff, 0xfe, 0x00, 0x00}):
+		enc, bomLen = &encoding{4, false}, 4
+	case bytes.HasPrefix(b, []byte{0xfe, 0xff}):
+		enc, bomLen = &encoding{2, true}, 2
+	case bytes.HasPrefix(b, []byte{0xff, 0xfe}):
+		enc, bomLen = &encoding{2, false}, 2
+	}
+	if enc == nil {
+		switch strings.ToLower(strings.TrimSpace(charset)) {
+		case "utf-16be":
+			enc = &encoding{2, true}
+		case "utf-16le":
+			enc = &encoding{2, false}
+		case "utf-32be":
+			enc = &encoding{4, true}
+		case "utf-32le":
+			enc = &encoding{4, false}
+		}
+	}
+	if enc == nil && len(b) >= 4 {
+		switch {
+		case b[0] == 0 && b[1] == 0 && b[2] == 0 && b[3] != 0:
+			enc = &encoding{4, true}
+		case b[0] != 0 && b[1] == 0 && b[2] == 0 && b[3] == 0:
+			enc = &encoding{4, false}
+		case b[0] == 0 && b[1] != 0:
+			enc = &encoding{2, true}
+		case b[0] != 0 && b[1] == 0:
+			enc = &encoding{2, false}
+		}
+	}
+	if enc == nil {
+		return body
+	}
+	b = b[bomLen:]
+	var out []byte
+	if enc.width == 4 {
+		for ; len(b) >= 4; b = b[4:] {
+			var r uint32
+			if enc.bigEndian {
+				r = uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
+			} else {
+				r = uint32(b[3])<<24 | uint32(b[2])<<16 | uint32(b[1])<<8 | uint32(b[0])
+			}
+			out = utf8.AppendRune(out, rune(r))
+		}
+		return out
+	}
+	units := make([]uint16, 0, len(b)/2)
+	for ; len(b) >= 2; b = b[2:] {
+		if enc.bigEndian {
+			units = append(units, uint16(b[0])<<8|uint16(b[1]))
+		} else {
+			units = append(units, uint16(b[1])<<8|uint16(b[0]))
+		}
+	}
+	for _, r := range utf16.Decode(units) {
+		out = utf8.AppendRune(out, r)
+	}
+	return out
 }
 
 // ambiguousJSONDocument checks one JSON document: nested no deeper than maxForwardedBodyDepth

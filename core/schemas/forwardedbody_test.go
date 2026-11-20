@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"unicode/utf16"
 )
 
 // TestAmbiguousBodyMember (TXE-7994): a forwarded body that gives one member twice is read
@@ -343,17 +344,83 @@ func TestMislabeledJSONBody(t *testing.T) {
 		{"application/octet-stream", ` [{"task":1},{"Model":"x"}]`, "application/octet-stream", "model"},
 		{"text/plain; charset=utf-8", "\ufeff{\"MODEL\":\"x\"}", "text/plain", "model"},
 		{"text/plain", `{hello`, "", ""},
-		{"text/plain", `{"model":"a",}`, "", ""},
-		{"application/octet-stream", "{\"model\":\"a\"}\n{\"model\":\"b\"}\n", "", ""},
+		{"text/plain", `{"model":"a",}`, "text/plain", "model"},
+		// JSON Lines naming a model must be declared as JSON Lines; as octet-stream it is refused.
+		{"application/octet-stream", "{\"model\":\"a\"}\n{\"model\":\"b\"}\n", "application/octet-stream", "model"},
+		{"application/octet-stream", "{\"key\":\"a\"}\n{\"key\":\"b\"}\n", "", ""},
 		{"text/plain", `{"metadata":{"model":"a"}}`, "", ""},
 		{"text/plain", `["model"]`, "", ""},
 		{"application/json", `{"model":"a"}`, "", ""},
 		{"", `{"model":"a"}`, "", ""},
 		{"application/x-ndjson", `{"model":"a"}`, "", ""},
+		// JSON a lenient parser accepts: no strict reading places the key, so a mention is enough.
+		{"text/plain", `{"model":"X",}`, "text/plain", "model"},
+		{"text/plain", `{model: 'X'}`, "text/plain", "model"},
+		{"text/plain", `{"mod\u0065l":"X",}`, "text/plain", "model"},
+		{"text/plain", `{"m\x6fdel":"X"`, "text/plain", "model"},
+		{"text/plain", strings.Repeat("[", maxForwardedBodyDepth+1) + `{"MODEL":"x"}`, "text/plain", "model"},
+		{"text/plain", `{hello, a text file with no key`, "", ""},
 	} {
 		mediaType, key, mislabeled := MislabeledJSONBody([]byte(tc.body), tc.contentType)
 		if mislabeled != (tc.key != "") || mediaType != tc.mediaType || key != tc.key {
 			t.Errorf("MislabeledJSONBody(%q, %q) = %q, %q, %t; want %q, %q", tc.body, tc.contentType, mediaType, key, mislabeled, tc.mediaType, tc.key)
 		}
+	}
+}
+
+// TestMislabeledJSONBodyInAnotherEncoding: a UTF-16 or UTF-32 JSON body opens with no "{" byte,
+// but a vendor that detects the encoding (RFC 4627, Python's json.loads on bytes) parses it, so
+// it is read after transcoding: by its byte order mark, its declared charset, or the NUL pattern
+// of its first bytes, declared as another type or undeclared (TXE-8012).
+func TestMislabeledJSONBodyInAnotherEncoding(t *testing.T) {
+	encode := func(text string, width int, bigEndian, bom bool) []byte {
+		var out []byte
+		runes := []rune(text)
+		if bom {
+			runes = append([]rune{0xfeff}, runes...)
+		}
+		for _, r := range runes {
+			units := []uint32{uint32(r)}
+			if width == 2 {
+				units = units[:0]
+				for _, u := range utf16.Encode([]rune{r}) {
+					units = append(units, uint32(u))
+				}
+			}
+			for _, u := range units {
+				for i := 0; i < width; i++ {
+					shift := 8 * i
+					if bigEndian {
+						shift = 8 * (width - 1 - i)
+					}
+					out = append(out, byte(u>>shift))
+				}
+			}
+		}
+		return out
+	}
+	const naming = `{"model":"o1"}`
+	for _, tc := range []struct {
+		name, contentType string
+		body              []byte
+		key               string
+	}{
+		{"UTF-16LE with a byte order mark", "text/plain", encode(naming, 2, false, true), "model"},
+		{"UTF-16BE with a byte order mark", "application/octet-stream", encode(naming, 2, true, true), "model"},
+		// UTF-16LE with no mark opens with the byte "{", so undeclared it is read as JSON and
+		// refused for not parsing strictly; big-endian opens with NUL and is content until read here.
+		{"UTF-16BE by its NUL pattern, undeclared", "", encode(naming, 2, true, false), "model"},
+		{"UTF-16BE by its declared charset", "text/plain; charset=utf-16be", encode(naming, 2, true, false), "model"},
+		{"UTF-32BE with a byte order mark", "text/plain", encode(naming, 4, true, true), "model"},
+		{"UTF-32LE by its NUL pattern", "text/plain", encode(naming, 4, false, false), "model"},
+		{"UTF-16 JSON naming no gated key", "text/plain", encode(`{"a":1}`, 2, false, true), ""},
+		{"UTF-16 text", "text/plain", encode("hello", 2, false, true), ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, key, mislabeled := MislabeledJSONBody(tc.body, tc.contentType)
+			if mislabeled != (tc.key != "") || key != tc.key {
+				t.Fatalf("MislabeledJSONBody = %q, %t; want %q", key, mislabeled, tc.key)
+			}
+		})
 	}
 }
