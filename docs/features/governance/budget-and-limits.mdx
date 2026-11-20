@@ -120,6 +120,18 @@ When a request is made with a virtual key, Bifrost checks **all applicable budge
     - Then the next request will be blocked (both provider and VK budgets exceeded).
 ```
 
+### Models the price book cannot price
+
+A budget is charged what the [model catalog](../../architecture/framework/model-catalog) says an answer cost. An answer it cannot price would cost the budget nothing. So a request that answers to any dollar budget is refused before the provider is called when its model has no price for the request's type: no pricing row and no [pricing override](../../providers/custom-pricing) covers it, or the row that covers it sets no price.
+
+A batch run from an uploaded input file is refused the same way when its models can't be priced before it runs. That is the case when it names no model on the request. It is also the case on OpenAI, Azure and xAI, whose batch APIs run the models the file's rows name rather than the model on the request. Send the requests inline instead; each inline request is priced on its own, in the mode of its endpoint (an embeddings batch needs an embeddings price). A passthrough `GET` or `HEAD` with no body, such as polling an operation, runs no model and is never refused for one. Creating Gemini or Vertex cached content is refused under a dollar budget too: the provider charges for it, but Bifrost has no price for it. A passthrough request naming no model of its own is priced by the models its body names; it is refused when any task in the body names no model (the provider runs its default, which can't be priced) or when the tasks name more than one model (one answer can't be charged model by model). A body that gives the `model` key twice is refused for every key, budget or not, with 400 `caller_invalid_request`. Send one model per request, named once.
+
+The refusal is HTTP 403 with `type` `model_unpriced` and `extra_fields.error_type` `policy_model_blocked`. Nothing is sent to the provider and nothing is charged. To serve the model under a budget, add a pricing override for it. A model whose prices are all `$0` is free, not unpriced, and is served.
+
+Some rows set a price that an answer can still miss: a row priced only per image token, for example, when the provider reports no tokens. When an answer like that is charged `$0` under a dollar budget, Bifrost logs a warning naming the provider, model, request type, budgets and virtual key. That virtual key's requests charged to any of those budgets on that model are then refused the same way until the gateway restarts. Other virtual keys, including ones sharing the budget, and other budgets are not affected. A video or batch job that settles at `$0` owed nothing (it failed, was cancelled or expired) and is not treated as unpriced: a job Bifrost cannot price is held unpriced rather than settled.
+
+Requests from a virtual key with no dollar budget are not affected.
+
 ## Rate Limiting
 
 Rate limits protect your system from abuse and manage traffic by setting thresholds on request frequency and token usage over a specific time window. Rate limits can be configured at the **Provider Config**, **Virtual Key**, **Team**, and **Customer** levels. A team or customer has at most one rate limit of its own.

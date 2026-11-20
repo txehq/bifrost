@@ -126,7 +126,7 @@ func TestPostHookWorkerChargesCharacterPricedEmbeddingsToTheDollarBudget(t *test
 	}}
 
 	settled := settleLimits(fixture.store, "sk-bf-acct", schemas.Vertex, "text-embedding-005", &UsageUpdate{})
-	plugin.postHookWorker(result, nil, schemas.Vertex, "text-embedding-005", schemas.EmbeddingRequest, "chars-1", "", false, 0, 0, false, nil, settled.Budgets, settled.RateLimits, nil)
+	plugin.postHookWorker(result, nil, schemas.Vertex, "text-embedding-005", schemas.EmbeddingRequest, "chars-1", "", false, 0, 0, false, nil, settled.Budgets, settled.RateLimits, nil, "", false, "")
 
 	assert.EventuallyWithT(t, func(c *assert.CollectT) {
 		assert.InDelta(c, 12000*2.5e-8, fixture.cost(), 1e-15)

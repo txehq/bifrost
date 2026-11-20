@@ -645,7 +645,10 @@ const fixturePricing = {
 		cache_read_input_token_cost: 3e-8, input_cost_per_token_cache_hit: 2.8e-8,
 	},
 	"legacy-per-request-only": { provider: "openai", mode: "chat", input_cost_per_token: 1e-6, output_cost_per_token: 1e-6, input_cost_per_request: 0.005 },
-	"typesafe/jev-1.13": { provider: "openrouter", mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002 },
+	// Keyed as the upstream datasheet keys it: the sync drops the key's first path segment, so the bare
+	// "typesafe/jev-1.13" this row had loaded as model jev-1.13 and never priced the openrouter model
+	// (TXE-7957: a dollar budget refuses a model the price book cannot price).
+	"openrouter/typesafe/jev-1.13": { provider: "openrouter", mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002 },
 	"decision-emulated": { provider: "openai", mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002, cache_read_input_token_cost: 0.0000001 },
 	"pp-custom-legacy": { provider: "openai", mode: "responses", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002 },
 	// TXE-6526: a token-priced Gemini image model, for the row that reads back the cost of a response whose usage
