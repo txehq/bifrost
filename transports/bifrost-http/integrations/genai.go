@@ -274,7 +274,8 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 			return gemini.ToGeminiVideoGenerationResponse(resp), nil
 		},
 		BatchCreateResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostBatchCreateResponse) (interface{}, error) {
-			return gemini.ToGeminiBatchJobResponse(resp), nil
+			// Gemini's own job, as the vendor answered the create (TXE-7953).
+			return gemini.ToGeminiBatchCreateBody(resp), nil
 		},
 		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return gemini.ToGeminiError(err)
@@ -642,7 +643,8 @@ func CreateGenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 			if resp.ExtraFields.Provider == schemas.Gemini && resp.ExtraFields.RawResponse != nil {
 				return resp.ExtraFields.RawResponse, nil
 			}
-			return gemini.ToGeminiBatchListResponse(resp), nil
+			// Each of Gemini's own jobs, under Bifrost's page token (TXE-7953).
+			return gemini.ToGeminiBatchListBody(resp)
 		},
 		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return gemini.ToGeminiError(err)
@@ -673,9 +675,8 @@ func CreateGenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 			if resp.ExtraFields.Provider == schemas.Gemini && resp.ExtraFields.RawResponse != nil {
 				return resp.ExtraFields.RawResponse, nil
 			}
-			// The job's own output (inline responses included) goes back at metadata.output,
-			// where Google's SDK reads batch results (TXE-7030).
-			return gemini.ToGeminiBatchRetrieveBody(resp)
+			// Gemini's own job, its state and results included (TXE-7030, TXE-7953).
+			return gemini.ToGeminiBatchRetrieveBody(resp), nil
 		},
 		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return gemini.ToGeminiError(err)

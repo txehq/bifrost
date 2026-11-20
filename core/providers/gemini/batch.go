@@ -1,6 +1,7 @@
 package gemini
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -79,30 +80,6 @@ func GeminiBatchInputFileName(raw []byte, parsed GeminiBatchInputConfig) (string
 	return file, nil
 }
 
-// geminiBatchNativeOutput returns a batch job's output object as the vendor sent it:
-// metadata.output, or the done operation's response when the metadata carries none. Nil when the
-// job has no output yet. It is a slice of body, which must be the provider's own
-// (TakeDecodedBody and CheckAndDecodeBody return one), never the pooled response buffer: the
-// output is most of the body, so a copy would hold it twice (TXE-8031).
-func geminiBatchNativeOutput(body []byte) []byte {
-	if len(body) == 0 {
-		return nil
-	}
-	// gjson.GetBytes would copy the match; Get over a string view of body only reports where it is.
-	view := unsafe.String(unsafe.SliceData(body), len(body))
-	for _, path := range []string{"metadata.output", "response"} {
-		out := gjson.Get(view, path)
-		if !out.Exists() || !out.IsObject() {
-			continue
-		}
-		if end := out.Index + len(out.Raw); out.Index > 0 && end <= len(body) {
-			return body[out.Index:end:end]
-		}
-		return []byte(out.Raw)
-	}
-	return nil
-}
-
 // outputFile is the batch's responses file: the top-level response's, else metadata.output's
 // (geminiBatchOutput's order).
 func (job *geminiBatchJobStatus) outputFile() string {
@@ -115,30 +92,58 @@ func (job *geminiBatchJobStatus) outputFile() string {
 	return ""
 }
 
-// ToGeminiBatchRetrieveBody is the body the native /genai route returns for a batch job:
-// ToGeminiBatchRetrieveResponse, with the vendor's own output object, inline responses
-// included, at metadata.output, where Google's SDK reads it. The SDK takes
-// metadata.output.inlinedResponses as a generateContent batch's results and, when they hold
-// embeddings, as an embedding batch's (python-genai t_recv_batch_job_destination renames them
-// to inlinedEmbedContentResponses), so the object goes back unchanged. The unified retrieve
-// response has no field for inline results, so the provider keeps the vendor's output object
-// on BifrostBatchRetrieveResponse.NativeOutput (metadata.output, or a done operation's
-// response; not serialised, and never part of the unified response). Without it the route
-// returned the job's state and counts and no results.
-func ToGeminiBatchRetrieveBody(resp *schemas.BifrostBatchRetrieveResponse) (interface{}, error) {
-	job := ToGeminiBatchRetrieveResponse(resp)
-	if job == nil || len(resp.NativeOutput) == 0 {
-		return job, nil
+// ToGeminiBatchCreateBody is the body the native /genai route returns for a batch it created:
+// the vendor's own job object, as Gemini answered the create (TXE-7953). Google's SDK reads the
+// job's state, model, displayName and @type from it, and a job rebuilt from the unified response
+// loses them: PENDING and RUNNING are both in_progress there, the unified response has no model,
+// and the @type would name the generateContent job for an embedding one. A response with no
+// vendor job (another provider behind /genai) is rebuilt with ToGeminiBatchJobResponse.
+func ToGeminiBatchCreateBody(resp *schemas.BifrostBatchCreateResponse) interface{} {
+	if resp != nil && len(resp.NativeJob) > 0 {
+		return json.RawMessage(geminiJobForSDK(resp.NativeJob))
 	}
-	encoded, err := providerUtils.MarshalSorted(job)
+	return ToGeminiBatchJobResponse(resp)
+}
+
+// geminiJobForSDK is a vendor job as the native route returns it: unchanged, except that a done
+// job whose output is only under the Operation's response (metadata.output absent) gets it at
+// metadata.output too, where Google's SDK reads a job's results (_BatchJob_from_mldev). The API
+// mirrors the output there; this covers a job that does not.
+func geminiJobForSDK(job []byte) []byte {
+	if len(job) == 0 {
+		return job
+	}
+	// gjson.GetBytes copies each match, and metadata is most of a finished job: read a string
+	// view of job instead, which copies nothing (TXE-8031).
+	view := unsafe.String(unsafe.SliceData(job), len(job))
+	if !gjson.Get(view, "metadata").IsObject() || gjson.Get(view, "metadata.output").Exists() {
+		return job
+	}
+	output := gjson.Get(view, "response")
+	if !output.IsObject() || !(output.Get("inlinedResponses").Exists() || output.Get("inlinedEmbedContentResponses").Exists() || output.Get("responsesFile").Exists()) {
+		return job
+	}
+	withOutput, err := providerUtils.SetRawJSONField(job, "metadata.output", []byte(output.Raw))
 	if err != nil {
-		return nil, err
+		return job
 	}
-	withOutput, err := providerUtils.SetRawJSONField(encoded, "metadata.output", resp.NativeOutput)
-	if err != nil {
-		return nil, err
+	return withOutput
+}
+
+// ToGeminiBatchRetrieveBody is the body the native /genai route returns for a batch job: the
+// vendor's own job object (BifrostBatchRetrieveResponse.NativeJob), unchanged but for
+// geminiJobForSDK (TXE-7953). It
+// carries what the unified response cannot: the job's own state, model, displayName and @type,
+// and its results inline at metadata.output (TXE-7030), where Google's SDK reads them (python-genai
+// t_recv_batch_job_destination renames inlinedResponses to inlinedEmbedContentResponses when they
+// hold embeddings). It is a slice of the body the provider read, written as it is (TXE-8031).
+// A response with no vendor job (another provider behind /genai) is rebuilt with
+// ToGeminiBatchRetrieveResponse.
+func ToGeminiBatchRetrieveBody(resp *schemas.BifrostBatchRetrieveResponse) interface{} {
+	if resp != nil && len(resp.NativeJob) > 0 {
+		return json.RawMessage(geminiJobForSDK(resp.NativeJob))
 	}
-	return json.RawMessage(withOutput), nil
+	return ToGeminiBatchRetrieveResponse(resp)
 }
 
 // ToGeminiBatchGenerateContentRequest converts one Bifrost batch request body into the
@@ -408,6 +413,68 @@ func ToGeminiBatchRetrieveResponse(resp *schemas.BifrostBatchRetrieveResponse) *
 }
 
 // ToGeminiBatchListResponse converts a Bifrost batch list response to Gemini format.
+// ToGeminiBatchListBody is the body the native /genai route returns for a batch list: each job
+// as the vendor sent it (BifrostBatchRetrieveResponse.NativeJob), unchanged, under operations
+// (TXE-7953), and the page token Bifrost issued, which walks the pages of every key. A job with no
+// vendor object (another provider behind /genai) is rebuilt with ToGeminiBatchRetrieveResponse.
+func ToGeminiBatchListBody(resp *schemas.BifrostBatchListResponse) (interface{}, error) {
+	if resp == nil {
+		return nil, nil
+	}
+	native := false
+	for i := range resp.Data {
+		if len(resp.Data[i].NativeJob) > 0 {
+			native = true
+			break
+		}
+	}
+	if !native {
+		return ToGeminiBatchListResponse(resp), nil
+	}
+	var b bytes.Buffer
+	b.WriteString(`{"operations":[`)
+	for i := range resp.Data {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		if job := resp.Data[i].NativeJob; len(job) > 0 {
+			b.Write(geminiJobForSDK(job))
+			continue
+		}
+		rebuilt, err := providerUtils.MarshalSorted(ToGeminiBatchRetrieveResponse(&resp.Data[i]))
+		if err != nil {
+			return nil, err
+		}
+		b.Write(rebuilt)
+	}
+	b.WriteByte(']')
+	if resp.NextCursor != nil && *resp.NextCursor != "" {
+		token, err := json.Marshal(*resp.NextCursor)
+		if err != nil {
+			return nil, err
+		}
+		b.WriteString(`,"nextPageToken":`)
+		b.Write(token)
+	}
+	b.WriteByte('}')
+	return json.RawMessage(b.Bytes()), nil
+}
+
+// geminiListedJobs returns each job of a batch list body as the vendor sent it, in order, as
+// slices of body (the provider's own copy). Nil when the body has no operations array.
+func geminiListedJobs(body []byte) [][]byte {
+	operations := gjson.GetBytes(body, "operations")
+	if !operations.IsArray() {
+		return nil
+	}
+	var jobs [][]byte
+	operations.ForEach(func(_, job gjson.Result) bool {
+		jobs = append(jobs, []byte(job.Raw))
+		return true
+	})
+	return jobs
+}
+
 func ToGeminiBatchListResponse(resp *schemas.BifrostBatchListResponse) *GeminiBatchListResponse {
 	if resp == nil {
 		return nil

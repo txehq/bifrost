@@ -3028,7 +3028,7 @@ type GeminiBatchMetadata struct {
 // only responsesFile, so the inline results a finished inline batch carries (up to 200,000) are
 // skipped by the decoder instead of decoded into Go values the retrieve never reads. Decoding them
 // cost about twenty times the body; the /genai route returns them from the body itself
-// (BifrostBatchRetrieveResponse.NativeOutput).
+// (BifrostBatchRetrieveResponse.NativeJob).
 type geminiBatchJobStatus struct {
 	Metadata *geminiBatchStatusMetadata `json:"metadata,omitempty"`
 	Response *geminiBatchOutputFile     `json:"response,omitempty"`
