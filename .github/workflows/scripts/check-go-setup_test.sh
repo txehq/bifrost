@@ -229,14 +229,16 @@ checkout_only() {
   printf 'jobs:\n  build:\n    runs-on: ubuntu-24.04\n    steps:\n'
   printf '      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2\n'
 }
+# case_ reads stdin from a process substitution, not a pipe: a pipe would run it in a subshell and
+# lose its n/fails counts, so a failing case here would not fail the script.
 wrapper wrapper-hosted-only "runner.environment == 'github-hosted'"
-checkout_only | case_ wrapper-hosted-only pass
+case_ wrapper-hosted-only pass < <(checkout_only)
 wrapper wrapper-unguarded ""
-checkout_only | case_ wrapper-unguarded 'rule 5'
+case_ wrapper-unguarded 'rule 5' < <(checkout_only)
 wrapper wrapper-other-condition "runner.environment != 'self-hosted' || github.event_name == 'push'"
-checkout_only | case_ wrapper-other-condition 'rule 5'
+case_ wrapper-other-condition 'rule 5' < <(checkout_only)
 wrapper wrapper-without-list absent
-checkout_only | case_ wrapper-without-list 'rule 5'
+case_ wrapper-without-list 'rule 5' < <(checkout_only)
 
 # The repository itself.
 n=$((n + 1))
