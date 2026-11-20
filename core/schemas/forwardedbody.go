@@ -308,10 +308,12 @@ func MislabeledJSONBody(body []byte, contentType string) (mediaType, problem str
 	}
 	decodings := jsonTextDecodings
 	if isMediaType(mediaType) {
-		// Media is read as UTF-8 only, and only when it is UTF-8 text: raw PCM read as UTF-16, or
-		// a sample that happens to be "{", must not make audio JSON. A JSON document is UTF-8 text.
+		// Media is read as UTF-8 only: raw PCM read as UTF-16 must not make audio JSON. It is read
+		// when its first 1 KB is UTF-8 text, or when its bytes open with a JSON object or array
+		// structure ({" {} [{ [" [[ [] after whitespace) whatever its byte validity, since a lenient
+		// parser replaces an invalid byte and reads on. Audio opens either way only by chance.
 		prefix := body[:min(len(body), 1024)]
-		if !utf8.Valid(trimCutRune(prefix)) {
+		if !utf8.Valid(trimCutRune(prefix)) && !opensWithJSONStructure(prefix) {
 			return "", "", false
 		}
 		decodings = jsonTextDecodings[:1]
@@ -349,6 +351,18 @@ func MislabeledJSONBody(body []byte, contentType string) (mediaType, problem str
 // that is JSON text is still checked, while raw PCM is not mistaken for it.
 func isMediaType(mediaType string) bool {
 	return strings.HasPrefix(mediaType, "audio/") || strings.HasPrefix(mediaType, "image/") || strings.HasPrefix(mediaType, "video/")
+}
+
+// opensWithJSONStructure reports bytes that open, after ASCII whitespace, with "{" or "[" followed
+// (after whitespace) by a quote, a bracket or a brace: the opening of a JSON object or array
+// holding objects, strings or arrays.
+func opensWithJSONStructure(b []byte) bool {
+	b = bytes.TrimLeft(b, " \t\r\n")
+	if len(b) == 0 || (b[0] != '{' && b[0] != '[') {
+		return false
+	}
+	b = bytes.TrimLeft(b[1:], " \t\r\n")
+	return len(b) > 0 && bytes.IndexByte([]byte(`"{}[]`), b[0]) >= 0
 }
 
 // trimCutRune drops an incomplete UTF-8 sequence a prefix cut at its end.
