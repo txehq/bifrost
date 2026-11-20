@@ -1443,18 +1443,28 @@ func BatchCreateModels(req *schemas.BifrostRequest, model string) []string {
 	}
 	add(model)
 	for _, item := range req.BatchCreateRequest.Requests {
-		// Body is the OpenAI shape, Params the Anthropic one; an item carries one.
-		for _, body := range []map[string]any{item.Body, item.Params} {
-			if m, ok := body["model"].(string); ok {
-				add(m)
-				break
-			}
+		for _, m := range batchItemModels(item) {
+			add(m)
 		}
 	}
 	if len(models) == 0 {
 		// No item named a model: fall back to the model-less evaluation so the
 		// provider-level and virtual-key checks still run.
 		return []string{model}
+	}
+	return models
+}
+
+// batchItemModels returns every model an inline batch request names: Body is the OpenAI shape,
+// Params the Anthropic one. An item naming one in each is read for both, whichever the provider
+// runs, and a blank one names nothing. Every reader of an item's model uses this, so admission,
+// pricing and the model gate never read an item two ways.
+func batchItemModels(item schemas.BatchRequestItem) []string {
+	var models []string
+	for _, body := range []map[string]any{item.Body, item.Params} {
+		if m, ok := body["model"].(string); ok && strings.TrimSpace(m) != "" && !slices.Contains(models, m) {
+			models = append(models, m)
+		}
 	}
 	return models
 }

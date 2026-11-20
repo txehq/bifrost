@@ -460,8 +460,16 @@ func deliveredAnswer(result *schemas.BifrostResponse) bool {
 		return false
 	}
 	// A passthrough the provider refused (any status but 2xx) delivered nothing, and nothing is
-	// priced on it; one that only acknowledges queued work has not finished.
+	// priced on it; one that only acknowledges queued work has not finished; one that counts a
+	// prompt's tokens (count_tokens, input_tokens, countTokens) generates nothing and is free.
 	if passthrough := result.PassthroughResponse; passthrough != nil {
+		path := passthrough.Path
+		if path == "" {
+			path = passthrough.ExtraFields.PassthroughPath
+		}
+		if passthroughCountsTokens(path) {
+			return false
+		}
 		if passthrough.StatusCode != 0 && (passthrough.StatusCode < 200 || passthrough.StatusCode >= 300) {
 			return false
 		}
@@ -732,19 +740,19 @@ func indexInlineBatchModes(req *schemas.BifrostRequest) map[string][]schemas.Req
 	batch := req.BatchCreateRequest
 	byModel := make(map[string][]schemas.RequestType)
 	for _, item := range batch.Requests {
-		model := batchEnvelopeModel(batch)
-		for _, body := range []map[string]any{item.Body, item.Params} {
-			if m, ok := body["model"].(string); ok {
-				model = m
-				break
-			}
+		models := batchItemModels(item)
+		if len(models) == 0 {
+			models = []string{batchEnvelopeModel(batch)}
 		}
 		endpoint := batch.Endpoint
 		if item.URL != "" {
 			endpoint = schemas.BatchEndpoint(item.URL)
 		}
-		if mode := jobaccounting.BatchRequestType(endpoint); !slices.Contains(byModel[model], mode) {
-			byModel[model] = append(byModel[model], mode)
+		mode := jobaccounting.BatchRequestType(endpoint)
+		for _, model := range models {
+			if !slices.Contains(byModel[model], mode) {
+				byModel[model] = append(byModel[model], mode)
+			}
 		}
 	}
 	return byModel
@@ -765,6 +773,17 @@ func batchEnvelopeModel(batch *schemas.BifrostBatchCreateRequest) string {
 		return ""
 	}
 	return *batch.Model
+}
+
+// passthroughCountsTokens reports whether a passthrough path counts a prompt's tokens without
+// generating: Anthropic's /v1/messages/count_tokens, OpenAI's /v1/responses/input_tokens,
+// Gemini's and Vertex's :countTokens.
+func passthroughCountsTokens(path string) bool {
+	if idx := strings.IndexByte(path, '?'); idx >= 0 {
+		path = path[:idx]
+	}
+	path = strings.ToLower(path)
+	return strings.HasSuffix(path, "/count_tokens") || strings.HasSuffix(path, "/input_tokens") || strings.HasSuffix(path, ":counttokens")
 }
 
 // emptyResponsesUsage reports whether a Responses usage record counts nothing at all.
@@ -796,13 +815,7 @@ func inlineBatchNamesEveryModel(req *schemas.BifrostRequest) bool {
 		return false
 	}
 	for _, item := range req.BatchCreateRequest.Requests {
-		named := false
-		for _, body := range []map[string]any{item.Body, item.Params} {
-			if m, ok := body["model"].(string); ok && strings.TrimSpace(m) != "" {
-				named = true
-			}
-		}
-		if !named {
+		if len(batchItemModels(item)) == 0 {
 			return false
 		}
 	}

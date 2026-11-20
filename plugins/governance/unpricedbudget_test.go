@@ -246,6 +246,14 @@ func TestUnpricedModelUnderADollarBudgetIsRefusedBeforeTheCall(t *testing.T) {
 		Provider: schemas.OpenAI,
 		Requests: []schemas.BatchRequestItem{{CustomID: "1", Body: map[string]any{"model": "gpt-4o"}}, {CustomID: "2", Body: map[string]any{"messages": []any{}}}},
 	}}), "an inline batch with a request naming no model")
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{
+		Provider: schemas.OpenAI,
+		Requests: []schemas.BatchRequestItem{{CustomID: "1", Body: map[string]any{"model": ""}, Params: map[string]any{"model": "house-llm"}}},
+	}}), "a request with a blank body model is gated on the model its params name")
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{
+		Provider: schemas.OpenAI,
+		Requests: []schemas.BatchRequestItem{{CustomID: "1", Body: map[string]any{"model": "gpt-4o"}, Params: map[string]any{"model": "house-llm"}}},
+	}}), "a request naming one model in its body and another in its params is gated on both")
 	// An inline batch is settled in its endpoint's mode (jobaccounting.BatchRequestType), so a model
 	// is priced in that mode, not in whichever mode prices it.
 	endpointBatch := func(endpoint schemas.BatchEndpoint, itemURL, model string) *schemas.BifrostRequest {
@@ -684,6 +692,27 @@ func TestPassthroughReadIsNotPriced(t *testing.T) {
 	chat := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o"}}
 	answer("GET")
 	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", chat), "a read's $0 answer does not refuse the model it names")
+	// Counting a prompt's tokens generates nothing and is free.
+	ctx := resolverCtx(plugin.store, "sk-bf-budget")
+	countTokens := &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+		Provider: schemas.OpenAI, Model: "gpt-4o", Method: "POST", Path: "/v1/messages/count_tokens", Body: []byte(`{"model":"gpt-4o"}`),
+	}}
+	_, shortCircuit, err := plugin.PreLLMHook(ctx, countTokens)
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit)
+	_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{PassthroughResponse: &schemas.BifrostPassthroughResponse{
+		StatusCode: 200, Body: []byte(`{"input_tokens":12}`), Path: "/v1/messages/count_tokens",
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.PassthroughRequest, Provider: schemas.OpenAI, OriginalModelRequested: "gpt-4o",
+			RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenAI, Model: "gpt-4o"},
+		},
+	}}, nil)
+	require.NoError(t, err)
+	plugin.wg.Wait()
+	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", chat), "a token count's $0 answer does not refuse the model it names")
+	assert.True(t, passthroughCountsTokens("/v1beta/models/gemini-2.5-pro:countTokens"))
+	assert.True(t, passthroughCountsTokens("/v1/responses/input_tokens?x=1"))
+	assert.False(t, passthroughCountsTokens("/v1/messages"))
 	answer("POST")
 	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", chat), "a POST's $0 answer refuses the model it names")
 }
