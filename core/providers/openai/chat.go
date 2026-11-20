@@ -366,10 +366,6 @@ const (
 	chatCacheFieldKeyExempt
 )
 
-// chatPromptCacheFields are the prompt-cache fields of a chat request, in the order a refusal
-// names them.
-var chatPromptCacheFields = []string{schemas.FieldPromptCacheKey, schemas.FieldPromptCacheRetention, schemas.FieldPromptCacheOptions}
-
 // chatPromptCacheFieldTreatment is the one table of what each provider's branch of
 // ToOpenAIChatRequest does with a prompt-cache field. The converter restores every field it
 // lists as sent, ChatPromptCacheFieldError refuses by it, and
@@ -432,14 +428,16 @@ func snapshotChatPromptCacheFields(req *OpenAIChatRequest) chatPromptCacheFieldS
 
 // restoreSentChatPromptCacheFields puts back every prompt-cache field the provider's branch
 // removed although chatPromptCacheFieldTreatment lists it as sent.
+// A request that carries none of the fields, the common case, costs three nil checks and no
+// context lookup.
 func restoreSentChatPromptCacheFields(ctx *schemas.BifrostContext, provider schemas.ModelProvider, req *OpenAIChatRequest, sent chatPromptCacheFieldSnapshot) {
-	if chatPromptCacheFieldTreatment(ctx, provider, schemas.FieldPromptCacheKey) == chatCacheFieldSent {
+	if sent.key != nil && chatPromptCacheFieldTreatment(ctx, provider, schemas.FieldPromptCacheKey) == chatCacheFieldSent {
 		req.ChatParameters.PromptCacheKey = sent.key
 	}
-	if chatPromptCacheFieldTreatment(ctx, provider, schemas.FieldPromptCacheRetention) == chatCacheFieldSent {
+	if sent.retention != nil && chatPromptCacheFieldTreatment(ctx, provider, schemas.FieldPromptCacheRetention) == chatCacheFieldSent {
 		req.ChatParameters.PromptCacheRetention = sent.retention
 	}
-	if chatPromptCacheFieldTreatment(ctx, provider, schemas.FieldPromptCacheOptions) == chatCacheFieldSent {
+	if sent.options != nil && chatPromptCacheFieldTreatment(ctx, provider, schemas.FieldPromptCacheOptions) == chatCacheFieldSent {
 		req.ChatParameters.PromptCacheOptions = sent.options
 	}
 }
@@ -455,29 +453,31 @@ func ChatPromptCacheFieldError(ctx *schemas.BifrostContext, bifrostReq *schemas.
 		return nil
 	}
 	params := bifrostReq.Params
-	set := map[string]bool{
-		schemas.FieldPromptCacheKey:       params.PromptCacheKey != nil,
-		schemas.FieldPromptCacheRetention: params.PromptCacheRetention != nil,
-		schemas.FieldPromptCacheOptions:   params.PromptCacheOptions != nil,
-	}
-	if !set[schemas.FieldPromptCacheKey] && !set[schemas.FieldPromptCacheRetention] && !set[schemas.FieldPromptCacheOptions] {
+	if params.PromptCacheKey == nil && params.PromptCacheRetention == nil && params.PromptCacheOptions == nil {
 		return nil
 	}
 	var caps *schemas.ModelCaps
-	for _, field := range chatPromptCacheFields {
-		if !set[field] || chatPromptCacheFieldTreatment(ctx, bifrostReq.Provider, field) != chatCacheFieldByCatalog {
-			continue
+	refuse := func(field string, set bool) *schemas.BifrostError {
+		if !set || chatPromptCacheFieldTreatment(ctx, bifrostReq.Provider, field) != chatCacheFieldByCatalog {
+			return nil
 		}
 		if caps == nil {
 			resolved := schemas.ResolveModelCaps(bifrostReq.Provider, schemas.ResolveCanonicalModel(ctx, bifrostReq.Model))
 			caps = &resolved
 		}
-		if caps.FieldUnsupported(field, true) {
-			return schemas.NewUnsupportedParameterError(field,
-				field+" is not supported by model "+bifrostReq.Model+" on provider "+string(bifrostReq.Provider))
+		if !caps.FieldUnsupported(field, true) {
+			return nil
 		}
+		return schemas.NewUnsupportedParameterError(field,
+			field+" is not supported by model "+bifrostReq.Model+" on provider "+string(bifrostReq.Provider))
 	}
-	return nil
+	if err := refuse(schemas.FieldPromptCacheKey, params.PromptCacheKey != nil); err != nil {
+		return err
+	}
+	if err := refuse(schemas.FieldPromptCacheRetention, params.PromptCacheRetention != nil); err != nil {
+		return err
+	}
+	return refuse(schemas.FieldPromptCacheOptions, params.PromptCacheOptions != nil)
 }
 
 // chatServiceTierUndeliverableError refuses a non-default service_tier on a provider whose
