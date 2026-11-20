@@ -2170,15 +2170,224 @@ func TestHybrid_BatchUpdateDropsMergeWhenObjectReadIsAmbiguous(t *testing.T) {
 		ID: "ambiguous", Timestamp: ts, CreatedAt: ts, Object: "chat.completion", Provider: "openai", Model: "gpt-4o", Status: "processing",
 	}))
 	objStore.GetErr = fmt.Errorf("simulated transient read failure")
+	hybrid.uploadRetryBackoff = []time.Duration{time.Millisecond, time.Millisecond}
 
 	output := "the answer"
 	require.NoError(t, hybrid.BatchUpdate(ctx, []*Log{{ID: "ambiguous", Status: "success",
 		OutputMessageParsed: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &output}}}}))
 	waitForUploads(t, hybrid, func() bool { return hybrid.droppedUploads.Load() == 1 })
+	assert.Equal(t, int64(1), hybrid.DroppedMergeUploads(), "a read that fails on every attempt loses the merge once")
 	assert.Equal(t, 0, objStore.Len(), "nothing may be written while the object's existence is unknown")
 	row, err := inner.FindByID(ctx, "ambiguous")
 	require.NoError(t, err)
 	assert.Equal(t, "success", row.Status, "the DB scalars still apply")
+}
+
+// failingMergePutStore fails the first failures Puts whose payload carries
+// marker (the late output a merge upload writes), then lets Puts through.
+type failingMergePutStore struct {
+	objectstore.ObjectStore
+	marker   string
+	failures int64
+	attempts atomic.Int64
+}
+
+func (s *failingMergePutStore) Put(ctx context.Context, key string, data []byte, tags map[string]string) error {
+	if strings.Contains(string(data), s.marker) {
+		if s.attempts.Add(1) <= s.failures {
+			return fmt.Errorf("simulated object store outage")
+		}
+	}
+	return s.ObjectStore.Put(ctx, key, data, tags)
+}
+
+// mergeUploadFixture creates a log whose input is already offloaded, then
+// reconciles a late output through BatchUpdate, the path a pending entry
+// evicted after pendingLogTTL takes.
+func mergeUploadFixture(t *testing.T, hybrid *HybridLogStore, inner LogStore, id string, hidden bool, input, output string) {
+	t.Helper()
+	ctx := context.Background()
+	ts := time.Now().UTC()
+	require.NoError(t, hybrid.CreateIfNotExists(ctx, &Log{
+		ID: id, Timestamp: ts, CreatedAt: ts, Object: "chat.completion", Provider: "openai", Model: "gpt-4o",
+		Status: "processing", ContentHidden: hidden,
+		InputHistoryParsed: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &input}}},
+	}))
+	waitForOffload(t, hybrid, inner, id)
+	require.NoError(t, hybrid.BatchUpdate(ctx, []*Log{{ID: id, Status: "success", ContentHidden: hidden,
+		OutputMessageParsed: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &output}}}}))
+}
+
+// TestHybrid_BatchUpdateRetriesFailedMergeUpload (TXE-7328): the DB row stays
+// content-free, so a merge upload is the only copy of a late output. A Put that
+// fails once must be retried, not dropped: the read then serves the output, and
+// nothing is counted as dropped.
+func TestHybrid_BatchUpdateRetriesFailedMergeUpload(t *testing.T) {
+	output := "the late answer"
+	objects := &failingMergePutStore{ObjectStore: objectstore.NewInMemoryObjectStore(), marker: output, failures: 1}
+	hybrid, inner := newTestHybridWithObjects(t, objects)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+
+	input := "the question"
+	mergeUploadFixture(t, hybrid, inner, "merge-retry", false, input, output)
+	waitForUploads(t, hybrid, func() bool { return objects.attempts.Load() >= 2 })
+
+	got, err := hybrid.FindByID(ctx, "merge-retry")
+	require.NoError(t, err)
+	assert.Contains(t, got.InputHistory, input)
+	assert.Contains(t, got.OutputMessage, output, "the late output survives one failed merge Put")
+	assert.Zero(t, hybrid.DroppedUploads(), "a merge that succeeds on retry is not a dropped upload")
+
+	row, err := inner.FindByID(ctx, "merge-retry")
+	require.NoError(t, err)
+	assert.Empty(t, row.OutputMessage, "the DB row stays content-free")
+}
+
+// TestHybrid_BatchUpdateCountsMergeUploadLostAfterRetries (TXE-7328): when the
+// store stays down past every retry, the loss is counted in its own counter,
+// the stored object keeps the input, and a hidden row's DB copy stays empty.
+func TestHybrid_BatchUpdateCountsMergeUploadLostAfterRetries(t *testing.T) {
+	output := "the late answer"
+	objects := &failingMergePutStore{ObjectStore: objectstore.NewInMemoryObjectStore(), marker: output, failures: 1 << 30}
+	hybrid, inner := newTestHybridWithObjects(t, objects)
+	defer hybrid.Close(context.Background())
+	hybrid.uploadRetryBackoff = []time.Duration{time.Millisecond, time.Millisecond}
+	ctx := context.Background()
+
+	input := "the question"
+	mergeUploadFixture(t, hybrid, inner, "merge-lost", true, input, output)
+	waitForUploads(t, hybrid, func() bool { return hybrid.DroppedMergeUploads() == 1 })
+
+	assert.Equal(t, int64(len(hybrid.uploadRetryBackoff)+1), objects.attempts.Load(), "one first attempt plus one per backoff step")
+	assert.Equal(t, int64(1), hybrid.DroppedUploads(), "the lost merge is also a dropped upload")
+	row, err := inner.FindByID(ctx, "merge-lost")
+	require.NoError(t, err)
+	assert.Equal(t, "success", row.Status, "the DB scalars still apply")
+	assert.Empty(t, row.OutputMessage, "a hidden row's output never falls back to the DB")
+	assert.Empty(t, row.InputHistory, "a hidden row's input never falls back to the DB")
+}
+
+// TestHybrid_MergeUploadFailureThatCannotRecoverIsNotRetried: a stored object
+// that does not decode fails the same way on every attempt, so it is dropped at
+// once and the object is left alone.
+func TestHybrid_MergeUploadFailureThatCannotRecoverIsNotRetried(t *testing.T) {
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	hybrid.uploadRetryBackoff = []time.Duration{time.Hour}
+	ctx := context.Background()
+	ts := time.Now().UTC()
+
+	require.NoError(t, inner.CreateIfNotExists(ctx, &Log{
+		ID: "undecodable", Timestamp: ts, CreatedAt: ts, Object: "chat.completion", Provider: "openai", Model: "gpt-4o", Status: "processing",
+	}))
+	require.NoError(t, objStore.Put(ctx, ObjectKey("test", ts, "undecodable"), []byte("not json"), nil))
+
+	output := "the answer"
+	require.NoError(t, hybrid.BatchUpdate(ctx, []*Log{{ID: "undecodable", Status: "success",
+		OutputMessageParsed: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &output}}}}))
+	// An hour-long backoff would time this wait out if the failure were retried.
+	waitForUploads(t, hybrid, func() bool { return hybrid.DroppedMergeUploads() == 1 })
+	data, err := objStore.Get(ctx, ObjectKey("test", ts, "undecodable"))
+	require.NoError(t, err)
+	assert.Equal(t, "not json", string(data), "the stored object is left untouched")
+}
+
+// landThenFailStore stores the first Put whose key ends in suffix and still
+// reports an error for it, as a Put whose response is lost after the server
+// stored the object does.
+type landThenFailStore struct {
+	*objectstore.InMemoryObjectStore
+	suffix string
+	failed atomic.Bool
+}
+
+func (s *landThenFailStore) Put(ctx context.Context, key string, data []byte, tags map[string]string) error {
+	return s.PutWithOptions(ctx, key, data, tags, objectstore.PutOptions{})
+}
+
+func (s *landThenFailStore) PutWithOptions(ctx context.Context, key string, data []byte, tags map[string]string, opts objectstore.PutOptions) error {
+	err := s.InMemoryObjectStore.PutWithOptions(ctx, key, data, tags, opts)
+	if err == nil && strings.HasSuffix(key, s.suffix) && s.failed.CompareAndSwap(false, true) {
+		return fmt.Errorf("simulated timeout after the object was stored")
+	}
+	return err
+}
+
+// TestHybrid_MergeRetryStillDeletesReplacedFormatObject: a merge that replaces
+// an object in the other format must delete that copy even when its first Put
+// landed but reported an error. The retry then finds the new object; if it
+// forgot the old key, a later switch back would serve the old copy, which lacks
+// the late output.
+func TestHybrid_MergeRetryStillDeletesReplacedFormatObject(t *testing.T) {
+	jsonHybrid, inner, mem := newTestHybrid(t)
+	ctx := context.Background()
+	defer jsonHybrid.Close(ctx) // shares inner with the parquet hybrid; closed last
+	ts := time.Now().UTC()
+
+	input, output := "written as json", "answered after the switch"
+	require.NoError(t, jsonHybrid.CreateIfNotExists(ctx, &Log{
+		ID: "retry-format", Timestamp: ts, CreatedAt: ts, Object: "chat.completion", Provider: "openai", Model: "gpt-4o", Status: "processing",
+		InputHistoryParsed: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &input}}},
+	}))
+	waitForOffload(t, jsonHybrid, inner, "retry-format")
+	legacy := ObjectKey("test", ts, "retry-format")
+	require.Equal(t, []string{legacy}, mem.Keys())
+
+	objects := &landThenFailStore{InMemoryObjectStore: mem, suffix: parquetObjectExt}
+	hybrid := newHybridLogStore(inner, objects, "test", hybridTestLogger{}, nil, nil)
+	hybrid.setObjectFormat(objectstore.FormatParquet, objectstore.CompressionZstd)
+	hybrid.uploadRetryBackoff = []time.Duration{time.Millisecond, time.Millisecond}
+	defer hybrid.Close(ctx)
+
+	require.NoError(t, hybrid.BatchUpdate(ctx, []*Log{{ID: "retry-format", Status: "success", OutputMessageParsed: &schemas.ChatMessage{
+		Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &output},
+	}}}))
+	key := objectKey("test", "logs", ts, "retry-format", parquetObjectExt)
+	waitForUploads(t, hybrid, func() bool { return objects.failed.Load() })
+	require.True(t, objects.failed.Load(), "the first parquet Put reported an error")
+	assert.Equal(t, []string{key}, mem.Keys(), "the retried merge still removes the json object it replaced")
+	assert.Zero(t, hybrid.DroppedUploads())
+	stored := requireParquetObject(t, mem, key)
+	assert.Contains(t, stored, input)
+	assert.Contains(t, stored, output)
+}
+
+// TestHybrid_EveryUploadKindHasRetryPolicy fails when an uploadKind constant is
+// declared in hybrid.go without an entry in uploadKindRetries, so every new
+// upload kind gets a decision on whether its failed Puts are retried.
+func TestHybrid_EveryUploadKindHasRetryPolicy(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "hybrid.go", nil, 0)
+	require.NoError(t, err)
+	var declared []string
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.CONST || len(gen.Specs) == 0 {
+			continue
+		}
+		first := gen.Specs[0].(*ast.ValueSpec)
+		if ident, ok := first.Type.(*ast.Ident); !ok || ident.Name != "uploadKind" {
+			continue
+		}
+		// The block is an iota sequence, so a constant's value is its position.
+		require.Len(t, first.Values, 1)
+		require.Equal(t, "iota", fmt.Sprint(first.Values[0]), "the uploadKind block must start at iota for this check to read its values")
+		for i, spec := range gen.Specs {
+			vs := spec.(*ast.ValueSpec)
+			require.Len(t, vs.Names, 1)
+			if i > 0 {
+				require.Nil(t, vs.Type, "%s: the uploadKind block must stay a plain iota sequence", vs.Names[0].Name)
+				require.Empty(t, vs.Values, "%s: the uploadKind block must stay a plain iota sequence", vs.Names[0].Name)
+			}
+			name := vs.Names[0].Name
+			declared = append(declared, name)
+			_, ok := uploadKindRetries[uploadKind(i)]
+			assert.True(t, ok, "upload kind %s has no entry in uploadKindRetries: decide whether its failed uploads are retried", name)
+		}
+	}
+	require.NotEmpty(t, declared, "no uploadKind constants found in hybrid.go")
+	assert.Len(t, uploadKindRetries, len(declared), "uploadKindRetries has an entry for a kind hybrid.go does not declare")
+	assert.True(t, uploadKindRetries[uploadKindLogMerge], "a merge upload carries the only copy of a late output and must be retried (TXE-7328)")
 }
 
 // TestHybrid_BatchUpdateKeepsStoredTimestamp: the reconcile's entry carries no

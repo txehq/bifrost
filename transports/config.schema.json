@@ -3575,6 +3575,11 @@
               "description": "Maximum concurrent deferred usage database updates (default: 5)",
               "minimum": 1,
               "default": 5
+            },
+            "pending_log_ttl": {
+              "type": "string",
+              "description": "Idle time, as a Go duration (\"15m\", \"500ms\"), after which a request's in-memory pending log entry is evicted and its input persisted as a partial row that a late completion is reconciled onto. Minimum 100ms (default: 15m). Shorter values exist for tests that need the eviction path quickly.",
+              "default": "15m"
             }
           },
           "additionalProperties": false

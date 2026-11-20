@@ -21,7 +21,13 @@ const (
 	// their LastActivity on every chunk (see PostLLMHook), so a long-running stream
 	// is never evicted mid-flight. Matches the 30-minute window used by
 	// cleanupOldProcessingLogs so the two reapers agree on what "stale" means.
+	// It is the default of writer.pending_log_ttl (logstore.DefaultWriterPendingLogTTL).
 	pendingLogTTL = 15 * time.Minute
+	// minPendingLogTTL is the shortest writer.pending_log_ttl accepted. Shorter
+	// values only make sense in tests that need the eviction path quickly.
+	minPendingLogTTL = 100 * time.Millisecond
+	// maxCleanupInterval is the longest gap between two cleanup sweeps.
+	maxCleanupInterval = time.Minute
 	// cleanupDrainTimeout caps how long Cleanup spends draining the write queue
 	// itself. Matches the outer server shutdown budget at server.go:1596 so the
 	// logging plugin can fully drain in the worst case; remaining entries beyond
@@ -953,6 +959,24 @@ func logHasUsage(log *logstore.Log) bool {
 		usage.Cost != nil
 }
 
+// pendingIdleTTL is the idle time after which a pending entry is evicted:
+// writer.pending_log_ttl, or pendingLogTTL for a plugin built without Init.
+func (p *LoggerPlugin) pendingIdleTTL() time.Duration {
+	if p.pendingTTL > 0 {
+		return p.pendingTTL
+	}
+	return pendingLogTTL
+}
+
+// cleanupInterval is how often the cleanup worker sweeps: every
+// maxCleanupInterval, or every half TTL when that is shorter.
+func cleanupInterval(ttl time.Duration) time.Duration {
+	if ttl <= 0 {
+		ttl = pendingLogTTL
+	}
+	return min(maxCleanupInterval, ttl/2)
+}
+
 // cleanupStalePendingLogs removes stale in-memory pending log state.
 // Before a stale LLM entry is dropped, its input is persisted as a partial
 // "processing" row so a request that finishes late can still be reconciled
@@ -961,7 +985,14 @@ func logHasUsage(log *logstore.Log) bool {
 // queued for persistence, because PreMCPHook does not write a processing row
 // to the database.
 func (p *LoggerPlugin) cleanupStalePendingLogs() {
-	cutoff := time.Now().Add(-pendingLogTTL)
+	now := time.Now()
+	// Only the pending entries' idle eviction follows writer.pending_log_ttl.
+	// The inject buffers, pending agent logs and evicted-partial markers keep
+	// the fixed pendingLogTTL: a marker must outlive the write batch that
+	// persists its partial row, or a late finish under a short TTL finds
+	// neither the marker nor the row and its output is lost.
+	cutoff := now.Add(-p.pendingIdleTTL())
+	retentionCutoff := now.Add(-pendingLogTTL)
 	p.pendingLogsEntries.Range(func(key, value any) bool {
 		if pending, ok := value.(*PendingLogData); ok {
 			// Evict on idle time: use the last chunk/activity timestamp, falling
@@ -982,7 +1013,7 @@ func (p *LoggerPlugin) cleanupStalePendingLogs() {
 	})
 	p.pendingLogsToInject.Range(func(key, value any) bool {
 		if pending, ok := value.(*pendingInjectEntries); ok {
-			if pending.createdAt.Before(cutoff) {
+			if pending.createdAt.Before(retentionCutoff) {
 				p.pendingLogsToInject.Delete(key)
 			}
 		}
@@ -990,7 +1021,7 @@ func (p *LoggerPlugin) cleanupStalePendingLogs() {
 	})
 	p.pendingMCPLogsToInject.Range(func(key, value any) bool {
 		if pending, ok := value.(*logstore.MCPToolLog); ok {
-			if pending.CreatedAt.Before(cutoff) {
+			if pending.CreatedAt.Before(retentionCutoff) {
 				stalePending, ok := p.claimStaleMCPEntry(key)
 				if !ok {
 					return true
@@ -1005,14 +1036,14 @@ func (p *LoggerPlugin) cleanupStalePendingLogs() {
 		return true
 	})
 	p.pendingAgentLogs.Range(func(key, value any) bool {
-		if pending, ok := value.(*logstore.AgentLog); ok && pending.Timestamp.Before(cutoff) {
+		if pending, ok := value.(*logstore.AgentLog); ok && pending.Timestamp.Before(retentionCutoff) {
 			p.pendingAgentLogs.Delete(key)
 		}
 		return true
 	})
 	p.pendingAgentLogsToInject.Range(func(key, value any) bool {
 		if pending, ok := value.(*pendingAgentInjectEntries); ok {
-			if pending.createdAt.Before(cutoff) {
+			if pending.createdAt.Before(retentionCutoff) {
 				p.pendingAgentLogsToInject.Delete(key)
 			}
 		}
@@ -1022,7 +1053,7 @@ func (p *LoggerPlugin) cleanupStalePendingLogs() {
 	// still finds the row through the DB probe while flushStaleProcessingLogs
 	// has not reaped it yet.
 	p.evictedPartials.Range(func(key, value any) bool {
-		if marker, ok := value.(evictedPartialMarker); ok && marker.at.Before(cutoff) {
+		if marker, ok := value.(evictedPartialMarker); ok && marker.at.Before(retentionCutoff) {
 			p.evictedPartials.Delete(key)
 		}
 		return true

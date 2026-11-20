@@ -383,6 +383,8 @@ Upgrading to a release **without** this pause (for example 2.2.x to 2.3.0) on a 
 
 Offload LLM request/response logs and MCP tool logs from the database to S3 or GCS. The database retains lightweight index records and fetches full payloads on demand. For MCP logs, the full tool log is stored in object storage and the database keeps dashboard/table fields plus a 200-character input preview.
 
+Uploads to object storage run in the background, so a slow or unreachable bucket never delays a request. A failed upload is dropped and logged, not retried, with one exception: a response that completes after its log entry was already written (a request still running when its pending log entry expired) is merged into the stored object, and that merge is retried twice with backoff (about 3 seconds in all), because the database row never holds payload content. If the bucket stays unreachable past the retries, that late response is lost. The request's status, tokens and cost stay in the database, and Bifrost logs the ID of the log whose response was lost.
+
 #### AWS S3
 
 **Required IAM permissions**
