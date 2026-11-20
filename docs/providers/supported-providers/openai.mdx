@@ -358,7 +358,7 @@ Requests use **multipart/form-data**, not JSON.
 |-----------|------|----------|-------|
 | `model` | string | ✅ | Model identifier (e.g., `dall-e-3`) |
 | `prompt` | string | ✅ | Text description of the image to generate |
-| `n` | int | ❌ | Number of images to generate (1-10) |
+| `n` | int | ❌ | Number of images to generate (1-10). With `stream: true` it must be 1: a streamed request with `n` greater than 1 is refused with 400 `caller_unsupported_parameter` (`error.param: n`) before any upstream call, because the stream delivers one finished image. Azure and custom providers built on OpenAI share this rule |
 | `size` | string | ❌ | Image size: `"256x256"`, `"512x512"`, `"1024x1024"`, `"1792x1024"`, `"1024x1792"`, `"1536x1024"`, `"1024x1536"`, `"auto"` |
 | `quality` | string | ❌ | Image quality: `"auto"`, `"high"`, `"medium"`, `"low"`, `"hd"`, `"standard"` |
 | `style` | string | ❌ | Image style: `"natural"`, `"vivid"` |
@@ -421,7 +421,7 @@ Requests use **multipart/form-data**, not JSON.
 | `prompt` | string | ✅ | Text description of the edit |
 | `image[]` | binary | ✅ | Image file(s) to edit (multipart form-data, supports multiple images) |
 | `mask` | binary | ❌ | Mask image file (multipart form-data) |
-| `n` | int | ❌ | Number of images to generate (1-10) |
+| `n` | int | ❌ | Number of images to generate (1-10). With `stream: true` it must be 1: a streamed request with `n` greater than 1 is refused with 400 `caller_unsupported_parameter` (`error.param: n`) before any upstream call, because the stream delivers one finished image. Azure and custom providers built on OpenAI share this rule |
 | `size` | string | ❌ | Image size: `"256x256"`, `"512x512"`, `"1024x1024"`, `"1536x1024"`, `"1024x1536"`, `"auto"` |
 | `quality` | string | ❌ | Image quality: `"auto"`, `"high"`, `"medium"`, `"low"`, `"standard"` |
 | `response_format` | string | ❌ | Response format: `"url"` or `"b64_json"` |

@@ -1450,6 +1450,75 @@ func TestAzureImageStreamReportsOutputImages(t *testing.T) {
 	}
 }
 
+// TXE-7116: Azure's image streams run on the OpenAI handlers, which end on the first completed
+// event, so a streamed Azure generation or edit asking for more than one image is refused 400
+// caller_unsupported_parameter naming n, before any upstream call. The same n=2 without stream
+// still makes its one call.
+func TestAzureImageStreamRefusesMoreThanOneImage(t *testing.T) {
+	var mu sync.Mutex
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"created":1,"data":[{"b64_json":"aGk="},{"b64_json":"aGk="}]}`)
+	}))
+	defer server.Close()
+	provider := newAzureDecisionProvider(t)
+	key := newAzureDecisionKey(server.URL)
+	passHook := func(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return resp, err
+	}
+	checkRefused := func(t *testing.T, stream chan *schemas.BifrostStreamChunk, bifrostErr *schemas.BifrostError) {
+		t.Helper()
+		if stream != nil || bifrostErr == nil {
+			t.Fatalf("a stream was opened (err %+v), want a 400 naming n", bifrostErr)
+		}
+		if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+			t.Fatalf("status = %v, want 400", bifrostErr.StatusCode)
+		}
+		if got := bifrostErr.ResolveErrorType(); got != schemas.ErrorTypeCallerUnsupportedParameter {
+			t.Fatalf("error_type = %q, want %q", got, schemas.ErrorTypeCallerUnsupportedParameter)
+		}
+		if bifrostErr.Error == nil || bifrostErr.Error.Param != "n" {
+			t.Fatalf("error.param = %+v, want \"n\"", bifrostErr.Error)
+		}
+	}
+	generation := &schemas.BifrostImageGenerationRequest{
+		Provider: schemas.Azure,
+		Model:    "gpt-image-1.5",
+		Input:    &schemas.ImageGenerationInput{Prompt: "two foxes"},
+		Params:   &schemas.ImageGenerationParameters{N: schemas.Ptr(2), PartialImages: schemas.Ptr(1)},
+	}
+	edit := &schemas.BifrostImageEditRequest{
+		Provider: schemas.Azure,
+		Model:    "gpt-image-1.5",
+		Input:    &schemas.ImageEditInput{Prompt: "two hats", Images: []schemas.ImageInput{{Image: []byte("\x89PNG\r\n\x1a\nfake")}}},
+		Params:   &schemas.ImageEditParameters{N: schemas.Ptr(2), PartialImages: schemas.Ptr(1)},
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	stream, bifrostErr := provider.ImageGenerationStream(ctx, passHook, nil, key, generation)
+	checkRefused(t, stream, bifrostErr)
+	stream, bifrostErr = provider.ImageEditStream(ctx, passHook, nil, key, edit)
+	checkRefused(t, stream, bifrostErr)
+	mu.Lock()
+	if len(paths) != 0 {
+		t.Fatalf("refused requests reached Azure: %v", paths)
+	}
+	mu.Unlock()
+
+	if _, bifrostErr := provider.ImageGeneration(ctx, key, generation); bifrostErr != nil {
+		t.Fatalf("ImageGeneration n=2 without stream: %+v", bifrostErr.Error)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(paths) != 1 || paths[0] != "/openai/v1/images/generations" {
+		t.Fatalf("upstream calls = %v, want one to /openai/v1/images/generations", paths)
+	}
+}
+
 // First-generation sora on Azure (TXE-6533): the video generation jobs API.
 
 // azureSoraJobQueued is the create response sample from the Azure video generation quickstart.
