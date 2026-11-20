@@ -124,6 +124,9 @@ export const GROUPS = [
 					secret_access_key: "harness",
 					force_path_style: true,
 				},
+				// 547.4 (TXE-7328) needs a pending entry evicted before its upstream-slow call (2 s)
+				// answers, so the late output reaches the log through the merge upload.
+				writer: { pending_log_ttl: "500ms" },
 			};
 		},
 		vars: (p) => ({ ...providerError.vars(p), hybridLogstoreFixture: "1" }),

@@ -29,6 +29,11 @@ const (
 	DefaultWriterMaxBatchBytes            = 300 * 1024 * 1024
 	DefaultWriterQueueCapacity            = 10000
 	DefaultWriterDeferredUsageConcurrency = 5
+	// DefaultWriterPendingLogTTL is how long a request may sit idle (no chunk or
+	// other activity) before the logging plugin evicts its in-memory pending
+	// entry, persisting the input as a partial row that a late completion
+	// reconciles onto.
+	DefaultWriterPendingLogTTL = "15m"
 )
 
 // WriterConfig controls the async logging plugin writer queue and batch flush behavior.
@@ -38,6 +43,11 @@ type WriterConfig struct {
 	MaxBatchBytes            int    `json:"max_batch_bytes,omitempty"`
 	WriteQueueCapacity       int    `json:"write_queue_capacity,omitempty"`
 	DeferredUsageConcurrency int    `json:"deferred_usage_concurrency,omitempty"`
+	// PendingLogTTL is the idle time, as a Go duration, after which a request's
+	// pending log entry is evicted and persisted as a partial row (default 15m).
+	// A completion that arrives later is reconciled onto that row. The provider
+	// harness shortens it to reach that path (TXE-7328).
+	PendingLogTTL string `json:"pending_log_ttl,omitempty"`
 }
 
 // WithDefaults returns a copy of WriterConfig with zero-value fields filled.
@@ -60,6 +70,9 @@ func (c *WriterConfig) WithDefaults() WriterConfig {
 	}
 	if out.DeferredUsageConcurrency == 0 {
 		out.DeferredUsageConcurrency = DefaultWriterDeferredUsageConcurrency
+	}
+	if out.PendingLogTTL == "" {
+		out.PendingLogTTL = DefaultWriterPendingLogTTL
 	}
 	return out
 }

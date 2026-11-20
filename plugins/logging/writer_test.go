@@ -1165,6 +1165,46 @@ func TestPersistEvictedPartialSkipsEntryAlreadyTaken(t *testing.T) {
 	}
 }
 
+// TestConfiguredPendingLogTTLEvictsSooner (TXE-7328): writer.pending_log_ttl
+// sets the idle time after which the sweep evicts a pending entry, an entry
+// idle for less than that stays, and eviction markers keep the fixed TTL.
+func TestConfiguredPendingLogTTLEvictsSooner(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{Writer: &logstore.WriterConfig{PendingLogTTL: "1s"}}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	idleFor := func(id string, idle time.Duration) {
+		pending := evictablePending(id, "input-"+id)
+		at := time.Now().Add(-idle)
+		pending.CreatedAt = at
+		pending.LastActivity.Store(at.UnixNano())
+		plugin.pendingLogsEntries.Store(id, pending)
+	}
+	idleFor("idle-past-ttl", 2*time.Second)
+	idleFor("idle-within-ttl", 0)
+	// A marker older than the short TTL stays: its partial row may still sit in
+	// the write batch, and the marker is how a late finish finds it.
+	plugin.evictedPartials.Store("evicted-earlier", evictedPartialMarker{at: time.Now().Add(-2 * time.Second)})
+
+	plugin.cleanupStalePendingLogs()
+	if _, ok := plugin.evictedPartials.Load("evicted-earlier"); !ok {
+		t.Fatal("an eviction marker was dropped on the short pending TTL; it keeps the fixed pendingLogTTL")
+	}
+	if _, ok := plugin.pendingLogsEntries.Load("idle-past-ttl"); ok {
+		t.Fatal("an entry idle past the configured 1s TTL was not evicted")
+	}
+	if _, ok := plugin.evictedPartials.Load("idle-past-ttl"); !ok {
+		t.Fatal("the evicted entry left no partial-row marker")
+	}
+	if _, ok := plugin.pendingLogsEntries.Load("idle-within-ttl"); !ok {
+		t.Fatal("an entry idle for less than the TTL was evicted")
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+}
+
 // TestConcurrentEvictionAndCompletionKeepsEveryLog races the stale sweep against
 // terminal PostLLMHook calls for the same requests: whichever side wins each
 // entry, every request must end as a single success row with its input.
