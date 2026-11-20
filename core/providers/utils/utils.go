@@ -3580,10 +3580,42 @@ func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGette
 		if mt != nil {
 			mt.EndSpan(mhdl, schemas.SpanStatusOk, "")
 		}
+		stampPromptCacheTTLFromBody(ctx, jsonBody)
 		return jsonBody, nil
 	} else {
+		stampPromptCacheTTLFromBody(ctx, rawBody)
 		return rawBody, nil
 	}
+}
+
+// stampPromptCacheTTLFromBody records, for pricing, the prompt_cache_options.ttl of the body this
+// attempt sends the vendor (BifrostContextKeyRequestedPromptCacheTTL). Bifrost stamps the typed or
+// merged TTL before the attempt; this replaces it with what the body actually carries, so a raw
+// body, an extra param in a spelling the vendor does not read, or any later rewrite is priced as
+// sent (fork, TXE-7996). TestPricedPromptCacheTTLIsTheTTLKimiReceives (core/providers/moonshot)
+// fails when they differ. Pricing reads the TTL only for a vendor in
+// schemas.RequestTTLPricedCacheWrites, so the body is scanned only when the attempt's base
+// provider (a custom provider's included) is one of them.
+func stampPromptCacheTTLFromBody(ctx context.Context, body []byte) {
+	bifrostCtx, ok := ctx.(*schemas.BifrostContext)
+	if !ok || bifrostCtx == nil {
+		return
+	}
+	base, _ := bifrostCtx.Value(schemas.BifrostContextKeyBaseProviderType).(schemas.ModelProvider)
+	if _, priced := schemas.RequestTTLPricedCacheWrites[base]; !priced {
+		return
+	}
+	bifrostCtx.SetValue(schemas.BifrostContextKeyRequestedPromptCacheTTL, PromptCacheTTLInBody(body))
+}
+
+// PromptCacheTTLInBody returns the string prompt_cache_options.ttl of a JSON request body, or ""
+// when the body has none. It scans without decoding, so a body with no such field costs one pass.
+func PromptCacheTTLInBody(body []byte) string {
+	ttl := gjson.GetBytes(body, "prompt_cache_options.ttl")
+	if ttl.Type != gjson.String {
+		return ""
+	}
+	return ttl.Str
 }
 
 // MarshalConvertedRequestBody encodes a converted provider request as the JSON sent to the

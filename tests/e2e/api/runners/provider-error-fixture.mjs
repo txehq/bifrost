@@ -554,6 +554,14 @@ const fixturePricing = {
 		provider: "databricks", mode: "chat",
 		input_cost_per_token: 4.00001e-06, output_cost_per_token: 1.999998e-05, cache_read_input_token_cost: 3.9998e-07, cache_creation_input_token_cost: 5.00003e-06,
 	},
+	// Folder 654 (TXE-7996): a Kimi row with its two cache-write rates, $3/M under an hour and $6/M above. own_moonshot (a
+	// custom provider on the moonshot base) has no row under its own name, so its 2,000-token write from /pp/ownkey is
+	// priced from this row at the tier the request asked for.
+	"moonshot/fixture-kimi-ttl-priced": {
+		provider: "moonshot", mode: "chat",
+		input_cost_per_token: 0.000001, output_cost_per_token: 0.000002,
+		cache_creation_input_token_cost: 0.000003, cache_creation_input_token_cost_above_1hr: 0.000006,
+	},
 	"databricks/databricks-gemini-4-argon": {
 		provider: "databricks", mode: "chat",
 		input_cost_per_token: 2.49998e-06, output_cost_per_token: 1.249997e-05, cache_read_input_token_cost: 1.2502e-07, cache_creation_input_token_cost: 2.49998e-06,
@@ -1701,6 +1709,10 @@ const wireAnswer = (path, body, bytes) => {
 	// glm, moonshot and qwen bases points at /pp/ownkey, where each base posts chat to its own path. The call is kept in
 	// /__wire with the bearer that arrived, which is what the row reads.
 	if (path.startsWith("/pp/ownkey/") && path.endsWith("/chat/completions")) {
+		// Folder 654 (TXE-7996): Kimi reports a cache write as one figure, with no TTL tier.
+		if (body.model === "fixture-kimi-ttl-priced") {
+			return { status: 200, body: JSON.stringify({ id: "chatcmpl_ownkey_ttl", object: "chat.completion", created: 1, model: body.model, choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "hello" } }], usage: { prompt_tokens: 3000, completion_tokens: 200, total_tokens: 3200, prompt_tokens_details: { cached_write_tokens: 2000 } } }) };
+		}
 		return { status: 200, body: JSON.stringify({ id: "chatcmpl_ownkey", object: "chat.completion", created: 1, model: body.model, choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "hello" } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }) };
 	}
 	// MiniMax answers its failures inside a 200 as base_resp, with no result (TXE-6588, contract C6). The model
