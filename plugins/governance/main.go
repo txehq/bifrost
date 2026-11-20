@@ -1010,6 +1010,11 @@ func (p *GovernancePlugin) decide(ctx *schemas.BifrostContext, result *Evaluatio
 	case DecisionRateLimited, DecisionTokenLimited, DecisionRequestLimited:
 		return result, refusal(result, 429, schemas.ErrorTypePolicyRateLimited)
 
+	case DecisionModelPricingUnconfirmed:
+		refused := refusal(result, 429, schemas.ErrorTypePolicyRateLimited)
+		refused.ExtraFields.RetryAfter = unpricedProbeRetryAfterMs
+		return result, refused
+
 	case DecisionBudgetExceeded:
 		return result, refusal(result, 402, schemas.ErrorTypePolicyBudgetExceeded)
 
@@ -1499,6 +1504,12 @@ func settlesIncurredUsage(ctx *schemas.BifrostContext, err *schemas.BifrostError
 //   - *schemas.BifrostError: The processed error
 //   - error: Any error that occurred during processing
 func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	// A budgeted request's hold on unconfirmed rows ends with its last post-hook call, whichever
+	// path returns below; the usage worker takes it over to confirm the rows when the answer priced.
+	probeType, _, _, _ := bifrost.GetResponseFields(result, err)
+	probe := takeUnpricedProbe(ctx, err, bifrost.IsStreamRequestType(probeType), bifrost.IsFinalChunk(ctx))
+	defer func() { probe.release() }()
+
 	if _, ok := ctx.Value(governanceRejectedContextKey).(bool); ok && !settlesIncurredUsage(ctx, err) {
 		return result, err, nil
 	}
@@ -1610,6 +1621,8 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		bodyModel, _ := ctx.Value(passthroughBodyModelContextKey).(string)
 		read, _ := ctx.Value(passthroughReadContextKey).(bool)
 		holder := unpricedHolder(ctx)
+		workerProbe := probe
+		probe = nil
 
 		p.wg.Add(1)
 		go func() {
@@ -1622,7 +1635,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 				}
 			}()
 			// Use the requested model for usage tracking
-			p.postHookWorker(result, err, provider, requestedModel, requestType, requestID, billingNonce, isFinalChunk, attemptNumber, fallbackIndex, sessionContinuation, pricingScopes, accountedBudgets, accountedRateLimits, routingMetadata, bodyModel, read, holder)
+			p.postHookWorker(result, err, provider, requestedModel, requestType, requestID, billingNonce, isFinalChunk, attemptNumber, fallbackIndex, sessionContinuation, pricingScopes, accountedBudgets, accountedRateLimits, routingMetadata, bodyModel, read, holder, workerProbe)
 		}()
 	} else if bodyModel, _ := ctx.Value(passthroughBodyModelContextKey).(string); bodyModel != "" && (!bifrost.IsStreamRequestType(requestType) || isFinalChunk) && (passthroughGenerated(result) || passthroughEscapedQueue(result, nil, requestID)) {
 		// A passthrough whose body named the model it runs, answered with no usage the provider
@@ -2077,7 +2090,10 @@ func responseTokensUsed(result *schemas.BifrostResponse) int {
 //   - isFinalChunk: Whether the request is the final chunk
 //   - skipRequestCount: Whether this is a session continuation that must not count as a request
 //   - pricingScopes: Prebuilt pricing lookup scopes using governance VK ID (nil if not applicable)
-func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, provider schemas.ModelProvider, model string, requestType schemas.RequestType, requestID string, billingNonce string, isFinalChunk bool, attemptNumber int, fallbackIndex int, skipRequestCount bool, pricingScopes *modelcatalog.PricingLookupScopes, budgets, rateLimits []schemas.Limit, routingMetadata *schemas.BifrostRoutingMetadata, bodyModel string, passthroughRead bool, holder string) {
+func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, provider schemas.ModelProvider, model string, requestType schemas.RequestType, requestID string, billingNonce string, isFinalChunk bool, attemptNumber int, fallbackIndex int, skipRequestCount bool, pricingScopes *modelcatalog.PricingLookupScopes, budgets, rateLimits []schemas.Limit, routingMetadata *schemas.BifrostRoutingMetadata, bodyModel string, passthroughRead bool, holder string, probe *unpricedProbe) {
+	// The request's hold on unconfirmed rows (TXE-7977) ends here; an answer that priced above $0
+	// confirms them first.
+	defer probe.release()
 	// Determine if request was successful
 	success := (result != nil)
 	billedReason := "success"
@@ -2175,6 +2191,9 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifro
 			}
 			if passthrough := result.PassthroughResponse; passthrough != nil {
 				pricedAs = modelcatalog.PassthroughPricingRequestType(provider, result.GetExtraFields().PassthroughPath, passthrough.PassthroughUsage)
+			}
+			if answerCost > 0 {
+				probe.confirm()
 			}
 			p.resolver.noteUnpricedAnswer(provider, priced, fallback, requestType, pricedAs, answerCost, pricingScopes, requestID, limitIDs(budgets), holder)
 		}

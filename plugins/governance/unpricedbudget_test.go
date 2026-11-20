@@ -202,10 +202,15 @@ func chatOn(model string) *schemas.BifrostRequest {
 	return &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: model}}
 }
 
+// preLLM runs one request's admission and ends it there, as a request that never reached the
+// provider: whatever row it held for a budgeted key (TXE-7977) is released, so the next call is
+// admitted as a request that follows it, not one concurrent with it.
 func preLLM(t testing.TB, plugin *GovernancePlugin, vk string, req *schemas.BifrostRequest) *schemas.LLMPluginShortCircuit {
 	t.Helper()
-	_, shortCircuit, err := plugin.PreLLMHook(resolverCtx(plugin.store, vk), req)
+	ctx := resolverCtx(plugin.store, vk)
+	_, shortCircuit, err := plugin.PreLLMHook(ctx, req)
 	require.NoError(t, err)
+	takeUnpricedProbe(ctx, nil, false, true).release()
 	return shortCircuit
 }
 
@@ -830,7 +835,9 @@ func TestQueuedPassthroughAcknowledgmentUnderABudgetRefusesTheModel(t *testing.T
 	_, _, err = plugin.PostLLMHook(ctx, answer(schemas.PassthroughStreamRequest, `data: chunk`), nil)
 	require.NoError(t, err)
 	plugin.wg.Wait()
-	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", request(schemas.PassthroughStreamRequest)), "a chunk before the last does not refuse the model")
+	// A chunk before the last does not refuse the model as unpriced; while the stream is in flight
+	// on a row no answer has priced, a concurrent request of the key is held off (TXE-7977).
+	requireProbeRefusal(t, preLLM(t, plugin, "sk-bf-budget", request(schemas.PassthroughStreamRequest)), "a chunk before the last does not refuse the model")
 	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 	_, _, err = plugin.PostLLMHook(ctx, answer(schemas.PassthroughStreamRequest, `data: last`), nil)
 	require.NoError(t, err)

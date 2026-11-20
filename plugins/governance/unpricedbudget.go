@@ -343,7 +343,8 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 		// The answer is charged under no model of its own: the body's model, named as it was
 		// evaluated, is what an unpriced answer refuses.
 		ctx.SetValue(passthroughBodyModelContextKey, bodyModel)
-		return nil
+		return r.probeUnconfirmed(ctx, requestType, provider, bodyModel, liveUnitPricingMode(ctx, requestType),
+			modelcatalog.PricingLookupScopesFromContext(ctx, string(provider)), unpricedScopes(limitIDs(budgets), unpricedHolder(ctx)))
 	}
 	if requestType == schemas.BatchCreateRequest {
 		// An inline batch naming no model of its own: each request was gated as its own model before
@@ -430,7 +431,7 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 			}
 		}
 	}
-	return nil
+	return r.probeUnconfirmed(ctx, requestType, provider, model, pricedAs, scopes, budgetIDs)
 }
 
 // noteUnpricedAnswer is called for an answer charged to the dollar budgets budgetIDs. When the
