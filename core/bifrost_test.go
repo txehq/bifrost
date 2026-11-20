@@ -13559,6 +13559,128 @@ func TestNestedPriceFieldsAreDeclaredAndRefused(t *testing.T) {
 	}
 }
 
+// videoTierProbeTiers are the tiers TestVideoTierReadersMatchConverters sends. Each is one a
+// video provider documents; a converter that refuses one sends nothing for it, which is not a read.
+var videoTierProbeTiers = []string{"720p", "1080p", "4k"}
+
+// videoTierForwardedNotRendered are providers whose converter puts extra_params.resolution in
+// the body only because it forwards every extra param, with the reason the tier is not counted
+// as rendered. Such a provider stays out of schemas.VideoTierReaderFor, so a requested tier is
+// priced at the dearer of it and the size: it never lowers the price.
+var videoTierForwardedNotRendered = map[schemas.ModelProvider]string{
+	schemas.Replicate: "replicate.ToReplicateVideoGenerationInput copies every extra param into the hosted model's input; whether that model has a resolution input, and renders it, depends on the model",
+}
+
+// TestVideoTierReadersMatchConverters keeps schemas.VideoTierReaderFor in step with the video
+// converters (fork, TXE-7101). Settlement reads the rate band from a requested resolution tier
+// only when that table says the provider renders it, so:
+//   - a provider whose converter sends the tier and is not listed is priced as if it might not
+//     render it: a job sent with a resolution and no size can be charged the unbanded rate;
+//   - a provider listed that no longer sends it is priced at the tier the caller named, whatever
+//     it rendered.
+//
+// Every standard provider is sent a video create bare, then with each tier in the typed field and
+// then in extra_params.resolution, with extra-param passthrough off so only what the converter
+// itself reads can land. A tier that changes what reaches the upstream is read from there.
+func TestVideoTierReadersMatchConverters(t *testing.T) {
+	upstream := newGuardUpstream(t)
+	client := &Bifrost{logger: NewNoOpLogger()}
+	boundary := regexp.MustCompile(`--[0-9A-Za-z'()+_,\-./:=?]{8,70}`)
+	// Runware names every task with a fresh UUID.
+	uuid := regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
+
+	// signature is everything the converter sent for one create: each request's target and its
+	// body, with a multipart boundary (random per request) blanked. "" when nothing was sent.
+	signature := func(provider schemas.Provider, key schemas.Key, model string, params schemas.VideoGenerationParameters) string {
+		if base, needed := nestedPriceProbeVideoBaseSeconds[provider.GetProviderKey()]; needed && params.Seconds == nil {
+			params.Seconds = schemas.Ptr(base)
+		}
+		upstream.take()
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		func() {
+			// The upstream's answer is no provider's response shape; what was sent is recorded.
+			defer func() { _ = recover() }()
+			_, _ = provider.VideoGeneration(ctx, key, &schemas.BifrostVideoGenerationRequest{
+				Provider: provider.GetProviderKey(), Model: model,
+				Input: &schemas.VideoGenerationInput{Prompt: guardOriginalText}, Params: &params,
+			})
+		}()
+		var sent strings.Builder
+		for _, request := range upstream.take() {
+			sent.WriteString(request.target)
+			sent.WriteByte('\n')
+			sent.Write(uuid.ReplaceAll(boundary.ReplaceAll(request.body, []byte("--BOUNDARY")), []byte("UUID")))
+			sent.WriteByte('\n')
+		}
+		return sent.String()
+	}
+
+	observed := map[schemas.ModelProvider]schemas.VideoTierReader{}
+	sentAny, probed := 0, 0
+	for _, providerKey := range schemas.StandardProviders {
+		t.Run(string(providerKey), func(t *testing.T) {
+			config := &schemas.ProviderConfig{
+				NetworkConfig: schemas.NetworkConfig{BaseURL: "http://" + guardUpstreamHost, DefaultRequestTimeoutInSeconds: 10},
+				ProxyConfig: &schemas.ProxyConfig{
+					Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(upstream.proxyURL), CACertPEM: schemas.NewSecretVar(upstream.caPEM),
+				},
+			}
+			provider, err := client.createBaseProvider(providerKey, config)
+			if err != nil {
+				t.Fatalf("construct: %v", err)
+			}
+			var reader schemas.VideoTierReader
+			for _, model := range append([]string{guardModel(providerKey)}, nestedPriceProbeModels[providerKey]...) {
+				key := guardKey(providerKey)
+				bare := signature(provider, key, model, schemas.VideoGenerationParameters{})
+				if bare == "" {
+					continue
+				}
+				sentAny++
+				if again := signature(provider, key, model, schemas.VideoGenerationParameters{}); again != bare {
+					t.Fatalf("model %s: two identical creates sent different requests, so a tier cannot be told apart; blank what varies in signature.\nfirst:  %s\nsecond: %s", model, bare, again)
+				}
+				for _, tier := range videoTierProbeTiers {
+					if typed := signature(provider, key, model, schemas.VideoGenerationParameters{Resolution: schemas.TolerantString(tier)}); typed != "" && typed != bare {
+						reader.Typed = true
+					}
+					if extra := signature(provider, key, model, schemas.VideoGenerationParameters{ExtraParams: map[string]any{"resolution": tier}}); extra != "" && extra != bare {
+						reader.Extra = true
+					}
+				}
+			}
+			probed++
+			observed[providerKey] = reader
+			if reason, forwarded := videoTierForwardedNotRendered[providerKey]; forwarded {
+				if !reader.Extra || reader.Typed {
+					t.Errorf("videoTierForwardedNotRendered lists %s, but its converter now sends extra_params.resolution: %v and reads the typed field: %v; remove the entry and list it in schemas.VideoTierReaderFor if it reads the tier", providerKey, reader.Extra, reader.Typed)
+				}
+				t.Logf("%s forwards extra_params.resolution without reading it: %s", providerKey, reason)
+				reader.Extra = false
+			}
+			listed := schemas.VideoTierReaderFor(providerKey)
+			if reader.Typed != listed.Typed || reader.Extra != listed.Extra {
+				t.Errorf("%s's video converter reads the resolution tier from the typed field: %v, from extra_params.resolution: %v; schemas.VideoTierReaderFor lists typed: %v, extra: %v. Correct its entry in core/schemas/videotiers.go, naming the code that reads it, so settlement prices the tier the provider rendered",
+					providerKey, reader.Typed, reader.Extra, listed.Typed, listed.Extra)
+			}
+		})
+	}
+	// The rest needs every provider: only a full run can tell.
+	if probed != len(schemas.StandardProviders) {
+		return
+	}
+	// The probe must be seeing video bodies: the providers listed today all send one.
+	if sentAny < 6 {
+		t.Fatalf("only %d provider/model pairs sent a video create to the upstream; the probe is not reaching the converters", sentAny)
+	}
+	for provider := range schemas.VideoTierReaders() {
+		if !slices.Contains(schemas.StandardProviders, provider) {
+			t.Errorf("schemas.VideoTierReaderFor lists %s, which is not a standard provider this test can probe", provider)
+		}
+	}
+	t.Logf("observed tier readers: %+v", observed)
+}
+
 // A refusal reached through the core request path echoes a bounded amount of the caller's input
 // (fork, TXE-7142). A megabyte-scale extra-param key that names the model (the rule ignores
 // underscores) and a megabyte-scale video size are both refused, with no upstream call, and the

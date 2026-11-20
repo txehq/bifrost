@@ -2800,6 +2800,9 @@ var videoResolutionTierEdges = map[string]int{
 	"1080p": 1080, "1080P": 1080,
 	"2k": 1440, "2K": 1440, "1440p": 1440, "1440P": 1440,
 	"4k": 2160, "4K": 2160, "2160p": 2160, "2160P": 2160,
+	// BFL's own names for the same tiers, which its video converter accepts as they are
+	// (core/providers/bfl videoResolutions, TXE-7101).
+	"hd": 720, "fhd": 1080, "qhd": 1440, "uhd": 2160,
 }
 
 // guardrailRateSet is the eight per-unit rates of a provider-side guardrail (fork, TXE-7365).

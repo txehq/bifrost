@@ -9763,11 +9763,60 @@ func TestCalculateVideoCostDetails_ReportsTheTierThatSetTheBand(t *testing.T) {
 	assert.Equal(t, "", priced(VideoPricingDimensions{Size: "3840x2160", SizeReported: true, Resolution: "1080p"}, schemas.Gemini).PricedResolution)
 }
 
+// A job sent with a resolution tier and no size is priced at that tier's band on every provider
+// whose converter renders the tier (TXE-7101). xAI and BFL send the tier but were missing from the
+// table of tier readers, so a cheap tier was charged the unbanded rate; MiniMax stopped reading
+// extra_params.resolution, so a tier named only there no longer sets the band.
+func TestVideoBandSize_RequestedTierOnEveryTierReader(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		OutputCostPerSecond:      bifrost.Ptr(0.40),
+		OutputCostPerSecond480p:  bifrost.Ptr(0.05),
+		OutputCostPerSecond720p:  bifrost.Ptr(0.10),
+		OutputCostPerSecond1080p: bifrost.Ptr(0.20),
+	}
+	seconds := 6
+	for _, tc := range []struct {
+		name     string
+		provider schemas.ModelProvider
+		dims     VideoPricingDimensions
+		want     string
+	}{
+		{name: "xai 480p typed", provider: schemas.XAI, dims: VideoPricingDimensions{Resolution: "480p"}, want: "480p"},
+		{name: "xai 720p extra only", provider: schemas.XAI, dims: VideoPricingDimensions{Extra: map[string]any{"resolution": "720p"}}, want: "720p"},
+		{name: "bfl fhd typed", provider: schemas.BFL, dims: VideoPricingDimensions{Resolution: "fhd"}, want: "fhd"},
+		{name: "bfl 720p typed", provider: schemas.BFL, dims: VideoPricingDimensions{Resolution: "720p"}, want: "720p"},
+		{name: "volcengine 480p extra only", provider: schemas.Volcengine, dims: VideoPricingDimensions{Extra: map[string]any{"resolution": "480p"}}, want: "480p"},
+		{name: "modelark 480p typed", provider: schemas.ModelArk, dims: VideoPricingDimensions{Resolution: "480p"}, want: "480p"},
+		{name: "byteplus 480p extra only", provider: schemas.BytePlus, dims: VideoPricingDimensions{Extra: map[string]any{"resolution": "480p"}}, want: "480p"},
+		// MiniMax renders its default tier when the tier is only in extra_params: a cheaper tier
+		// named there cannot lower the price.
+		{name: "minimax 480p extra only is not rendered", provider: schemas.MiniMax, dims: VideoPricingDimensions{Extra: map[string]any{"resolution": "480p"}}, want: ""},
+		{name: "minimax 480p typed", provider: schemas.MiniMax, dims: VideoPricingDimensions{Resolution: "480p"}, want: "480p"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.dims.Seconds = &seconds
+			assert.Equal(t, tc.want, tc.dims.bandSize(tc.provider, &p, false))
+		})
+	}
+	// Every listed reader, from where it reads: a tier cheaper than the unbanded rate prices the job.
+	for provider, reader := range schemas.VideoTierReaders() {
+		if reader.Typed {
+			d := VideoPricingDimensions{Resolution: "480p", Seconds: &seconds}
+			assert.Equal(t, "480p", d.bandSize(provider, &p, false), "%s typed", provider)
+		}
+		if reader.Extra {
+			d := VideoPricingDimensions{Extra: map[string]any{"resolution": "480p"}, Seconds: &seconds}
+			assert.Equal(t, "480p", d.bandSize(provider, &p, false), "%s extra", provider)
+		}
+	}
+}
+
 func TestVideoResolutionBand_TierLabels(t *testing.T) {
 	for label, want := range map[string]int{
 		"480p": 480, "480P": 480, "720p": 720, "768P": 768, "1080p": 1080,
 		"2K": 1440, "2k": 1440, "4k": 2160, "4K": 2160, " 4k ": 2160,
 		"540p": 540, "360P": 360, "576p": 0, "auto": 0, "": 0,
+		"hd": 720, "fhd": 1080, "FHD": 1080, "qhd": 1440, "uhd": 2160,
 	} {
 		assert.Equal(t, want, videoResolutionBand(label), label)
 	}

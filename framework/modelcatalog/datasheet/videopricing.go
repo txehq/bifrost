@@ -49,7 +49,7 @@ type VideoPricingDimensions struct {
 	// set the band (VideoCostDetails.PricedResolution, or TierOnlyResolution on an unpriced job).
 	// That choice was made with the request's sources and the custom provider's base in hand,
 	// neither of which a reprice has, so the tier prices the job as recorded instead of being
-	// judged again against videoTierReaders. Only RepriceFromLog sets it; it is never persisted.
+	// judged again against schemas.VideoTierReaderFor. Only RepriceFromLog sets it; it is never persisted.
 	ResolutionSettled bool `json:"-"`
 	// BaseProvider is the base provider of a custom provider, set by the caller that can
 	// resolve it. Pricing reads it only to know which converter rendered the job (see
@@ -326,30 +326,16 @@ func (d VideoPricingDimensions) BandResolution() string {
 	return ""
 }
 
-// videoTierReader says where a provider's create converter reads the resolution tier from, so a
-// tier the provider renders can set the band and one it never reads cannot (TXE-7349). Typed is
-// the unified field (VideoGenerationParameters.Resolution); extra is extra_params.resolution.
-// The HTTP adapters fill both; a Go SDK caller may set one. Each entry names the code that reads
-// it, and a provider is added only from its converter.
-type videoTierReader struct {
-	typed, extra bool
-	source       string
-}
-
-var videoTierReaders = map[schemas.ModelProvider]videoTierReader{
-	schemas.Gemini:    {typed: true, extra: true, source: "gemini.ToGeminiVideoGenerationRequest: parameters.resolution from extra_params.resolution, else the typed field; size sets only aspectRatio"},
-	schemas.Vertex:    {typed: true, extra: true, source: "vertex sends Veo through gemini.ToGeminiVideoGenerationRequest"},
-	schemas.MiniMax:   {extra: true, source: "minimax video create: extra_params.resolution replaces the tier derived from size"},
-	schemas.DashScope: {typed: true, source: "dashscope video create: parameters.resolution from the typed field (Wan 2.7+, and image-to-video before it)"},
-	schemas.Kling:     {typed: true, source: "kling video create: settings.resolution from the typed field"},
-	schemas.BytePlus:  {typed: true, source: "byteplus video create: the typed field overrides the tier a size implies"},
-}
+// Where each provider's create converter reads the resolution tier from is
+// schemas.VideoTierReaderFor (TXE-7349, TXE-7101): a tier the provider renders can set the band
+// and one it never reads cannot. core's TestVideoTierReadersMatchConverters keeps that table in
+// step with the converters.
 
 // requestedTier is the resolution tier the request named and whether the provider that rendered
 // the job reads it from where it was named. A tier the provider reads from either source counts
 // as rendered.
 func (d VideoPricingDimensions) requestedTier(renderer schemas.ModelProvider) (string, bool) {
-	reader := videoTierReaders[renderer]
+	reader := schemas.VideoTierReaderFor(renderer)
 	typed := ""
 	if videoResolutionBand(d.Resolution) > 0 {
 		typed = d.Resolution
@@ -359,9 +345,9 @@ func (d VideoPricingDimensions) requestedTier(renderer schemas.ModelProvider) (s
 		extra = resolution
 	}
 	switch {
-	case typed != "" && reader.typed:
+	case typed != "" && reader.Typed:
 		return typed, true
-	case extra != "" && reader.extra:
+	case extra != "" && reader.Extra:
 		return extra, true
 	case typed != "":
 		return typed, false
@@ -381,7 +367,7 @@ func (d VideoPricingDimensions) renderer(provider schemas.ModelProvider) schemas
 //   - a tier a settlement recorded as the one that set the band (ResolutionSettled), on a
 //     reprice;
 //   - a size the provider reported, which is what it rendered;
-//   - else a requested tier the provider reads (see videoTierReaders), which is what it
+//   - else a requested tier the provider reads (see schemas.VideoTierReaderFor), which is what it
 //     rendered whatever size was also asked for (Veo with size 3840x2160 and resolution 1080p
 //     renders 1080p);
 //   - else the requested size, or the unbanded rate when there is none, unless a tier the
