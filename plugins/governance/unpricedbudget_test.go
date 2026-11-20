@@ -132,7 +132,8 @@ func unpricedBudgetPlugin(t testing.TB) (*GovernancePlugin, *LocalGovernanceStor
 		"token-image":{"provider":"openai","mode":"image_generation","output_cost_per_image_token":0.00004},
 		"clip-1":{"provider":"openai","mode":"video_generation","output_cost_per_second":0.1},
 		"free-on-key":{"provider":"openai","mode":"chat","input_cost_per_token":0.000001,"output_cost_per_token":0.000002},
-		"embed-1":{"provider":"openai","mode":"embedding","input_cost_per_token":0.0000001}
+		"embed-1":{"provider":"openai","mode":"embedding","input_cost_per_token":0.0000001},
+		"alias-label":{"provider":"openai","mode":"chat","input_cost_per_token":0.000001,"output_cost_per_token":0.000002}
 	}`), 0o600))
 	ds := datasheet.New(nil, NewMockLogger(), datasheet.Config{URL: "file://" + sheet})
 	require.NoError(t, ds.LoadFromURLIntoMemory(context.Background()))
@@ -161,7 +162,7 @@ func unpricedBudgetPlugin(t testing.TB) (*GovernancePlugin, *LocalGovernanceStor
 	}, nil, nil)
 	require.NoError(t, err)
 	providers := &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
-		schemas.OpenAI: {Keys: []schemas.Key{{ID: keyID}}},
+		schemas.OpenAI: {Keys: []schemas.Key{{ID: keyID, Aliases: schemas.KeyAliases{"alias-label": {ModelID: "free-chat"}}}}},
 	}}
 	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, catalog, nil, providers)
 	require.NoError(t, err)
@@ -498,4 +499,72 @@ func TestUnpricedAnswerBesideAPricedRoutingCallRefusesTheModelAfter(t *testing.T
 	require.NoError(t, err)
 	plugin.wg.Wait()
 	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", image), "the model whose answer priced at $0 beside a priced classifier")
+}
+
+// An image request the content filter answered with no image delivered nothing to price: its $0
+// refuses nothing.
+func TestContentFilteredImageAnswerDoesNotRefuseTheModel(t *testing.T) {
+	plugin, _ := unpricedBudgetPlugin(t)
+	image := &schemas.BifrostRequest{
+		RequestType:            schemas.ImageGenerationRequest,
+		ImageGenerationRequest: &schemas.BifrostImageGenerationRequest{Provider: schemas.OpenAI, Model: "token-image"},
+	}
+	ctx := resolverCtx(plugin.store, "sk-bf-budget")
+	_, shortCircuit, err := plugin.PreLLMHook(ctx, image)
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit)
+	_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{ImageGenerationResponse: &schemas.BifrostImageGenerationResponse{
+		ContentFilter: &schemas.ContentFilterInfo{FilteredCount: 1},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.ImageGenerationRequest, Provider: schemas.OpenAI, OriginalModelRequested: "token-image",
+			RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenAI, Model: "token-image"},
+		},
+	}}, nil)
+	require.NoError(t, err)
+	plugin.wg.Wait()
+	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", image), "a fully filtered answer does not refuse the model")
+}
+
+// A passthrough whose body names its model, answered with no usage the provider could read
+// (Runware without includeCost), is an answer at $0 all the same, and refuses the model after.
+func TestPassthroughAnswerWithoutUsageRefusesItsBodyModel(t *testing.T) {
+	plugin, _ := unpricedBudgetPlugin(t)
+	req := &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+		Provider: schemas.OpenAI, Method: "POST", Path: "/v1/images", Body: []byte(`[{"model":"token-image"}]`),
+	}}
+	ctx := resolverCtx(plugin.store, "sk-bf-budget")
+	_, shortCircuit, err := plugin.PreLLMHook(ctx, req)
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit)
+	_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{PassthroughResponse: &schemas.BifrostPassthroughResponse{
+		StatusCode: 200,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.PassthroughRequest, Provider: schemas.OpenAI,
+			RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenAI},
+		},
+	}}, nil)
+	require.NoError(t, err)
+	plugin.wg.Wait()
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", req), "the same passthrough after an answer with no usage")
+}
+
+// A key alias that serves a priced label as a free model prices the answer as accounting does,
+// from the alias's target: its $0 is the price, and refuses nothing.
+func TestAnswerFreeUnderTheServingAliasDoesNotRefuseTheModel(t *testing.T) {
+	plugin, _ := unpricedBudgetPlugin(t)
+	ctx := resolverCtx(plugin.store, "sk-bf-budget")
+	_, shortCircuit, err := plugin.PreLLMHook(ctx, chatOn("alias-label"))
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit)
+	ctx.SetValue(schemas.BifrostContextKeySelectedKeyID, "openai-key-1")
+	_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		Usage: &schemas.BifrostLLMUsage{PromptTokens: 100, CompletionTokens: 10, TotalTokens: 110},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.ChatCompletionRequest, Provider: schemas.OpenAI, OriginalModelRequested: "alias-label",
+			RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenAI, Model: "alias-label", ResolvedKeyAlias: &schemas.ResolvedKeyAlias{ModelID: "free-chat"}},
+		},
+	}}, nil)
+	require.NoError(t, err)
+	plugin.wg.Wait()
+	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", chatOn("alias-label")), "an answer free under the serving alias does not refuse the label")
 }

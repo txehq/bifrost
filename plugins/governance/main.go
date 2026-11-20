@@ -29,9 +29,10 @@ const PluginName = "governance"
 
 const (
 	governanceRejectedContextKey schemas.BifrostContextKey = "bf-governance-rejected"
-	// passthroughBodyModelsContextKey holds the models a passthrough body names when the request
-	// names none of its own ([]string), so the post-hook can judge its answer by them.
-	passthroughBodyModelsContextKey schemas.BifrostContextKey = "bf-governance-passthrough-body-models"
+	// passthroughBodyModelContextKey holds the one model a passthrough body names when the request
+	// names none of its own (string), so the post-hook can judge its answer by it. A body naming
+	// several is refused under a dollar budget, and nothing is recorded for it.
+	passthroughBodyModelContextKey schemas.BifrostContextKey = "bf-governance-passthrough-body-model"
 
 	VirtualKeyPrefix = "sk-bf-"
 )
@@ -1237,17 +1238,22 @@ func (p *GovernancePlugin) preLLMHook(ctx *schemas.BifrostContext, req *schemas.
 			// The answer is charged under no model of its own; the body's models, named as they are
 			// evaluated below, are what prices it and what an unpriced answer refuses (TXE-7957,
 			// unpricedbudget.go).
-			evaluated := make([]string, 0, len(bodyModels))
+			distinct := make(map[string]struct{}, len(bodyModels))
 			for _, bodyModel := range bodyModels {
 				if resourceNamed {
 					bodyModel = bareResourceModel(bodyModel)
 				}
-				if !slices.Contains(evaluated, bodyModel) {
-					evaluated = append(evaluated, bodyModel)
+				if _, seen := distinct[bodyModel]; !seen {
+					distinct[bodyModel] = struct{}{}
+					if evaluationRequest.BodyModel == "" {
+						evaluationRequest.BodyModel = bodyModel
+					}
 				}
 			}
-			evaluationRequest.BodyModels = evaluated
-			ctx.SetValue(passthroughBodyModelsContextKey, evaluated)
+			evaluationRequest.BodyModelCount = len(distinct)
+			if len(distinct) == 1 {
+				ctx.SetValue(passthroughBodyModelContextKey, evaluationRequest.BodyModel)
+			}
 		}
 		for _, bodyModel := range bodyModels {
 			if resourceNamed {
@@ -1603,7 +1609,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		routingMetadata, _ := schemas.InitialAttemptRoutingMetadataFromContext(ctx)
 		// A live session's continuation bills its usage but was already counted as a request at admission.
 		sessionContinuation := isLiveSessionContinuation(ctx)
-		bodyModels, _ := ctx.Value(passthroughBodyModelsContextKey).([]string)
+		bodyModel, _ := ctx.Value(passthroughBodyModelContextKey).(string)
 
 		p.wg.Add(1)
 		go func() {
@@ -1616,8 +1622,21 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 				}
 			}()
 			// Use the requested model for usage tracking
-			p.postHookWorker(result, err, provider, requestedModel, requestType, requestID, billingNonce, isFinalChunk, attemptNumber, fallbackIndex, sessionContinuation, pricingScopes, accountedBudgets, accountedRateLimits, routingMetadata, bodyModels)
+			p.postHookWorker(result, err, provider, requestedModel, requestType, requestID, billingNonce, isFinalChunk, attemptNumber, fallbackIndex, sessionContinuation, pricingScopes, accountedBudgets, accountedRateLimits, routingMetadata, bodyModel)
 		}()
+	} else if bodyModel, _ := ctx.Value(passthroughBodyModelContextKey).(string); bodyModel != "" && passthroughGenerated(result) {
+		// A passthrough whose body named the model it runs, answered with no usage the provider
+		// could read (Runware without includeCost), is not charged and counts no request. It is
+		// still an answer under the budgets it was admitted against, priced at $0 (TXE-7957).
+		if limits := ctx.Grant().Limits(); limits != nil {
+			budgets := limits.Budgets()
+			if skipHolderUsage {
+				budgets = grant.LimitsFrom(budgets, untrackedHolderKinds...)
+			}
+			if len(budgets) > 0 {
+				p.resolver.noteUnpricedAnswer(provider, bodyModel, requestType, 0, pricingScopes, requestID, limitIDs(budgets))
+			}
+		}
 	}
 
 	return result, err, nil
@@ -2053,7 +2072,7 @@ func responseTokensUsed(result *schemas.BifrostResponse) int {
 //   - isFinalChunk: Whether the request is the final chunk
 //   - skipRequestCount: Whether this is a session continuation that must not count as a request
 //   - pricingScopes: Prebuilt pricing lookup scopes using governance VK ID (nil if not applicable)
-func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, provider schemas.ModelProvider, model string, requestType schemas.RequestType, requestID string, billingNonce string, isFinalChunk bool, attemptNumber int, fallbackIndex int, skipRequestCount bool, pricingScopes *modelcatalog.PricingLookupScopes, budgets, rateLimits []schemas.Limit, routingMetadata *schemas.BifrostRoutingMetadata, bodyModels []string) {
+func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, provider schemas.ModelProvider, model string, requestType schemas.RequestType, requestID string, billingNonce string, isFinalChunk bool, attemptNumber int, fallbackIndex int, skipRequestCount bool, pricingScopes *modelcatalog.PricingLookupScopes, budgets, rateLimits []schemas.Limit, routingMetadata *schemas.BifrostRoutingMetadata, bodyModel string) {
 	// Determine if request was successful
 	success := (result != nil)
 	billedReason := "success"
@@ -2117,9 +2136,9 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifro
 		// and the model refused under a budget from now on (TXE-7957, unpricedbudget.go).
 		// A passthrough naming no model of its own is judged by the models its body names.
 		if len(budgets) > 0 && budgetPricingOf(requestType) == budgetPricingAnswer && deliveredAnswer(result) {
-			models := []string{model}
-			if model == "" && len(bodyModels) > 0 {
-				models = bodyModels
+			priced := model
+			if priced == "" {
+				priced = bodyModel
 			}
 			// The answer's own cost, without the calls Bifrost prices beside it (routing classifiers,
 			// guardrail judges, MCP tools, the semantic cache's embedding lookup): none of them may
@@ -2134,9 +2153,7 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifro
 					}
 				}
 			}
-			for _, priced := range models {
-				p.resolver.noteUnpricedAnswer(provider, priced, requestType, answerCost, pricingScopes, requestID, limitIDs(budgets))
-			}
+			p.resolver.noteUnpricedAnswer(provider, priced, requestType, answerCost, pricingScopes, requestID, limitIDs(budgets))
 		}
 
 		// Create usage update for tracker (business logic)

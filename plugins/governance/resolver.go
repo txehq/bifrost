@@ -52,9 +52,10 @@ type EvaluationRequest struct {
 	// work it carries (the object, or every task of an array), each of which was evaluated on its
 	// own before the request's pass (TXE-7957).
 	BodyModelsComplete bool `json:"body_models_complete,omitempty"`
-	// BodyModels are the distinct models a passthrough body names when the request names none of
-	// its own, as each was evaluated.
-	BodyModels []string `json:"body_models,omitempty"`
+	// BodyModel is the first, and BodyModelCount the number, of the distinct models a passthrough
+	// body names when the request names none of its own, as each was evaluated.
+	BodyModel      string `json:"body_model,omitempty"`
+	BodyModelCount int    `json:"body_model_count,omitempty"`
 	// InlineBatchModelsComplete marks an inline batch create every request of which names its
 	// model, each evaluated on its own before the request's pass (TXE-7957).
 	InlineBatchModelsComplete bool `json:"inline_batch_models_complete,omitempty"`

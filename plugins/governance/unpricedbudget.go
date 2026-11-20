@@ -264,11 +264,11 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 		// One answer is priced for the whole body, so a body mixing models cannot say which of them
 		// a $0 answer was not priced for. Under a dollar budget it sends one model per request, as
 		// refuseUnchargedBodyModelLimits asks of a body whose models carry their own limits.
-		if len(evaluationRequest.BodyModels) > 1 {
+		if evaluationRequest.BodyModelCount > 1 {
 			return &EvaluationResult{
 				Decision: DecisionModelUnpriced,
-				Reason: fmt.Sprintf("the request body names several models (%s), and one answer priced for all of them cannot be charged to a dollar budget model by model; send one model per request",
-					strings.Join(evaluationRequest.BodyModels, ", ")),
+				Reason: fmt.Sprintf("the request body names %d models, and one answer priced for all of them cannot be charged to a dollar budget model by model; send one model per request",
+					evaluationRequest.BodyModelCount),
 			}
 		}
 		return nil
@@ -360,6 +360,11 @@ func deliveredAnswer(result *schemas.BifrostResponse) bool {
 		return false
 	}
 	if extra := result.GetExtraFields(); extra != nil && extra.CacheDebug != nil && extra.CacheDebug.CacheHit {
+		return false
+	}
+	// An image request the provider's content filter answered with no image delivered nothing to
+	// price (extractCostInput charges such an answer no output).
+	if image := result.ImageGenerationResponse; image != nil && image.ContentFilter != nil && len(image.Data) == 0 {
 		return false
 	}
 	if result.ResponsesResponse != nil && result.ResponsesResponse.Status != nil {
@@ -463,37 +468,47 @@ func (r *BudgetResolver) priceIdentities(provider schemas.ModelProvider, model s
 	return best, rows
 }
 
-// servedPriceStatus is the best status of the request's model, and of the models the key that
-// served it aliases it to, under the scope the answer was priced in.
+// servedPriceStatus is the status of the row the answer was priced under: the serving key's scope,
+// and the model resolved the way accounting resolves it (resolvePricing tries the key alias's model
+// name, then its model id, then the requested model, and prices from the first that has a row).
 func (r *BudgetResolver) servedPriceStatus(provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) modelcatalog.PriceStatus {
-	_, best := r.modelCatalog.PriceIdentity(provider, model, requestType, scopes)
-	if scopes == nil || scopes.SelectedKeyID == "" || r.governanceInMemoryStore == nil {
-		return best
-	}
-	config, ok := configuredProvider(r.governanceInMemoryStore, provider)
-	if !ok {
-		return best
-	}
-	for _, key := range config.Keys {
-		if key.ID != scopes.SelectedKeyID {
-			continue
-		}
-		if alias := key.Aliases.ResolveConfig(model); alias != nil {
-			candidates := [2]string{alias.ModelID}
-			if alias.ModelName != nil {
-				candidates[1] = *alias.ModelName
-			}
-			for _, candidate := range candidates {
-				if candidate == "" {
+	candidates := []string{model}
+	if scopes != nil && scopes.SelectedKeyID != "" && r.governanceInMemoryStore != nil {
+		if config, ok := configuredProvider(r.governanceInMemoryStore, provider); ok {
+			for _, key := range config.Keys {
+				if key.ID != scopes.SelectedKeyID {
 					continue
 				}
-				if _, status := r.modelCatalog.PriceIdentity(provider, candidate, requestType, scopes); status > best {
-					best = status
+				if alias := key.Aliases.ResolveConfig(model); alias != nil {
+					candidates = candidates[:0]
+					if alias.ModelName != nil && *alias.ModelName != "" {
+						candidates = append(candidates, *alias.ModelName)
+					}
+					if alias.ModelID != "" {
+						candidates = append(candidates, alias.ModelID)
+					}
+					candidates = append(candidates, model)
 				}
+				break
 			}
 		}
 	}
-	return best
+	for _, candidate := range candidates {
+		if row, status := r.modelCatalog.PriceIdentity(provider, candidate, requestType, scopes); row != "" {
+			return status
+		}
+	}
+	return modelcatalog.PriceUnpriced
+}
+
+// passthroughGenerated reports whether a passthrough answer is a provider's success: a body that
+// named the model it runs was accepted and answered.
+func passthroughGenerated(result *schemas.BifrostResponse) bool {
+	if result == nil || result.PassthroughResponse == nil {
+		return false
+	}
+	status := result.PassthroughResponse.StatusCode
+	return status >= 200 && status < 300
 }
 
 // passthroughBodyNamesEveryModel reports whether a passthrough body names a model for every unit
