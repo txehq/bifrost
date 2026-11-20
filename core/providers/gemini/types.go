@@ -3030,8 +3030,16 @@ type GeminiBatchMetadata struct {
 // cost about twenty times the body; the /genai route returns them from the body itself
 // (BifrostBatchRetrieveResponse.NativeJob).
 type geminiBatchJobStatus struct {
+	Name     string                     `json:"name,omitempty"`
 	Metadata *geminiBatchStatusMetadata `json:"metadata,omitempty"`
 	Response *geminiBatchOutputFile     `json:"response,omitempty"`
+}
+
+// geminiBatchListStatus is a batch list as Bifrost reads it: each job as geminiBatchJobStatus
+// (TXE-8032).
+type geminiBatchListStatus struct {
+	Operations    []geminiBatchJobStatus `json:"operations,omitempty"`
+	NextPageToken string                 `json:"nextPageToken,omitempty"`
 }
 
 // geminiBatchStatusMetadata is GeminiBatchMetadata with its output read as geminiBatchOutputFile.

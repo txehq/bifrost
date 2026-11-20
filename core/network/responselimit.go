@@ -48,13 +48,13 @@ func MaxResponseBodyBytes() int64 {
 // a retrieve allocates up to this many bytes per body byte: the read buffer (up to twice the
 // body, as fasthttp rounds its capacity up to a power of two), the route's rewritten body, and
 // what the decode and the encoders add. So a retrieve at its limit allocates no more than
-// client.max_response_body_size_mb in all. TestGeminiBatchRetrieveAllocatesWithinTheRetrieveShare
+// client.max_response_body_size_mb in all. TestGeminiBatchRetrieveAndListAllocateWithinTheRetrieveShare
 // fails when converting the largest retrieve the gateway carries (a Gemini inline batch job, its
 // results inline) allocates more.
 const RetrieveResponseShare = 4
 
 // MaxRetrieveResponseBodyBytes returns the limit a retrieve's upstream body is read under
-// (schemas.RequestType.IsRetrieve): a RetrieveResponseShare-th of MaxResponseBodyBytes, so it
+// (schemas.RequestType.ReadUnderRetrieveLimit: a retrieve or a list): a RetrieveResponseShare-th of MaxResponseBodyBytes, so it
 // follows client.max_response_body_size_mb.
 func MaxRetrieveResponseBodyBytes() int64 {
 	return MaxResponseBodyBytes() / RetrieveResponseShare
@@ -92,7 +92,7 @@ func (e *ResponseBodyTooLargeError) Error() string {
 // Setting names where Limit comes from, for the caller's error.
 func (e *ResponseBodyTooLargeError) Setting() string {
 	if e.Retrieve {
-		return fmt.Sprintf("for a retrieve, client.max_response_body_size_mb / %d", RetrieveResponseShare)
+		return fmt.Sprintf("for a retrieve or list, client.max_response_body_size_mb / %d", RetrieveResponseShare)
 	}
 	return "client.max_response_body_size_mb"
 }

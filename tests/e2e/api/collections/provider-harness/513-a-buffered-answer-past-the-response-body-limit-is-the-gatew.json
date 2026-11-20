@@ -1,6 +1,6 @@
 {
   "name": "513. A buffered answer past client.max_response_body_size_mb is the gateway's refusal: bifrost_internal, no retry, no fallback (response-body-limit) [SERIAL]",
-  "description": "Local fixture regression for TXE-7148, no live provider calls. Run with the provider error fixture and the gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json (openai base_url -> the fixture) and providerErrorFixture=1; every case is skipped otherwise. [SERIAL]: it lowers client.max_response_body_size_mb to 1 MB, which every other row's answers are read under, so the harness runs it alone and it restores the stored value at the end. The fixture answers upstream-oversize with a 2 MiB chat completion and upstream-oversize-gzip-500 with a 500 whose gzip body decompresses to 2 MiB. Each must come back as is_bifrost_error with error_type bifrost_internal and a message naming the limit, be requested from the fixture once, and never reach its configured fallback; an answer under the limit is still served. A Gemini batch retrieve is read under a quarter of the limit (TXE-8031): the fixture's finished inline job of about 560 KB must come back as bifrost_internal naming the retrieve limit and be requested once, while a batch list holding the same job, which is not a retrieve, is served.",
+  "description": "Local fixture regression for TXE-7148, no live provider calls. Run with the provider error fixture and the gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json (openai base_url -> the fixture) and providerErrorFixture=1; every case is skipped otherwise. [SERIAL]: it lowers client.max_response_body_size_mb to 1 MB, which every other row's answers are read under, so the harness runs it alone and it restores the stored value at the end. The fixture answers upstream-oversize with a 2 MiB chat completion and upstream-oversize-gzip-500 with a 500 whose gzip body decompresses to 2 MiB. Each must come back as is_bifrost_error with error_type bifrost_internal and a message naming the limit, be requested from the fixture once, and never reach its configured fallback; an answer under the limit is still served. A Gemini batch retrieve is read under a quarter of the limit (TXE-8031): the fixture's finished inline job of about 560 KB must come back as bifrost_internal naming the retrieve limit and be requested once, and a batch list holding the same job is refused the same way (TXE-8032): a list is converted as a retrieve is.",
   "item": [
     {
       "name": "513.1 fixture hit counters reset",
@@ -396,7 +396,7 @@
               "  pm.expect(j.extra_fields && j.extra_fields.error_type, text).to.equal('bifrost_internal');",
               "});",
               "pm.test('the message names the retrieve limit and the setting', function () {",
-              "  pm.expect((j.error || {}).message, text).to.include('limit 262144 bytes, for a retrieve, client.max_response_body_size_mb / 4');",
+              "  pm.expect((j.error || {}).message, text).to.include('limit 262144 bytes, for a retrieve or list, client.max_response_body_size_mb / 4');",
               "});",
               "pm.test('the job is not passed on, whole or cut short', function () {",
               "  pm.expect(text.length, 'response is ' + text.length + ' bytes').to.be.below(65536);",
@@ -428,7 +428,7 @@
       }
     },
     {
-      "name": "513.9 [EXPECT-200] the same job in a batch list, which is not a retrieve, is read under the whole limit and served (response-body-limit, TXE-8031)",
+      "name": "513.9 [EXPECT-500] the same job in a batch list fails the same way: a list is held to the retrieve limit too (response-body-limit, TXE-8032)",
       "event": [
         {
           "listen": "prerequest",
@@ -446,12 +446,19 @@
           "script": {
             "type": "text/javascript",
             "exec": [
+              "// A list is converted as a retrieve is, and a Gemini batch list carries each listed job's inline results (TXE-8032).",
               "var text = pm.response.text();",
-              "pm.test('the list of the same job is served', function () {",
-              "  pm.expect(pm.response.code, 'failed: ' + text.slice(0, 2000)).to.eql(200);",
-              "  var j = pm.response.json();",
-              "  pm.expect((j.data || []).length, text.slice(0, 2000)).to.eql(1);",
-              "  pm.expect(j.data[0].id, text.slice(0, 2000)).to.eql('batches/rbl-oversize-job');",
+              "var j = {}; try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+              "pm.test('the list is refused as the gateway\\'s own error', function () {",
+              "  pm.expect(pm.response.code, text).to.be.at.least(500);",
+              "  pm.expect(j.is_bifrost_error, text).to.equal(true);",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, text).to.equal('bifrost_internal');",
+              "});",
+              "pm.test('the message names the retrieve and list limit and the setting', function () {",
+              "  pm.expect((j.error || {}).message, text).to.include('limit 262144 bytes, for a retrieve or list, client.max_response_body_size_mb / 4');",
+              "});",
+              "pm.test('the list is not passed on, whole or cut short', function () {",
+              "  pm.expect(text.length, 'response is ' + text.length + ' bytes').to.be.below(65536);",
               "});"
             ]
           }
@@ -483,7 +490,7 @@
       }
     },
     {
-      "name": "513.10 [EXPECT-200] the refused job was requested once and the list once (response-body-limit, TXE-8031)",
+      "name": "513.10 [EXPECT-200] the refused job and the refused list were each requested once (response-body-limit, TXE-8031, TXE-8032)",
       "event": [
         {
           "listen": "prerequest",

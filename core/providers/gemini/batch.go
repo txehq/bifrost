@@ -431,21 +431,32 @@ func ToGeminiBatchListBody(resp *schemas.BifrostBatchListResponse) (interface{},
 	if !native {
 		return ToGeminiBatchListResponse(resp), nil
 	}
-	var b bytes.Buffer
-	b.WriteString(`{"operations":[`)
+	// Each job is resolved first, so the body is allocated once at its size: a listed job carries
+	// its inline results, and a growing buffer would allocate up to twice the list (TXE-8032).
+	jobs := make([][]byte, len(resp.Data))
+	size := len(`{"operations":[]}`) + len(resp.Data) + len(`,"nextPageToken":""`) + 2
+	if resp.NextCursor != nil {
+		size += len(*resp.NextCursor) * 2
+	}
 	for i := range resp.Data {
+		if job := resp.Data[i].NativeJob; len(job) > 0 {
+			jobs[i] = geminiJobForSDK(job)
+		} else {
+			rebuilt, err := providerUtils.MarshalSorted(ToGeminiBatchRetrieveResponse(&resp.Data[i]))
+			if err != nil {
+				return nil, err
+			}
+			jobs[i] = rebuilt
+		}
+		size += len(jobs[i])
+	}
+	b := bytes.NewBuffer(make([]byte, 0, size))
+	b.WriteString(`{"operations":[`)
+	for i, job := range jobs {
 		if i > 0 {
 			b.WriteByte(',')
 		}
-		if job := resp.Data[i].NativeJob; len(job) > 0 {
-			b.Write(geminiJobForSDK(job))
-			continue
-		}
-		rebuilt, err := providerUtils.MarshalSorted(ToGeminiBatchRetrieveResponse(&resp.Data[i]))
-		if err != nil {
-			return nil, err
-		}
-		b.Write(rebuilt)
+		b.Write(job)
 	}
 	b.WriteByte(']')
 	if resp.NextCursor != nil && *resp.NextCursor != "" {

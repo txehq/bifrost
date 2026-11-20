@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -1861,31 +1862,36 @@ func TestGeminiBatchRetrievePastTheRetrieveLimitIsRefusedOnce(t *testing.T) {
 	assert.Equal(t, int32(1), calls.Load(), "the job is downloaded once")
 }
 
-// TXE-8031: reading and converting a Gemini batch retrieve for the /genai route allocates at
-// most network.RetrieveResponseShare bytes per byte of the job, so a retrieve at its limit (a
-// RetrieveResponseShare-th of client.max_response_body_size_mb) allocates no more than the
-// response limit. The job is just over 8 MiB, the worst case for the read buffer, whose capacity
-// fasthttp rounds up to the next power of two. Measured 3.3: the read buffer (2), the route's body
-// with the vendor's output (1) and the decoders' and encoders' own buffers. Before, decoding every
-// inline result into Go values cost about twenty times the job, and copying the body, copying its
-// output and encoding the route's body again cost four more.
-func TestGeminiBatchRetrieveAllocatesWithinTheRetrieveShare(t *testing.T) {
+// TXE-8031, TXE-8032: reading and converting a Gemini batch retrieve or list for the /genai route
+// allocates at most network.RetrieveResponseShare bytes per byte of the body, so one at the limit
+// a retrieve and a list are read under (a RetrieveResponseShare-th of
+// client.max_response_body_size_mb) allocates no more than the response limit. The job is just
+// over 8 MiB, the worst case for the read buffer, whose capacity fasthttp rounds up to the next
+// power of two; the buffer is counted as allocated each time, as a gateway whose pool keeps only
+// ordinary sizes allocates it. Measured 2.3 for a retrieve and 3.3 for a list: the read buffer (2),
+// which the provider takes rather than copies, the list's body (1; a retrieve writes the vendor's
+// bytes, TXE-7953) and the decoders' and encoders' own buffers.
+// Before, decoding every inline result into Go values cost about twenty times the body, for a
+// retrieve and for a list.
+func TestGeminiBatchRetrieveAndListAllocateWithinTheRetrieveShare(t *testing.T) {
 	job := geminiInlineBatchJob(8 << 20)
+	list := append(append([]byte(`{"operations":[`), job...), `]}`...)
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := job
+		if strings.HasSuffix(r.URL.Path, "/batches") {
+			body = list
+		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Content-Length", fmt.Sprint(len(job)))
-		_, _ = w.Write(job)
+		w.Header().Set("Content-Length", fmt.Sprint(len(body)))
+		_, _ = w.Write(body)
 	}))
 	defer ts.Close()
 	provider := NewGeminiProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: ts.URL + "/v1beta"}}, testNoopLogger{})
 	keys := []schemas.Key{{Value: *schemas.NewSecretVar("k")}}
 
-	retrieve := func() int {
-		resp, bifrostErr := provider.BatchRetrieve(newRetrieveCtx(), keys, &schemas.BifrostBatchRetrieveRequest{Provider: schemas.Gemini, BatchID: "big"})
-		require.Nil(t, bifrostErr)
-		body := ToGeminiBatchRetrieveBody(resp)
-		// What the router writes (sendSuccess): a json.RawMessage as it is (SetBodyRaw), anything
-		// else encoded and copied into the response buffer.
+	// What the router writes (sendSuccess): a json.RawMessage as it is (SetBodyRaw), anything else
+	// encoded and copied into the response buffer.
+	written := func(body interface{}) int {
 		if raw, ok := body.(json.RawMessage); ok && raw != nil {
 			return len(raw)
 		}
@@ -1893,18 +1899,45 @@ func TestGeminiBatchRetrieveAllocatesWithinTheRetrieveShare(t *testing.T) {
 		require.NoError(t, err)
 		return len(append([]byte(nil), out...))
 	}
-	n := retrieve() // warms the client's pooled read buffer, as a running gateway's is
-	require.Greater(t, n, len(job)-1024, "the route returns the inline results")
+	for _, tc := range []struct {
+		name string
+		size int
+		read func() int
+	}{
+		{"retrieve", len(job), func() int {
+			resp, bifrostErr := provider.BatchRetrieve(newRetrieveCtx(), keys, &schemas.BifrostBatchRetrieveRequest{Provider: schemas.Gemini, BatchID: "big"})
+			require.Nil(t, bifrostErr)
+			return written(ToGeminiBatchRetrieveBody(resp))
+		}},
+		{"list", len(list), func() int {
+			resp, bifrostErr := provider.BatchList(newRetrieveCtx(), keys, &schemas.BifrostBatchListRequest{Provider: schemas.Gemini})
+			require.Nil(t, bifrostErr)
+			body, err := ToGeminiBatchListBody(resp)
+			require.NoError(t, err)
+			return written(body)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n := tc.read() // first use: lazy initialisation is not counted
+			require.Greater(t, n, len(job)-1024, "the route returns the inline results")
 
-	var before, after runtime.MemStats
-	runtime.GC()
-	runtime.ReadMemStats(&before)
-	retrieve()
-	runtime.ReadMemStats(&after)
-	perByte := float64(after.TotalAlloc-before.TotalAlloc) / float64(len(job))
-	t.Logf("%.2f bytes allocated per job byte (%d MiB job)", perByte, len(job)>>20)
-	assert.LessOrEqual(t, perByte, float64(network.RetrieveResponseShare),
-		"a retrieve at its limit would hold more than client.max_response_body_size_mb")
+			// TotalAlloc counts every goroutine's allocations, and a test that ran earlier in the
+			// package can leave some still running; they only add, so the least of three reads is
+			// this path's own cost.
+			perByte := math.MaxFloat64
+			for range 3 {
+				var before, after runtime.MemStats
+				runtime.GC()
+				runtime.ReadMemStats(&before)
+				tc.read()
+				runtime.ReadMemStats(&after)
+				perByte = min(perByte, float64(after.TotalAlloc-before.TotalAlloc)/float64(tc.size))
+			}
+			t.Logf("%.2f bytes allocated per body byte (%d MiB body)", perByte, tc.size>>20)
+			assert.LessOrEqual(t, perByte, float64(network.RetrieveResponseShare),
+				"one at the retrieve limit would hold more than client.max_response_body_size_mb")
+		})
+	}
 }
 
 // TXE-7953: the native route returns the vendor's job unchanged. The one addition is a done job

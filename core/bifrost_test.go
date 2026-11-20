@@ -15837,12 +15837,14 @@ func opensWithStopKeyWalk(body *ast.BlockStmt) bool {
 	return ok && branch.Tok == token.BREAK && branch.Label == nil
 }
 
-// TXE-8031: every retrieve request type is read under the retrieve limit, and no other is. The
-// expectation comes from each constant's Go name (FooRetrieveRequest), while the classification
-// (RequestType.IsRetrieve) reads the wire value (foo_retrieve), so a retrieve type added later
-// whose value is named otherwise fails here until it is read under the limit. A streamed retrieve
-// is relayed as it arrives and is not held to it. The mark follows the request, not the context:
-// a retrieve's mark left on a shared context is cleared by the next request that is not one.
+// TXE-8031, TXE-8032: every retrieve and list request type is read under the retrieve limit, and
+// no other is. The expectation comes from each constant's Go name (FooRetrieveRequest,
+// FooListRequest, ListModelsRequest), while the classification
+// (RequestType.ReadUnderRetrieveLimit) reads the wire value (foo_retrieve, foo_list), so a
+// retrieve or list type added later whose value is named otherwise fails here until it is read
+// under the limit. A streamed retrieve is relayed as it arrives and is not held to it. The mark
+// follows the request, not the context: a mark left on a shared context is cleared by the next
+// request that is not a retrieve or list.
 func TestEveryRetrieveRequestTypeIsReadUnderTheRetrieveLimit(t *testing.T) {
 	file, err := parser.ParseFile(token.NewFileSet(), "schemas/bifrost.go", nil, 0)
 	if err != nil {
@@ -15880,7 +15882,7 @@ func TestEveryRetrieveRequestTypeIsReadUnderTheRetrieveLimit(t *testing.T) {
 	}
 	retrieves := 0
 	for _, rt := range types {
-		want := strings.Contains(rt.name, "Retrieve") && !strings.Contains(rt.name, "Stream")
+		want := (strings.Contains(rt.name, "Retrieve") || strings.Contains(rt.name, "List")) && !strings.Contains(rt.name, "Stream")
 		if want {
 			retrieves++
 		}
@@ -15888,18 +15890,19 @@ func TestEveryRetrieveRequestTypeIsReadUnderTheRetrieveLimit(t *testing.T) {
 		ctx.SetValue(schemas.BifrostContextKeyRetrieveRequest, !want)
 		markRetrieve(ctx, rt.value)
 		if got := marked(); got != want {
-			t.Errorf("%s (%q): marked as a retrieve = %v, want %v", rt.name, rt.value, got, want)
+			t.Errorf("%s (%q): read under the retrieve limit = %v, want %v", rt.name, rt.value, got, want)
 		}
 	}
-	// The scan must see the retrieves this change was made for, or it is reading the wrong thing.
-	if retrieves < 9 {
-		t.Fatalf("the scan of schemas/bifrost.go found %d retrieve types in %d", retrieves, len(types))
+	// The scan must see the retrieves and lists this change was made for, or it is reading the
+	// wrong thing: nine retrieves, seven lists.
+	if retrieves < 16 {
+		t.Fatalf("the scan of schemas/bifrost.go found %d retrieve and list types in %d", retrieves, len(types))
 	}
 }
 
-// TXE-8031, through the request worker: a batch retrieve whose job is past the retrieve limit is
-// refused naming that limit, while a batch list of the same size, which is not a retrieve, is read.
-// Before, both were read under the whole response limit.
+// TXE-8031, TXE-8032, through the request worker: a batch retrieve whose job is past the retrieve
+// limit is refused naming that limit, and so is a batch list holding the same job, while reading
+// the job's results, a download, keeps the whole limit. Before, all three were read under it.
 func TestBatchRetrieveThroughBifrostIsReadUnderTheRetrieveLimit(t *testing.T) {
 	network.SetMaxResponseBodySizeMB(4) // retrieve limit 1 MiB
 	t.Cleanup(func() { network.SetMaxResponseBodySizeMB(0) })
@@ -15944,12 +15947,21 @@ func TestBatchRetrieveThroughBifrostIsReadUnderTheRetrieveLimit(t *testing.T) {
 
 	listCtx, listCancel := schemas.NewBifrostContextWithTimeout(context.Background(), 30*time.Second)
 	defer listCancel()
-	listed, bifrostErr := client.BatchListRequest(listCtx, &schemas.BifrostBatchListRequest{Provider: schemas.Gemini})
-	if bifrostErr != nil {
-		t.Fatalf("a batch list (not a retrieve) of the same size was refused: %+v", bifrostErr.Error)
+	_, bifrostErr = client.BatchListRequest(listCtx, &schemas.BifrostBatchListRequest{Provider: schemas.Gemini})
+	if bifrostErr == nil || bifrostErr.Error == nil {
+		t.Fatalf("a list holding the %d-byte job was read under a 1 MiB retrieve limit", len(job))
 	}
-	if len(listed.Data) != 1 {
-		t.Errorf("listed %d batches, want 1", len(listed.Data))
+	if !strings.Contains(bifrostErr.Error.Message, "limit 1 MiB, for a retrieve or list") {
+		t.Errorf("the list refusal does not name the retrieve limit: %s", bifrostErr.Error.Message)
+	}
+	if got := lists.Load(); got != 1 {
+		t.Errorf("the list was requested %d times, want once", got)
+	}
+
+	resultsCtx, resultsCancel := schemas.NewBifrostContextWithTimeout(context.Background(), 30*time.Second)
+	defer resultsCancel()
+	if _, bifrostErr = client.BatchResultsRequest(resultsCtx, &schemas.BifrostBatchResultsRequest{Provider: schemas.Gemini, BatchID: "big"}); bifrostErr != nil {
+		t.Fatalf("the job's results, a download, were refused: %+v", bifrostErr.Error)
 	}
 }
 
