@@ -28,6 +28,8 @@ func TestBatchPriceStatus(t *testing.T) {
 		makeKey("embed", "openai", "embedding"):            {Model: "embed", Provider: "openai", Mode: "embedding", InputCostPerToken: schemas.Ptr(1e-07)},
 		makeKey("per-image", "openai", "image_generation"): {Model: "per-image", Provider: "openai", Mode: "image_generation", OutputCostPerImage: schemas.Ptr(0.04)},
 		makeKey("token-image", "openai", "image_generation"): {Model: "token-image", Provider: "openai", Mode: "image_generation",
+			InputCostPerToken: schemas.Ptr(5e-06), OutputCostPerToken: schemas.Ptr(1e-05), OutputCostPerImageToken: schemas.Ptr(4e-05)},
+		makeKey("image-no-text-output", "openai", "image_generation"): {Model: "image-no-text-output", Provider: "openai", Mode: "image_generation",
 			InputCostPerToken: schemas.Ptr(5e-06), OutputCostPerImageToken: schemas.Ptr(4e-05)},
 	})
 	cases := []struct {
@@ -43,6 +45,8 @@ func TestBatchPriceStatus(t *testing.T) {
 		{"embed", schemas.EmbeddingRequest, Priced},
 		{"per-image", schemas.ImageGenerationRequest, Unpriced},
 		{"token-image", schemas.ImageGenerationRequest, Priced},
+		// Settlement prices an image line's completion tokens at the text output rate too.
+		{"image-no-text-output", schemas.ImageGenerationRequest, Unpriced},
 		{"gpt-4o", schemas.SpeechRequest, Unpriced}, // no batch settlement for the mode
 		{"no-row", schemas.ChatCompletionRequest, Unpriced},
 	}

@@ -479,57 +479,80 @@ func (s *Store) CalculateBatchCostDetailsForUsage(usage *schemas.BifrostLLMUsage
 		return BatchCostDetails{}
 	}
 
+	rates, settles := batchLineRates(pricing, requestType)
+	if !settles {
+		return BatchCostDetails{}
+	}
 	price := computeBatchTextCost
+	if rates.image != nil {
+		price = computeBatchImageCost
+	}
+	inputRate, outputRate := rates.input, rates.output
+	if usage.PromptTokens > 0 && inputRate == nil {
+		return BatchCostDetails{}
+	}
+	if usage.CompletionTokens > 0 && outputRate == nil {
+		return BatchCostDetails{}
+	}
+	// Speed or InferenceGeo are carried on BifrostLLMUsage for exactly this —
+	// the bare-usage batch path never sees a full response to read a served
+	// tier off, mirroring CalculateCostForUsage.
+	tier := tierFromResponse(nil, usage.Speed, usage.InferenceGeo)
+	breakdown := price(pricing, usage, tier)
+	// Time-of-day pricing, as in computeCostFromInput: the off-peak multiplier
+	// scales the usage charge (and the effective rates reported with it), never
+	// the flat per-request fee added below.
+	if m, ok := offPeakMultiplier(pricing, lookupScopes.BilledAt); ok {
+		scaleUsageCost(breakdown, m)
+		inputRate = scaledRate(inputRate, m)
+		outputRate = scaledRate(outputRate, m)
+	}
+	cost := 0.0
+	if breakdown != nil {
+		cost = breakdown.TotalCost
+	}
+	// Flat per-request surcharge, mirroring computeCostFromInput: each row in
+	// a batch is its own distinct request, so a per-request fee applies once
+	// per row exactly as it would have applied once per synchronous call.
+	if pricing.CostPerRequest != nil {
+		cost += *pricing.CostPerRequest
+	}
+	return BatchCostDetails{
+		Cost:                      cost,
+		Priced:                    true,
+		InputCostPerTokenBatches:  inputRate,
+		OutputCostPerTokenBatches: outputRate,
+	}
+}
+
+// batchLineRateSet is the rates a batch line is settled at: token rates (the batch rate, else the
+// standard one at the default batch ratio) and, for an image line, the image-token rate.
+type batchLineRateSet struct {
+	input, output, image *float64
+}
+
+// batchLineRates resolves the rates a batch line settled as requestType is priced at, and whether
+// the mode settles in a batch at all. An image line (fork, TXE-7354) settles only when the row
+// prices image tokens, in a batch or synchronously: a row priced per image or per pixel has no
+// batch rate to apply, so the line stays unpriced and the job waits for repricing. Settlement
+// (CalculateBatchCostDetailsForUsage) and admission (BatchPriceStatus) both read this, so they
+// cannot disagree on what a batch can be charged.
+func batchLineRates(pricing *configstoreTables.TableModelPricing, requestType schemas.RequestType) (batchLineRateSet, bool) {
+	rates := batchLineRateSet{
+		input:  resolveBatchRate(pricing.InputCostPerToken, pricing.InputCostPerTokenBatches),
+		output: resolveBatchRate(pricing.OutputCostPerToken, pricing.OutputCostPerTokenBatches),
+	}
 	switch normalizeStreamRequestType(requestType) {
 	case schemas.ImageGenerationRequest, schemas.ImageEditRequest:
-		// An image line (fork, TXE-7354) is priced on its tokens only when the row prices image
-		// tokens, in a batch or synchronously. A row priced per image or per pixel has no batch
-		// rate to apply, so the line stays unpriced and the job waits for repricing, as before.
-		if pricing.OutputCostPerImageTokenBatches == nil && pricing.OutputCostPerImageToken == nil {
-			return BatchCostDetails{}
+		rates.image = pricing.OutputCostPerImageTokenBatches
+		if rates.image == nil {
+			rates.image = pricing.OutputCostPerImageToken
 		}
-		price = computeBatchImageCost
-		fallthrough
+		return rates, rates.image != nil
 	case schemas.BatchResultsRequest, schemas.ChatCompletionRequest, schemas.TextCompletionRequest, schemas.ResponsesRequest, schemas.EmbeddingRequest:
-		inputRate := resolveBatchRate(pricing.InputCostPerToken, pricing.InputCostPerTokenBatches)
-		outputRate := resolveBatchRate(pricing.OutputCostPerToken, pricing.OutputCostPerTokenBatches)
-		if usage.PromptTokens > 0 && inputRate == nil {
-			return BatchCostDetails{}
-		}
-		if usage.CompletionTokens > 0 && outputRate == nil {
-			return BatchCostDetails{}
-		}
-		// Speed or InferenceGeo are carried on BifrostLLMUsage for exactly this —
-		// the bare-usage batch path never sees a full response to read a served
-		// tier off, mirroring CalculateCostForUsage.
-		tier := tierFromResponse(nil, usage.Speed, usage.InferenceGeo)
-		breakdown := price(pricing, usage, tier)
-		// Time-of-day pricing, as in computeCostFromInput: the off-peak multiplier
-		// scales the usage charge (and the effective rates reported with it), never
-		// the flat per-request fee added below.
-		if m, ok := offPeakMultiplier(pricing, lookupScopes.BilledAt); ok {
-			scaleUsageCost(breakdown, m)
-			inputRate = scaledRate(inputRate, m)
-			outputRate = scaledRate(outputRate, m)
-		}
-		cost := 0.0
-		if breakdown != nil {
-			cost = breakdown.TotalCost
-		}
-		// Flat per-request surcharge, mirroring computeCostFromInput: each row in
-		// a batch is its own distinct request, so a per-request fee applies once
-		// per row exactly as it would have applied once per synchronous call.
-		if pricing.CostPerRequest != nil {
-			cost += *pricing.CostPerRequest
-		}
-		return BatchCostDetails{
-			Cost:                      cost,
-			Priced:                    true,
-			InputCostPerTokenBatches:  inputRate,
-			OutputCostPerTokenBatches: outputRate,
-		}
+		return rates, true
 	default:
-		return BatchCostDetails{}
+		return batchLineRateSet{}, false
 	}
 }
 
@@ -554,20 +577,18 @@ func (s *Store) BatchPriceStatus(provider schemas.ModelProvider, model string, r
 	if pricing == nil {
 		return Unpriced
 	}
-	input := resolveBatchRate(pricing.InputCostPerToken, pricing.InputCostPerTokenBatches)
-	rates := []*float64{input}
-	switch requestType {
-	case schemas.ImageGenerationRequest, schemas.ImageEditRequest:
-		image := pricing.OutputCostPerImageTokenBatches
-		if image == nil {
-			image = pricing.OutputCostPerImageToken
-		}
-		rates = append(rates, image)
-	case schemas.BatchResultsRequest, schemas.ChatCompletionRequest, schemas.TextCompletionRequest, schemas.ResponsesRequest:
-		rates = append(rates, resolveBatchRate(pricing.OutputCostPerToken, pricing.OutputCostPerTokenBatches))
-	case schemas.EmbeddingRequest:
-	default:
+	lineRates, settles := batchLineRates(pricing, requestType)
+	if !settles {
 		return Unpriced
+	}
+	// Settlement needs the input rate for prompt tokens and the output rate for completion tokens
+	// (an image line's too); an embedding line has no completion tokens.
+	rates := []*float64{lineRates.input}
+	if requestType != schemas.EmbeddingRequest {
+		rates = append(rates, lineRates.output)
+	}
+	if lineRates.image != nil {
+		rates = append(rates, lineRates.image)
 	}
 	free := pricing.CostPerRequest == nil || *pricing.CostPerRequest == 0
 	for _, rate := range rates {
