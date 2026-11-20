@@ -77,7 +77,7 @@ func requestFor(requestType schemas.RequestType, background bool) *schemas.Bifro
 			if background {
 				body = `{"model":"gpt-4o","background":true}`
 			}
-			return &schemas.BifrostRequest{RequestType: requestType, PassthroughRequest: &schemas.BifrostPassthroughRequest{Body: []byte(body)}}
+			return &schemas.BifrostRequest{RequestType: requestType, PassthroughRequest: &schemas.BifrostPassthroughRequest{Path: "/v1/responses", Body: []byte(body)}}
 		}
 	}
 	req := responsesOn(requestType, "gpt-4o", &background)
@@ -174,10 +174,10 @@ func TestProviderJobAccountingSwitchGatesSettledJobs(t *testing.T) {
 	requireUnsettledRefusal(t, pre(), "job_unsettled", "after the transport turns job accounting off")
 }
 
-// A passthrough body is judged as the upstream's decoder might read it, failing closed: any
-// occurrence of the key, any value but false or null, an escaped key name, a byte order mark, and
-// a body gjson cannot read that names background all count.
-func TestPassthroughBodyIsBackground(t *testing.T) {
+// A passthrough Responses body is judged as the upstream's decoder might read it, failing closed:
+// any occurrence of the key in any letter case, any value but false or null, an escaped key name, a
+// byte order mark, and a body gjson cannot read all count. Other paths are not Responses creates.
+func TestPassthroughIsBackground(t *testing.T) {
 	for body, want := range map[string]bool{
 		`{"model":"m","background":true}`:             true,
 		`{"model":"m","background":"true"}`:           true,
@@ -185,17 +185,29 @@ func TestPassthroughBodyIsBackground(t *testing.T) {
 		`{"model":"m","background":"yes"}`:            true,
 		`{"background":false,"background":true}`:      true,
 		`{"background":true,"background":false}`:      true,
-		`{"background":true}`:                         true,
+		`{"Background":true}`:                         true,
+		`{"BACKGROUND":true}`:                         true,
+		`{"backgr\u006fund":true}`:                    true,
 		"\xef\xbb\xbf{\"background\":true}":           true,
-		`{"model":"m","background":true,}`:            true, // not JSON gjson reads, names background
+		`{"model":"m","background":true,}`:            true, // gjson cannot read it
+		"\x1f\x8b\x08\x00compressed":                  true, // gjson cannot read it
+		"\xff\xfe{\x00\"\x00b\x00":                    true, // UTF-16: gjson cannot read it
+		`not json at all`:                             true,
 		`{"model":"m","background":false}`:            false,
 		`{"model":"m","background":null}`:             false,
 		`{"model":"m","input":"draw a background"}`:   false,
 		`{"model":"m","tools":[{"background":true}]}`: false, // not top level
-		`[{"model":"m","background":true}]`:           false, // a task array is not a Responses create
-		`not json at all`:                             false,
+		`[{"model":"m","background":true}]`:           false, // an array is not a Responses create
 		``:                                            false,
+		`   `:                                         false,
 	} {
-		assert.Equal(t, want, passthroughBodyIsBackground([]byte(body)), "%q", body)
+		assert.Equal(t, want, passthroughIsBackground("/v1/responses", []byte(body)), "%q", body)
+	}
+	for _, path := range []string{"/v1/responses", "/openai/v1/responses", "/openai/RESPONSES", "/v1/responses/"} {
+		assert.True(t, passthroughIsBackground(path, []byte(`{"background":true}`)), path)
+	}
+	for _, path := range []string{"/v1/files", "/v1/fine_tuning/jobs", "/v1/images/generations"} {
+		assert.False(t, passthroughIsBackground(path, []byte(`{"background":true}`)), "%s is not a Responses create", path)
+		assert.False(t, passthroughIsBackground(path, []byte("--multipart-boundary")), "%s with a non-JSON body is not a Responses create", path)
 	}
 }

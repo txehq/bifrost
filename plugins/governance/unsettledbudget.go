@@ -3,6 +3,7 @@ package governance
 import (
 	"bytes"
 	"fmt"
+	"strings"
 
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
@@ -99,22 +100,31 @@ func isBackgroundResponsesCreate(req *schemas.BifrostRequest) bool {
 		if req.PassthroughRequest == nil || len(req.PassthroughRequest.Body) == 0 {
 			return false
 		}
-		return passthroughBodyIsBackground(req.PassthroughRequest.Body)
+		return passthroughIsBackground(req.PassthroughRequest.Path, req.PassthroughRequest.Body)
 	}
 	return false
 }
 
-// passthroughBodyIsBackground reports whether a passthrough body may ask the upstream to run in
-// the background. It fails closed, since the upstream's decoder, not gjson, decides what runs:
-//   - every top-level "background" key is read: gjson returns the first of a duplicated key and
-//     most decoders keep the last, so {"background":false,"background":true} must not pass;
+// passthroughIsBackground reports whether a passthrough request may ask the upstream to run a
+// Responses create in the background. background means nothing outside the Responses API, so only
+// a path that addresses it is read. On such a path the check fails closed, since the upstream's
+// decoder, not gjson, decides what runs:
+//   - every top-level key is read: gjson returns the first of a duplicated key and most decoders
+//     keep the last, so {"background":false,"background":true} must not pass;
+//   - key names compare case-insensitively, as Go's encoding/json matches them;
 //   - any value other than false or null counts, since a lenient decoder may coerce one;
-//   - a body that is not a JSON value gjson can read, after a UTF-8 byte order mark, counts when it
-//     names background anywhere: a decoder more lenient than gjson might still read the key.
-func passthroughBodyIsBackground(body []byte) bool {
+//   - a body gjson cannot read as JSON (compressed, UTF-16, malformed) counts: what an upstream
+//     makes of it cannot be judged here.
+func passthroughIsBackground(path string, body []byte) bool {
+	if !strings.Contains(strings.ToLower(path), "responses") {
+		return false
+	}
 	body = bytes.TrimPrefix(body, []byte("\xef\xbb\xbf"))
+	if len(bytes.TrimSpace(body)) == 0 {
+		return false
+	}
 	if !gjson.ValidBytes(body) {
-		return bytes.Contains(bytes.ToLower(body), []byte("background"))
+		return true
 	}
 	root := gjson.ParseBytes(body)
 	if !root.IsObject() {
@@ -122,7 +132,7 @@ func passthroughBodyIsBackground(body []byte) bool {
 	}
 	background := false
 	root.ForEach(func(key, value gjson.Result) bool {
-		if key.Str == "background" && value.Type != gjson.False && value.Type != gjson.Null {
+		if strings.EqualFold(key.Str, "background") && value.Type != gjson.False && value.Type != gjson.Null {
 			background = true
 			return false
 		}
