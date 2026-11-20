@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf16"
 	"unicode/utf8"
 	"unsafe"
@@ -260,152 +261,201 @@ func AmbiguousBodyMember(body []byte, contentType string) (string, bool) {
 // as JSON naming a gated key (GatedBodyKeys, compared without case): the media type it declares
 // ("" when none) and the key. No reader reads such a body as JSON, so the gates see no model,
 // while a vendor that parses it would run the one it names, past a model's own budget or rate
-// limit. Core refuses it and asks for application/json (TXE-8012).
+// limit. Core refuses it and asks for UTF-8 application/json (TXE-8012).
 //
-// The body is first read as text the way a JSON parser would: a UTF-16 or UTF-32 body (by its
-// byte order mark, its declared charset, or the NUL pattern of its first bytes, as RFC 4627 and
-// Python's json module detect it) is transcoded to UTF-8. Then, when it opens with "{" or "[":
-//   - strict JSON is reported when its root object, or an object of a root array, names a gated
-//     key;
-//   - anything else (JSON a lenient parser accepts: a trailing comma, single quotes, bare keys,
-//     nesting past maxForwardedBodyDepth) is reported when it mentions a gated key anywhere, or
-//     holds a \u or \x escape that could spell one: there is no strict reading to place the key.
+// What a lenient parser might accept is open-ended, so the check is broad rather than a model of
+// one parser. The body is read under every encoding a JSON parser might pick (UTF-8, UTF-16 and
+// UTF-32 in both byte orders, whatever its charset or byte order mark claims). Under any of them
+// where it opens like JSON ("{" or "[" after Unicode whitespace, byte order marks and // or /* */
+// comments), it is reported when:
+//   - it is strict JSON whose root object, or an object of a root array, names a gated key; or
+//   - it is not strict JSON (a trailing comma, quotes, bare keys, comments, nesting past
+//     maxForwardedBodyDepth) and mentions a gated key anywhere, or holds a backslash, which could
+//     spell one through an escape.
 //
-// A text upload opening with "{" that never mentions a gated key, a JSON Lines file (declared as
-// such, it is not content), and strict JSON naming no gated key at its root are not reported.
+// A body declared JSON Lines is reported when a line names a gated key at its root: it is no
+// request document, so no gate reads a model from it either.
+//
+// Content that opens like JSON under none of them (audio, images, prose) is not reported, nor is
+// a text upload opening with "{" that never mentions a gated key and holds no backslash. File
+// upload routes are exempt in core (IsFileUploadPath): the vendor stores those bytes and runs no
+// model.
 func MislabeledJSONBody(body []byte, contentType string) (mediaType, key string, mislabeled bool) {
-	if ClassifyForwardedBody(contentType, body).Format != ForwardedBodyOpaque {
-		return "", "", false
-	}
-	mediaType, params, _ := mime.ParseMediaType(contentType)
-	// Most content (audio, images, text) opens with neither: decide that from a short prefix
-	// before transcoding a large body. A prefix of only whitespace reads on to the full body.
-	if prefix := trimForwardedBody(utf8ForJSON(body[:min(len(body), 256)], params["charset"])); len(prefix) > 0 && prefix[0] != '{' && prefix[0] != '[' {
-		return "", "", false
-	}
-	doc := trimForwardedBody(utf8ForJSON(body, params["charset"]))
-	if len(doc) == 0 || (doc[0] != '{' && doc[0] != '[') {
-		return "", "", false
-	}
-	if _, deep := jsonNestedTooDeep(doc); deep || !gjson.ValidBytes(doc) {
-		if key = gatedKeyMentioned(doc); key == "" {
-			return "", "", false
-		}
-		return mediaType, key, true
-	}
-	named := func(object gjson.Result) bool {
-		object.ForEach(func(member, _ gjson.Result) bool {
-			if gated := gatedBodyKey(member.Str); gated != "" {
-				key = gated
-				return false
+	format := ClassifyForwardedBody(contentType, body).Format
+	mediaType, _, _ = mime.ParseMediaType(contentType)
+	if format == ForwardedBodyJSONLines {
+		// A JSON Lines file is no request document either, so no gate reads a model from it; a
+		// line naming one at its root is what a vendor parsing the body as JSON would run.
+		for _, line := range bytes.Split(body, []byte("\n")) {
+			line = trimForwardedBody(bytes.TrimRight(line, " \t\r"))
+			if len(line) == 0 {
+				continue
 			}
-			return true
-		})
-		return key != ""
-	}
-	root := gjson.ParseBytes(doc)
-	if root.IsObject() {
-		named(root)
-	} else {
-		root.ForEach(func(_, element gjson.Result) bool {
-			return !(element.IsObject() && named(element))
-		})
-	}
-	if key == "" {
+			if key = gatedKeyInJSONText(line); key != "" {
+				return mediaType, key, true
+			}
+		}
 		return "", "", false
 	}
-	return mediaType, key, true
+	if format != ForwardedBodyOpaque {
+		return "", "", false
+	}
+	for _, decode := range jsonTextDecodings {
+		// Most content opens like JSON under no encoding: decide from a short prefix before
+		// decoding a large body. A prefix holding only space and comments reads on.
+		if opens, decided := opensLikeJSON(decode(body[:min(len(body), 1024)])); decided && !opens {
+			continue
+		}
+		doc := decode(body)
+		start, opens := jsonTextStart(doc)
+		if !opens {
+			continue
+		}
+		if key = gatedKeyInJSONText(doc[start:]); key != "" {
+			return mediaType, key, true
+		}
+	}
+	return "", "", false
 }
 
-// gatedKeyMentioned returns the gated key a non-strict JSON text mentions in any case, or the
-// first gated key when it holds an escape (\u, \x) that could spell one.
-func gatedKeyMentioned(doc []byte) string {
+// jsonTextDecodings are the encodings a JSON parser might read a body in: as it is (UTF-8), and
+// UTF-16 and UTF-32 in both byte orders. A leading byte order mark decodes to U+FEFF, which
+// jsonTextStart skips.
+var jsonTextDecodings = []func([]byte) []byte{
+	func(b []byte) []byte { return b },
+	func(b []byte) []byte { return decodeUTF16(b, false) },
+	func(b []byte) []byte { return decodeUTF16(b, true) },
+	func(b []byte) []byte { return decodeUTF32(b, false) },
+	func(b []byte) []byte { return decodeUTF32(b, true) },
+}
+
+// opensLikeJSON reports whether text opens like JSON, and whether that was decided: a text of
+// only space and comments is undecided.
+func opensLikeJSON(text []byte) (opens, decided bool) {
+	start, opens := jsonTextStart(text)
+	return opens, start < len(text)
+}
+
+// jsonTextStart skips Unicode whitespace, byte order marks and // or /* */ comments, and reports
+// where the text starts and whether it starts with "{" or "[".
+func jsonTextStart(text []byte) (int, bool) {
+	i := 0
+	for i < len(text) {
+		r, size := utf8.DecodeRune(text[i:])
+		switch {
+		case r == utf8.RuneError && size <= 1:
+			return i, false
+		case unicode.IsSpace(r) || r == 0xfeff || r == 0x200b:
+			i += size
+		case r == '/' && i+1 < len(text) && text[i+1] == '/':
+			end := bytes.IndexByte(text[i:], '\n')
+			if end < 0 {
+				return len(text), false
+			}
+			i += end + 1
+		case r == '/' && i+1 < len(text) && text[i+1] == '*':
+			end := bytes.Index(text[i+2:], []byte("*/"))
+			if end < 0 {
+				return len(text), false
+			}
+			i += end + 4
+		default:
+			return i, r == '{' || r == '['
+		}
+	}
+	return i, false
+}
+
+// gatedKeyInJSONText returns the gated key a JSON text opening with "{" or "[" names: by its
+// root members when it is strict JSON, by any mention or backslash when it is not.
+func gatedKeyInJSONText(doc []byte) string {
+	if _, deep := jsonNestedTooDeep(doc); !deep && gjson.ValidBytes(doc) {
+		var key string
+		named := func(object gjson.Result) bool {
+			object.ForEach(func(member, _ gjson.Result) bool {
+				if gated := gatedBodyKey(member.Str); gated != "" {
+					key = gated
+					return false
+				}
+				return true
+			})
+			return key != ""
+		}
+		root := gjson.ParseBytes(doc)
+		if root.IsObject() {
+			named(root)
+		} else {
+			root.ForEach(func(_, element gjson.Result) bool {
+				return !(element.IsObject() && named(element))
+			})
+		}
+		return key
+	}
 	lower := bytes.ToLower(doc)
 	for _, key := range GatedBodyKeys {
 		if bytes.Contains(lower, []byte(key)) {
 			return key
 		}
 	}
-	if bytes.Contains(lower, []byte(`\u`)) || bytes.Contains(lower, []byte(`\x`)) {
+	if bytes.IndexByte(doc, '\\') >= 0 {
 		return GatedBodyKeys[0]
 	}
 	return ""
 }
 
-// utf8ForJSON returns body as UTF-8 when it is UTF-16 or UTF-32, detected the way JSON parsers
-// detect it: a byte order mark, then the declared charset, then the NUL pattern of the first four
-// bytes (a JSON text opens with ASCII). Any other body is returned as it is.
-func utf8ForJSON(body []byte, charset string) []byte {
-	type encoding struct {
-		width     int
-		bigEndian bool
-	}
-	var enc *encoding
-	bomLen := 0
-	b := body
-	switch {
-	case bytes.HasPrefix(b, []byte{0x00, 0x00, 0xfe, 0xff}):
-		enc, bomLen = &encoding{4, true}, 4
-	case bytes.HasPrefix(b, []byte{0xff, 0xfe, 0x00, 0x00}):
-		enc, bomLen = &encoding{4, false}, 4
-	case bytes.HasPrefix(b, []byte{0xfe, 0xff}):
-		enc, bomLen = &encoding{2, true}, 2
-	case bytes.HasPrefix(b, []byte{0xff, 0xfe}):
-		enc, bomLen = &encoding{2, false}, 2
-	}
-	if enc == nil {
-		switch strings.ToLower(strings.TrimSpace(charset)) {
-		case "utf-16be":
-			enc = &encoding{2, true}
-		case "utf-16le":
-			enc = &encoding{2, false}
-		case "utf-32be":
-			enc = &encoding{4, true}
-		case "utf-32le":
-			enc = &encoding{4, false}
-		}
-	}
-	if enc == nil && len(b) >= 4 {
-		switch {
-		case b[0] == 0 && b[1] == 0 && b[2] == 0 && b[3] != 0:
-			enc = &encoding{4, true}
-		case b[0] != 0 && b[1] == 0 && b[2] == 0 && b[3] == 0:
-			enc = &encoding{4, false}
-		case b[0] == 0 && b[1] != 0:
-			enc = &encoding{2, true}
-		case b[0] != 0 && b[1] == 0:
-			enc = &encoding{2, false}
-		}
-	}
-	if enc == nil {
-		return body
-	}
-	b = b[bomLen:]
-	var out []byte
-	if enc.width == 4 {
-		for ; len(b) >= 4; b = b[4:] {
-			var r uint32
-			if enc.bigEndian {
-				r = uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
-			} else {
-				r = uint32(b[3])<<24 | uint32(b[2])<<16 | uint32(b[1])<<8 | uint32(b[0])
-			}
-			out = utf8.AppendRune(out, rune(r))
-		}
-		return out
-	}
+// decodeUTF16 reads b as UTF-16 in the given byte order and returns it as UTF-8.
+func decodeUTF16(b []byte, bigEndian bool) []byte {
 	units := make([]uint16, 0, len(b)/2)
 	for ; len(b) >= 2; b = b[2:] {
-		if enc.bigEndian {
+		if bigEndian {
 			units = append(units, uint16(b[0])<<8|uint16(b[1]))
 		} else {
 			units = append(units, uint16(b[1])<<8|uint16(b[0]))
 		}
 	}
+	out := make([]byte, 0, len(units))
 	for _, r := range utf16.Decode(units) {
 		out = utf8.AppendRune(out, r)
 	}
 	return out
+}
+
+// decodeUTF32 reads b as UTF-32 in the given byte order and returns it as UTF-8.
+func decodeUTF32(b []byte, bigEndian bool) []byte {
+	out := make([]byte, 0, len(b)/4)
+	for ; len(b) >= 4; b = b[4:] {
+		var r uint32
+		if bigEndian {
+			r = uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
+		} else {
+			r = uint32(b[3])<<24 | uint32(b[2])<<16 | uint32(b[1])<<8 | uint32(b[0])
+		}
+		out = utf8.AppendRune(out, rune(r))
+	}
+	return out
+}
+
+// IsFileUploadPath reports a passthrough route that stores the request body as a file and runs no
+// model: OpenAI's and Anthropic's POST .../files, OpenAI's POST .../uploads/{id}/parts, and
+// Gemini's POST /upload/... media upload. A file is content, so MislabeledJSONBody does not apply
+// there: a batch input file is JSON Lines naming a model on every line, uploaded under whatever
+// type its SDK guesses (Python's mimetypes knows no .jsonl, so often application/octet-stream).
+func IsFileUploadPath(method, path string) bool {
+	if method != "POST" {
+		return false
+	}
+	path = strings.TrimSuffix(path, "/")
+	switch {
+	case strings.HasSuffix(path, "/files"):
+		return true
+	case strings.HasPrefix(path, "/upload/"):
+		return true
+	}
+	if i := strings.Index(path, "/uploads/"); i >= 0 {
+		id, tail, _ := strings.Cut(path[i+len("/uploads/"):], "/")
+		return id != "" && tail == "parts"
+	}
+	return false
 }
 
 // ambiguousJSONDocument checks one JSON document: nested no deeper than maxForwardedBodyDepth
@@ -778,9 +828,10 @@ func ambiguousMultipartField(body []byte, boundary string) (string, bool) {
 			part.Close()
 			return multipartUnreadableDisposition, true
 		}
-		// A part is read as JSON only when it declares a JSON type; a part with no type is a
-		// form field or a file, whatever its content looks like.
-		if member, ambiguous := ambiguousMultipartPartContent(part); ambiguous {
+		// A part is read as JSON only when it is a field (no filename) that declares a JSON type.
+		// A part with a filename is a file, whatever type its SDK guessed: a batch input .jsonl
+		// part names a model on every line and runs none. A part with no type is a form field.
+		if member, ambiguous := ambiguousMultipartPartContent(part, text); ambiguous {
 			part.Close()
 			label := name
 			if label == "" {
@@ -802,10 +853,14 @@ func ambiguousMultipartField(body []byte, boundary string) (string, bool) {
 	}
 }
 
-// ambiguousMultipartPartContent checks a part's content by the part's own declared type: a part
-// declaring a JSON or JSON Lines type is checked as one, any other part is content. A part with
+// ambiguousMultipartPartContent checks a field part's content by the part's own declared type: a
+// field declaring a JSON or JSON Lines type is checked as one, any other part is content. A file
+// part (field false) is content whatever its type. A part with
 // two Content-Type headers, or one that does not parse, is refused like such a body.
-func ambiguousMultipartPartContent(part *multipart.Part) (string, bool) {
+func ambiguousMultipartPartContent(part *multipart.Part, field bool) (string, bool) {
+	if !field {
+		return "", false
+	}
 	types := part.Header.Values("Content-Type")
 	switch len(types) {
 	case 0:

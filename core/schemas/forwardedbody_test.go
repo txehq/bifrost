@@ -352,7 +352,18 @@ func TestMislabeledJSONBody(t *testing.T) {
 		{"text/plain", `["model"]`, "", ""},
 		{"application/json", `{"model":"a"}`, "", ""},
 		{"", `{"model":"a"}`, "", ""},
-		{"application/x-ndjson", `{"model":"a"}`, "", ""},
+		// Declared JSON Lines is no request document: a line naming a model at its root is refused
+		// (core exempts file upload routes, where batch files live).
+		{"application/x-ndjson", `{"model":"a"}`, "application/x-ndjson", "model"},
+		{"application/jsonl", "{\"custom_id\":\"1\",\"body\":{\"model\":\"a\"}}\n", "", ""},
+		// Every encoding is read, whatever the charset claims.
+		{"text/plain; charset=utf-16le", `{"model":"X"}`, "text/plain", "model"},
+		// Unicode space and comments before the opener.
+		{"text/plain", "\u00a0\u2028/* x */ // y\n{\"model\":\"X\"}", "text/plain", "model"},
+		// Any backslash in non-strict JSON could spell a key.
+		{"text/plain", "{\"mo\\\nde\\154\":\"X\",}", "text/plain", "model"},
+		{"text/plain", `{"a":"\\",}`, "text/plain", "model"},
+		{"audio/wav", "RIFF\x00\x00\x00\x00WAVEfmt {\"model\"", "", ""},
 		// JSON a lenient parser accepts: no strict reading places the key, so a mention is enough.
 		{"text/plain", `{"model":"X",}`, "text/plain", "model"},
 		{"text/plain", `{model: 'X'}`, "text/plain", "model"},
@@ -422,5 +433,27 @@ func TestMislabeledJSONBodyInAnotherEncoding(t *testing.T) {
 				t.Fatalf("MislabeledJSONBody = %q, %t; want %q", key, mislabeled, tc.key)
 			}
 		})
+	}
+}
+
+// TestIsFileUploadPath: the routes that store a body as a file and run no model (TXE-8012).
+func TestIsFileUploadPath(t *testing.T) {
+	for _, tc := range []struct {
+		method, path string
+		want         bool
+	}{
+		{"POST", "/v1/files", true},
+		{"POST", "/v1/files/", true},
+		{"POST", "/upload/v1beta/files", true},
+		{"POST", "/v1/uploads/upload_abc/parts", true},
+		{"GET", "/v1/files", false},
+		{"POST", "/v1/files/file-1/content", false},
+		{"POST", "/v1/chat/completions", false},
+		{"POST", "/v1/uploads", false},
+		{"POST", "/v1/uploads/upload_abc/complete", false},
+	} {
+		if got := IsFileUploadPath(tc.method, tc.path); got != tc.want {
+			t.Errorf("IsFileUploadPath(%s %s) = %t; want %t", tc.method, tc.path, got, tc.want)
+		}
 	}
 }

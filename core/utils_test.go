@@ -1111,7 +1111,7 @@ func TestRunLLMPreHooksRefusesAmbiguousForwardedBody(t *testing.T) {
 func TestRunLLMPreHooksForwardsABodyDeclaredAsAnotherType(t *testing.T) {
 	typed := func(contentType, body string) *schemas.BifrostRequest {
 		return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
-			Provider: schemas.Gemini, Method: "POST", Path: "/upload/v1beta/files", Body: []byte(body),
+			Provider: schemas.OpenAI, Method: "POST", Path: "/v1/chat/completions", Body: []byte(body),
 			SafeHeaders: map[string]string{"Content-Type": contentType},
 		}}
 	}
@@ -1474,4 +1474,64 @@ func TestBodyReadersGateOnlyOnTheSharedKeyList(t *testing.T) {
 	}
 	assert.Empty(t, literals, "a forwarded-body reader compares a key to a string literal; use schemas.BodyModelKey (gated, in GatedBodyKeys) or schemas.BodyStreamKey")
 	assert.Empty(t, unlisted, "a forwarded-body reader gates on a key not in schemas.GatedBodyKeys; add it there so the guard covers it")
+}
+
+// TestRunLLMPreHooksForwardsABatchInputFileUpload: a batch input file is JSON Lines naming a model
+// on every line, and SDKs upload it under whatever type they guess (Python's mimetypes knows no
+// .jsonl, so a multipart part is often application/octet-stream). Uploading one to a file route
+// stores it and runs no model, so the guard forwards it in each SDK's shape (TXE-8012), while the
+// same lines sent as a body to an inference route are refused.
+func TestRunLLMPreHooksForwardsABatchInputFileUpload(t *testing.T) {
+	openAILines := "{\"custom_id\":\"r1\",\"method\":\"POST\",\"url\":\"/v1/chat/completions\",\"body\":{\"model\":\"gpt-4o\",\"messages\":[]}}\n" +
+		"{\"custom_id\":\"r2\",\"method\":\"POST\",\"url\":\"/v1/chat/completions\",\"body\":{\"model\":\"gpt-4o\",\"messages\":[]}}\n"
+	anthropicLines := "{\"custom_id\":\"r1\",\"params\":{\"model\":\"claude-sonnet-4-5\",\"max_tokens\":16,\"messages\":[]}}\n"
+	geminiLines := "{\"key\":\"r1\",\"request\":{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"hi\"}]},{\"role\":\"model\",\"parts\":[{\"text\":\"yo\"}]}]}}\n"
+	multipartUpload := func(partType, lines string) (string, string) {
+		const boundary = "----sdkboundary8012"
+		body := "--" + boundary + "\r\nContent-Disposition: form-data; name=\"purpose\"\r\n\r\nbatch\r\n" +
+			"--" + boundary + "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"batch.jsonl\"\r\nContent-Type: " + partType + "\r\n\r\n" +
+			lines + "\r\n--" + boundary + "--\r\n"
+		return "multipart/form-data; boundary=" + boundary, body
+	}
+	passthrough := func(provider schemas.ModelProvider, path, contentType, body string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+			Provider: provider, Method: "POST", Path: path, Body: []byte(body),
+			SafeHeaders: map[string]string{"content-type": contentType},
+		}}
+	}
+	type upload struct {
+		name string
+		req  *schemas.BifrostRequest
+	}
+	var uploads []upload
+	for _, partType := range []string{"application/octet-stream", "application/jsonl", "application/json", "text/plain"} {
+		ct, body := multipartUpload(partType, openAILines)
+		uploads = append(uploads, upload{"OpenAI /v1/files, part " + partType, passthrough(schemas.OpenAI, "/v1/files", ct, body)})
+		ct, body = multipartUpload(partType, anthropicLines)
+		uploads = append(uploads, upload{"Anthropic /v1/files, part " + partType, passthrough(schemas.Anthropic, "/v1/files", ct, body)})
+	}
+	ct, body := multipartUpload("application/octet-stream", openAILines)
+	uploads = append(uploads, upload{"OpenAI /v1/uploads/{id}/parts", passthrough(schemas.OpenAI, "/v1/uploads/upload_1/parts", ct, body)})
+	for _, rawType := range []string{"application/octet-stream", "application/jsonl", "text/plain", ""} {
+		uploads = append(uploads, upload{"GenAI /upload/v1beta/files raw " + rawType, passthrough(schemas.Gemini, "/upload/v1beta/files", rawType, geminiLines)})
+		uploads = append(uploads, upload{"GenAI /upload raw OpenAI-shape lines " + rawType, passthrough(schemas.Gemini, "/upload/v1beta/files", rawType, openAILines)})
+	}
+	for _, tc := range uploads {
+		gate := &bodyReadingGate{fakeRoutingPlugin: fakeRoutingPlugin{name: "gate"}}
+		_, shortCircuit, _ := newRoutingCommitPipeline(gate).RunLLMPreHooks(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), tc.req)
+		if shortCircuit != nil && shortCircuit.Error != nil && shortCircuit.Error.Error != nil {
+			t.Errorf("%s refused: %s", tc.name, shortCircuit.Error.Error.Message)
+		}
+		assert.True(t, gate.ran, "%s did not reach the plugins", tc.name)
+	}
+
+	// The same lines as a body to an inference route are refused: a vendor parsing it as JSON
+	// would run the model the first line names, past that model's own limits.
+	for _, contentType := range []string{"application/octet-stream", "application/x-ndjson"} {
+		_, shortCircuit, _ := newRoutingCommitPipeline(&bodyReadingGate{fakeRoutingPlugin: fakeRoutingPlugin{name: "gate"}}).RunLLMPreHooks(
+			schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+			passthrough(schemas.OpenAI, "/v1/chat/completions", contentType, `{"model":"o1","messages":[]}`+"\n"))
+		require.NotNil(t, shortCircuit, "JSON naming a model as %s to an inference route was admitted", contentType)
+		assert.Contains(t, shortCircuit.Error.Error.Message, "is JSON naming model but is declared "+contentType)
+	}
 }

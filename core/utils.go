@@ -1201,6 +1201,13 @@ func setAssistantRoleOnce(resp *schemas.BifrostChatResponse, roleSent bool) bool
 	return true
 }
 
+// forwardsAFile reports a passthrough request to a file upload route (schemas.IsFileUploadPath):
+// the vendor stores its body as a file and runs no model, so a JSON Lines batch file naming a model
+// on every line is content there, under whatever type its SDK guessed.
+func forwardsAFile(req *schemas.BifrostRequest) bool {
+	return req.PassthroughRequest != nil && schemas.IsFileUploadPath(strings.ToUpper(req.PassthroughRequest.Method), req.PassthroughRequest.Path)
+}
+
 // refuseAmbiguousForwardedBody refuses a request whose forwarded body (a passthrough body, or a
 // raw request body sent as written) repeats a member: gjson keeps the first of two equal keys,
 // encoding/json, sonic and most vendors the last, so a gate would judge one model, storage URI or
@@ -1213,10 +1220,14 @@ func refuseAmbiguousForwardedBody(req *schemas.BifrostRequest) *schemas.LLMPlugi
 		return nil
 	}
 	body, contentType := req.ForwardedBody(), req.ForwardedBodyContentType()
+	if contentType == "" && forwardsAFile(req) {
+		// A file with no declared type is a file: its bytes are stored, never read as a request.
+		return nil
+	}
 	var message string
 	if member, ambiguous := schemas.AmbiguousBodyMember(body, contentType); ambiguous {
 		message = fmt.Sprintf("request body gives %s more than once; Bifrost and the provider could read different values, so give each member once", member)
-	} else if mediaType, key, mislabeled := schemas.MislabeledJSONBody(body, contentType); mislabeled {
+	} else if mediaType, key, mislabeled := schemas.MislabeledJSONBody(body, contentType); mislabeled && !forwardsAFile(req) {
 		// Bifrost reads a body by its declared type (TXE-8012), so a JSON body naming a model under
 		// another type would run a model no gate saw.
 		declared := "declared " + mediaType
