@@ -54,7 +54,8 @@ export type ModelFamily =
 	| "imagen"
 	| "veo"
 	| "nova"
-	| "titan";
+	| "titan"
+	| "mai-image";
 
 export const ModelFamilyValues: ModelFamily[] = [
 	"anthropic",
@@ -68,6 +69,7 @@ export const ModelFamilyValues: ModelFamily[] = [
 	"veo",
 	"nova",
 	"titan",
+	"mai-image",
 ];
 
 // AliasConfig matching Go's schemas.AliasConfig.

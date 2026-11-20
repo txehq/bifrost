@@ -910,6 +910,19 @@ resp, err := client.ImageGenerationRequest(schemas.NewBifrostContext(ctx, schema
 
 Image generation streaming is supported and uses OpenAI's streaming format with Server-Sent Events (SSE).
 
+## Microsoft MAI-Image (Azure AI Foundry)
+
+A request whose model resolves to the `mai-image` family (an alias's `model_family: "mai-image"`, or a model, deployment or alias name containing `mai-image` in any letter case) goes to `{endpoint}/mai/v1/images/generations` instead of `/openai/v1/images/generations`. Set the key's endpoint to the Foundry resource, `https://<resource>.services.ai.azure.com`.
+
+| Unified field | MAI-Image body |
+|---------------|----------------|
+| `model` | `model` (the deployment) |
+| `prompt` | `prompt` |
+| `size` (`WIDTHxHEIGHT`) | `width`, `height`; `auto` sends neither |
+| `background` | `background` |
+
+The response is `data[].b64_json` (one PNG) and `usage.output_images` is the delivered count. MAI-Image reports no token usage. These are refused with 400 `caller_unsupported_parameter` before any upstream call: `n` other than 1, a `size` that is not `WIDTHxHEIGHT`, `response_format` other than `b64_json`, `output_format` other than `png`, any other price-affecting field, and `stream`. Image edits on `/mai/v1/images/edits` are not routed yet.
+
 ---
 
 # 6. Image Edit

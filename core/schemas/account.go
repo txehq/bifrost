@@ -193,21 +193,31 @@ const (
 	ModelFamilyVeo       ModelFamily = "veo"
 	ModelFamilyNova      ModelFamily = "nova"
 	ModelFamilyTitan     ModelFamily = "titan"
+	// ModelFamilyMAIImage is Microsoft's MAI-Image (fork, TXE-6543). On Azure it selects the
+	// Azure AI Foundry MAI images API, /mai/v1/images/generations, in place of Azure OpenAI's.
+	ModelFamilyMAIImage ModelFamily = "mai-image"
 )
+
+// modelFamilies is every recognized model family, in the order the config schemas list them.
+// It is the one list: IsValid reads it, and ModelFamilies hands it to the test that keeps
+// transports/config.schema.json, the Helm values schema and the UI's lists equal to it.
+var modelFamilies = []ModelFamily{
+	ModelFamilyAnthropic, ModelFamilyOpenAI, ModelFamilyMistral, ModelFamilyCohere,
+	ModelFamilyGemini, ModelFamilyGemma, ModelFamilyLlama, ModelFamilyImagen,
+	ModelFamilyVeo, ModelFamilyNova, ModelFamilyTitan, ModelFamilyMAIImage,
+}
+
+// ModelFamilies returns every recognized model family. The slice is shared; do not modify it.
+func ModelFamilies() []ModelFamily {
+	return modelFamilies
+}
 
 // IsValid reports whether mf is a recognized model family.
 func (mf *ModelFamily) IsValid() bool {
 	if mf == nil {
 		return false
 	}
-	switch *mf {
-	case ModelFamilyAnthropic, ModelFamilyOpenAI, ModelFamilyMistral,
-		ModelFamilyCohere, ModelFamilyGemini, ModelFamilyGemma,
-		ModelFamilyLlama, ModelFamilyImagen, ModelFamilyVeo,
-		ModelFamilyNova, ModelFamilyTitan:
-		return true
-	}
-	return false
+	return slices.Contains(modelFamilies, *mf)
 }
 
 // AzureAliasCfg holds Azure-specific overrides that apply to a single alias.
@@ -490,6 +500,8 @@ func ResolveFamily(ctx *BifrostContext, fallbackModel string) ModelFamily {
 			return ModelFamilyTitan
 		case IsCohereModel(s):
 			return ModelFamilyCohere
+		case IsMAIImageModel(s):
+			return ModelFamilyMAIImage
 		}
 	}
 	return ""

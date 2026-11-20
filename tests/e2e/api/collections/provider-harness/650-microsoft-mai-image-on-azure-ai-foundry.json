@@ -1,0 +1,512 @@
+{
+  "name": "650. Microsoft MAI-Image on Azure AI Foundry: size to width and height, data[].b64_json, output_images, undeliverable fields refused, named key (azure mai-image)",
+  "description": "Pins contract C3, C4, C5 and C9 for MAI-Image on Azure AI Foundry (TXE-6543). Local fixture regression, no live provider calls: start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json and run with providerErrorFixture=1; every case is skipped otherwise. The azure-mai key's endpoint is the fixture's /mai-a resource, so a request goes to /mai-a/mai/v1/images/generations. Rows 4 to 8 are refused before any upstream call; the last row proves rows 2 and 9 each made exactly one call, with the named key.",
+  "item": [
+    {
+      "name": "650.1 reset the fixture's hit counters (azure mai-image)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "{{providerErrorFixtureUrl}}/__reset"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('reset', function () { pm.expect(pm.response.code).to.eql(200); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "650.2 POST /v1/images/generations size 1024x768 returns data[0].b64_json and usage.output_images 1 (azure mai-image)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "azure-mai"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"azure/MAI-Image-2.5\", \"prompt\": \"a lighthouse at dusk\", \"size\": \"1024x768\"}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('one PNG in data[] and output_images 1', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.data, pm.response.text()).to.have.lengthOf(1);",
+              "  pm.expect(j.data[0].b64_json, pm.response.text()).to.match(/^iVBORw0KGgo/);",
+              "  pm.expect(j.usage.output_images, pm.response.text()).to.equal(1);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "650.3 MAI received model, prompt, width 1024 and height 768, and no size (azure mai-image)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{providerErrorFixtureUrl}}/__sent?model=mai-image"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('size became width and height', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var sent = JSON.parse(pm.response.json().data[0].body);",
+              "  pm.expect(sent).to.eql({ model: 'MAI-Image-2.5', prompt: 'a lighthouse at dusk', width: 1024, height: 768 });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "650.4 [EXPECT-400] n 2 is refused: MAI returns one image (azure mai-image)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "azure-mai"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"azure/MAI-Image-2.5\", \"prompt\": \"a fox\", \"n\": 2}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('400 caller_unsupported_parameter naming n', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields.error_type, pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error.param, pm.response.text()).to.eql('n');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "650.5 [EXPECT-400] quality has no MAI field and is refused (azure mai-image)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "azure-mai"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"azure/MAI-Image-2.5\", \"prompt\": \"a fox\", \"quality\": \"high\"}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('400 caller_unsupported_parameter naming quality', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields.error_type, pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error.param, pm.response.text()).to.eql('quality');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "650.6 [EXPECT-400] response_format url is refused: MAI returns b64_json only (azure mai-image)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "azure-mai"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"azure/MAI-Image-2.5\", \"prompt\": \"a fox\", \"response_format\": \"url\"}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('400 caller_unsupported_parameter naming response_format', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields.error_type, pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error.param, pm.response.text()).to.eql('response_format');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "650.7 [EXPECT-400] size that is not WIDTHxHEIGHT is refused, never rewritten (azure mai-image)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "azure-mai"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"azure/MAI-Image-2.5\", \"prompt\": \"a fox\", \"size\": \"large\"}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('400 caller_unsupported_parameter naming size', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields.error_type, pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error.param, pm.response.text()).to.eql('size');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "650.8 [EXPECT-400] stream is refused: MAI documents no stream (azure mai-image)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "azure-mai"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"azure/MAI-Image-2.5\", \"prompt\": \"a fox\", \"stream\": true}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('400 caller_unsupported_parameter naming stream', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields.error_type, pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error.param, pm.response.text()).to.eql('stream');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "650.9 [EXPECT-400] a vendor 400 keeps its status and is not a caller refusal (azure mai-image)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "azure-mai"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"azure/MAI-Image-2.5\", \"prompt\": \"a blocked prompt\"}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the vendor status comes back', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields.error_type, pm.response.text()).to.not.eql('caller_unsupported_parameter');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "650.10 only rows 2 and 9 reached MAI, once each, with the named key (azure mai-image)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{providerErrorFixtureUrl}}/__hits"
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the upstream counters are exact', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var hits = pm.response.json().data[0].hits;",
+              "  var mai = {};",
+              "  Object.keys(hits).filter(function (k) { return k.indexOf('mai ') === 0; }).forEach(function (k) { mai[k] = hits[k]; });",
+              "  pm.expect(mai).to.eql({ 'mai POST azure-mai-secret': 2 });",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

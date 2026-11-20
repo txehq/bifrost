@@ -2032,3 +2032,220 @@ func TestAzureBatchCreateRefusesMoreLinesThanTheVendorTakes(t *testing.T) {
 		}
 	})
 }
+
+// maiImageSample is the documented MAI-Image generation response (Microsoft Learn, "Use MAI
+// models in Foundry", response format): JSON with one base64 PNG and no usage.
+const maiImageSample = `{"data":[{"b64_json":"iVBORw0KGgo="}]}`
+
+// maiImageUpstream records each call's path, api-key header and JSON body, and answers with
+// status and body.
+type maiImageCall struct {
+	path, apiKey string
+	body         map[string]any
+}
+
+func maiImageUpstream(t *testing.T, status int, response string) (*httptest.Server, func() []maiImageCall) {
+	t.Helper()
+	var mu sync.Mutex
+	var calls []maiImageCall
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var body map[string]any
+		_ = json.Unmarshal(raw, &body)
+		mu.Lock()
+		calls = append(calls, maiImageCall{path: r.URL.Path, apiKey: r.Header.Get("api-key"), body: body})
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, response)
+	}))
+	t.Cleanup(server.Close)
+	return server, func() []maiImageCall {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]maiImageCall(nil), calls...)
+	}
+}
+
+// TXE-6543: a generation for a MAI-Image deployment goes to Azure AI Foundry's
+// /mai/v1/images/generations with size split into width and height, in one call with the key's
+// api-key, and the documented response comes back as data[0].b64_json with usage.output_images 1.
+// Before, it went to /openai/v1/images/generations, which does not serve MAI-Image.
+func TestAzureMAIImageGenerationSendsWidthHeight(t *testing.T) {
+	server, calls := maiImageUpstream(t, http.StatusOK, maiImageSample)
+	provider := newAzureDecisionProvider(t)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &schemas.BifrostImageGenerationRequest{
+		Provider: schemas.Azure,
+		Model:    "MAI-Image-2.5",
+		Input:    &schemas.ImageGenerationInput{Prompt: "a lighthouse at dusk"},
+		Params:   &schemas.ImageGenerationParameters{Size: schemas.Ptr("1024x768"), N: schemas.Ptr(1)},
+	}
+	resp, bifrostErr := provider.ImageGeneration(ctx, newAzureDecisionKey(server.URL), req)
+	if bifrostErr != nil {
+		t.Fatalf("ImageGeneration: %+v", bifrostErr.Error)
+	}
+	got := calls()
+	if len(got) != 1 {
+		t.Fatalf("upstream calls = %d, want 1", len(got))
+	}
+	call := got[0]
+	if call.path != "/mai/v1/images/generations" {
+		t.Fatalf("path = %q, want /mai/v1/images/generations", call.path)
+	}
+	if call.apiKey != "test-key" {
+		t.Fatalf("api-key = %q, want the key's value", call.apiKey)
+	}
+	want := map[string]any{"model": "MAI-Image-2.5", "prompt": "a lighthouse at dusk", "width": float64(1024), "height": float64(768)}
+	if len(call.body) != len(want) {
+		t.Fatalf("body = %v, want exactly %v", call.body, want)
+	}
+	for k, v := range want {
+		if call.body[k] != v {
+			t.Fatalf("body[%q] = %v, want %v (body %v)", k, call.body[k], v, call.body)
+		}
+	}
+	resp.BackfillParams(&schemas.BifrostRequest{RequestType: schemas.ImageGenerationRequest, ImageGenerationRequest: req})
+	if len(resp.Data) != 1 || resp.Data[0].B64JSON != "iVBORw0KGgo=" {
+		t.Fatalf("data = %+v, want one b64_json image", resp.Data)
+	}
+	if resp.Usage == nil || resp.Usage.OutputImages == nil || *resp.Usage.OutputImages != 1 {
+		t.Fatalf("usage = %+v, want output_images 1", resp.Usage)
+	}
+}
+
+// The MAI route is chosen by model family, so a deployment with an opaque name is routed by its
+// alias: model_family mai-image, or a model_name or alias key that names MAI-Image. A gpt-image
+// model stays on Azure OpenAI's images API.
+func TestAzureMAIImageRouteFollowsModelFamily(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		model    string
+		alias    *schemas.ResolvedAlias
+		wantPath string
+	}{
+		{"lower-case deployment", "mai-image-2-6-flash", nil, "/mai/v1/images/generations"},
+		{"alias model_family", "foundry-dep-1", &schemas.ResolvedAlias{Key: "house-image", Config: &schemas.AliasConfig{ModelID: "foundry-dep-1", ModelFamily: schemas.Ptr(schemas.ModelFamily("mai-image"))}}, "/mai/v1/images/generations"},
+		{"alias key", "foundry-dep-1", &schemas.ResolvedAlias{Key: "MAI-Image-2.6", Config: &schemas.AliasConfig{ModelID: "foundry-dep-1"}}, "/mai/v1/images/generations"},
+		{"gpt-image", "gpt-image-1.5", nil, "/openai/v1/images/generations"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, calls := maiImageUpstream(t, http.StatusOK, maiImageSample)
+			provider := newAzureDecisionProvider(t)
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if tc.alias != nil {
+				ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, tc.alias)
+			}
+			_, bifrostErr := provider.ImageGeneration(ctx, newAzureDecisionKey(server.URL), &schemas.BifrostImageGenerationRequest{
+				Provider: schemas.Azure,
+				Model:    tc.model,
+				Input:    &schemas.ImageGenerationInput{Prompt: "a fox"},
+			})
+			if bifrostErr != nil {
+				t.Fatalf("ImageGeneration: %+v", bifrostErr.Error)
+			}
+			got := calls()
+			if len(got) != 1 || got[0].path != tc.wantPath {
+				t.Fatalf("calls = %+v, want one to %s", got, tc.wantPath)
+			}
+			if got[0].body["model"] != tc.model {
+				t.Fatalf("body model = %v, want the deployment %q", got[0].body["model"], tc.model)
+			}
+		})
+	}
+}
+
+// Contract C4: a field the MAI API cannot carry is refused with 400 caller_unsupported_parameter
+// naming it, before any upstream call. size "auto" sends no width or height (the API's default).
+func TestAzureMAIImageRefusesUndeliverableFields(t *testing.T) {
+	for _, tc := range []struct {
+		param  string
+		params schemas.ImageGenerationParameters
+	}{
+		{"n", schemas.ImageGenerationParameters{N: schemas.Ptr(2)}},
+		{"response_format", schemas.ImageGenerationParameters{ResponseFormat: schemas.Ptr("url")}},
+		{"output_format", schemas.ImageGenerationParameters{OutputFormat: schemas.Ptr("webp")}},
+		{"size", schemas.ImageGenerationParameters{Size: schemas.Ptr("1024")}},
+		{"quality", schemas.ImageGenerationParameters{Quality: schemas.Ptr("high")}},
+		{"aspect_ratio", schemas.ImageGenerationParameters{AspectRatio: schemas.Ptr("16:9")}},
+		{"style", schemas.ImageGenerationParameters{Style: schemas.Ptr("vivid")}},
+		{"output_compression", schemas.ImageGenerationParameters{OutputCompression: schemas.Ptr(50)}},
+	} {
+		t.Run(tc.param, func(t *testing.T) {
+			server, calls := maiImageUpstream(t, http.StatusOK, maiImageSample)
+			provider := newAzureDecisionProvider(t)
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			params := tc.params
+			_, bifrostErr := provider.ImageGeneration(ctx, newAzureDecisionKey(server.URL), &schemas.BifrostImageGenerationRequest{
+				Provider: schemas.Azure, Model: "MAI-Image-2.5",
+				Input:  &schemas.ImageGenerationInput{Prompt: "a fox"},
+				Params: &params,
+			})
+			if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+				t.Fatalf("err = %+v, want a 400", bifrostErr)
+			}
+			if bifrostErr.ResolveErrorType() != schemas.ErrorTypeCallerUnsupportedParameter || bifrostErr.Error == nil || bifrostErr.Error.Param != tc.param {
+				t.Fatalf("err = %+v, want caller_unsupported_parameter naming %q", bifrostErr.Error, tc.param)
+			}
+			if n := len(calls()); n != 0 {
+				t.Fatalf("upstream calls = %d, want 0", n)
+			}
+		})
+	}
+	t.Run("size auto and accepted values", func(t *testing.T) {
+		server, calls := maiImageUpstream(t, http.StatusOK, maiImageSample)
+		provider := newAzureDecisionProvider(t)
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		_, bifrostErr := provider.ImageGeneration(ctx, newAzureDecisionKey(server.URL), &schemas.BifrostImageGenerationRequest{
+			Provider: schemas.Azure, Model: "MAI-Image-2.7",
+			Input: &schemas.ImageGenerationInput{Prompt: "a fox"},
+			Params: &schemas.ImageGenerationParameters{Size: schemas.Ptr("auto"), N: schemas.Ptr(1), ResponseFormat: schemas.Ptr("b64_json"),
+				OutputFormat: schemas.Ptr("png"), Background: schemas.Ptr("transparent"), Seed: schemas.Ptr(7)},
+		})
+		if bifrostErr != nil {
+			t.Fatalf("ImageGeneration: %+v", bifrostErr.Error)
+		}
+		got := calls()
+		if len(got) != 1 {
+			t.Fatalf("upstream calls = %d, want 1", len(got))
+		}
+		body := got[0].body
+		if _, ok := body["width"]; ok {
+			t.Fatalf("body = %v: size auto must send no width", body)
+		}
+		if body["background"] != "transparent" || len(body) != 3 {
+			t.Fatalf("body = %v, want model, prompt and background only", body)
+		}
+	})
+	t.Run("stream", func(t *testing.T) {
+		server, calls := maiImageUpstream(t, http.StatusOK, maiImageSample)
+		provider := newAzureDecisionProvider(t)
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		stream, bifrostErr := provider.ImageGenerationStream(ctx, nil, nil, newAzureDecisionKey(server.URL), &schemas.BifrostImageGenerationRequest{
+			Provider: schemas.Azure, Model: "MAI-Image-2.5", Input: &schemas.ImageGenerationInput{Prompt: "a fox"},
+		})
+		if stream != nil || bifrostErr == nil || bifrostErr.Error == nil || bifrostErr.Error.Param != "stream" ||
+			bifrostErr.ResolveErrorType() != schemas.ErrorTypeCallerUnsupportedParameter {
+			t.Fatalf("stream err = %+v, want caller_unsupported_parameter naming stream", bifrostErr)
+		}
+		if n := len(calls()); n != 0 {
+			t.Fatalf("upstream calls = %d, want 0", n)
+		}
+	})
+}
+
+// C6: a vendor error keeps the vendor's status, from one upstream call.
+func TestAzureMAIImageVendorErrorKeepsStatus(t *testing.T) {
+	server, calls := maiImageUpstream(t, http.StatusTooManyRequests, `{"error":{"code":"429","message":"Rate limit exceeded"}}`)
+	provider := newAzureDecisionProvider(t)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, bifrostErr := provider.ImageGeneration(ctx, newAzureDecisionKey(server.URL), &schemas.BifrostImageGenerationRequest{
+		Provider: schemas.Azure, Model: "MAI-Image-2.5", Input: &schemas.ImageGenerationInput{Prompt: "a fox"},
+	})
+	if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("err = %+v, want the vendor's 429", bifrostErr)
+	}
+	if n := len(calls()); n != 1 {
+		t.Fatalf("upstream calls = %d, want 1", n)
+	}
+}

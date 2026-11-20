@@ -3105,6 +3105,26 @@ const handleRequest = (req, res) => {
 		countHit(`bfl get_result ${id}`);
 		return send(200, {}, JSON.stringify(bflResult(id)));
 	}
+	// Microsoft MAI-Image on Azure AI Foundry (folder 650, TXE-6543): the azure-mai key's endpoint is
+	// /mai-a, so its generations route is /mai-a/mai/v1/images/generations. Every call is counted under
+	// "mai <METHOD> <api-key>" and its body kept for /__sent?model=mai-image. The answer is the
+	// documented shape, one PNG as data[0].b64_json. A prompt containing "blocked" gets a 400 with
+	// Foundry's error envelope, so a case can check the vendor status survives.
+	if (path === "/mai-a/mai/v1/images/generations") {
+		const chunks = [];
+		req.on("data", (c) => chunks.push(c));
+		req.on("end", () => {
+			countHit(`mai ${req.method} ${req.headers["api-key"] || ""}`);
+			if (req.method !== "POST") return send(405, {}, errorBody("method not allowed", "invalid_request_error", "method_not_allowed"));
+			const raw = Buffer.concat(chunks).toString("utf8");
+			sentBodies["mai-image"] = raw;
+			if (raw.includes("blocked")) {
+				return send(400, {}, JSON.stringify({ error: { code: "content_filter", message: "The prompt was blocked by the content filter.", type: "invalid_request_error" } }));
+			}
+			return send(200, {}, JSON.stringify({ created: 1762700000, data: [{ b64_json: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==" }] }));
+		});
+		return undefined;
+	}
 	// Sora 2 on two Azure resources (folder 419, TXE-6532): each key's endpoint is its own path
 	// prefix, so a counter names the resource a request reached and the key it carried. Every
 	// create's form fields are kept for /__sent?model=sora-form. A prompt containing "blocked" gets

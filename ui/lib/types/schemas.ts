@@ -627,6 +627,7 @@ export const modelFamilySchema = z.enum([
 	"veo",
 	"nova",
 	"titan",
+	"mai-image",
 ]);
 
 // AliasConfig schema — mirrors schemas.AliasConfig with the embedded

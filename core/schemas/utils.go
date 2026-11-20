@@ -2777,6 +2777,13 @@ func IsTitanModel(model string) bool {
 	return strings.Contains(model, "titan")
 }
 
+// IsMAIImageModel reports whether model names a Microsoft MAI-Image model (MAI-Image-2.5,
+// MAI-Image-2.6-Flash, ...), in any letter case: Azure AI Foundry's catalog writes them in
+// upper case and deployment names are often lower case (fork, TXE-6543).
+func IsMAIImageModel(model string) bool {
+	return len(model) >= len("mai-image") && strings.Contains(strings.ToLower(model), "mai-image")
+}
+
 // IsTitanMultimodalEmbeddingModel checks if the model is Titan's multimodal embedding model.
 func IsTitanMultimodalEmbeddingModel(model string) bool {
 	return strings.Contains(strings.ToLower(model), "titan-embed-image")
