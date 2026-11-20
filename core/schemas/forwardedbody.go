@@ -139,8 +139,9 @@ func (br *BifrostRequest) ForwardedBodyContentType() string {
 //
 //   - JSON (declared, or a body opening with "{" or "[" after a UTF-8 byte order mark and
 //     whitespace): an object anywhere in the document that gives one key twice, compared as
-//     decoded, so "model" and "mod\u0065l" are the same key. A gated key (gatedBodyKeys) is also
-//     compared without case, since encoding/json and sonic fill a struct field from any casing.
+//     decoded, so "model" and "mod\u0065l" are the same key. In the root object and the objects
+//     of a root array, a gated key (gatedBodyKeys) is also compared without case, since
+//     encoding/json and sonic fill a struct field from any casing.
 //     A document nested deeper than maxForwardedBodyDepth is refused, and so is one that does not
 //     parse strictly: a lenient vendor parser might read members gjson does not see.
 //   - multipart/form-data (declared, read by the declared boundary; or, with no declared type, a
@@ -239,13 +240,25 @@ func multipartPartName(part *multipart.Part) (string, bool) {
 // quoted value, which refuses a body that is merely odd: the check fails closed.
 var extendedNameParameter = regexp.MustCompile(`(?i);\s*name\*`)
 
-// plainHeaderValue reports whether a header value holds only printable ASCII, space and tab.
-// mime.ParseMediaType trims any Unicode space around a parameter, which extendedNameParameter's
-// \s does not match; with only space and tab allowed, the two agree on where a parameter starts.
-// A form-data disposition in any API this forwards to is plain ASCII.
+// plainHeaderValue reports whether a header value's syntax, outside its quoted strings, holds
+// only printable ASCII, space and tab. mime.ParseMediaType trims any Unicode space around a
+// parameter, which extendedNameParameter's \s does not match; with only space and tab allowed
+// between parameters, the two agree on where a parameter starts. A quoted string (a filename
+// such as "résumé.pdf") may hold any byte but a control character; a backslash escapes the byte
+// after it, as in Go's parser.
 func plainHeaderValue(value string) bool {
+	quoted := false
 	for i := 0; i < len(value); i++ {
-		if c := value[i]; (c < 0x20 || c > 0x7e) && c != '\t' {
+		c := value[i]
+		if (c < 0x20 && c != '\t') || c == 0x7f {
+			return false
+		}
+		switch {
+		case quoted && c == '\\':
+			i++
+		case c == '"':
+			quoted = !quoted
+		case !quoted && c > 0x7e:
 			return false
 		}
 	}
@@ -257,7 +270,10 @@ var utf8ByteOrderMark = []byte{0xef, 0xbb, 0xbf}
 
 // gatedBodyKeys are the members an access gate or the router reads from a forwarded body by
 // name. Two of them that differ only in case are ambiguous too: a typed decoder fills the field
-// from either, gjson and the vendor read the exact spelling.
+// from either, gjson and the vendor read the exact spelling. They are read only from the root
+// object and from the objects of a root array (governance's passthrough models, a typed decoder
+// of the request), so only those objects are compared without case: elsewhere, such as a tool's
+// input_schema.properties, keys are user-defined and case-sensitive.
 var gatedBodyKeys = []string{"model"}
 
 // gatedBodyKey returns the gated key name folds to, or "".
@@ -305,9 +321,11 @@ func ambiguousJSONMember(value gjson.Result, path *[]bodyPathSegment, depth int)
 	small := keys[:0]
 	var large map[string]struct{}
 	var gated []string // gated keys (folded) this object has given
+	// Gated keys are read from the root object and the objects of a root array only.
+	foldGated := depth == 0 || (depth == 1 && (*path)[0].index >= 0)
 	value.ForEach(func(key, member gjson.Result) bool {
 		name := key.Str
-		if folded := gatedBodyKey(name); folded != "" {
+		if folded := gatedBodyKey(name); foldGated && folded != "" {
 			if slices.Contains(gated, folded) {
 				found, ambiguous = renderBodyPath(*path, name), true
 				return false

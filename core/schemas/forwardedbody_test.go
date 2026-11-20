@@ -27,6 +27,9 @@ func TestAmbiguousBodyMember(t *testing.T) {
 		{"object naming its model once", `{"model":"a","messages":[{"role":"user","content":"x"}]}`, ""},
 		{"same key in sibling objects", `{"messages":[{"role":"user"},{"role":"assistant"}]}`, ""},
 		{"keys differing in case", `{"properties":{"Name":{},"name":{}}}`, ""},
+		{"tool schema properties model and Model", `{"model":"a","tools":[{"input_schema":{"properties":{"model":{},"Model":{}}}}]}`, ""},
+		{"nested object model and Model", `{"metadata":{"model":"a","Model":"b"}}`, ""},
+		{"nested object model repeated exactly", `{"metadata":{"model":"a","model":"b"}}`, "metadata.model"},
 		{"top-level model repeated", `{"model":"a","stream":true,"model":"b"}`, "model"},
 		{"escaped repeat", `{"model":"a","model":"b"}`, "model"},
 		{"leading whitespace", " \n\t{\"model\":\"a\",\"model\":\"b\"}", "model"},
@@ -155,6 +158,11 @@ func TestAmbiguousMultipartField(t *testing.T) {
 	folded := []byte("--b\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\na\r\n--b\r\nContent-Disposition: form-data; name=\"Model\"\r\n\r\nb\r\n--b--\r\n")
 	if member, ambiguous := AmbiguousBodyMember(folded, "multipart/form-data; boundary=b"); !ambiguous || member != "multipart field model" {
 		t.Errorf("model then Model = %q, %t; want it refused", member, ambiguous)
+	}
+	// A non-ASCII quoted filename stays admitted; non-ASCII outside a quoted string does not.
+	unicodeFilename := []byte("--b\r\nContent-Disposition: form-data; name=\"file\"; filename=\"r\u00e9sum\u00e9.pdf\"\r\n\r\nx\r\n--b--\r\n")
+	if member, ambiguous := AmbiguousBodyMember(unicodeFilename, "multipart/form-data; boundary=b"); ambiguous {
+		t.Errorf("a non-ASCII quoted filename = %q, %t; want it admitted", member, ambiguous)
 	}
 	// A filename* parameter is not a name parameter and stays admitted.
 	filenameStar := []byte("--b\r\nContent-Disposition: form-data; name=\"image\"; filename*=utf-8''a.png\r\n\r\nx\r\n--b--\r\n")
