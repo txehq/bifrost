@@ -42,6 +42,18 @@ check("the real harness: every folder that reads a fixture variable is run by a 
 	}
 });
 
+// A row renamed without its skippedRows or quarantine entry used to surface only at the end of
+// the 25-minute fixture job (TXE-7033 renamed 406.1). This check finds it offline, in seconds.
+check("the real harness: every skippedRows and quarantine entry names a row that exists", () => {
+	const names = new Set();
+	for (const { folder: f } of readFolders()) for (const n of requestNames({ item: [f] })) names.add(n);
+	const { quarantine, skippedRows } = loadData();
+	const stale = [...skippedRows, ...quarantine]
+		.map((e) => (typeof e === "string" ? e : e.row))
+		.filter((row) => !names.has(row));
+	assert.deepStrictEqual(stale, [], "fixture-folders.json names rows that no harness folder has (renamed or removed?)");
+});
+
 check("ports are picked below the ephemeral ranges, so a gateway's own startup connections cannot take its listen port", () => {
 	// The widest span a group asks for must fit under the ceiling too.
 	const widest = Math.max(0, ...GROUPS.flatMap((g) => g.span || [0]));
