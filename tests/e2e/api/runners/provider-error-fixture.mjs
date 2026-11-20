@@ -704,6 +704,9 @@ const fixturePricing = {
 	// custom provider on an xAI base. Folder 601 sends xAI's own first frame, "image", which only xAI's converter
 	// sends; the capture judged it by the custom name and billed no image.
 	"fixture-xai-images": { provider: "xai_media_proxy", mode: "video_generation", input_cost_per_image: 0.01, output_cost_per_second: 0.08 },
+	// TXE-7101 (folder 651): an xAI video row with a 480p band, $0.04/s, under the $0.08/s unbanded rate. xAI renders
+	// the tier it is sent, so a 480p job with no size settles at the band; main left xAI out of the tier readers.
+	"fixture-xai-tier": { provider: "xai", mode: "video_generation", output_cost_per_second: 0.08, output_cost_per_second_480p: 0.04 },
 	// Folder 612 (TXE-7302): an image model priced per image by quality, so an over-limit refusal of 3 high-quality
 	// images charges the budget 3 x $0.17; and the over-limit chat model priced, so a charge for it would show.
 	"fixture-image-oversize": { provider: "openai", mode: "image_generation", output_cost_per_image: 0.04, output_cost_per_image_high_quality: 0.17 },
@@ -1504,6 +1507,8 @@ const xaiVideoCreateAnswer = (body) => {
 	if (body.model === "xai-video-policy") return { status: 403, body: JSON.stringify({ code: "content_policy_violation", error: "The prompt violates the usage policy." }) };
 	// TXE-7434 (folder 601): a create that sent xAI's own first frame is answered with a task that reports no cost.
 	if (body.model === "fixture-xai-images" && body.image && body.image.url) return { status: 200, body: JSON.stringify({ request_id: "xai-fixture-images" }) };
+	// TXE-7101 (folder 651): a 480p create is answered with a task that reports no cost, so the datasheet prices it.
+	if (body.model === "fixture-xai-tier") return { status: 200, body: JSON.stringify({ request_id: "xai-fixture-tier" }) };
 	return { status: 200, body: JSON.stringify({ request_id: "xai-fixture-done" }) };
 };
 // GET /pp/xai/v1/videos/{request_id}: xai-fixture-pending is still generating, xai-fixture-moderated finished
@@ -1512,6 +1517,10 @@ const xaiVideoCreateAnswer = (body) => {
 const xaiVideoTask = (id) => {
 	if (id === "xai-fixture-pending") return { status: "pending", progress: 42, model: "grok-imagine-video-1.5" };
 	// TXE-7434 (folder 601): finished, 6 s, with no usage, so settlement prices it from the fixture-xai-images row.
+	// TXE-7101 (folder 651): finished, 6 s, no usage and no size, so settlement prices it from the tier the create named.
+	if (id === "xai-fixture-tier") {
+		return { status: "done", progress: 100, model: "fixture-xai-tier", video: { url: "https://vidgen.fixture.invalid/xai-video-tier.mp4", duration: 6, respect_moderation: true } };
+	}
 	if (id === "xai-fixture-images") {
 		return { status: "done", progress: 100, model: "fixture-xai-images", video: { url: "https://vidgen.fixture.invalid/xai-video-images.mp4", duration: 6, respect_moderation: true } };
 	}
