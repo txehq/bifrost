@@ -1,6 +1,7 @@
 package governance
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -107,6 +108,33 @@ func TestPricedAnswerLiftsTheProbe(t *testing.T) {
 	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", chat), "a confirmed row admits concurrent requests")
 }
 
+// A priced answer a provider's server-side fallback served confirms nothing: it was priced as
+// another model.
+func TestFallbackAnswerDoesNotConfirmTheProbedRow(t *testing.T) {
+	plugin, _ := unpricedBudgetPlugin(t)
+	chat := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "seconds-chat"}}
+	first := resolverCtx(plugin.store, "sk-bf-budget")
+	_, shortCircuit, err := plugin.PreLLMHook(first, chat)
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit)
+	fallback := "gpt-4o"
+	_, _, err = plugin.PostLLMHook(first, &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		Model: "seconds-chat",
+		Usage: &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.ChatCompletionRequest, Provider: schemas.OpenAI, OriginalModelRequested: "seconds-chat",
+			RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenAI, Model: "seconds-chat", ServerSideFallbackModel: &fallback},
+		},
+	}}, nil)
+	require.NoError(t, err)
+	plugin.wg.Wait()
+	held := resolverCtx(plugin.store, "sk-bf-budget")
+	_, shortCircuit, err = plugin.PreLLMHook(held, chat)
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit, "the fallback's answer released the row")
+	requireProbeRefusal(t, preLLM(t, plugin, "sk-bf-budget", chat), "but did not confirm it: a concurrent request is still held off")
+}
+
 // A request that fails, or a key with no dollar budget, holds nothing afterwards.
 func TestProbeIsReleasedOnErrorAndSkippedWithoutABudget(t *testing.T) {
 	plugin, _ := unpricedBudgetPlugin(t)
@@ -159,6 +187,17 @@ func TestUnpricedProbes(t *testing.T) {
 	assert.False(t, probesUnpriced(schemas.LiveRequest), "a live unit holds its row for a whole session")
 	assert.False(t, probesUnpriced(schemas.VideoGenerationRequest), "a settled job is not an answer")
 	assert.True(t, probesUnpriced(schemas.ChatCompletionRequest))
+}
+
+// A request presenting no virtual key is never probed: callers without one share a holder, so one
+// in flight would hold off the others.
+func TestRequestWithoutAVirtualKeyIsNotProbed(t *testing.T) {
+	plugin, _ := unpricedBudgetPlugin(t)
+	for range 2 {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		assert.Nil(t, plugin.resolver.probeUnconfirmed(ctx, schemas.ChatCompletionRequest, "openai|chat|gpt-4o", []string{"budget-unpriced"}))
+		assert.Nil(t, ctx.Value(unpricedProbeContextKey))
+	}
 }
 
 // A stream holds its row until its final chunk.

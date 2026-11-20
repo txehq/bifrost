@@ -2192,7 +2192,9 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifro
 			if passthrough := result.PassthroughResponse; passthrough != nil {
 				pricedAs = modelcatalog.PassthroughPricingRequestType(provider, result.GetExtraFields().PassthroughPath, passthrough.PassthroughUsage)
 			}
-			if answerCost > 0 {
+			// A price confirms the probed row only when that row's model served the answer: one a
+			// provider's server-side fallback served was priced as another model.
+			if answerCost > 0 && fallback == "" {
 				probe.confirm()
 			}
 			p.resolver.noteUnpricedAnswer(provider, priced, fallback, requestType, pricedAs, answerCost, pricingScopes, requestID, limitIDs(budgets), holder)

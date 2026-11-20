@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/capsohq/bifrost/core/schemas"
-	"github.com/capsohq/bifrost/framework/modelcatalog"
 )
 
 // A dollar budget refuses a price book row for a virtual key once an answer on it priced at $0
@@ -158,14 +157,22 @@ func probesUnpriced(requestType schemas.RequestType) bool {
 // probeUnconfirmed holds the request's rows for its (budget, virtual key) scopes until its answer
 // returns, or refuses it when another request holds one of them. The hold is kept on the request,
 // and a later pass over the same rows (a body model, then the envelope) reuses it.
-func (r *BudgetResolver) probeUnconfirmed(ctx *schemas.BifrostContext, requestType schemas.RequestType, provider schemas.ModelProvider, model string, pricedAs schemas.RequestType, scopes *modelcatalog.PricingLookupScopes, holderScopes []string) *EvaluationResult {
-	if r.probes == nil || ctx == nil || model == "" || !probesUnpriced(requestType) {
+//
+// row is the price book row the request is priced as (priceIdentity in its pricing mode), which
+// the gate has already read: concurrent requests on one model resolve to the same row.
+//
+// A request presenting no virtual key is not probed: every such caller shares one holder, so one's
+// request in flight would hold off the others. Its answers are still judged after the fact.
+func (r *BudgetResolver) probeUnconfirmed(ctx *schemas.BifrostContext, requestType schemas.RequestType, row string, budgetIDs []string) *EvaluationResult {
+	if r.probes == nil || ctx == nil || row == "" || !probesUnpriced(requestType) {
 		return nil
 	}
-	_, rows := r.priceIdentities(provider, model, pricedAs, scopes)
-	if len(rows) == 0 {
+	holder := unpricedHolder(ctx)
+	if holder == "" {
 		return nil
 	}
+	holderScopes := unpricedScopes(budgetIDs, holder)
+	rows := []string{row}
 	if held, ok := ctx.Value(unpricedProbeContextKey).(*unpricedProbe); ok && held != nil {
 		if slices.Equal(held.scopes, holderScopes) && slices.Equal(held.rows, rows) {
 			return nil

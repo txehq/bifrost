@@ -343,8 +343,8 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 		// The answer is charged under no model of its own: the body's model, named as it was
 		// evaluated, is what an unpriced answer refuses.
 		ctx.SetValue(passthroughBodyModelContextKey, bodyModel)
-		return r.probeUnconfirmed(ctx, requestType, provider, bodyModel, liveUnitPricingMode(ctx, requestType),
-			modelcatalog.PricingLookupScopesFromContext(ctx, string(provider)), unpricedScopes(limitIDs(budgets), unpricedHolder(ctx)))
+		bodyRow, _ := r.priceIdentity(provider, bodyModel, liveUnitPricingMode(ctx, requestType), modelcatalog.PricingLookupScopesFromContext(ctx, string(provider)))
+		return r.probeUnconfirmed(ctx, requestType, bodyRow, limitIDs(budgets))
 	}
 	if requestType == schemas.BatchCreateRequest {
 		// An inline batch naming no model of its own: each request was gated as its own model before
@@ -396,8 +396,13 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 			checkedModes = []schemas.RequestType{jobaccounting.BatchRequestType(evaluationRequest.request.BatchCreateRequest.Endpoint)}
 		}
 	}
+	probeRow := ""
 	for _, mode := range checkedModes {
-		if _, status := r.priceIdentity(provider, model, mode, scopes); status == modelcatalog.PriceUnpriced {
+		row, status := r.priceIdentity(provider, model, mode, scopes)
+		if mode == pricedAs {
+			probeRow = row
+		}
+		if status == modelcatalog.PriceUnpriced {
 			return &EvaluationResult{
 				Decision: DecisionModelUnpriced,
 				Reason: fmt.Sprintf("model %q on provider %q has no price for %s requests, so it cannot be charged to a dollar budget; add a pricing override for it",
@@ -431,7 +436,7 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 			}
 		}
 	}
-	return r.probeUnconfirmed(ctx, requestType, provider, model, pricedAs, scopes, budgetIDs)
+	return r.probeUnconfirmed(ctx, requestType, probeRow, limitIDs(budgets))
 }
 
 // noteUnpricedAnswer is called for an answer charged to the dollar budgets budgetIDs. When the
