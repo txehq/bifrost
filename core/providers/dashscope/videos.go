@@ -638,7 +638,15 @@ func (provider *DashScopeProvider) VideoDownload(ctx *schemas.BifrostContext, ke
 	if task.Status != schemas.VideoStatusCompleted {
 		return nil, providerUtils.NewBifrostOperationError(fmt.Sprintf("video not ready, current status: %s", task.Status), nil)
 	}
-	if len(task.Videos) == 0 || task.Videos[0].URL == nil || *task.Videos[0].URL == "" {
+	if len(task.Videos) == 0 {
+		return nil, providerUtils.NewBifrostOperationError("video URL not available", nil)
+	}
+	// Fork (TXE-7040): the caller names one of the task's videos with index (default 0).
+	selected, indexErr := schemas.SelectDownloadVideo(request, task.Videos)
+	if indexErr != nil {
+		return nil, indexErr
+	}
+	if selected.URL == nil || *selected.URL == "" {
 		return nil, providerUtils.NewBifrostOperationError("video URL not available", nil)
 	}
 
@@ -648,7 +656,7 @@ func (provider *DashScopeProvider) VideoDownload(ctx *schemas.BifrostContext, ke
 	// storage host, never the API's. No credentials are sent. A streamed request is forwarded
 	// as the file arrives, with no size cap; any other is held, within the fetcher's cap.
 	return providerUtils.FetchVideoContent(ctx, providerUtils.VideoContentFetch{
-		VendorURL:                *task.Videos[0].URL,
+		VendorURL:                *selected.URL,
 		Stream:                   request.Stream,
 		VideoID:                  request.ID,
 		StreamIdleTimeoutSeconds: provider.networkConfig.StreamIdleTimeoutInSeconds,

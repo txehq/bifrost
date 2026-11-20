@@ -3561,6 +3561,12 @@ func (h *CompletionHandler) videoDownload(ctx *fasthttp.RequestCtx) {
 
 	// take variant from query parameters
 	variant := string(ctx.QueryArgs().Peek("variant"))
+	// Fork (TXE-7040): index names one of the task's videos (default 0).
+	index, indexErr := schemas.ParseVideoDownloadIndex(string(ctx.QueryArgs().Peek(schemas.VideoDownloadIndexParam)))
+	if indexErr != nil {
+		SendBifrostError(ctx, indexErr)
+		return
+	}
 
 	// Build Bifrost video download request
 	// Fork: the file is asked for as a stream and forwarded as it arrives, so it is never held
@@ -3569,6 +3575,7 @@ func (h *CompletionHandler) videoDownload(ctx *fasthttp.RequestCtx) {
 		Provider: schemas.ModelProvider(idParts[1]),
 		ID:       idParts[0],
 		Stream:   true,
+		Index:    index,
 	}
 
 	if variant != "" {

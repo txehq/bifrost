@@ -2717,7 +2717,12 @@ func (provider *GeminiProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 	if len(videoResp.Videos) == 0 {
 		return nil, providerUtils.NewBifrostOperationError("video URL not available", nil)
 	}
-	video := videoResp.Videos[0]
+	// Fork (TXE-7040): a Veo task can hold up to four videos (sampleCount); the caller names
+	// one with index (default 0).
+	video, indexErr := schemas.SelectDownloadVideo(request, videoResp.Videos)
+	if indexErr != nil {
+		return nil, indexErr
+	}
 	switch {
 	case video.Type == schemas.VideoOutputTypeBase64 && video.Base64Data != nil:
 		// The bytes arrived inline in the operation.

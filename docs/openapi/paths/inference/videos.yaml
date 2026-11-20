@@ -247,6 +247,18 @@ video-download:
         - "thumbnail"
         - "spritesheet"
       description: Variant of the video content to download (provider-specific)
+    - name: index
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+      description: Which of the task's videos to download, counting from 0 in the order of the
+        task object's `videos` array (a task can hold several, such as Veo with `sampleCount`
+        above 1 or Sora with `n_variants` above 1). An index the task does not have, or a value
+        that is not a non-negative integer, is a 400 with `error.param` `index`. A provider that
+        stores one file per video id accepts only 0.
     responses:
       '200':
         description: Successful response. Returns the video file as binary content.

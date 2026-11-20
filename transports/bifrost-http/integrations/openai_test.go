@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/bytedance/sonic"
@@ -2212,4 +2213,53 @@ func TestOpenAIVideoRouteReachesMiniMax(t *testing.T) {
 		assert.Equal(t, http.StatusBadRequest, status, "response: %v", resp)
 		assert.Empty(t, upstream.take())
 	})
+}
+
+// TestOpenAIVideoContentRouteIndex is TXE-7040 on the OpenAI-SDK /videos/{id}/content routes:
+// a malformed index is a 400 naming index before any upstream call, and index 1 on OpenAI,
+// which stores one file per video id, is a 400 naming index rather than that file.
+func TestOpenAIVideoContentRouteIndex(t *testing.T) {
+	var calls atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "video/mp4")
+		_, _ = w.Write([]byte("ONLY-FILE"))
+	}))
+	defer upstream.Close()
+
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: speechTestAccount{baseURL: upstream.URL},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+
+	r := router.New()
+	identity := func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next }
+	NewOpenAIRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, identity)
+
+	get := func(uri string) *fasthttp.RequestCtx {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod(fasthttp.MethodGet)
+		ctx.Request.SetRequestURI(uri)
+		r.Handler(ctx)
+		return ctx
+	}
+
+	bad := get("/openai/v1/videos/video_a:openai/content?index=two")
+	require.Equal(t, fasthttp.StatusBadRequest, bad.Response.StatusCode(), "body: %s", bad.Response.Body())
+	require.Equal(t, "index", gjson.GetBytes(bad.Response.Body(), "error.param").String(), "body: %s", bad.Response.Body())
+	require.Zero(t, calls.Load(), "a malformed index reached the vendor")
+
+	refused := get("/openai/v1/videos/video_a:openai/content?index=1")
+	require.Equal(t, fasthttp.StatusBadRequest, refused.Response.StatusCode(), "body: %s", refused.Response.Body())
+	require.False(t, refused.Response.IsBodyStream())
+	require.Equal(t, "index", gjson.GetBytes(refused.Response.Body(), "error.param").String(), "body: %s", refused.Response.Body())
+
+	served := get("/openai/v1/videos/video_a:openai/content?index=0")
+	require.Equal(t, fasthttp.StatusOK, served.Response.StatusCode())
+	body, err := io.ReadAll(served.Response.BodyStream())
+	require.NoError(t, err)
+	require.Equal(t, "ONLY-FILE", string(body))
+	require.NoError(t, served.Response.CloseBodyStream())
 }

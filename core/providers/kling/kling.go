@@ -345,7 +345,15 @@ func (provider *KlingProvider) VideoDownload(ctx *schemas.BifrostContext, key sc
 	if task.Status != schemas.VideoStatusCompleted {
 		return nil, providerUtils.NewBifrostBadRequestError(fmt.Sprintf("video not ready, current status: %s", task.Status))
 	}
-	if len(task.Videos) == 0 || task.Videos[0].URL == nil || *task.Videos[0].URL == "" {
+	if len(task.Videos) == 0 {
+		return nil, schemas.NewProviderEmptyResultError("kling reported the task succeeded with no video link")
+	}
+	// Fork (TXE-7040): the caller names one of the task's videos with index (default 0).
+	selected, indexErr := schemas.SelectDownloadVideo(request, task.Videos)
+	if indexErr != nil {
+		return nil, indexErr
+	}
+	if selected.URL == nil || *selected.URL == "" {
 		return nil, schemas.NewProviderEmptyResultError("kling reported the task succeeded with no video link")
 	}
 
@@ -355,7 +363,7 @@ func (provider *KlingProvider) VideoDownload(ctx *schemas.BifrostContext, key sc
 	// path. No request is passed either, so no credentials reach the file host. A caller that
 	// asked for a stream gets the open response (contract C9; TXE-7036).
 	return providerUtils.FetchVideoContent(ctx, providerUtils.VideoContentFetch{
-		VendorURL:                *task.Videos[0].URL,
+		VendorURL:                *selected.URL,
 		Stream:                   request.Stream,
 		VideoID:                  request.ID,
 		StreamIdleTimeoutSeconds: provider.networkConfig.StreamIdleTimeoutInSeconds,

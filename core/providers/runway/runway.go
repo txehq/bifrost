@@ -565,9 +565,14 @@ func (provider *RunwayProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 	if len(taskDetails.Videos) == 0 {
 		return nil, providerUtils.NewBifrostOperationError("video URL not available", nil)
 	}
+	// Fork (TXE-7040): the caller names one of the task's videos with index (default 0).
+	selected, indexErr := schemas.SelectDownloadVideo(request, taskDetails.Videos)
+	if indexErr != nil {
+		return nil, indexErr
+	}
 	var videoUrl string
-	if taskDetails.Videos[0].URL != nil {
-		videoUrl = *taskDetails.Videos[0].URL
+	if selected.URL != nil {
+		videoUrl = *selected.URL
 	}
 	if videoUrl == "" {
 		return nil, providerUtils.NewBifrostOperationError("invalid video output type", nil)

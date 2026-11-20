@@ -885,3 +885,51 @@ func BenchmarkGeminiInteractionVideoConversion(b *testing.B) {
 		}
 	})
 }
+
+// TestGeminiVeoVideoDownloadServesTheNamedVideo is TXE-7040 on the Gemini API: a Veo operation
+// with two generated samples, and /content?index=1 fetches the second sample's file. An index
+// outside the task is a 400 naming index, after the operation lookup and before any file read;
+// an Omni interaction has one video, so index 1 there is refused the same way.
+func TestGeminiVeoVideoDownloadServesTheNamedVideo(t *testing.T) {
+	const operation = "models/veo-3.1-generate-preview/operations/op-two"
+	provider, recorder := newOmniTestProvider(t, func(w http.ResponseWriter, r *http.Request, serverURL string) {
+		switch r.URL.Path {
+		case "/v1beta/files/first:download":
+			w.Header().Set("Content-Type", "video/mp4")
+			_, _ = w.Write([]byte("FIRST-SAMPLE"))
+		case "/v1beta/files/second:download":
+			w.Header().Set("Content-Type", "video/mp4")
+			_, _ = w.Write([]byte("SECOND-SAMPLE"))
+		case "/v1beta/" + operation:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"name":"` + operation + `","done":true,"response":{"generateVideoResponse":{"generatedSamples":[` +
+				`{"video":{"uri":"` + serverURL + `/v1beta/files/first:download?alt=media"}},` +
+				`{"video":{"uri":"` + serverURL + `/v1beta/files/second:download?alt=media"}}]}}}`))
+		default:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"` + omniInteractionID + `","status":"completed","steps":[{"type":"model_output","content":[{"type":"video","mime_type":"video/mp4","data":"` + base64.StdEncoding.EncodeToString([]byte("OMNI")) + `"}]}]}`))
+		}
+	})
+	taskID := providerUtils.AddVideoIDProviderSuffix(operation, schemas.Gemini)
+	for _, tc := range []struct {
+		index *int
+		want  string
+	}{{nil, "FIRST-SAMPLE"}, {schemas.Ptr(1), "SECOND-SAMPLE"}} {
+		resp, bifrostErr := provider.VideoDownload(omniTestContext(), omniTestKey, &schemas.BifrostVideoDownloadRequest{Provider: schemas.Gemini, ID: taskID, Index: tc.index})
+		require.Nil(t, bifrostErr, "index %v", tc.index)
+		assert.Equal(t, tc.want, string(resp.Content), "index %v", tc.index)
+	}
+
+	before, _ := recorder.snapshot()
+	_, bifrostErr := provider.VideoDownload(omniTestContext(), omniTestKey, &schemas.BifrostVideoDownloadRequest{Provider: schemas.Gemini, ID: taskID, Index: schemas.Ptr(2)})
+	require.NotNil(t, bifrostErr)
+	require.NotNil(t, bifrostErr.StatusCode)
+	assert.Equal(t, http.StatusBadRequest, *bifrostErr.StatusCode)
+	assert.Equal(t, "index", bifrostErr.Error.Param)
+	after, _ := recorder.snapshot()
+	assert.Equal(t, append(append([]string(nil), before...), "GET /v1beta/"+operation), after, "a refused index reads no file")
+
+	_, bifrostErr = provider.VideoDownload(omniTestContext(), omniTestKey, &schemas.BifrostVideoDownloadRequest{Provider: schemas.Gemini, ID: omniTaskID, Index: schemas.Ptr(1)})
+	require.NotNil(t, bifrostErr)
+	assert.Equal(t, "index", bifrostErr.Error.Param)
+}

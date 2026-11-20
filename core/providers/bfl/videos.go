@@ -280,10 +280,18 @@ func (provider *BFLProvider) VideoDownload(ctx *schemas.BifrostContext, key sche
 	if task.Status != schemas.VideoStatusCompleted {
 		return nil, providerUtils.NewBifrostBadRequestError(fmt.Sprintf("video not ready, current status: %s", task.Status))
 	}
-	if len(task.Videos) == 0 || task.Videos[0].URL == nil || *task.Videos[0].URL == "" {
+	if len(task.Videos) == 0 {
 		return nil, schemas.NewProviderEmptyResultError("bfl reported the task Ready with no video link")
 	}
-	videoURL := *task.Videos[0].URL
+	// Fork (TXE-7040): the caller names one of the task's videos with index (default 0).
+	selected, indexErr := schemas.SelectDownloadVideo(request, task.Videos)
+	if indexErr != nil {
+		return nil, indexErr
+	}
+	if selected.URL == nil || *selected.URL == "" {
+		return nil, schemas.NewProviderEmptyResultError("bfl reported the task Ready with no video link")
+	}
+	videoURL := *selected.URL
 	return providerUtils.FetchVideoContent(ctx, providerUtils.VideoContentFetch{
 		VendorURL:                videoURL,
 		Stream:                   request.Stream,

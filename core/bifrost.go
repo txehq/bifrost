@@ -9958,9 +9958,17 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		} else {
 			req.Context.ClearValue(schemas.BifrostContextKeyVideoDownloadRange)
 		}
-		videoDownloadResponse, bifrostError := provider.VideoDownload(req.Context, key, req.BifrostRequest.VideoDownloadRequest)
+		downloadRequest := req.BifrostRequest.VideoDownloadRequest
+		downloadRequest.ResetIndexSelected()
+		videoDownloadResponse, bifrostError := provider.VideoDownload(req.Context, key, downloadRequest)
 		if bifrostError != nil {
 			return nil, bifrostError
+		}
+		// Fork (TXE-7040): a non-zero index no provider path selected is refused, never
+		// answered with the task's first video.
+		if indexErr := schemas.CheckVideoDownloadIndexServed(downloadRequest, videoDownloadResponse); indexErr != nil {
+			indexErr.ExtraFields.Provider = provider.GetProviderKey()
+			return nil, indexErr
 		}
 		response.VideoDownloadResponse = videoDownloadResponse
 	case schemas.VideoListRequest:

@@ -916,6 +916,8 @@ Videos removed by the safety filter take no slot in `videos[]`; `content_filter`
 
 A video Veo wrote to Cloud Storage is a `videos[]` entry of `type: "content"` with no `url` and the `gs://` URI as its `id`; fetch it through `GET /v1/videos/{id}/content`.
 
+A task with `sampleCount` above 1 lists each video in `videos[]`. `GET /v1/videos/{id}/content?index=N` downloads the video at position `N` of `videos[]`, counting from 0; without `index` it is the first. An index the task does not have is a `400` with `error.param` `index`.
+
 **Job Statuses**: `in_progress` → `completed` / `failed`
 
 ### Retrieve / Download
@@ -923,7 +925,7 @@ A video Veo wrote to Cloud Storage is a `videos[]` entry of `type: "content"` wi
 | Operation | Endpoint | Notes |
 |-----------|----------|-------|
 | Get status | `GET /v1/videos/{id}` | Polls the long-running operation |
-| Download | `GET /v1/videos/{id}/content` | Downloads from GCS URI or decodes base64 video |
+| Download | `GET /v1/videos/{id}/content` | Downloads from GCS URI or decodes base64 video; `?index=N` names one of the task's videos (default 0) |
 
 Video Delete, List, and Remix are not supported.
 

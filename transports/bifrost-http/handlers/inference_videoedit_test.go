@@ -22,6 +22,7 @@ import (
 	"github.com/fasthttp/router"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -1082,4 +1083,48 @@ func TestKlingVideoRoutes(t *testing.T) {
 	assert.Equal(t, fasthttp.StatusBadRequest, cancelled.Response.StatusCode())
 	assert.Equal(t, "provider_cancel_unsupported", cancelRefusal.ExtraFields.ErrorType)
 	assert.Len(t, upstreamCalls(), 3, "a refused request must not reach Kling")
+}
+
+// TestVideoContentIndexIsValidatedAndNeverServesTheWrongVideo is TXE-7040 on GET
+// /v1/videos/{id}/content: index names one of a task's videos. A value that is not a
+// non-negative integer is a 400 naming index, with no upstream call. OpenAI stores one file per
+// video id, so index 1 is refused with a 400 naming index instead of serving that one file as
+// if it were the second; index 0 serves it.
+func TestVideoContentIndexIsValidatedAndNeverServesTheWrongVideo(t *testing.T) {
+	upstream := &videoUpstream{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstream.record(r)
+		w.Header().Set("Content-Type", "video/mp4")
+		_, _ = w.Write([]byte("ONLY-FILE"))
+	}))
+	defer srv.Close()
+	h := newVideoRouteHandler(t, srv.URL)
+
+	get := func(query string) *fasthttp.RequestCtx {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod(fasthttp.MethodGet)
+		ctx.Request.SetRequestURI("/v1/videos/video_a:openai/content" + query)
+		ctx.SetUserValue("video_id", "video_a:openai")
+		h.videoDownload(ctx)
+		return ctx
+	}
+
+	for _, query := range []string{"?index=abc", "?index=-1", "?index=1.5"} {
+		ctx := get(query)
+		require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), query)
+		require.Equal(t, "index", gjson.GetBytes(ctx.Response.Body(), "error.param").String(), "%s: %s", query, ctx.Response.Body())
+	}
+	require.Empty(t, upstream.seen(), "a malformed index reached the vendor")
+
+	refused := get("?index=1")
+	require.Equal(t, fasthttp.StatusBadRequest, refused.Response.StatusCode(), "body: %s", refused.Response.Body())
+	require.False(t, refused.Response.IsBodyStream(), "a refused index must not forward the file")
+	require.Equal(t, "index", gjson.GetBytes(refused.Response.Body(), "error.param").String(), "body: %s", refused.Response.Body())
+
+	served := get("?index=0")
+	require.Equal(t, fasthttp.StatusOK, served.Response.StatusCode())
+	body, err := io.ReadAll(served.Response.BodyStream())
+	require.NoError(t, err)
+	require.Equal(t, "ONLY-FILE", string(body))
+	require.NoError(t, served.Response.CloseBodyStream())
 }
