@@ -121,7 +121,7 @@ Optional provider settings include `network_config` for timeouts, retries, proxy
 | `metadata` | [object](https://github.com/capsohq/bifrost/blob/main/core/schemas/chatcompletions.go#L27) | ❌ | Custom metadata |
 | `store` | bool | ❌ | **Filtered for non-OpenAI routing** |
 | `service_tier` | string | ❌ | Sent as given; refused with 400 `caller_unsupported_parameter` when the model's capability record does not list the tier (`default` is never refused) |
-| `prompt_cache_key` | string | ❌ | **Filtered for non-OpenAI routing** |
+| `prompt_cache_key` | string | ❌ | Sent on OpenAI, Azure and custom providers; on another compatible vendor, removed unless the model's record lists it. `prompt_cache_retention` and `prompt_cache_options` are refused there instead: see [Prompt caching](/features/prompt-caching#prompt-cache-fields-on-openai-compatible-chat) |
 | `prediction` | [object](https://github.com/capsohq/bifrost/blob/main/core/schemas/chatcompletions.go#L28) | ❌ | Predicted output for acceleration |
 | `audio` | [object](https://github.com/capsohq/bifrost/blob/main/core/schemas/chatcompletions.go#L29) | ❌ | Audio output config |
 | `modalities` | [array](https://github.com/capsohq/bifrost/blob/main/core/schemas/chatcompletions.go#L30) | ❌ | Response modalities (text, audio) |
@@ -135,7 +135,7 @@ Optional provider settings include `network_config` for timeouts, retries, proxy
 - **Streaming:** Server-Sent Events format with `delta.content`, `delta.tool_calls`, `finish_reason`, and `usage` (final chunk only, automatically included by Bifrost). `stream_options: { include_usage: true }` is set by default for all streaming calls.
 - **Cache Control:** `cache_control` fields are stripped from messages, their content blocks, and tools before sending. The exception is the **gpt-5.6 family**, where a marked block is translated into OpenAI's own `prompt_cache_breakpoint`. Bifrost does not set `prompt_cache_options`: the default implicit mode honours explicit breakpoints and also looks back over up to 20 earlier message endings, which is what lets an agent loop with a marker that moves every turn (such as Claude Code) read the previous turn back from cache. Explicit-only mode checks only the breakpoints in the current request, so send `prompt_cache_options.mode: "explicit"` yourself only if your breakpoints stay at fixed positions. In implicit mode Bifrost keeps at most three translated breakpoints, since the implicit breakpoint takes one of the four cache-write slots. Earlier models have no such field, so stripping remains correct for them. Bifrost can also add the marker for clients that send none - see [Prompt caching](/features/prompt-caching).
 - **Output cap:** `max_completion_tokens` is sent as given. A value below the vendor's minimum (16 on some OpenAI models) comes back as the vendor's error; Bifrost does not raise it.
-- **Special handling:** `user` field is truncated to 64 characters; `prompt_cache_key` and `store` are filtered when routing to non-OpenAI providers; `service_tier` is still omitted on the Gemini OpenAI-compatible route
+- **Special handling:** `user` field is truncated to 64 characters; `store` is filtered when routing to non-OpenAI providers, and `prompt_cache_key` too unless the provider is a custom provider or the model's record lists it; on the Gemini OpenAI-compatible route a `service_tier` other than `default` is refused with 400 `caller_unsupported_parameter`
 
 ---
 

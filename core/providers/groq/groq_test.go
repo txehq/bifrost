@@ -2,6 +2,7 @@ package groq_test
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -133,4 +134,76 @@ func TestGroqModelRetrieve(t *testing.T) {
 	mu.Lock()
 	require.Equal(t, before, dispatched, "a path-shaping model id must never be dispatched upstream")
 	mu.Unlock()
+}
+
+// TXE-7063 (contract C4, agreement three): Groq takes neither prompt_cache_retention nor
+// prompt_cache_options, so a chat request carrying one is refused with 400
+// caller_unsupported_parameter naming the field, unary and streamed, before any upstream call.
+// prompt_cache_key alone is the documented exemption: Groq has no cache key, so it does not set
+// the price there, and the request goes out without it.
+func TestGroqChatRefusesPriceTierCacheFieldsWithNoUpstreamCall(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	var bodies []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, string(raw))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-groq","object":"chat.completion","created":1,"model":"llama-3.3-70b-versatile","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer server.Close()
+
+	provider, err := groq.NewGroqProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 30},
+	}, bifrost.NewNoOpLogger())
+	require.NoError(t, err)
+	key := schemas.Key{Value: *schemas.NewSecretVar("gsk-test")}
+	request := func(params *schemas.ChatParameters) *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Provider: schemas.Groq,
+			Model:    "llama-3.3-70b-versatile",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}}},
+			Params:   params,
+		}
+	}
+	requireRefused := func(t *testing.T, bifrostErr *schemas.BifrostError, field string) {
+		t.Helper()
+		require.NotNil(t, bifrostErr, "the request was sent")
+		require.NotNil(t, bifrostErr.StatusCode)
+		require.Equal(t, http.StatusBadRequest, *bifrostErr.StatusCode)
+		require.Equal(t, schemas.ErrorTypeCallerUnsupportedParameter, bifrostErr.ExtraFields.ErrorType)
+		require.Equal(t, field, bifrostErr.Error.Param)
+	}
+
+	for field, params := range map[string]func() *schemas.ChatParameters{
+		schemas.FieldPromptCacheRetention: func() *schemas.ChatParameters {
+			return &schemas.ChatParameters{PromptCacheKey: schemas.Ptr("tenant-42"), PromptCacheRetention: schemas.Ptr("24h")}
+		},
+		schemas.FieldPromptCacheOptions: func() *schemas.ChatParameters {
+			return &schemas.ChatParameters{PromptCacheOptions: &schemas.PromptCacheOptions{TTL: schemas.Ptr("1h")}}
+		},
+	} {
+		_, bifrostErr := provider.ChatCompletion(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), key, request(params()))
+		requireRefused(t, bifrostErr, field)
+		_, bifrostErr = provider.ChatCompletionStream(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+			func(_ *schemas.BifrostContext, r *schemas.BifrostResponse, e *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				return r, e
+			}, nil, key, request(params()))
+		requireRefused(t, bifrostErr, field)
+	}
+	mu.Lock()
+	require.Empty(t, bodies, "a refused request reached Groq")
+	mu.Unlock()
+
+	_, bifrostErr := provider.ChatCompletion(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), key,
+		request(&schemas.ChatParameters{PromptCacheKey: schemas.Ptr("tenant-42")}))
+	require.Nil(t, bifrostErr)
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, bodies, 1)
+	require.NotContains(t, bodies[0], "prompt_cache_key", "the exempt key goes out removed")
+	require.Contains(t, bodies[0], `"hello"`)
 }

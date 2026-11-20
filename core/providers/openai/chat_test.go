@@ -3135,3 +3135,146 @@ func TestToOpenAIChatRequest_MoonshotKeepsPromptCacheFields(t *testing.T) {
 		t.Fatalf("a compatible provider with no catalog record must still drop prompt_cache_options: %v", other)
 	}
 }
+
+// TXE-7063 (contract C4, agreement three): every provider's branch of ToOpenAIChatRequest
+// delivers a price-setting chat field or ChatRequestRefusal refuses it with 400
+// caller_unsupported_parameter naming the field; no branch removes one silently. The one
+// exemption is prompt_cache_key on a standard vendor with no cache key (chatCacheFieldKeyExempt). The
+// test runs every standard provider, so a new switch case or a new filter in one is checked
+// without being listed here; custom providers run on a standard base and on a non-standard one.
+func TestChatConverterNeverDropsAPriceFieldSilently(t *testing.T) {
+	type target struct {
+		name     string
+		provider schemas.ModelProvider
+		base     schemas.ModelProvider // "" for a standard provider
+	}
+	var targets []target
+	seen := map[schemas.ModelProvider]bool{}
+	for _, p := range append(slices.Clone(schemas.StandardProviders),
+		schemas.OpenAI, schemas.Azure, schemas.Wafer, schemas.Groq, schemas.Cerebras, schemas.XAI, schemas.DeepSeek,
+		schemas.GLM, schemas.Gemini, schemas.Mistral, schemas.MiniMax, schemas.BytePlus, schemas.OpencodeGo,
+		schemas.OpencodeZen, schemas.Ollama, schemas.Vertex, schemas.Qwen, schemas.Moonshot, schemas.Fireworks) {
+		if !seen[p] {
+			seen[p] = true
+			targets = append(targets, target{name: string(p), provider: p})
+		}
+	}
+	targets = append(targets,
+		target{name: "custom on openai", provider: "cp_plain", base: schemas.OpenAI},
+		target{name: "custom on groq", provider: "cp_groq", base: schemas.Groq},
+		target{name: "custom on gemini", provider: "cp_gemini", base: schemas.Gemini},
+	)
+
+	type field struct {
+		name   string
+		params func() *schemas.ChatParameters
+		wire   func(provider schemas.ModelProvider, body map[string]any) bool
+	}
+	fields := []field{
+		{schemas.FieldPromptCacheKey, func() *schemas.ChatParameters {
+			return &schemas.ChatParameters{PromptCacheKey: schemas.Ptr("tenant-42")}
+		},
+			func(p schemas.ModelProvider, body map[string]any) bool {
+				return body["prompt_cache_key"] == "tenant-42" || (p == schemas.Fireworks && body["prompt_cache_isolation_key"] == "tenant-42")
+			}},
+		{schemas.FieldPromptCacheRetention, func() *schemas.ChatParameters {
+			return &schemas.ChatParameters{PromptCacheRetention: schemas.Ptr("24h")}
+		},
+			func(_ schemas.ModelProvider, body map[string]any) bool {
+				return body["prompt_cache_retention"] == "24h"
+			}},
+		{schemas.FieldPromptCacheOptions, func() *schemas.ChatParameters {
+			return &schemas.ChatParameters{PromptCacheOptions: &schemas.PromptCacheOptions{TTL: schemas.Ptr("1h")}}
+		}, func(_ schemas.ModelProvider, body map[string]any) bool {
+			options, _ := body["prompt_cache_options"].(map[string]any)
+			return options["ttl"] == "1h"
+		}},
+		{"service_tier", func() *schemas.ChatParameters {
+			return &schemas.ChatParameters{ServiceTier: schemas.Ptr(schemas.BifrostServiceTier("priority"))}
+		}, func(_ schemas.ModelProvider, body map[string]any) bool { return body["service_tier"] != nil }},
+	}
+
+	// The vendors with a prompt-cache key of their own. Everywhere else prompt_cache_key selects
+	// nothing, so removing it is the documented exemption; on these it is delivered or refused.
+	keyedVendors := map[schemas.ModelProvider]bool{
+		schemas.OpenAI: true, schemas.Azure: true, schemas.Moonshot: true, schemas.Fireworks: true, schemas.XAI: true,
+	}
+	exempt := 0
+	for _, tg := range targets {
+		for _, f := range fields {
+			t.Run(tg.name+"/"+f.name, func(t *testing.T) {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				if tg.base != "" {
+					ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, tg.base)
+					ctx.SetValue(schemas.BifrostContextKeyIsCustomProvider, false)
+				}
+				// A model with no capability record: the catalog opts no field in.
+				req := &schemas.BifrostChatRequest{
+					Provider: tg.provider,
+					Model:    "txe-7063-uncatalogued-model",
+					Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}}},
+					Params:   f.params(),
+				}
+				if refusal := ChatRequestRefusal(ctx, req); refusal != nil {
+					require.Equal(t, 400, *refusal.StatusCode)
+					require.Equal(t, schemas.ErrorTypeCallerUnsupportedParameter, refusal.ExtraFields.ErrorType)
+					require.Equal(t, f.name, refusal.Error.Param)
+					t.Log("outcome: refused")
+					return
+				}
+				out := ToOpenAIChatRequest(ctx, req)
+				require.NotNil(t, out)
+				raw, err := sonic.Marshal(out)
+				require.NoError(t, err)
+				var body map[string]any
+				require.NoError(t, json.Unmarshal(raw, &body))
+				if f.wire(tg.provider, body) {
+					t.Log("outcome: sent")
+					return
+				}
+				if f.name == schemas.FieldPromptCacheKey && tg.base == "" && !keyedVendors[tg.provider] {
+					exempt++
+					t.Log("outcome: exempt (key removed)")
+					return
+				}
+				t.Fatalf("%s: %s was neither refused nor sent; wire body %s", tg.name, f.name, raw)
+			})
+		}
+	}
+	if exempt == 0 {
+		t.Fatal("no provider used the prompt_cache_key exemption; the exemption test below is checking nothing")
+	}
+}
+
+// TXE-7063: the exemption is prompt_cache_key alone, and only on a provider with no cache key.
+// The price-tier fields are refused there, a custom provider on a standard base sends all three,
+// and xAI, which has a key, refuses an unlisted model's key rather than removing it.
+func TestChatPromptCacheKeyExemptionIsNarrow(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	for _, p := range []schemas.ModelProvider{schemas.Groq, schemas.DeepSeek, schemas.Mistral, schemas.Gemini, schemas.Parasail} {
+		require.Equal(t, chatCacheFieldKeyExempt, chatPromptCacheFieldTreatment(ctx, p, schemas.FieldPromptCacheKey), p)
+		require.Equal(t, chatCacheFieldByCatalog, chatPromptCacheFieldTreatment(ctx, p, schemas.FieldPromptCacheRetention), p)
+		require.Equal(t, chatCacheFieldByCatalog, chatPromptCacheFieldTreatment(ctx, p, schemas.FieldPromptCacheOptions), p)
+	}
+	require.Equal(t, chatCacheFieldByCatalog, chatPromptCacheFieldTreatment(ctx, schemas.XAI, schemas.FieldPromptCacheKey))
+	require.Equal(t, chatCacheFieldRenamed, chatPromptCacheFieldTreatment(ctx, schemas.Fireworks, schemas.FieldPromptCacheKey))
+
+	custom := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	custom.SetValue(schemas.BifrostContextKeyBaseProviderType, schemas.OpenAI)
+	custom.SetValue(schemas.BifrostContextKeyIsCustomProvider, false)
+	req := &schemas.BifrostChatRequest{
+		Provider: "cp_plain",
+		Model:    "cp-capped",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}}},
+		Params: &schemas.ChatParameters{
+			PromptCacheKey:       schemas.Ptr("tenant-42"),
+			PromptCacheRetention: schemas.Ptr("24h"),
+			PromptCacheOptions:   &schemas.PromptCacheOptions{TTL: schemas.Ptr("1h")},
+		},
+	}
+	require.Nil(t, ChatRequestRefusal(custom, req))
+	out := ToOpenAIChatRequest(custom, req)
+	require.Equal(t, "tenant-42", *out.PromptCacheKey)
+	require.Equal(t, "24h", *out.PromptCacheRetention)
+	require.Equal(t, "1h", *out.PromptCacheOptions.TTL)
+}

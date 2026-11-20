@@ -131,6 +131,18 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		clampOpenRouterCacheControl(openaiReq, maxResponsesCacheBreakpoints)
 	}
 
+	sentCacheFields := snapshotChatPromptCacheFields(openaiReq)
+	applyChatProviderCompatibility(ctx, bifrostReq, openaiReq, caps, capModel)
+	restoreSentChatPromptCacheFields(ctx, bifrostReq.Provider, openaiReq, sentCacheFields)
+	return openaiReq
+}
+
+// applyChatProviderCompatibility applies the provider's own request rules to an OpenAI-shape
+// chat body. It may filter a prompt-cache field only as chatPromptCacheFieldTreatment says:
+// ToOpenAIChatRequest restores every field listed as sent, and ChatRequestRefusal has already
+// refused every field the catalog leaves out. TestChatConverterNeverDropsAPriceFieldSilently
+// runs every provider through it.
+func applyChatProviderCompatibility(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostChatRequest, openaiReq *OpenAIChatRequest, caps schemas.ModelCaps, capModel string) {
 	switch bifrostReq.Provider {
 	case schemas.OpenAI, schemas.Azure:
 		openaiReq.normalizeReasoningEffort(caps)
@@ -139,19 +151,19 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		// still have to be resolved before the request goes out - but that is a network fetch that
 		// can fail, and this function has no way to report a failure. Callers invoke
 		// ResolveChatFileURLs after conversion, where the error can propagate; see its doc comment.
-		return openaiReq
+		return
 	case schemas.Wafer:
 		openaiReq.filterOpenAISpecificParameters(caps)
 		openaiReq.stripReasoningDetails()
-		return openaiReq
+		return
 	case schemas.Groq, schemas.Cerebras:
 		openaiReq.filterOpenAISpecificParameters(caps)
 		openaiReq.renameAssistantReasoningToAlias()
-		return openaiReq
+		return
 	case schemas.XAI:
 		openaiReq.filterOpenAISpecificParameters(caps)
 		openaiReq.applyXAICompatibility(caps)
-		return openaiReq
+		return
 	case schemas.DeepSeek:
 		openaiReq.filterOpenAISpecificParametersInternal(caps, false)
 		// DeepSeek's chat-completions endpoint still uses the legacy max_tokens
@@ -165,28 +177,30 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		// requires it on assistant tool-call turns.
 		openaiReq.stripReasoningDetailsExceptToolCalls()
 		openaiReq.downgradeJSONSchemaToJSONObject()
-		return openaiReq
+		return
 	case schemas.GLM:
 		openaiReq.filterOpenAISpecificParametersInternal(caps, false)
 		openaiReq.applyGLMCompatibility()
-		return openaiReq
+		return
 	case schemas.Gemini:
 		openaiReq.filterOpenAISpecificParameters(caps)
-		// Removing extra parameters that are not supported by Gemini
+		// Gemini's OpenAI-compatible endpoint takes no service_tier. ChatRequestRefusal has
+		// already refused every tier but "default", the standard tier, which sets no price
+		// of its own; only that one is removed here (chatServiceTierDelivered).
 		openaiReq.ServiceTier = nil
-		return openaiReq
+		return
 	case schemas.Mistral:
 		openaiReq.filterOpenAISpecificParameters(caps)
 		openaiReq.applyMistralCompatibility()
-		return openaiReq
+		return
 	case schemas.MiniMax:
 		openaiReq.filterOpenAISpecificParameters(caps)
 		openaiReq.applyMiniMaxCompatibility(capModel)
-		return openaiReq
+		return
 	case schemas.BytePlus:
 		openaiReq.filterOpenAISpecificParameters(caps)
 		openaiReq.applyBytePlusCompatibility()
-		return openaiReq
+		return
 	case schemas.OpencodeGo, schemas.OpencodeZen:
 		openaiReq.filterOpenAISpecificParameters(caps)
 		// OpenCode's chat-completions endpoints still use the legacy max_tokens
@@ -195,7 +209,7 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 			openaiReq.MaxTokens = openaiReq.MaxCompletionTokens
 			openaiReq.MaxCompletionTokens = nil
 		}
-		return openaiReq
+		return
 	case schemas.Ollama:
 		openaiReq.filterOpenAISpecificParameters(caps)
 		// Ollama's chat-completions endpoints still use the legacy max_tokens
@@ -204,7 +218,7 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 			openaiReq.MaxTokens = openaiReq.MaxCompletionTokens
 			openaiReq.MaxCompletionTokens = nil
 		}
-		return openaiReq
+		return
 	case schemas.Vertex:
 		openaiReq.filterOpenAISpecificParameters(caps)
 
@@ -220,23 +234,18 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 			// // proprietary OpenAI/Azure GPT-5.1+ keep "none" via their own cases.)
 			openaiReq.Reasoning.Effort = nil
 		}
-		return openaiReq
+		return
 	case schemas.Qwen:
 		openaiReq.filterOpenAISpecificParametersInternal(caps, false)
 		openaiReq.applyQwenCompatibility()
-		return openaiReq
+		return
 	case schemas.Moonshot:
 		// Kimi prices a cache write by the request's prompt_cache_options.ttl and does
-		// not echo the TTL back, so losing either prompt-cache field silently bills
-		// another tier. Both go out as sent, whatever the capability catalog records
-		// (contract C4); the rest of the OpenAI-only fields are filtered as for any
-		// compatible provider.
-		promptCacheKey := openaiReq.ChatParameters.PromptCacheKey
-		promptCacheOptions := openaiReq.ChatParameters.PromptCacheOptions
+		// not echo the TTL back, so its key and options go out as sent whatever the
+		// capability catalog records: chatPromptCacheFieldTreatment lists them as sent and
+		// ToOpenAIChatRequest restores them after this filter (contract C4).
 		openaiReq.filterOpenAISpecificParameters(caps)
-		openaiReq.ChatParameters.PromptCacheKey = promptCacheKey
-		openaiReq.ChatParameters.PromptCacheOptions = promptCacheOptions
-		return openaiReq
+		return
 	case schemas.Fireworks:
 		// Fireworks uses prompt_cache_isolation_key for cache isolation on chat/completions.
 		// Preserve it before the generic filter strips prompt_cache_key.
@@ -247,7 +256,7 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		prediction := openaiReq.ChatParameters.Prediction
 		openaiReq.filterOpenAISpecificParameters(caps)
 		openaiReq.ChatParameters.Prediction = prediction
-		return openaiReq
+		return
 	default:
 		// Check if provider is a custom provider
 		if isCustomProvider, ok := ctx.Value(schemas.BifrostContextKeyIsCustomProvider).(bool); ok && isCustomProvider {
@@ -256,10 +265,10 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 			if schemas.ResolveBaseProvider(ctx, bifrostReq.Provider) == schemas.DeepSeek {
 				openaiReq.downgradeJSONSchemaToJSONObject()
 			}
-			return openaiReq
+			return
 		}
 		openaiReq.filterOpenAISpecificParameters(caps)
-		return openaiReq
+		return
 	}
 }
 
@@ -333,26 +342,130 @@ func serviceTierError(ctx *schemas.BifrostContext, provider schemas.ModelProvide
 		"service_tier \""+string(*tier)+"\" is not supported by model "+model+" on provider "+string(provider))
 }
 
-// ChatPromptCacheFieldError is the refusal for an xAI chat request that carries a
-// prompt-cache field the target model cannot take: 400 caller_unsupported_parameter naming
-// the field, and nil otherwise. These fields decide what is cached and for how long, so they
-// change the price; the xAI branch of the converter used to remove one silently, which sent
-// a different request from the one the caller made (contract C4). A model the catalog lists
-// the field for takes it as sent.
-//
-// Only xAI is checked: the other OpenAI-compatible branches keep their behaviour until their
-// own tickets decide it.
+// chatCacheFieldTreatment is what the OpenAI-shape chat converter does with one prompt-cache
+// field for one provider. Contract C4: a field that sets the price is delivered or refused,
+// never dropped.
+type chatCacheFieldTreatment int
+
+const (
+	// chatCacheFieldSent: the field goes to the vendor as sent, whatever the capability
+	// catalog records.
+	chatCacheFieldSent chatCacheFieldTreatment = iota
+	// chatCacheFieldRenamed: the field goes to the vendor under the vendor's own name
+	// (Fireworks' prompt_cache_isolation_key).
+	chatCacheFieldRenamed
+	// chatCacheFieldByCatalog: the field goes as sent when the model's capability record
+	// lists it, and is refused with 400 caller_unsupported_parameter otherwise.
+	chatCacheFieldByCatalog
+	// chatCacheFieldKeyExempt: prompt_cache_key on a vendor with no cache key. It goes as
+	// sent when the model's record lists it and is removed otherwise. This is the one
+	// documented exemption from C4 agreement three (TXE-7063, option B): on such a vendor the
+	// key selects nothing and so does not affect the price, and OpenAI-SDK clients (Codex
+	// among them) send it on every call, so a 400 would fail requests that are billed
+	// exactly as asked.
+	chatCacheFieldKeyExempt
+)
+
+// chatPromptCacheFieldTreatment is the one table of what each provider's branch of
+// ToOpenAIChatRequest does with a prompt-cache field. The converter restores every field it
+// lists as sent, ChatPromptCacheFieldError refuses by it, and
+// TestChatConverterNeverDropsAPriceFieldSilently checks every provider against it.
+func chatPromptCacheFieldTreatment(ctx *schemas.BifrostContext, provider schemas.ModelProvider, field string) chatCacheFieldTreatment {
+	// A custom provider is configured by its operator for one vendor, and Bifrost cannot know
+	// what that vendor takes: its fields go as sent, and the vendor answers for them.
+	if schemas.ResolveBaseProvider(ctx, provider) != provider {
+		return chatCacheFieldSent
+	}
+	if ctx != nil {
+		if isCustom, ok := ctx.Value(schemas.BifrostContextKeyIsCustomProvider).(bool); ok && isCustom {
+			return chatCacheFieldSent
+		}
+	}
+	switch provider {
+	case schemas.OpenAI, schemas.Azure:
+		return chatCacheFieldSent
+	case schemas.Moonshot:
+		// Kimi takes prompt_cache_key and prices a write by prompt_cache_options.ttl (TXE-6527).
+		if field == schemas.FieldPromptCacheKey || field == schemas.FieldPromptCacheOptions {
+			return chatCacheFieldSent
+		}
+	case schemas.Fireworks:
+		if field == schemas.FieldPromptCacheKey {
+			return chatCacheFieldRenamed
+		}
+	case schemas.XAI:
+		// xAI has a cache key (prompt_cache_key on the models the datasheet lists), so an
+		// unlisted model's key is refused, not exempt (TXE-7043).
+		return chatCacheFieldByCatalog
+	}
+	if field == schemas.FieldPromptCacheKey {
+		return chatCacheFieldKeyExempt
+	}
+	return chatCacheFieldByCatalog
+}
+
+// chatServiceTierDelivered reports whether the provider's branch of ToOpenAIChatRequest sends
+// service_tier. Gemini's OpenAI-compatible endpoint takes none, so ChatRequestRefusal refuses
+// every tier there except "default", the standard tier, which sets no price of its own.
+func chatServiceTierDelivered(provider schemas.ModelProvider) bool {
+	return provider != schemas.Gemini
+}
+
+// chatPromptCacheFieldSnapshot holds the prompt-cache fields of a chat body as the caller sent them.
+type chatPromptCacheFieldSnapshot struct {
+	key       *string
+	retention *string
+	options   *schemas.PromptCacheOptions
+}
+
+func snapshotChatPromptCacheFields(req *OpenAIChatRequest) chatPromptCacheFieldSnapshot {
+	return chatPromptCacheFieldSnapshot{
+		key:       req.ChatParameters.PromptCacheKey,
+		retention: req.ChatParameters.PromptCacheRetention,
+		options:   req.ChatParameters.PromptCacheOptions,
+	}
+}
+
+// restoreSentChatPromptCacheFields puts back every prompt-cache field the provider's branch
+// removed although chatPromptCacheFieldTreatment lists it as sent.
+// A request that carries none of the fields, the common case, costs three nil checks and no
+// context lookup.
+func restoreSentChatPromptCacheFields(ctx *schemas.BifrostContext, provider schemas.ModelProvider, req *OpenAIChatRequest, sent chatPromptCacheFieldSnapshot) {
+	if sent.key != nil && chatPromptCacheFieldTreatment(ctx, provider, schemas.FieldPromptCacheKey) == chatCacheFieldSent {
+		req.ChatParameters.PromptCacheKey = sent.key
+	}
+	if sent.retention != nil && chatPromptCacheFieldTreatment(ctx, provider, schemas.FieldPromptCacheRetention) == chatCacheFieldSent {
+		req.ChatParameters.PromptCacheRetention = sent.retention
+	}
+	if sent.options != nil && chatPromptCacheFieldTreatment(ctx, provider, schemas.FieldPromptCacheOptions) == chatCacheFieldSent {
+		req.ChatParameters.PromptCacheOptions = sent.options
+	}
+}
+
+// ChatPromptCacheFieldError is the refusal for a chat request that carries a prompt-cache field
+// the provider's branch of ToOpenAIChatRequest would not deliver: 400
+// caller_unsupported_parameter naming the field, and nil otherwise. A field the catalog lists
+// for the model goes as sent. The fields decide what is cached and for how long, so they change
+// the price (contract C4); see chatPromptCacheFieldTreatment for each provider, and
+// chatCacheFieldKeyExempt for the one field that is removed rather than refused.
 func ChatPromptCacheFieldError(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostChatRequest) *schemas.BifrostError {
-	if bifrostReq == nil || bifrostReq.Provider != schemas.XAI || bifrostReq.Params == nil {
+	if bifrostReq == nil || bifrostReq.Params == nil {
 		return nil
 	}
 	params := bifrostReq.Params
 	if params.PromptCacheKey == nil && params.PromptCacheRetention == nil && params.PromptCacheOptions == nil {
 		return nil
 	}
-	caps := schemas.ResolveModelCaps(bifrostReq.Provider, schemas.ResolveCanonicalModel(ctx, bifrostReq.Model))
+	var caps *schemas.ModelCaps
 	refuse := func(field string, set bool) *schemas.BifrostError {
-		if !set || !caps.FieldUnsupported(field, true) {
+		if !set || chatPromptCacheFieldTreatment(ctx, bifrostReq.Provider, field) != chatCacheFieldByCatalog {
+			return nil
+		}
+		if caps == nil {
+			resolved := schemas.ResolveModelCaps(bifrostReq.Provider, schemas.ResolveCanonicalModel(ctx, bifrostReq.Model))
+			caps = &resolved
+		}
+		if !caps.FieldUnsupported(field, true) {
 			return nil
 		}
 		return schemas.NewUnsupportedParameterError(field,
@@ -367,13 +480,28 @@ func ChatPromptCacheFieldError(ctx *schemas.BifrostContext, bifrostReq *schemas.
 	return refuse(schemas.FieldPromptCacheOptions, params.PromptCacheOptions != nil)
 }
 
+// chatServiceTierUndeliverableError refuses a non-default service_tier on a provider whose
+// branch of ToOpenAIChatRequest does not send one (chatServiceTierDelivered).
+func chatServiceTierUndeliverableError(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostChatRequest) *schemas.BifrostError {
+	if bifrostReq == nil || bifrostReq.Params == nil || bifrostReq.Params.ServiceTier == nil ||
+		*bifrostReq.Params.ServiceTier == schemas.BifrostServiceTierDefault || chatServiceTierDelivered(bifrostReq.Provider) {
+		return nil
+	}
+	return schemas.NewUnsupportedParameterError("service_tier",
+		"service_tier \""+string(*bifrostReq.Params.ServiceTier)+"\" is not supported on provider "+string(bifrostReq.Provider))
+}
+
 // ChatRequestRefusal is the one check every path that sends a ToOpenAIChatRequest body runs
 // first, inside its request converter, so a refused request makes no upstream call: a
-// service tier the model cannot take (ChatServiceTierError), then a prompt-cache field xAI
-// cannot take (ChatPromptCacheFieldError). A refusal added later goes here, not at the call
+// service tier the model cannot take (ChatServiceTierError) or the provider does not send
+// (chatServiceTierUndeliverableError), then a prompt-cache field the provider's branch would not
+// deliver (ChatPromptCacheFieldError). A refusal added later goes here, not at the call
 // sites.
 func ChatRequestRefusal(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostChatRequest) *schemas.BifrostError {
 	if tierErr := ChatServiceTierError(ctx, bifrostReq); tierErr != nil {
+		return tierErr
+	}
+	if tierErr := chatServiceTierUndeliverableError(ctx, bifrostReq); tierErr != nil {
 		return tierErr
 	}
 	return ChatPromptCacheFieldError(ctx, bifrostReq)
