@@ -468,6 +468,11 @@ func deliveredAnswer(result *schemas.BifrostResponse) bool {
 	if image := result.ImageGenerationResponse; image != nil && image.ContentFilter != nil && len(image.Data) == 0 {
 		return false
 	}
+	// Nor did a chat answer the provider's filter blocked before generating (Gemini's prompt block:
+	// every choice finished by content_filter, and no tokens counted).
+	if chat := result.ChatResponse; chat != nil && contentFilteredWithoutUsage(chat) {
+		return false
+	}
 	// A passthrough the provider refused (any status but 2xx) delivered nothing, and nothing is
 	// priced on it; one that only acknowledges queued work has not finished; one that counts a
 	// prompt's tokens (count_tokens, input_tokens, countTokens) generates nothing and is free.
@@ -833,6 +838,21 @@ func passthroughCountsTokens(path string) bool {
 	}
 	path = strings.ToLower(path)
 	return strings.HasSuffix(path, "/count_tokens") || strings.HasSuffix(path, "/input_tokens") || strings.HasSuffix(path, ":counttokens")
+}
+
+// contentFilteredWithoutUsage reports whether every choice of a chat answer finished by the
+// provider's content filter and the answer counted no tokens.
+func contentFilteredWithoutUsage(chat *schemas.BifrostChatResponse) bool {
+	if len(chat.Choices) == 0 {
+		return false
+	}
+	for _, choice := range chat.Choices {
+		if choice.FinishReason == nil || *choice.FinishReason != "content_filter" {
+			return false
+		}
+	}
+	usage := chat.Usage
+	return usage == nil || (usage.PromptTokens == 0 && usage.CompletionTokens == 0 && usage.TotalTokens == 0)
 }
 
 // emptyResponsesUsage reports whether a Responses usage record counts nothing at all.

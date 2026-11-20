@@ -721,6 +721,23 @@ func TestPassthroughReadIsNotPriced(t *testing.T) {
 	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", chat), "a POST's $0 answer refuses the model it names")
 }
 
+// A chat answer the provider's filter blocked before generating (every choice content_filter, no
+// tokens) delivered nothing; one that counted tokens, or with a choice that finished otherwise, did.
+func TestContentFilteredChatAnswerIsNotAnAnswer(t *testing.T) {
+	filtered := func(usage *schemas.BifrostLLMUsage, reasons ...string) *schemas.BifrostResponse {
+		choices := make([]schemas.BifrostResponseChoice, 0, len(reasons))
+		for _, reason := range reasons {
+			choices = append(choices, schemas.BifrostResponseChoice{FinishReason: schemas.Ptr(reason)})
+		}
+		return &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{Choices: choices, Usage: usage}}
+	}
+	assert.False(t, deliveredAnswer(filtered(nil, "content_filter")))
+	assert.False(t, deliveredAnswer(filtered(&schemas.BifrostLLMUsage{}, "content_filter", "content_filter")))
+	assert.True(t, deliveredAnswer(filtered(&schemas.BifrostLLMUsage{PromptTokens: 12, TotalTokens: 12}, "content_filter")), "tokens were counted")
+	assert.True(t, deliveredAnswer(filtered(nil, "content_filter", "stop")), "a choice was generated")
+	assert.True(t, deliveredAnswer(filtered(nil)), "no choices is not a filter verdict")
+}
+
 // A 200 that reports only task errors (Runware) delivered nothing; one with data did.
 func TestPassthroughErrorEnvelopeIsNotAnAnswer(t *testing.T) {
 	assert.True(t, passthroughErrorEnvelope([]byte(`{"errors":[{"code":"invalidModel","taskUUID":"a"}]}`)))
