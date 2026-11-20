@@ -9793,6 +9793,12 @@ func TestVideoBandSize_RequestedTierOnEveryTierReader(t *testing.T) {
 		{name: "xai undocumented 540p is not trusted", provider: schemas.XAI, dims: VideoPricingDimensions{Resolution: "540p"}, want: ""},
 		// BFL's aliases are BFL's: on Gemini "hd" names no band.
 		{name: "gemini hd names no band", provider: schemas.Gemini, dims: VideoPricingDimensions{Resolution: "hd"}, want: ""},
+		// Typed and extra both named and different: xAI sends the typed tier whatever it holds and
+		// Gemini the extra, so neither cheaper one is trusted.
+		{name: "xai undocumented typed with a cheap extra is not trusted", provider: schemas.XAI, dims: VideoPricingDimensions{Resolution: "540p", Extra: map[string]any{"resolution": "480p"}}, want: ""},
+		{name: "xai unknown typed with a cheap extra is not trusted", provider: schemas.XAI, dims: VideoPricingDimensions{Resolution: "best", Extra: map[string]any{"resolution": "480p"}}, want: ""},
+		{name: "gemini typed and extra disagree", provider: schemas.Gemini, dims: VideoPricingDimensions{Resolution: "480p", Extra: map[string]any{"resolution": "720p"}}, want: ""},
+		{name: "xai the same tier both ways", provider: schemas.XAI, dims: VideoPricingDimensions{Resolution: "720p", Extra: map[string]any{"resolution": "720P"}}, want: "720p"},
 		{name: "bfl 720p typed", provider: schemas.BFL, dims: VideoPricingDimensions{Resolution: "720p"}, want: "720p"},
 		{name: "volcengine 480p extra only", provider: schemas.Volcengine, dims: VideoPricingDimensions{Extra: map[string]any{"resolution": "480p"}}, want: "480p"},
 		{name: "modelark 480p typed", provider: schemas.ModelArk, dims: VideoPricingDimensions{Resolution: "480p"}, want: "480p"},

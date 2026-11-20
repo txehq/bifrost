@@ -339,6 +339,16 @@ func (d VideoPricingDimensions) requestedTier(renderer schemas.ModelProvider) (s
 	typed, typedKnown := tierFor(reader, d.Resolution)
 	extraTier, _ := d.Extra["resolution"].(string)
 	extra, extraKnown := tierFor(reader, extraTier)
+	// Named both ways with different values, the converters disagree on which one is sent:
+	// Gemini reads extra_params.resolution first, xAI and BytePlus the typed field, falling back to
+	// the extra only when the typed field is empty, whatever it holds. Neither can lower the price
+	// then; the dearer is priced as a tier the provider may ignore.
+	if typedRaw, extraRaw := strings.TrimSpace(d.Resolution), strings.TrimSpace(extraTier); typedRaw != "" && extraRaw != "" && !strings.EqualFold(typedRaw, extraRaw) {
+		if videoResolutionBand(extra) > videoResolutionBand(typed) {
+			return extra, false
+		}
+		return typed, false
+	}
 	switch {
 	case typed != "" && reader.Typed && typedKnown:
 		return typed, true
