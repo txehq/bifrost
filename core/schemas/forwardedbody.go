@@ -303,10 +303,20 @@ func MislabeledJSONBody(body []byte, contentType string) (mediaType, problem str
 		}
 		return "", "", false
 	}
-	if format != ForwardedBodyOpaque || isMediaType(mediaType) {
+	if format != ForwardedBodyOpaque {
 		return "", "", false
 	}
-	for _, decode := range jsonTextDecodings {
+	decodings := jsonTextDecodings
+	if isMediaType(mediaType) {
+		// Media is read as UTF-8 only, and only when it is UTF-8 text: raw PCM read as UTF-16, or
+		// a sample that happens to be "{", must not make audio JSON. A JSON document is UTF-8 text.
+		prefix := body[:min(len(body), 1024)]
+		if !utf8.Valid(trimCutRune(prefix)) {
+			return "", "", false
+		}
+		decodings = jsonTextDecodings[:1]
+	}
+	for _, decode := range decodings {
 		// Most content opens like JSON under no encoding: decide from a short prefix before
 		// decoding a large body. A prefix holding only space and comments reads on.
 		if opens, decided := opensLikeJSON(decode(body[:min(len(body), 1024)])); decided && !opens {
@@ -334,10 +344,24 @@ func MislabeledJSONBody(body []byte, contentType string) (mediaType, problem str
 	return "", "", false
 }
 
-// isMediaType reports a declared audio, image or video type: binary media, which no vendor reads
-// as JSON. Raw PCM read as UTF-16 can open with "{", so media is never read as JSON text.
+// isMediaType reports a declared audio, image or video type: binary media. It is read as JSON
+// text only as UTF-8, and only when it is valid UTF-8 (MislabeledJSONBody): a body declared audio
+// that is JSON text is still checked, while raw PCM is not mistaken for it.
 func isMediaType(mediaType string) bool {
 	return strings.HasPrefix(mediaType, "audio/") || strings.HasPrefix(mediaType, "image/") || strings.HasPrefix(mediaType, "video/")
+}
+
+// trimCutRune drops an incomplete UTF-8 sequence a prefix cut at its end.
+func trimCutRune(prefix []byte) []byte {
+	for i := 1; i < utf8.UTFMax && i <= len(prefix); i++ {
+		if utf8.RuneStart(prefix[len(prefix)-i]) {
+			if !utf8.FullRune(prefix[len(prefix)-i:]) {
+				return prefix[:len(prefix)-i]
+			}
+			break
+		}
+	}
+	return prefix
 }
 
 // jsonTextProblem describes a strict JSON document that names a gated key at its root, or may name

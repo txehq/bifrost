@@ -372,9 +372,15 @@ func TestMislabeledJSONBody(t *testing.T) {
 		{"text/plain", strings.Repeat("\u3000", 342) + `{"model":"X"}`, "text/plain", naming},
 		{"text/plain", strings.Repeat(" ", 1023) + "/* c */" + `{"model":"X"}`, "text/plain", naming},
 		{"text/plain", strings.Repeat("[", maxForwardedBodyDepth+1) + `{"a":1}`, "text/plain", "is a JSON body nested more than 512 levels"},
-		// Media is never read as JSON text.
+		// Media is read as JSON text only as valid UTF-8: JSON declared audio is still checked,
+		// while audio bytes (a RIFF header, raw PCM that opens with "{" then a sample past 0x7f, or
+		// UTF-16-shaped samples) are not.
 		{"audio/wav", "RIFF\x00\x00\x00\x00WAVEfmt {\"model\"", "", ""},
-		{"audio/l16", "{\x00\"\x00m\x00", "", ""},
+		{"audio/l16", "{\x00\"\x00m\x00", "audio/l16", "is JSON that does not parse strictly"},
+		{"audio/l16", "{\x00\xff\x7f\x10\x80", "", ""},
+		{"audio/wav", `{"model":"X","messages":[]}`, "audio/wav", naming},
+		{"image/png", `{"model":"X",}`, "image/png", lenient},
+		{"audio/wav", "\xff\xfe{\x00\"\x00m\x00o\x00d\x00e\x00l\x00\"\x00:\x001\x00}\x00", "", ""},
 		// Provider objects: governance's object gate reads only JSON.
 		{"text/plain", `{"file_id":"file-foreign"}`, "text/plain", object},
 		{"text/plain", `{"File_ID":"file-foreign"}`, "text/plain", object},
