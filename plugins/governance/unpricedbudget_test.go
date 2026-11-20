@@ -321,6 +321,12 @@ func TestUnpricedModelUnderADollarBudgetIsRefusedBeforeTheCall(t *testing.T) {
 	matched := passthrough(`{"model":"gpt-4o"}`)
 	matched.PassthroughRequest.Model = "gpt-4o"
 	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", matched), "a request whose body names the same model is served")
+	partial := passthrough(`[{"model":"gpt-4o"},{"prompt":"runs the provider's default model"}]`)
+	partial.PassthroughRequest.Model = "gpt-4o"
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", partial), "a request naming its model whose body names it for only some tasks")
+	bodyless := passthrough(`{"prompt":"p"}`)
+	bodyless.PassthroughRequest.Model = "gpt-4o"
+	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", bodyless), "a request naming its model whose body names none (the model is in the path) is served")
 
 	// An OpenAI container create sent through passthrough names no model and is priced as the
 	// container it creates.

@@ -314,6 +314,13 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 				Decision: DecisionModelUnpriced,
 				Reason:   fmt.Sprintf("the request names model %q and its body names another, and one answer cannot be charged to a dollar budget model by model; name one model", evaluationRequest.Model),
 			}
+		} else if count == 1 && !passthroughBodyNamesEveryModel(evaluationRequest.request) {
+			// A body naming the model for some of its units of work and not others runs the
+			// provider's default on the rest, which the request's model does not price.
+			return &EvaluationResult{
+				Decision: DecisionModelUnpriced,
+				Reason:   fmt.Sprintf("the request names model %q and its body names it for only some of its tasks; the others run the provider's default model, which cannot be priced; name the model on every task", evaluationRequest.Model),
+			}
 		}
 	}
 	if (requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest) && evaluationRequest.Model == "" &&
