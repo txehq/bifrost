@@ -52,6 +52,9 @@ func TestPriceStatus(t *testing.T) {
 	require.NoError(t, s.SetOverrides([]configstoreTables.TablePricingOverride{{
 		ID: "override-no-row", ScopeKind: string(ScopeKindGlobal), MatchType: string(MatchTypeExact),
 		Pattern: "no-row", RequestTypes: []schemas.RequestType{schemas.ChatCompletionRequest}, PricingPatchJSON: `{"input_cost_per_token":0.000001}`,
+	}, {
+		ID: "override-wild", ScopeKind: string(ScopeKindGlobal), MatchType: string(MatchTypeWildcard),
+		Pattern: "wild-*", RequestTypes: []schemas.RequestType{schemas.ChatCompletionRequest}, PricingPatchJSON: `{"input_cost_per_token":0.000001}`,
 	}}))
 	assert.Equal(t, Priced, s.PriceStatus(schemas.OpenAI, "no-row", schemas.ChatCompletionRequest, nil))
 
@@ -65,7 +68,13 @@ func TestPriceStatus(t *testing.T) {
 		assert.Equal(t, identity, respelled, spelling)
 	}
 	overrideOnly, _ := s.PriceIdentity(schemas.OpenAI, "no-row", schemas.ChatCompletionRequest, nil)
-	assert.Equal(t, "override|openai|chat|no-row", overrideOnly)
+	assert.Equal(t, "override|override-no-row|chat", overrideOnly)
+	// Every model one wildcard override prices shares the override's identity, whatever the caller names.
+	for _, model := range []string{"wild-a", "wild-b", "wild-anything"} {
+		wild, status := s.PriceIdentity(schemas.OpenAI, model, schemas.ChatCompletionRequest, nil)
+		assert.Equal(t, Priced, status, model)
+		assert.Equal(t, "override|override-wild|chat", wild, model)
+	}
 	// An exact override matches its own spelling only: another spelling is unpriced and refused
 	// before the call, so it never reaches the after-the-fact set.
 	_, status = s.PriceIdentity(schemas.OpenAI, "No-Row", schemas.ChatCompletionRequest, nil)

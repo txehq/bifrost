@@ -218,6 +218,16 @@ func TestUnpricedModelUnderADollarBudgetIsRefusedBeforeTheCall(t *testing.T) {
 	}
 	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", inlineBatch("gpt-4o")), "an inline batch naming no model of its own, whose items are priced, is served")
 	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", inlineBatch("house-llm")), "an inline batch with an item on a model with no row")
+
+	fileBatch := func(model *string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{
+			Provider: schemas.OpenAI, Model: model, InputFileID: "file-abc",
+		}}
+	}
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", fileBatch(nil)), "a batch whose models are only inside its uploaded input")
+	priced := "gpt-4o"
+	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", fileBatch(&priced)), "a file batch naming a priced model is served")
+	assert.Nil(t, preLLM(t, plugin, "sk-bf-open", fileBatch(nil)), "a file batch on a key with no dollar budget is not refused")
 }
 
 // An answer the gate admitted that still priced at $0 under a dollar budget fails closed for that

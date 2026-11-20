@@ -71,8 +71,8 @@ func (s *Store) PriceStatus(provider schemas.ModelProvider, model string, reques
 // PriceIdentity is PriceStatus with the identity of the pricing row that decided it: the row's
 // provider, mode and model as the price book files them, so every spelling of a model a lookup
 // folds onto one row (case, aliases, a custom provider's base) has one identity. A request priced
-// by an override alone, with no row, is identified by the provider, mode and the lowercased model.
-// Empty when unpriced with no row at all.
+// by an override alone, with no row, is identified by the override that matched it, so every model
+// one wildcard override prices shares one identity. Empty when unpriced with no row at all.
 func (s *Store) PriceIdentity(provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *LookupScopes) (string, PriceStatus) {
 	if model == "" {
 		return "", Unpriced
@@ -81,10 +81,13 @@ func (s *Store) PriceIdentity(provider schemas.ModelProvider, model string, requ
 	if scopes != nil {
 		lookupScopes = *scopes
 	}
+	if lookupScopes.Provider == "" {
+		lookupScopes.Provider = string(provider)
+	}
 	routing := schemas.RoutingInfo{Provider: provider, Model: model}
 	if normalizeRequestType(requestType) != "unknown" {
 		row := s.resolvePricing(routing, requestType, lookupScopes)
-		return rowIdentity(row, provider, model, requestType), rowPriceStatus(row)
+		return s.rowIdentity(row, model, requestType, lookupScopes), rowPriceStatus(row)
 	}
 	bestIdentity, best := "", Unpriced
 	for _, mode := range anyModePricingRequestTypes {
@@ -93,7 +96,7 @@ func (s *Store) PriceIdentity(provider schemas.ModelProvider, model string, requ
 			continue
 		}
 		if status := rowPriceStatus(row); bestIdentity == "" || status > best {
-			best, bestIdentity = status, rowIdentity(row, provider, model, mode)
+			best, bestIdentity = status, s.rowIdentity(row, model, mode, lookupScopes)
 		}
 		if best == Priced {
 			break
@@ -102,15 +105,26 @@ func (s *Store) PriceIdentity(provider schemas.ModelProvider, model string, requ
 	return bestIdentity, best
 }
 
-// rowIdentity names a resolved pricing row; see PriceIdentity.
-func rowIdentity(row *configstoreTables.TableModelPricing, provider schemas.ModelProvider, model string, requestType schemas.RequestType) string {
+// rowIdentity names a resolved pricing row; see PriceIdentity. A row with no model is an
+// override-only price, named by the override resolvePricing applied for the same model, mode and
+// scopes.
+func (s *Store) rowIdentity(row *configstoreTables.TableModelPricing, model string, requestType schemas.RequestType, scopes LookupScopes) string {
 	if row == nil {
 		return ""
 	}
 	if row.Model != "" {
 		return row.Provider + "|" + row.Mode + "|" + row.Model
 	}
-	return "override|" + string(provider) + "|" + normalizeRequestType(requestType) + "|" + strings.ToLower(model)
+	mode := normalizeRequestType(requestType)
+	s.overridesMu.RLock()
+	custom := s.customPricing
+	s.overridesMu.RUnlock()
+	if custom != nil {
+		if entry := custom.resolveEntry(model, mode, scopes); entry != nil {
+			return "override|" + entry.id + "|" + mode
+		}
+	}
+	return "override||" + mode + "|" + model
 }
 
 // rowPriceStatus classifies a resolved pricing row by the prices it sets.

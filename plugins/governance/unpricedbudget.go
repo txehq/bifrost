@@ -225,11 +225,17 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 	if budgetPricingOf(requestType) == budgetPricingNone {
 		return nil
 	}
-	// A batch create naming no model of its own: its inline requests were each gated as their own
-	// model before the envelope (PreLLMHook), and an uploaded input's lines are settled per model by
-	// job accounting, which parks a line it cannot price rather than charging it $0.
+	// A batch create naming no model of its own. Its inline requests were each gated as their own
+	// model before the envelope (PreLLMHook), so the envelope has nothing left to price. An uploaded
+	// input's models are not visible to governance, so none of them can be priced before it runs.
 	if requestType == schemas.BatchCreateRequest && evaluationRequest.Model == "" {
-		return nil
+		if !evaluationRequest.OpaqueBatchInput {
+			return nil
+		}
+		return &EvaluationResult{
+			Decision: DecisionModelUnpriced,
+			Reason:   "a batch whose models are named only inside its uploaded input cannot be priced before it runs, so it cannot be charged to a dollar budget; name its model on the request, or send its requests inline",
+		}
 	}
 	provider := evaluationRequest.Provider
 	model := pricedModel(requestType, evaluationRequest.Model)

@@ -124,6 +124,8 @@ When a request is made with a virtual key, Bifrost checks **all applicable budge
 
 A budget is charged what the [model catalog](../../architecture/framework/model-catalog) says an answer cost. An answer it cannot price would cost the budget nothing. So a request that answers to any dollar budget is refused before the provider is called when its model has no price for the request's type: no pricing row and no [pricing override](../../providers/custom-pricing) covers it, or the row that covers it sets no price.
 
+A batch whose models are named only inside its uploaded input file is refused the same way, since none of them can be priced before it runs: name its model on the request, or send its requests inline.
+
 The refusal is HTTP 403 with `type` `model_unpriced` and `extra_fields.error_type` `policy_model_blocked`. Nothing is sent to the provider and nothing is charged. To serve the model under a budget, add a pricing override for it. A model whose prices are all `$0` is free, not unpriced, and is served.
 
 Some rows set a price that an answer can still miss: a row priced only per image token, for example, when the provider reports no tokens. When an answer like that is charged `$0` under a dollar budget, Bifrost logs a warning naming the provider, model, request type and budgets. Requests charged to any of those budgets on that model are then refused the same way until the gateway restarts. Other budgets are not affected. A video or batch job that settles at `$0` owed nothing (it failed, was cancelled or expired) and is not treated as unpriced: a job Bifrost cannot price is held unpriced rather than settled.
