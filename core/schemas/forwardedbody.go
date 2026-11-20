@@ -153,7 +153,15 @@ func (br *BifrostRequest) ForwardedBodyContentType() string {
 func AmbiguousBodyMember(body []byte, contentType string) (string, bool) {
 	trimmed := bytes.TrimPrefix(bytes.TrimLeft(body, " \t\r\n"), utf8ByteOrderMark)
 	trimmed = bytes.TrimLeft(trimmed, " \t\r\n")
+	if len(trimmed) == 0 {
+		return "", false
+	}
 	mediaType, params, mimeErr := mime.ParseMediaType(contentType)
+	if contentType != "" && mimeErr != nil {
+		// Go rejects a type a vendor may still read (two boundary parameters, say), so a body
+		// under one is not judged by a guess at what the vendor makes of it.
+		return "a Content-Type that does not parse", true
+	}
 	if mimeErr == nil && strings.HasPrefix(mediaType, "multipart/") {
 		boundary := params["boundary"]
 		if boundary == "" {
@@ -162,9 +170,6 @@ func AmbiguousBodyMember(body []byte, contentType string) (string, bool) {
 		return ambiguousMultipartField(trimmed, boundary)
 	}
 	declaredJSON := mimeErr == nil && (mediaType == "application/json" || strings.HasSuffix(mediaType, "+json"))
-	if len(trimmed) == 0 {
-		return "", false
-	}
 	switch {
 	case declaredJSON || trimmed[0] == '{' || trimmed[0] == '[':
 		if !gjson.ValidBytes(trimmed) {
@@ -176,16 +181,27 @@ func AmbiguousBodyMember(body []byte, contentType string) (string, bool) {
 		// The body is not written while it is read, so it is viewed as a string, not copied.
 		path := make([]bodyPathSegment, 0, 8)
 		return ambiguousJSONMember(gjson.Parse(unsafe.String(unsafe.SliceData(trimmed), len(trimmed))), &path, 0)
-	case contentType == "" && bytes.HasPrefix(trimmed, []byte("--")):
+	case bytes.HasPrefix(trimmed, []byte("--")):
+		// A body opening with a boundary line is read as multipart whatever type it declares: a
+		// vendor sniffing it, or a type rewritten on the way, must not find a repeat unchecked.
+		// Only an undeclared body is refused for not parsing; under another declared type, text
+		// opening with "--" is just text.
 		line, _, _ := bytes.Cut(trimmed, []byte("\n"))
 		line = bytes.TrimRight(line, "\r")
 		if len(line) <= 2 {
 			return "", false
 		}
-		return ambiguousMultipartField(trimmed, string(line[2:]))
+		member, ambiguous := ambiguousMultipartField(trimmed, string(line[2:]))
+		if ambiguous && member == multipartUnparsable && contentType != "" {
+			return "", false
+		}
+		return member, ambiguous
 	}
 	return "", false
 }
+
+// multipartUnparsable is the member reported for a multipart body that does not parse.
+const multipartUnparsable = "multipart body that does not parse"
 
 // utf8ByteOrderMark opens some JSON documents; Python's json.loads, among others, skips it.
 var utf8ByteOrderMark = []byte{0xef, 0xbb, 0xbf}
@@ -317,7 +333,7 @@ func ambiguousMultipartField(body []byte, boundary string) (string, bool) {
 			return "", false
 		}
 		if err != nil {
-			return "multipart body that does not parse", true
+			return multipartUnparsable, true
 		}
 		name, text := part.FormName(), part.FileName() == ""
 		part.Close()

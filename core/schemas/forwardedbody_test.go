@@ -62,6 +62,12 @@ func TestAmbiguousBodyMember(t *testing.T) {
 		{`{"model":"a","model":"b"}`, "application/vnd.api+json", "model"},
 		{`not json`, "text/plain", ""},
 		{`{"model":"a","model":"b"}`, "text/plain", "model"},
+		{`{"model":"a"}`, "multipart/form-data; boundary=a; boundary=b", "a Content-Type that does not parse"},
+		{`{"model":"a"}`, "not a type", "a Content-Type that does not parse"},
+		{``, "not a type", ""},
+		{"--b\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\na\r\n--b\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nb\r\n--b--\r\n", "text/plain", "multipart field model"},
+		{"-- a line of text that is not multipart", "text/plain", ""},
+		{"-- a line of text that is not multipart", "", "multipart body that does not parse"},
 	} {
 		if member, ambiguous := AmbiguousBodyMember([]byte(tc.body), tc.contentType); ambiguous != (tc.member != "") || member != tc.member {
 			t.Errorf("AmbiguousBodyMember(%s, %s) = %q, %t; want %q", tc.body, tc.contentType, member, ambiguous, tc.member)
