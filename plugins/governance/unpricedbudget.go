@@ -31,6 +31,9 @@ const (
 	// budgetPricingSettled: priced when its job settles (framework/jobaccounting), not on the
 	// create's answer, which is a queued job.
 	budgetPricingSettled
+	// budgetPricingUnpriced: charged by the vendor, but Bifrost prices no answer of it, so it is
+	// refused under a dollar budget whatever model it names.
+	budgetPricingUnpriced
 )
 
 // requestTypeBudgetPricing classifies every request type. TestEveryRequestTypeHasABudgetPricing
@@ -62,12 +65,14 @@ var requestTypeBudgetPricing = map[schemas.RequestType]budgetPricing{
 	schemas.RealtimeRequest:              budgetPricingAnswer,
 	schemas.LiveRequest:                  budgetPricingAnswer,
 	schemas.ContainerCreateRequest:       budgetPricingAnswer,
-	schemas.CachedContentCreateRequest:   budgetPricingAnswer,
 	schemas.PassthroughRequest:           budgetPricingAnswer,
 	schemas.PassthroughStreamRequest:     budgetPricingAnswer,
 	// An image task is billed once, at its create (TXE-6431): the create's answer is priced.
 	schemas.ImageGenerationTaskRequest: budgetPricingAnswer,
 	schemas.ImageEditTaskRequest:       budgetPricingAnswer,
+
+	// Gemini and Vertex charge for the cached tokens and their storage; Bifrost prices neither.
+	schemas.CachedContentCreateRequest: budgetPricingUnpriced,
 
 	schemas.VideoGenerationRequest: budgetPricingSettled,
 	schemas.VideoEditRequest:       budgetPricingSettled,
@@ -243,6 +248,17 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 		return nil
 	}
 	provider := evaluationRequest.Provider
+	if budgetPricingOf(requestType) == budgetPricingUnpriced {
+		return &EvaluationResult{
+			Decision: DecisionModelUnpriced,
+			Reason:   fmt.Sprintf("Bifrost has no price for %s requests, so they cannot be charged to a dollar budget", requestType),
+		}
+	}
+	// A passthrough naming no model on the request whose body names models: each was gated as its
+	// own model before the envelope (PreLLMHook). One naming none anywhere cannot be priced.
+	if (requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest) && evaluationRequest.Model == "" && !evaluationRequest.ModelUnseen {
+		return nil
+	}
 	if requestType == schemas.BatchCreateRequest {
 		// An inline batch naming no model of its own: each request was gated as its own model before
 		// the envelope (PreLLMHook), so the envelope has nothing left to price.
@@ -297,10 +313,12 @@ func (r *BudgetResolver) noteUnpricedAnswer(provider schemas.ModelProvider, mode
 		return false
 	}
 	model = pricedModel(requestType, model)
-	best, rows := r.priceIdentities(provider, model, requestType, scopes)
-	if best == modelcatalog.PriceFree {
+	// Whether $0 was the price is read under the scope that priced the answer: the key that served
+	// it is selected by now, and another key's override says nothing about this answer.
+	if r.servedPriceStatus(provider, model, requestType, scopes) == modelcatalog.PriceFree {
 		return false
 	}
+	_, rows := r.priceIdentities(provider, model, requestType, scopes)
 	// A model with no row at all is refused before the call by the gate itself; there is no row
 	// to remember.
 	for _, row := range rows {
@@ -422,4 +440,37 @@ func (r *BudgetResolver) priceIdentities(provider schemas.ModelProvider, model s
 		}
 	}
 	return best, rows
+}
+
+// servedPriceStatus is the best status of the request's model, and of the models the key that
+// served it aliases it to, under the scope the answer was priced in.
+func (r *BudgetResolver) servedPriceStatus(provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) modelcatalog.PriceStatus {
+	_, best := r.modelCatalog.PriceIdentity(provider, model, requestType, scopes)
+	if scopes == nil || scopes.SelectedKeyID == "" || r.governanceInMemoryStore == nil {
+		return best
+	}
+	config, ok := configuredProvider(r.governanceInMemoryStore, provider)
+	if !ok {
+		return best
+	}
+	for _, key := range config.Keys {
+		if key.ID != scopes.SelectedKeyID {
+			continue
+		}
+		if alias := key.Aliases.ResolveConfig(model); alias != nil {
+			candidates := [2]string{alias.ModelID}
+			if alias.ModelName != nil {
+				candidates[1] = *alias.ModelName
+			}
+			for _, candidate := range candidates {
+				if candidate == "" {
+					continue
+				}
+				if _, status := r.modelCatalog.PriceIdentity(provider, candidate, requestType, scopes); status > best {
+					best = status
+				}
+			}
+		}
+	}
+	return best
 }

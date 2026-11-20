@@ -121,8 +121,8 @@ func TestUnpricedAnswers(t *testing.T) {
 // unpricedBudgetPlugin is a governance plugin over a price book with a priced chat model (gpt-4o),
 // a free one (free-chat), an image model priced only per image token (token-image), a video model
 // priced per second (clip-1), a model priced only by an override scoped to the openai provider key
-// (key-priced), and none for house-llm. vk-budget and vk-other-tenant each have their own $100
-// budget; vk-open has none.
+// (key-priced), a priced model that override's key makes free (free-on-key), and none for
+// house-llm. vk-budget and vk-other-tenant each have their own $100 budget; vk-open has none.
 func unpricedBudgetPlugin(t testing.TB) (*GovernancePlugin, *LocalGovernanceStore) {
 	t.Helper()
 	sheet := filepath.Join(t.TempDir(), "pricing.json")
@@ -130,7 +130,8 @@ func unpricedBudgetPlugin(t testing.TB) (*GovernancePlugin, *LocalGovernanceStor
 		"gpt-4o":{"provider":"openai","mode":"chat","input_cost_per_token":0.0000025,"output_cost_per_token":0.00001},
 		"free-chat":{"provider":"openai","mode":"chat","input_cost_per_token":0,"output_cost_per_token":0},
 		"token-image":{"provider":"openai","mode":"image_generation","output_cost_per_image_token":0.00004},
-		"clip-1":{"provider":"openai","mode":"video_generation","output_cost_per_second":0.1}
+		"clip-1":{"provider":"openai","mode":"video_generation","output_cost_per_second":0.1},
+		"free-on-key":{"provider":"openai","mode":"chat","input_cost_per_token":0.000001,"output_cost_per_token":0.000002}
 	}`), 0o600))
 	ds := datasheet.New(nil, NewMockLogger(), datasheet.Config{URL: "file://" + sheet})
 	require.NoError(t, ds.LoadFromURLIntoMemory(context.Background()))
@@ -139,6 +140,10 @@ func unpricedBudgetPlugin(t testing.TB) (*GovernancePlugin, *LocalGovernanceStor
 		ID: "key-priced-override", ScopeKind: string(datasheet.ScopeKindProviderKey), ProviderKeyID: &keyID,
 		MatchType: string(datasheet.MatchTypeExact), Pattern: "key-priced", RequestTypes: []schemas.RequestType{schemas.ChatCompletionRequest},
 		PricingPatchJSON: `{"input_cost_per_token":0.000001,"output_cost_per_token":0.000002}`,
+	}, {
+		ID: "free-on-key-override", ScopeKind: string(datasheet.ScopeKindProviderKey), ProviderKeyID: &keyID,
+		MatchType: string(datasheet.MatchTypeExact), Pattern: "free-on-key", RequestTypes: []schemas.RequestType{schemas.ChatCompletionRequest},
+		PricingPatchJSON: `{"input_cost_per_token":0,"output_cost_per_token":0}`,
 	}}))
 	catalog := modelcatalog.NewTestCatalogWithDatasheet(ds)
 
@@ -230,6 +235,45 @@ func TestUnpricedModelUnderADollarBudgetIsRefusedBeforeTheCall(t *testing.T) {
 	priced := "gpt-4o"
 	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", fileBatch(&priced)), "an openai file batch naming a priced model it does not bind")
 	assert.Nil(t, preLLM(t, plugin, "sk-bf-open", fileBatch(nil)), "a file batch on a key with no dollar budget is not refused")
+
+	// A passthrough whose body names its models (a Runware task array) names none on the request:
+	// each body model is gated on its own, and the envelope is not refused for naming none.
+	passthrough := func(body string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+			Provider: schemas.OpenAI, Method: "POST", Path: "/v1/tasks", Body: []byte(body),
+		}}
+	}
+	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", passthrough(`[{"model":"gpt-4o"},{"model":"free-chat"}]`)), "a passthrough whose body models are all priced is served")
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", passthrough(`[{"model":"gpt-4o"},{"model":"house-llm"}]`)), "a passthrough with a body model that has no row")
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", passthrough(`{"prompt":"no model anywhere"}`)), "a passthrough naming no model anywhere")
+
+	// Creating Gemini cached content is charged by the vendor but priced by no Bifrost answer.
+	cachedContent := &schemas.BifrostRequest{RequestType: schemas.CachedContentCreateRequest, CachedContentCreateRequest: &schemas.BifrostCachedContentCreateRequest{
+		Provider: schemas.OpenAI, Model: "gpt-4o",
+	}}
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", cachedContent), "cached content creation under a budget")
+	assert.Nil(t, preLLM(t, plugin, "sk-bf-open", cachedContent), "cached content creation on a key with no dollar budget is not refused")
+}
+
+// A $0 answer the serving key's override prices at $0 is free, not unpriced, though another
+// scope prices the model: it refuses nothing.
+func TestFreeAnswerUnderTheServingKeysPriceDoesNotRefuseTheModel(t *testing.T) {
+	plugin, _ := unpricedBudgetPlugin(t)
+	ctx := resolverCtx(plugin.store, "sk-bf-budget")
+	_, shortCircuit, err := plugin.PreLLMHook(ctx, chatOn("free-on-key"))
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit)
+	ctx.SetValue(schemas.BifrostContextKeySelectedKeyID, "openai-key-1")
+	_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		Usage: &schemas.BifrostLLMUsage{PromptTokens: 100, CompletionTokens: 10, TotalTokens: 110},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.ChatCompletionRequest, Provider: schemas.OpenAI, OriginalModelRequested: "free-on-key",
+			RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenAI, Model: "free-on-key"},
+		},
+	}}, nil)
+	require.NoError(t, err)
+	plugin.wg.Wait()
+	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", chatOn("free-on-key")), "an answer free under the key that served it does not refuse the model")
 }
 
 // A $0 answer recorded under the key that served it is found by the next request, which has not
