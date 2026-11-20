@@ -13,6 +13,22 @@ import (
 // seedreamMaxImages is the most images one Seedream sequential generation returns, counting reference images.
 const seedreamMaxImages = 15
 
+// applyBytePlusImageCount turns n into Seedream group generation (TXE-7304, Connor's decision of
+// 20 Nov 2026, option B): n from 2 to 15 is sequential_image_generation "auto" with max_images
+// n. Seedream then returns up to n images, as many as the model decides, so a caller can
+// receive fewer than n; usage.output_images is the count delivered (Ark's generated_images),
+// and that is what is billed. This is TXE-6605 B3's one exception: n becomes "up to n" for
+// Seedream only. n is the one way in: Seedream's own group fields stay refused as extra
+// params (TXE-7124), and ValidateBytePlusImageParams has refused an n out of range. This is the only
+// place that sets SequentialImageGenerationOptions, which Ark reads only beside "auto".
+func applyBytePlusImageCount(req *BytePlusImageGenerationRequest, n *int) {
+	if n == nil || *n < 2 {
+		return
+	}
+	req.SequentialImageGeneration = schemas.Ptr("auto")
+	req.SequentialImageGenerationOptions = &BytePlusSequentialImageGenerationOptions{MaxImages: *n}
+}
+
 // ToBytePlusImageGenerationRequest converts a Bifrost image generation request to the Seedream /images/generations body.
 func ToBytePlusImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRequest) (*BytePlusImageGenerationRequest, error) {
 	if bifrostReq == nil || bifrostReq.Input == nil || strings.TrimSpace(bifrostReq.Input.Prompt) == "" {
@@ -26,7 +42,7 @@ func ToBytePlusImageGenerationRequest(bifrostReq *schemas.BifrostImageGeneration
 	if params == nil {
 		return req, nil
 	}
-	if fieldErr := ValidateBytePlusImageParams(params, nil); fieldErr != nil {
+	if fieldErr := ValidateBytePlusImageParams(params, nil, len(params.InputImages)); fieldErr != nil {
 		return nil, providerUtils.InvalidRequestErrorf("%s", fieldErr.Error.Message)
 	}
 	req.Seed = params.Seed
@@ -45,6 +61,7 @@ func ToBytePlusImageGenerationRequest(bifrostReq *schemas.BifrostImageGeneration
 		maps.Copy(req.ExtraParams, params.ExtraParams)
 		liftBytePlusImageExtraParams(req)
 	}
+	applyBytePlusImageCount(req, params.N)
 	req.Size = bytePlusImageSize(params.Size, string(params.Resolution), req.ExtraParams)
 	return req, nil
 }
@@ -83,7 +100,7 @@ func ToBytePlusImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) (*B
 	}
 	// The entry points refuse these first with error.param set; this keeps a direct caller of
 	// the converter from sending a request that drops a field.
-	if fieldErr := ValidateBytePlusImageParams(nil, params); fieldErr != nil {
+	if fieldErr := ValidateBytePlusImageParams(nil, params, len(req.Image)); fieldErr != nil {
 		return nil, providerUtils.InvalidRequestErrorf("%s", fieldErr.Error.Message)
 	}
 	req.Seed = params.Seed
@@ -95,6 +112,7 @@ func ToBytePlusImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) (*B
 		maps.Copy(req.ExtraParams, params.ExtraParams)
 		liftBytePlusImageExtraParams(req)
 	}
+	applyBytePlusImageCount(req, params.N)
 	req.Size = bytePlusImageSize(params.Size, string(params.Resolution), req.ExtraParams)
 	return req, nil
 }
@@ -139,14 +157,17 @@ func bytePlusImageSize(size *string, resolution string, extraParams map[string]i
 // ValidateBytePlusImageParams refuses, before any upstream call, a unified image field that
 // Seedream cannot take as given (contract C4): 400 caller_unsupported_parameter naming the
 // field in error.param. Seedream has no quality, aspect ratio, negative prompt, inference
-// step count or mask, and no way to ask for exactly n images: its sequential generation
-// returns up to max_images, as many as the model decides, so n>1 is refused rather than
-// turned into "up to n". Seedream's own group fields (sequential_image_generation and its
-// options) are refused as extra params too: they set how many images are made, so the
-// price, and a price field never comes from an extra param (TXE-7124). Seedream group
-// generation is therefore not offered.
-// The generation and edit parameters are passed as one or the other; nil passes.
-func ValidateBytePlusImageParams(gen *schemas.ImageGenerationParameters, edit *schemas.ImageEditParameters) *schemas.BifrostError {
+// step count or mask.
+//
+// n from 2 to 15 is Seedream group generation, which returns up to n images
+// (applyBytePlusImageCount, TXE-7304). Seedream counts the reference images in its limit of
+// 15, so with k reference images n can be at most 15 - k. Seedream's own
+// group fields (sequential_image_generation and its options) stay refused as extra params:
+// they set how many images are made, so the price, and a price field never comes from an
+// extra param (TXE-7124). n is the one way in; "disabled" beside an n above 1 contradicts it.
+// The generation and edit parameters are passed as one or the other; nil passes. references
+// is the number of reference images the request sends.
+func ValidateBytePlusImageParams(gen *schemas.ImageGenerationParameters, edit *schemas.ImageEditParameters, references int) *schemas.BifrostError {
 	var (
 		quality, aspectRatio, negativePrompt, size *string
 		resolution                                 string
@@ -185,17 +206,25 @@ func ValidateBytePlusImageParams(gen *schemas.ImageGenerationParameters, edit *s
 	case len(mask) > 0:
 		return notTaken("mask")
 	}
+	group := false
 	if n != nil {
 		switch {
 		case *n < 1 || *n > seedreamMaxImages:
 			return schemas.NewUnsupportedParameterError("n", fmt.Sprintf("n must be between 1 and %d for byteplus seedream images, got %d", seedreamMaxImages, *n))
-		case *n > 1:
-			return schemas.NewUnsupportedParameterError("n", "byteplus seedream cannot generate an exact number of images; n must be 1")
+		case *n > 1 && references > 0 && *n > seedreamMaxImages-references:
+			return schemas.NewUnsupportedParameterError("n", fmt.Sprintf("n is %d with %d reference images: byteplus seedream makes at most %d images counting the reference images, so n can be at most %d here", *n, references, seedreamMaxImages, max(seedreamMaxImages-references, 1)))
 		}
+		group = *n > 1
 	}
-	if mode, ok := extraParams["sequential_image_generation"]; ok && mode != nil && mode != "" && mode != "disabled" {
-		return schemas.NewUnsupportedParameterError("sequential_image_generation",
-			"extra params cannot set \"sequential_image_generation\": byteplus seedream group generation decides how many images are made, and that count is set only by n, which must be 1")
+	if mode, ok := extraParams["sequential_image_generation"]; ok && mode != nil && mode != "" {
+		switch {
+		case mode != "disabled":
+			return schemas.NewUnsupportedParameterError("sequential_image_generation",
+				"extra params cannot set \"sequential_image_generation\": byteplus seedream group generation decides how many images are made, and that count is set only by n (2 to 15 asks for up to n images)")
+		case group:
+			return schemas.NewUnsupportedParameterError("sequential_image_generation",
+				"sequential_image_generation \"disabled\" contradicts n above 1: byteplus seedream makes several images only as a group generation")
+		}
 	}
 	if opts, ok := extraParams["sequential_image_generation_options"]; ok && opts != nil {
 		param := "sequential_image_generation_options"
@@ -208,7 +237,7 @@ func ValidateBytePlusImageParams(gen *schemas.ImageGenerationParameters, edit *s
 		}
 		if opts != nil {
 			return schemas.NewUnsupportedParameterError(param, fmt.Sprintf(
-				"extra params cannot set %q: it sets how many images byteplus seedream makes, and that count is set only by n, which must be 1", param))
+				"extra params cannot set %q: it sets how many images byteplus seedream makes, and that count is set only by n (2 to 15 asks for up to n images)", param))
 		}
 	}
 	if resolution != "" && size != nil && *size != "" && *size != "auto" {
@@ -218,7 +247,8 @@ func ValidateBytePlusImageParams(gen *schemas.ImageGenerationParameters, edit *s
 }
 
 // liftBytePlusImageExtraParams moves the Seedream fields Bifrost has typed slots for out of the passthrough map.
-// ValidateBytePlusImageParams has refused group generation, so sequential_image_generation can only be "disabled" here.
+// ValidateBytePlusImageParams has refused group generation from extra params, so sequential_image_generation can only be
+// "disabled" here, beside an n of 1; applyBytePlusImageCount sets "auto" from n afterwards.
 func liftBytePlusImageExtraParams(req *BytePlusImageGenerationRequest) {
 	if v, ok := req.ExtraParams["watermark"].(bool); ok {
 		req.Watermark = &v
@@ -228,6 +258,9 @@ func liftBytePlusImageExtraParams(req *BytePlusImageGenerationRequest) {
 		req.SequentialImageGeneration = &v
 		delete(req.ExtraParams, "sequential_image_generation")
 	}
+	// Validation passed only empty options, which ask for nothing; the typed field carries
+	// what n asks for.
+	delete(req.ExtraParams, "sequential_image_generation_options")
 }
 
 // ToBifrostImageGenerationResponse converts a Seedream response to Bifrost format. An image

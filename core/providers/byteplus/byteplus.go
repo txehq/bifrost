@@ -269,7 +269,7 @@ func doArkRequestURL(ctx *schemas.BifrostContext, client *fasthttp.Client, netwo
 // Extra params pass through so Seedream-only fields such as background reach the wire.
 func (provider *BytePlusProvider) ImageGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	if request.Params != nil {
-		if bifrostErr := ValidateBytePlusImageParams(request.Params, nil); bifrostErr != nil {
+		if bifrostErr := ValidateBytePlusImageParams(request.Params, nil, len(request.Params.InputImages)); bifrostErr != nil {
 			return nil, bifrostErr
 		}
 	}
@@ -290,7 +290,7 @@ func (provider *BytePlusProvider) ImageGeneration(ctx *schemas.BifrostContext, k
 // /images/generations endpoint, with the source images sent as reference images.
 func (provider *BytePlusProvider) ImageEdit(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageEditRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	if request.Params != nil {
-		if bifrostErr := ValidateBytePlusImageParams(nil, request.Params); bifrostErr != nil {
+		if bifrostErr := ValidateBytePlusImageParams(nil, request.Params, bytePlusEditReferenceCount(request)); bifrostErr != nil {
 			return nil, bifrostErr
 		}
 	}
@@ -420,7 +420,7 @@ func (provider *BytePlusProvider) TranscriptionStream(ctx *schemas.BifrostContex
 // only on Seedream 5.0 lite, 4.5 and 4.0; other models reject the stream field with a 400.
 func (provider *BytePlusProvider) ImageGenerationStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	if request.Params != nil {
-		if bifrostErr := ValidateBytePlusImageParams(request.Params, nil); bifrostErr != nil {
+		if bifrostErr := ValidateBytePlusImageParams(request.Params, nil, len(request.Params.InputImages)); bifrostErr != nil {
 			return nil, bifrostErr
 		}
 	}
@@ -445,7 +445,7 @@ func (provider *BytePlusProvider) ImageGenerationStream(ctx *schemas.BifrostCont
 // ImageEditStream streams a Seedream image-to-image generation through the same endpoint as ImageGenerationStream.
 func (provider *BytePlusProvider) ImageEditStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostImageEditRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	if request.Params != nil {
-		if bifrostErr := ValidateBytePlusImageParams(nil, request.Params); bifrostErr != nil {
+		if bifrostErr := ValidateBytePlusImageParams(nil, request.Params, bytePlusEditReferenceCount(request)); bifrostErr != nil {
 			return nil, bifrostErr
 		}
 	}
@@ -830,4 +830,19 @@ func (provider *BytePlusProvider) Passthrough(_ *schemas.BifrostContext, _ schem
 // PassthroughStream is not supported by the BytePlus provider.
 func (provider *BytePlusProvider) PassthroughStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughStreamRequest, provider.GetProviderKey())
+}
+
+// bytePlusEditReferenceCount is the number of reference images an edit sends Seedream: the
+// source images, which Seedream counts in its limit of 15 images a request makes and reads.
+func bytePlusEditReferenceCount(request *schemas.BifrostImageEditRequest) int {
+	if request == nil || request.Input == nil {
+		return 0
+	}
+	count := 0
+	for _, image := range request.Input.Images {
+		if len(image.Image) > 0 || image.URL != "" {
+			count++
+		}
+	}
+	return count
 }

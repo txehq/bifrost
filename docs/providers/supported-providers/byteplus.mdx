@@ -197,12 +197,12 @@ curl -X POST http://localhost:8080/v1/images/generations \
 |-------------------|-----------|-------|
 | `prompt` | `prompt` | Required |
 | `size` | `size` | `WIDTHxHEIGHT`, or a tier such as `2K` |
-| `n` | (none) | Must be 1. Seedream cannot generate an exact number of images, so any other `n` is a 400 `caller_unsupported_parameter` naming `n`. |
+| `n` | `sequential_image_generation`, `sequential_image_generation_options.max_images` | 1 (the default) asks for one image. 2 to 15 asks for a group generation of **up to** `n` images: `sequential_image_generation: auto` with `max_images: n`. Seedream decides how many it makes, so a response can carry fewer than `n` images; `usage.output_images` counts the images delivered, and that is what is billed. Seedream counts reference images in its limit of 15, so with `k` reference images `n` can be at most `15 - k`. Any other `n` is a 400 `caller_unsupported_parameter` naming `n`. |
 | `input_images` (generation), `image[]` (edit) | `image` | URLs or base64 data URIs. Masks aren't supported. |
 | `response_format` | `response_format` | `url` (default) or `b64_json`. Image URLs expire after 24 hours; a response with a URL carries `expires_at` (`created` + 24 hours). |
 | `seed`, `output_format` | `seed`, `output_format` | |
 | `extra_params.watermark` | `watermark` | |
-| `extra_params.sequential_image_generation`, `extra_params.sequential_image_generation_options` | (refused) | Seedream's group generation decides how many images are made, so the price. It is not offered: `sequential_image_generation` other than `disabled`, or non-empty options, is a 400 `caller_unsupported_parameter` naming the field, with no call to Ark. |
+| `extra_params.sequential_image_generation`, `extra_params.sequential_image_generation_options` | (refused) | They set how many images Seedream makes, so the price, and `n` is the one way to ask for a group. Either field with any non-empty value is a 400 `caller_unsupported_parameter` naming the field, with no call to Ark; send `n` instead. |
 
 Any other extra params, such as `background`, `layer_decomposition` or `optimize_prompt_options`, are sent to Ark unchanged. An image that content safety blocks takes no slot in `data`; it is counted in `content_filter` (`filtered_count` and Ark's codes in `reasons`), and `usage.output_images` counts the images delivered. A response whose every image was blocked is still a 200, with an empty `data` and `content_filter`. Ark refusing the request itself (for example `InputTextSensitiveContentDetected`) keeps Ark's status and code, with `extra_fields.error_type` `caller_content_filtered`.
 

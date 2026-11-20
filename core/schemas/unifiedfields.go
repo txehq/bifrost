@@ -237,6 +237,10 @@ var vendorPriceFieldNames = func() []VendorPriceFieldName {
 		{Nebius, "height", "size", imageGeneration},
 		{Nebius, "response_extension", "output_format", imageGeneration},
 		{Runway, "outputCount", "n", image},
+		// Seedream group generation: n from 2 to 15 is sequential_image_generation "auto" with
+		// sequential_image_generation_options.max_images n (TXE-7304).
+		{BytePlus, "sequential_image_generation", "n", image},
+		{BytePlus, "sequential_image_generation_options", "n", image},
 		{Runway, "duration", "seconds", video},
 		{Voyage, "output_dimension", "dimensions", []RequestType{EmbeddingRequest}},
 		{XAI, "duration", "seconds", video},

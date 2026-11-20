@@ -1629,6 +1629,8 @@ const seedreamUsage = (n) => ({ generated_images: n, output_tokens: 16384 * n, t
 const seedreamAnswers = {
 	"seedream-partly-filtered": () => ({ data: [seedreamImage(0), seedreamRefusal, seedreamImage(2)], usage: seedreamUsage(2) }),
 	"seedream-all-filtered": () => ({ data: [seedreamRefusal], usage: seedreamUsage(0) }),
+	// A group generation answered in full (TXE-7304): three images for n=3, streamed or not (folder 312, rows 23-26).
+	"seedream-group": () => ({ data: [seedreamImage(0), seedreamImage(1), seedreamImage(2)], usage: seedreamUsage(3) }),
 	"seedream-empty": () => ({ data: [], usage: seedreamUsage(0) }),
 	// Error objects inside a 200: Ark's own failure on the only image, and a whole-request error object in place of data.
 	"seedream-internal-error": () => ({ data: [{ error: { code: "InternalServiceError", message: "The service encountered an unexpected internal error." } }], usage: seedreamUsage(0) }),
