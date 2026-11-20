@@ -260,6 +260,15 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 	// (the object, or every task of an array): each was gated as its own model before the envelope
 	// (PreLLMHook). One with a task naming no model runs the provider's default, which cannot be
 	// priced, and is gated as the envelope, which names none.
+	// A body naming a model twice is gated on the first and run on the last by most providers,
+	// whichever model the request names: under a dollar budget it cannot be priced.
+	if (requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest) &&
+		evaluationRequest.request != nil && passthroughBodyRepeatsModel(evaluationRequest.request) {
+		return &EvaluationResult{
+			Decision: DecisionModelUnpriced,
+			Reason:   "the request body names its model more than once, so the model it runs cannot be priced or charged to a dollar budget; name it once",
+		}
+	}
 	if (requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest) && evaluationRequest.Model == "" &&
 		evaluationRequest.request != nil && passthroughBodyNamesEveryModel(evaluationRequest.request) {
 		// One answer is priced for the whole body, so a body mixing models cannot say which of them
@@ -527,9 +536,22 @@ func passthroughBodyNamesEveryModel(req *schemas.BifrostRequest) bool {
 	if req.PassthroughRequest == nil || len(req.PassthroughRequest.Body) == 0 || !gjson.ValidBytes(req.PassthroughRequest.Body) {
 		return false
 	}
+	// A model key given twice is read as the first by gjson and as the last by most providers
+	// (encoding/json among them), so the body would be gated on one model and run on another: it
+	// is not read as naming its model.
 	names := func(object gjson.Result) bool {
+		if !object.IsObject() {
+			return false
+		}
+		count := 0
+		object.ForEach(func(key, _ gjson.Result) bool {
+			if key.Str == "model" {
+				count++
+			}
+			return count < 2
+		})
 		value := object.Get("model")
-		return object.IsObject() && value.Type == gjson.String && strings.TrimSpace(value.Str) != ""
+		return count == 1 && value.Type == gjson.String && strings.TrimSpace(value.Str) != ""
 	}
 	root := gjson.ParseBytes(req.PassthroughRequest.Body)
 	switch {
@@ -621,4 +643,35 @@ func passthroughQueuedAcknowledgment(body []byte) bool {
 		return queued
 	})
 	return queued
+}
+
+// passthroughBodyRepeatsModel reports whether a passthrough body gives a "model" key twice in one
+// object: the JSON object it is, or any object of the array it is.
+func passthroughBodyRepeatsModel(req *schemas.BifrostRequest) bool {
+	if req.PassthroughRequest == nil || len(req.PassthroughRequest.Body) == 0 || !gjson.ValidBytes(req.PassthroughRequest.Body) {
+		return false
+	}
+	repeats := func(object gjson.Result) bool {
+		count := 0
+		object.ForEach(func(key, _ gjson.Result) bool {
+			if key.Str == "model" {
+				count++
+			}
+			return count < 2
+		})
+		return count > 1
+	}
+	root := gjson.ParseBytes(req.PassthroughRequest.Body)
+	switch {
+	case root.IsObject():
+		return repeats(root)
+	case root.IsArray():
+		repeated := false
+		root.ForEach(func(_, task gjson.Result) bool {
+			repeated = task.IsObject() && repeats(task)
+			return !repeated
+		})
+		return repeated
+	}
+	return false
 }

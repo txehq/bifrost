@@ -255,6 +255,12 @@ func TestUnpricedModelUnderADollarBudgetIsRefusedBeforeTheCall(t *testing.T) {
 	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", passthrough(`[{"model":"gpt-4o"},{"model":"house-llm"}]`)), "a passthrough with a body model that has no row")
 	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", passthrough(`{"prompt":"no model anywhere"}`)), "a passthrough naming no model anywhere")
 	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", passthrough(`[{"model":"gpt-4o"},{"prompt":"runs the provider's default model"}]`)), "a task array with a task naming no model")
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", passthrough(`[{"model":"gpt-4o","model":"house-llm"}]`)), "a task naming its model twice, gated on the first and run on the last")
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", passthrough(`{"model":"gpt-4o","prompt":"p","model":"house-llm"}`)), "a body naming its model twice")
+	withModel := passthrough(`{"model":"gpt-4o","prompt":"p","model":"house-llm"}`)
+	withModel.PassthroughRequest.Model = "gpt-4o"
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", withModel), "a body naming its model twice, whatever model the request names")
+	assert.Nil(t, preLLM(t, plugin, "sk-bf-open", withModel), "a key with no dollar budget is not refused for it")
 
 	// Creating Gemini cached content is charged by the vendor but priced by no Bifrost answer.
 	cachedContent := &schemas.BifrostRequest{RequestType: schemas.CachedContentCreateRequest, CachedContentCreateRequest: &schemas.BifrostCachedContentCreateRequest{
