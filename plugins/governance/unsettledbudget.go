@@ -98,10 +98,31 @@ func isBackgroundResponsesCreate(req *schemas.BifrostRequest) bool {
 		if req.PassthroughRequest == nil || len(req.PassthroughRequest.Body) == 0 {
 			return false
 		}
-		background := gjson.GetBytes(req.PassthroughRequest.Body, "background")
-		return background.Type == gjson.True || (background.Type == gjson.String && background.Str == "true")
+		return passthroughBodyIsBackground(req.PassthroughRequest.Body)
 	}
 	return false
+}
+
+// passthroughBodyIsBackground reports whether any top-level "background" key of a JSON body is
+// true. Every occurrence is read: gjson returns the first of a duplicated key and most decoders
+// keep the last, so reading one would let {"background":false,"background":true} past the gate.
+func passthroughBodyIsBackground(body []byte) bool {
+	if !gjson.ValidBytes(body) {
+		return false
+	}
+	root := gjson.ParseBytes(body)
+	if !root.IsObject() {
+		return false
+	}
+	background := false
+	root.ForEach(func(key, value gjson.Result) bool {
+		if key.Str == "background" && (value.Type == gjson.True || (value.Type == gjson.String && value.Str == "true")) {
+			background = true
+			return false
+		}
+		return true
+	})
+	return background
 }
 
 // refuseUnsettledUnderBudget refuses a request under a dollar budget whose queued answer nothing
