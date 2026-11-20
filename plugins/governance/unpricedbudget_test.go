@@ -492,24 +492,38 @@ func TestUnbilledSettledJobDoesNotRefuseTheModel(t *testing.T) {
 // and a model priced only by a key-scoped override under a budget (a lookup per configured key).
 func BenchmarkUnpricedBudgetGate(b *testing.B) {
 	plugin, _ := unpricedBudgetPlugin(b)
+	passthrough := func(path, body string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+			Provider: schemas.OpenAI, Model: "gpt-4o", Method: "POST", Path: path, Body: []byte(body),
+		}}
+	}
+	foreground := func(withForwarded bool) *schemas.BifrostRequest {
+		req := &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "gpt-4o"}
+		if withForwarded {
+			req.Params = &schemas.ResponsesParameters{ExtraParams: map[string]interface{}{"service_tier": "flex"}}
+			req.RawRequestBody = []byte(`{"model":"gpt-4o","input":"hi","service_tier":"flex"}`)
+		}
+		return &schemas.BifrostRequest{RequestType: schemas.ResponsesRequest, ResponsesRequest: req}
+	}
 	for _, bc := range []struct {
-		name, vk, model string
+		name, vk string
+		req      *schemas.BifrostRequest
 	}{
-		{"no_budget", "sk-bf-open", "gpt-4o"},
-		{"budget_priced", "sk-bf-budget", "gpt-4o"},
-		{"budget_key_scoped_override", "sk-bf-budget", "key-priced"},
-		{"no_budget_passthrough_task_array", "sk-bf-open", ""},
+		{"no_budget", "sk-bf-open", chatOn("gpt-4o")},
+		{"budget_priced", "sk-bf-budget", chatOn("gpt-4o")},
+		{"budget_key_scoped_override", "sk-bf-budget", chatOn("key-priced")},
+		{"no_budget_passthrough_task_array", "sk-bf-open", &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+			Provider: schemas.OpenAI, Method: "POST", Path: "/v1/tasks", Body: []byte(`[{"model":"gpt-4o"},{"model":"free-chat"},{"model":"gpt-4o"}]`),
+		}}},
+		// TXE-7963: the background check on what each budgeted request may forward.
+		{"budget_responses_foreground", "sk-bf-budget", foreground(false)},
+		{"budget_responses_extra_params_and_raw_body", "sk-bf-budget", foreground(true)},
+		{"budget_passthrough_responses_body", "sk-bf-budget", passthrough("/v1/responses", `{"model":"gpt-4o","input":"hi","store":false,"metadata":{"a":"b"}}`)},
 	} {
 		b.Run(bc.name, func(b *testing.B) {
-			req := chatOn(bc.model)
-			if bc.model == "" {
-				req = &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
-					Provider: schemas.OpenAI, Method: "POST", Path: "/v1/tasks", Body: []byte(`[{"model":"gpt-4o"},{"model":"free-chat"},{"model":"gpt-4o"}]`),
-				}}
-			}
 			b.ReportAllocs()
 			for b.Loop() {
-				if shortCircuit := preLLM(b, plugin, bc.vk, req); shortCircuit != nil {
+				if shortCircuit := preLLM(b, plugin, bc.vk, bc.req); shortCircuit != nil {
 					b.Fatalf("refused: %v", shortCircuit.Error)
 				}
 			}

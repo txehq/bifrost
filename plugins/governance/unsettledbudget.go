@@ -87,16 +87,16 @@ func (p *GovernancePlugin) ProviderJobAccountingEnabled() bool {
 	return p != nil && p.resolver != nil && p.resolver.providerJobAccounting.Load()
 }
 
-// isBackgroundResponsesCreate reports whether a request is a Responses create sent with
-// background: true, on the typed request or at the top of a passthrough body.
+// isBackgroundResponsesCreate reports whether a request is a Responses create that may be sent with
+// background set: on the typed request (its field, forwarded extra params or raw body), or at the
+// top of a passthrough body.
 func isBackgroundResponsesCreate(req *schemas.BifrostRequest) bool {
 	if req == nil {
 		return false
 	}
 	switch req.RequestType {
 	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest:
-		return req.ResponsesRequest != nil && req.ResponsesRequest.Params != nil &&
-			req.ResponsesRequest.Params.Background != nil && *req.ResponsesRequest.Params.Background
+		return responsesSendsBackground(req.ResponsesRequest)
 	case schemas.PassthroughRequest, schemas.PassthroughStreamRequest:
 		if req.PassthroughRequest == nil || len(req.PassthroughRequest.Body) == 0 {
 			return false
@@ -104,6 +104,29 @@ func isBackgroundResponsesCreate(req *schemas.BifrostRequest) bool {
 		return passthroughIsBackground(req.PassthroughRequest.Path, req.PassthroughRequest.Body)
 	}
 	return false
+}
+
+// responsesSendsBackground reports whether a typed Responses create may reach the provider with
+// background set. Besides the typed field, the provider receives Params.ExtraParams merged into its
+// body (BifrostContextKeyPassthroughExtraParams) and, when asked, RawRequestBody verbatim; both are
+// read failing closed, as a Responses passthrough body is: any background key, in any case, whose
+// value is not false or null counts. Neither is read unless present, so a plain
+// request pays only nil checks.
+func responsesSendsBackground(req *schemas.BifrostResponsesRequest) bool {
+	if req == nil {
+		return false
+	}
+	if params := req.Params; params != nil {
+		if params.Background != nil && *params.Background {
+			return true
+		}
+		for key, value := range params.ExtraParams {
+			if strings.EqualFold(key, "background") && value != nil && value != false {
+				return true
+			}
+		}
+	}
+	return len(req.RawRequestBody) > 0 && passthroughIsBackground("/responses", req.RawRequestBody)
 }
 
 // backgroundCapablePaths name the passthrough APIs that run a create in the background when
