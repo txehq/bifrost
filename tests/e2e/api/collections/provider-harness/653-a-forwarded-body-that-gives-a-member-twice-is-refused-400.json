@@ -262,9 +262,10 @@
             "type": "text/javascript",
             "exec": [
               "var text = pm.response.text();",
-              "pm.test('a body declared JSON that does not parse is refused 400 by Bifrost', function () {",
+              "pm.test('a body declared JSON that does not parse is refused 400 by Bifrost, not forwarded', function () {",
               "  pm.expect(pm.response.code, text.slice(0, 300)).to.equal(400);",
-              "  pm.expect(text).to.include('does not parse strictly');",
+              "  pm.expect(text, 'the passthrough router refuses it before the provider').to.include('passthrough request body is not valid JSON');",
+              "  pm.expect(text).to.not.include('unknown fixture model');",
               "});"
             ]
           }

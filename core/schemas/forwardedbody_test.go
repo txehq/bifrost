@@ -364,6 +364,14 @@ func TestMislabeledJSONBody(t *testing.T) {
 		{"text/plain", "{\"mo\\\nde\\154\":\"X\",}", "text/plain", "model"},
 		{"text/plain", `{"a":"\\",}`, "text/plain", "model"},
 		{"audio/wav", "RIFF\x00\x00\x00\x00WAVEfmt {\"model\"", "", ""},
+		// Content that may name a provider object: governance's object gate reads only JSON.
+		{"text/plain", `{"file_id":"file-foreign"}`, "text/plain", "a provider object"},
+		{"text/plain", `{"File_ID":"file-foreign",}`, "text/plain", "a provider object"},
+		{"application/octet-stream", `{"input":[{"fileUri":"gs://bucket/o"}]}`, "application/octet-stream", "a provider object"},
+		{"text/plain", `{"tools":[{"type":"code_interpreter"}]}`, "text/plain", "a provider object"},
+		{"text/plain", `{"note":"see s3://bucket/key"}`, "text/plain", "a provider object"},
+		{"application/x-ndjson", "{\"custom_id\":\"1\",\"file_id\":\"file-x\"}\n", "application/x-ndjson", "a provider object"},
+		{"text/plain", `{hello, nothing named here`, "", ""},
 		// The 1 KB prefix must not decide on a rune or a "/" it cut: ideographic spaces (3 bytes)
 		// to byte 1025, and spaces to a "/" at byte 1024 that opens a comment.
 		{"text/plain", strings.Repeat("\u3000", 342) + `{"model":"X"}`, "text/plain", "model"},

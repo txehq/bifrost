@@ -1316,6 +1316,20 @@ func TestEveryForwardedBodyReaderUsesTheSharedClassifier(t *testing.T) {
 		"../plugins/logging/main.go:captureRequestInput": "log display only",
 		// Called only by parsePassthroughBody, after it classified the body as multipart.
 		"../transports/bifrost-http/integrations/router.go:parseMultipartPassthroughBody": "classified by its caller",
+		// The vendor calls: they send the body's bytes upstream as written and read no member.
+		"providers/anthropicmsg/passthrough.go:Passthrough":        "forwards bytes",
+		"providers/anthropicmsg/passthrough.go:PassthroughStream":  "forwards bytes",
+		"providers/azure/azure.go:Passthrough":                     "forwards bytes",
+		"providers/azure/azure.go:PassthroughStream":               "forwards bytes",
+		"providers/bedrock/passthrough.go:buildPassthroughRequest": "forwards bytes",
+		"providers/bedrock/passthrough.go:PassthroughStream":       "forwards bytes",
+		"providers/gemini/gemini.go:Passthrough":                   "forwards bytes",
+		"providers/gemini/gemini.go:PassthroughStream":             "forwards bytes",
+		"providers/openai/openai.go:Passthrough":                   "forwards bytes",
+		"providers/openai/openai.go:PassthroughStream":             "forwards bytes",
+		"providers/runware/runware.go:Passthrough":                 "forwards bytes",
+		"providers/vertex/vertex.go:Passthrough":                   "forwards bytes",
+		"providers/vertex/vertex.go:PassthroughStream":             "forwards bytes",
 		// Rewrites project and region placeholders in the bytes of a body its callers check is
 		// declared application/json; reads no member a gate acts on.
 		"providers/vertex/utils.go:rewritePassthroughBody": "byte rewrite after the vendor call is built",
@@ -1344,10 +1358,24 @@ func TestEveryForwardedBodyReaderUsesTheSharedClassifier(t *testing.T) {
 				}
 				reads := strings.Contains(strings.ToLower(fn.Name.Name), "passthroughbody")
 				classifies := false
+				// A parameter holding a passthrough request: reading its Body reads the body too.
+				requests := map[string]bool{}
+				for _, field := range fn.Type.Params.List {
+					if star, ok := field.Type.(*ast.StarExpr); ok {
+						if sel, ok := star.X.(*ast.SelectorExpr); ok && sel.Sel.Name == "BifrostPassthroughRequest" {
+							for _, name := range field.Names {
+								requests[name.Name] = true
+							}
+						}
+					}
+				}
 				ast.Inspect(fn.Body, func(n ast.Node) bool {
 					switch node := n.(type) {
 					case *ast.SelectorExpr:
 						if inner, ok := node.X.(*ast.SelectorExpr); ok && node.Sel.Name == "Body" && inner.Sel.Name == "PassthroughRequest" {
+							reads = true
+						}
+						if ident, ok := node.X.(*ast.Ident); ok && node.Sel.Name == "Body" && requests[ident.Name] {
 							reads = true
 						}
 						switch node.Sel.Name {
@@ -1371,6 +1399,7 @@ func TestEveryForwardedBodyReaderUsesTheSharedClassifier(t *testing.T) {
 			return nil
 		}))
 	}
+	assert.Contains(t, readers, "../plugins/governance/providerjobs.go:passthroughObjectRefs", "the check no longer finds governance's object reader")
 	assert.Contains(t, readers, "../plugins/governance/main.go:passthroughBodyModels", "the check no longer finds governance's body reader; it is not looking where readers are")
 	assert.Contains(t, readers, "../transports/bifrost-http/integrations/router.go:parsePassthroughBody", "the check no longer finds the router's body reader")
 	assert.Empty(t, unclassified, "a forwarded-body reader decides how to read the body without schemas.ClassifyForwardedBody; route it through the classifier so it reads what the guard checked (TXE-8012)")
@@ -1524,6 +1553,19 @@ func TestRunLLMPreHooksForwardsABatchInputFileUpload(t *testing.T) {
 		}
 		assert.True(t, gate.ran, "%s did not reach the plugins", tc.name)
 	}
+
+	// A body that may name a provider object, as content, to an inference route is refused:
+	// governance's object gate reads objects only from a body classified JSON.
+	_, refused, _ := newRoutingCommitPipeline(&bodyReadingGate{fakeRoutingPlugin: fakeRoutingPlugin{name: "gate"}}).RunLLMPreHooks(
+		schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+		passthrough(schemas.OpenAI, "/v1/responses", "text/plain", `{"input":[{"type":"input_file","file_id":"file-foreign"}],}`))
+	require.NotNil(t, refused, "content naming a file id to an inference route was admitted")
+	assert.Contains(t, refused.Error.Error.Message, "is JSON naming a provider object but is declared text/plain")
+	// The same on an upload route is a file.
+	_, admitted, _ := newRoutingCommitPipeline(&bodyReadingGate{fakeRoutingPlugin: fakeRoutingPlugin{name: "gate"}}).RunLLMPreHooks(
+		schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+		passthrough(schemas.OpenAI, "/v1/files", "application/octet-stream", "{\"custom_id\":\"1\",\"file_id\":\"file-x\"}\n"))
+	assert.Nil(t, admitted, "a batch file naming a file id on an upload route was refused")
 
 	// An undeclared strict JSON document on an upload route is still checked for repeats: the
 	// router and governance read an undeclared one.

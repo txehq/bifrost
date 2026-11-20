@@ -127,7 +127,13 @@ func (br *BifrostRequest) ForwardedBodyContentType() string {
 	if br.PassthroughRequest == nil {
 		return ""
 	}
-	for name, value := range br.PassthroughRequest.SafeHeaders {
+	return br.PassthroughRequest.ContentType()
+}
+
+// ContentType returns the Content-Type a passthrough request forwards upstream, "" when none: the
+// type ClassifyForwardedBody reads its body by.
+func (r *BifrostPassthroughRequest) ContentType() string {
+	for name, value := range r.SafeHeaders {
 		if strings.EqualFold(name, "content-type") {
 			return value
 		}
@@ -276,6 +282,10 @@ func AmbiguousBodyMember(body []byte, contentType string) (string, bool) {
 // A body declared JSON Lines is reported when a line names a gated key at its root: it is no
 // request document, so no gate reads a model from it either.
 //
+// Either kind is also reported when it may name a provider object (MayNameProviderObject, compared
+// without case): governance's object gate reads file ids and storage URIs only from a body
+// classified JSON, so a vendor parsing this one could act on an object no gate checked.
+//
 // Content that opens like JSON under none of them (audio, images, prose) is not reported, nor is
 // a text upload opening with "{" that never mentions a gated key and holds no backslash. File
 // upload routes are exempt in core (IsFileUploadPath): the vendor stores those bytes and runs no
@@ -292,6 +302,9 @@ func MislabeledJSONBody(body []byte, contentType string) (mediaType, key string,
 				continue
 			}
 			if key = gatedKeyInJSONText(line); key != "" {
+				return mediaType, key, true
+			}
+			if key = providerObjectMention(line); key != "" {
 				return mediaType, key, true
 			}
 		}
@@ -312,6 +325,9 @@ func MislabeledJSONBody(body []byte, contentType string) (mediaType, key string,
 			continue
 		}
 		if key = gatedKeyInJSONText(doc[start:]); key != "" {
+			return mediaType, key, true
+		}
+		if key = providerObjectMention(doc[start:]); key != "" {
 			return mediaType, key, true
 		}
 	}
@@ -439,6 +455,55 @@ func decodeUTF32(b []byte, bigEndian bool) []byte {
 		out = utf8.AppendRune(out, rune(r))
 	}
 	return out
+}
+
+// ProviderObjectBodyMarkers are the keys a JSON body names a provider object under (a file, a
+// cached content, a code interpreter container). Governance's object gate parses a body only when
+// it holds one of these, a \u escape that could spell one, or a storage URI
+// (MayNameProviderObject), and MislabeledJSONBody refuses content that may name one.
+var ProviderObjectBodyMarkers = []string{
+	`"file_id`, `"fileUri"`, `"file_uri"`, `"cached_content"`, `"cachedContent"`, `code_interpreter`,
+	`"input_file_id"`, `"training_file"`, `"validation_file"`, `"fileName"`,
+}
+
+// StorageURIMarkers are the storage URI forms a body names a recorded file by: gs: and s3:
+// schemes, and the Google Cloud Storage and AWS hosts (compared without case).
+var StorageURIMarkers = []string{"gs:", "s3:", "storage.cloud.google.com", "googleapis.com", "amazonaws.com", "arn:aws"}
+
+// MayNameProviderObject reports whether a raw body could name a provider object: a marker key,
+// a \u escape (which can spell any marker character: file\u005fid decodes to file_id), or a
+// storage URI. Bodies that cannot are forwarded without a JSON parse.
+func MayNameProviderObject(body []byte) bool {
+	if bytes.Contains(body, []byte(`\u`)) {
+		return true
+	}
+	for _, marker := range ProviderObjectBodyMarkers {
+		if bytes.Contains(body, []byte(marker)) {
+			return true
+		}
+	}
+	lower := bytes.ToLower(body)
+	for _, marker := range StorageURIMarkers {
+		if bytes.Contains(lower, []byte(marker)) {
+			return true
+		}
+	}
+	return false
+}
+
+// providerObjectMention reports, as a label, a JSON text that may name a provider object when its
+// keys are compared without case: a lenient vendor parser may fold them.
+func providerObjectMention(doc []byte) string {
+	if MayNameProviderObject(doc) {
+		return "a provider object"
+	}
+	lower := bytes.ToLower(doc)
+	for _, marker := range ProviderObjectBodyMarkers {
+		if bytes.Contains(lower, bytes.ToLower([]byte(marker))) {
+			return "a provider object"
+		}
+	}
+	return ""
 }
 
 // FileUploadRoute is a route that stores the request body as a file and runs no model. Path is a
