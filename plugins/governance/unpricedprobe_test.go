@@ -178,6 +178,8 @@ func TestUnpricedProbes(t *testing.T) {
 	stale, busy := probes.acquire(scopes, []string{"row"})
 	assert.False(t, busy, "a probe whose request never returned is freed after unpricedProbeStaleAfter")
 	held.release()
+	_, busy = probes.acquire(scopes, []string{"row"})
+	assert.True(t, busy, "the expired probe's late release leaves its replacement's hold in place")
 	stale.confirm()
 	stale.release()
 	stale.release()

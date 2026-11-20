@@ -47,8 +47,16 @@ const unpricedProbeContextKey schemas.BifrostContextKey = "bf-governance-unprice
 type unpricedProbes struct {
 	mu        sync.Mutex
 	confirmed map[string]*confirmedRows // scope -> rows confirmed priced
-	inflight  map[string]time.Time      // scope + "\x00" + row -> when its probe started
+	inflight  map[string]inflightHold   // scope + "\x00" + row -> the probe holding it
 	now       func() time.Time
+}
+
+// inflightHold is one probe's hold on a (scope, row): which probe holds it, and since when. A hold
+// past unpricedProbeStaleAfter may be replaced, and its probe's later release must not free the
+// replacement's.
+type inflightHold struct {
+	owner *unpricedProbe
+	since time.Time
 }
 
 type confirmedRows struct {
@@ -57,7 +65,7 @@ type confirmedRows struct {
 }
 
 func newUnpricedProbes() *unpricedProbes {
-	return &unpricedProbes{confirmed: make(map[string]*confirmedRows), inflight: make(map[string]time.Time), now: time.Now}
+	return &unpricedProbes{confirmed: make(map[string]*confirmedRows), inflight: make(map[string]inflightHold), now: time.Now}
 }
 
 // unpricedProbe is one request's hold on the rows it probes; release frees them, confirm marks
@@ -89,7 +97,7 @@ func (p *unpricedProbes) acquire(scopes, rows []string) (probe *unpricedProbe, b
 				}
 			}
 			key := scope + "\x00" + row
-			if since, held := p.inflight[key]; held && now.Sub(since) < unpricedProbeStaleAfter {
+			if hold, held := p.inflight[key]; held && now.Sub(hold.since) < unpricedProbeStaleAfter {
 				return nil, true
 			}
 			keys = append(keys, key)
@@ -98,13 +106,15 @@ func (p *unpricedProbes) acquire(scopes, rows []string) (probe *unpricedProbe, b
 	if len(keys) == 0 {
 		return nil, false
 	}
+	probe = &unpricedProbe{probes: p, keys: keys, scopes: scopes, rows: rows}
 	for _, key := range keys {
-		p.inflight[key] = now
+		p.inflight[key] = inflightHold{owner: probe, since: now}
 	}
-	return &unpricedProbe{probes: p, keys: keys, scopes: scopes, rows: rows}, false
+	return probe, false
 }
 
-// release frees the probe's rows; later calls do nothing.
+// release frees the probe's rows that it still holds; a row whose stale hold another probe has
+// replaced stays held by that probe. Later calls do nothing.
 func (probe *unpricedProbe) release() {
 	if probe == nil {
 		return
@@ -113,7 +123,9 @@ func (probe *unpricedProbe) release() {
 		probe.probes.mu.Lock()
 		defer probe.probes.mu.Unlock()
 		for _, key := range probe.keys {
-			delete(probe.probes.inflight, key)
+			if hold, held := probe.probes.inflight[key]; held && hold.owner == probe {
+				delete(probe.probes.inflight, key)
+			}
 		}
 	})
 }
