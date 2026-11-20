@@ -178,6 +178,13 @@ func TestWireBatchAccountingSweeperAppliesProviderJobAccountingSwitch(t *testing
 			if got := governancePlugin.ProviderJobAccountingEnabled(); got != !tc.disabled {
 				t.Fatalf("governance ProviderJobAccountingEnabled() = %v with disable_provider_job_accounting=%v", got, tc.disabled)
 			}
+			// With the logging plugin gone nothing settles a job, so governance is told accounting
+			// is off, whatever the switch says (RemovePlugin rewires when logging is removed).
+			config.BasePlugins.Store(&[]schemas.BasePlugin{governancePlugin})
+			s.WireBatchAccountingSweeper()
+			if governancePlugin.ProviderJobAccountingEnabled() {
+				t.Fatalf("governance kept provider job accounting on after the logging plugin was removed (disable_provider_job_accounting=%v)", tc.disabled)
+			}
 		})
 	}
 }

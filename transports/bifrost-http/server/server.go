@@ -2638,6 +2638,12 @@ func (s *BifrostHTTPServer) RemovePlugin(ctx context.Context, displayName string
 	if _, ok := plugin.(*logging.LoggerPlugin); ok && s.WarpHandler != nil {
 		s.WarpHandler.Service().SetLogReader(nil)
 	}
+	// 3b. The logging plugin ran the sweepers that settle provider jobs. Rewiring with it gone
+	// tells governance nothing settles, so a budgeted video or batch create is refused, not
+	// admitted and never charged (TXE-7963).
+	if plugin != nil && plugin.GetName() == logging.PluginName {
+		s.WireBatchAccountingSweeper()
+	}
 
 	// 4. Update status and marshaller
 	if isDisabled, _ := ctx.Value(handlers.PluginDisabledKey).(bool); isDisabled {
