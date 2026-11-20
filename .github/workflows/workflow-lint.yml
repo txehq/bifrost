@@ -106,7 +106,7 @@ jobs:
 
       - name: Check the Go setup rule on fixture workflows
         if: ${{ !cancelled() }}
-        run: ./.github/workflows/scripts/check-go-setup.test.sh
+        run: ./.github/workflows/scripts/check-go-setup_test.sh
 
       # Evaluates each pull_request job's approval-environment expression: only a
       # pull request whose head branch is in another repository may pick pr-testing.

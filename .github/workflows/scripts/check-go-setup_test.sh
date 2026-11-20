@@ -219,7 +219,7 @@ else
 fi
 
 if (( fails > 0 )); then
-  echo "check-go-setup.test.sh: $fails of $n cases failed"
+  echo "check-go-setup_test.sh: $fails of $n cases failed"
   exit 1
 fi
-echo "check-go-setup.test.sh: all $n cases pass"
+echo "check-go-setup_test.sh: all $n cases pass"
