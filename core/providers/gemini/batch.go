@@ -43,8 +43,10 @@ func geminiBatchNativeOutput(body []byte) []byte {
 // metadata.output.inlinedResponses as a generateContent batch's results and, when they hold
 // embeddings, as an embedding batch's (python-genai t_recv_batch_job_destination renames them
 // to inlinedEmbedContentResponses), so the object goes back unchanged. The unified retrieve
-// response has no field for inline results, so without it the route returned the job's state
-// and counts and no results.
+// response has no field for inline results, so the provider keeps the vendor's output object
+// on BifrostBatchRetrieveResponse.NativeOutput (metadata.output, or a done operation's
+// response; not serialised, and never part of the unified response). Without it the route
+// returned the job's state and counts and no results.
 func ToGeminiBatchRetrieveBody(resp *schemas.BifrostBatchRetrieveResponse) (interface{}, error) {
 	job := ToGeminiBatchRetrieveResponse(resp)
 	if job == nil || len(resp.NativeOutput) == 0 {

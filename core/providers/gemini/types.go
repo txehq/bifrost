@@ -2888,14 +2888,14 @@ type GeminiBatchConfig struct {
 // GeminiBatchInputConfig represents the input configuration for batch requests.
 // Supports both inline requests and file-based input.
 type GeminiBatchInputConfig struct {
-	Requests *GeminiBatchRequestsWrapper `json:"requests,omitempty"`
-	FileName string                      `json:"fileName,omitempty"`
-	// FileNameSnake is the same file as Google's SDK spells it for an embedding batch
-	// (batches.create_embeddings writes inputConfig.file_name). Read with InputFileName.
-	FileNameSnake string `json:"file_name,omitempty"`
+	Requests      *GeminiBatchRequestsWrapper `json:"requests,omitempty"`
+	FileName      string                      `json:"fileName,omitempty"`
+	FileNameSnake string                      `json:"file_name,omitempty"` // SDK spelling for embedding batches; see InputFileName
 }
 
-// InputFileName returns the input file a batch create names, in either spelling.
+// InputFileName returns the input file a batch create names, in either spelling: Google's SDK
+// writes inputConfig.fileName for a generateContent batch and inputConfig.file_name for an
+// embedding batch (batches.create_embeddings, TXE-7030).
 func (c GeminiBatchInputConfig) InputFileName() string {
 	if c.FileName != "" {
 		return c.FileName

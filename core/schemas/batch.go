@@ -321,11 +321,7 @@ type BifrostBatchRetrieveResponse struct {
 	OperationName *string `json:"operation_name,omitempty"`
 	Done          *bool   `json:"done,omitempty"`
 	Progress      *int    `json:"progress,omitempty"` // Percentage progress
-	// NativeOutput is the job's output object as the vendor returned it (Gemini:
-	// metadata.output, or response on a done operation), inline responses included. The
-	// unified response never carries it; the native /genai route hands it back where Google's
-	// SDK reads it (TXE-7030).
-	NativeOutput []byte `json:"-"`
+	NativeOutput  []byte  `json:"-"`                  // Vendor's own job output; see gemini.ToGeminiBatchRetrieveBody
 
 	// Azure-specific Blob Storage URLs (returned when using blob storage input/output)
 	InputBlob  *string `json:"input_blob,omitempty"`
