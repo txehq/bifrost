@@ -482,6 +482,11 @@ func deliveredAnswer(result *schemas.BifrostResponse) bool {
 	if response := result.ResponsesResponse; response != nil && response.ExtraFields.RequestType == schemas.LiveRequest && emptyResponsesUsage(response.Usage) {
 		return false
 	}
+	// So is a Realtime turn that produced nothing and reported no usage (an empty response.done).
+	if response := result.ResponsesResponse; response != nil && response.ExtraFields.RequestType == schemas.RealtimeRequest &&
+		emptyResponsesUsage(response.Usage) && len(response.Output) == 0 {
+		return false
+	}
 	if result.ResponsesResponse != nil && result.ResponsesResponse.Status != nil {
 		switch *result.ResponsesResponse.Status {
 		case "queued", "in_progress", "failed", "cancelled":

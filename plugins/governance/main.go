@@ -1483,7 +1483,9 @@ func settlesIncurredUsage(ctx *schemas.BifrostContext, err *schemas.BifrostError
 		return false
 	}
 	decision := Decision(*err.Type)
-	return isBudgetViolation(decision) || isRateLimitViolation(decision)
+	// A model refused as unpriced under a budget (TXE-7957) is a refusal of spending, too: what the
+	// session already incurred is charged.
+	return isBudgetViolation(decision) || isRateLimitViolation(decision) || decision == DecisionModelUnpriced
 }
 
 // PostLLMHook processes the response and updates usage tracking (business logic execution)

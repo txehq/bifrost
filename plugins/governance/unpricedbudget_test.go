@@ -844,6 +844,23 @@ func TestLiveUnitsArePricedInTheirAccountingMode(t *testing.T) {
 	closeUnit("seconds-chat", &schemas.ResponsesResponseUsage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15})
 	requireUnpricedRefusal(t, unit("backend", "seconds-chat"), "a backend unit with tokens the model's price does not cover refuses it")
 	assert.False(t, emptyResponsesUsage(&schemas.ResponsesResponseUsage{AudioSeconds: new(3.0)}), "a voice window with seconds is not empty")
+
+	// An empty Realtime turn (response.done with no output and no usage) is not an answer either; one
+	// with output is.
+	realtimeTurn := func(output []schemas.ResponsesMessage) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{
+			Object: "response", Model: "gpt-4o", Output: output,
+			ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.RealtimeRequest, Provider: schemas.OpenAI},
+		}}
+	}
+	assert.False(t, deliveredAnswer(realtimeTurn(nil)), "an empty realtime turn")
+	assert.True(t, deliveredAnswer(realtimeTurn([]schemas.ResponsesMessage{{}})), "a realtime turn with output and no usage")
+
+	// A session refused as unpriced while it holds vendor-billed usage is settled, as a budget refusal is.
+	unpriced := string(DecisionModelUnpriced)
+	settling := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	settling.SetValue(schemas.BifrostContextKeyRealtimeIncurredUsage, &schemas.BifrostLLMUsage{TextMessages: schemas.Ptr(2)})
+	assert.True(t, settlesIncurredUsage(settling, &schemas.BifrostError{Type: &unpriced, ExtraFields: schemas.BifrostErrorExtraFields{BilledUsage: &schemas.BifrostLLMUsage{TextMessages: schemas.Ptr(2)}}}))
 }
 
 // A model priced in two modes whose embedding row was refused after a $0 answer: an inline
