@@ -105,6 +105,12 @@ func (s *Store) PriceIdentity(provider schemas.ModelProvider, model string, requ
 	return bestIdentity, best
 }
 
+// InferPassthroughRequestType is the request type a passthrough answer is priced as; see
+// inferPassthroughRequestType.
+func InferPassthroughRequestType(provider schemas.ModelProvider, path string, usage *schemas.BifrostPassthroughUsage) schemas.RequestType {
+	return inferPassthroughRequestType(provider, path, usage)
+}
+
 // rowIdentity names a resolved pricing row; see PriceIdentity. A row with no model is an
 // override-only price, named by the override resolvePricing applied for the same model, mode and
 // scopes.

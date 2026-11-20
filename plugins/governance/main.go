@@ -1611,7 +1611,8 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 				budgets = grant.LimitsFrom(budgets, untrackedHolderKinds...)
 			}
 			if len(budgets) > 0 {
-				p.resolver.noteUnpricedAnswer(provider, bodyModel, requestType, 0, pricingScopes, requestID, limitIDs(budgets))
+				pricedAs := modelcatalog.PassthroughPricingRequestType(provider, result.GetExtraFields().PassthroughPath, nil)
+				p.resolver.noteUnpricedAnswer(provider, bodyModel, requestType, pricedAs, 0, pricingScopes, requestID, limitIDs(budgets))
 			}
 		}
 	}
@@ -2130,7 +2131,14 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifro
 					}
 				}
 			}
-			p.resolver.noteUnpricedAnswer(provider, priced, requestType, answerCost, pricingScopes, requestID, limitIDs(budgets))
+			pricedAs := requestType
+			if extra := result.GetExtraFields(); extra != nil && extra.PricingRequestType != "" {
+				pricedAs = extra.PricingRequestType
+			}
+			if passthrough := result.PassthroughResponse; passthrough != nil {
+				pricedAs = modelcatalog.PassthroughPricingRequestType(provider, result.GetExtraFields().PassthroughPath, passthrough.PassthroughUsage)
+			}
+			p.resolver.noteUnpricedAnswer(provider, priced, requestType, pricedAs, answerCost, pricingScopes, requestID, limitIDs(budgets))
 		}
 
 		// Create usage update for tracker (business logic)

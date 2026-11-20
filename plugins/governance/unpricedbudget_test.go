@@ -17,6 +17,7 @@ import (
 	"github.com/capsohq/bifrost/framework/jobaccounting"
 	"github.com/capsohq/bifrost/framework/modelcatalog"
 	"github.com/capsohq/bifrost/framework/modelcatalog/datasheet"
+	"github.com/capsohq/bifrost/plugins/governance/internal/testtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -133,7 +134,9 @@ func unpricedBudgetPlugin(t testing.TB) (*GovernancePlugin, *LocalGovernanceStor
 		"clip-1":{"provider":"openai","mode":"video_generation","output_cost_per_second":0.1},
 		"free-on-key":{"provider":"openai","mode":"chat","input_cost_per_token":0.000001,"output_cost_per_token":0.000002},
 		"embed-1":{"provider":"openai","mode":"embedding","input_cost_per_token":0.0000001},
-		"alias-label":{"provider":"openai","mode":"chat","input_cost_per_token":0.000001,"output_cost_per_token":0.000002}
+		"alias-label":{"provider":"openai","mode":"chat","input_cost_per_token":0.000001,"output_cost_per_token":0.000002},
+		"container-4g":{"provider":"openai","mode":"container_create","code_interpreter_cost_per_session":0.12},
+		"responses-free":{"provider":"openai","mode":"chat","input_cost_per_token":0.000001,"output_cost_per_token":0.000002}
 	}`), 0o600))
 	ds := datasheet.New(nil, NewMockLogger(), datasheet.Config{URL: "file://" + sheet})
 	require.NoError(t, ds.LoadFromURLIntoMemory(context.Background()))
@@ -145,6 +148,10 @@ func unpricedBudgetPlugin(t testing.TB) (*GovernancePlugin, *LocalGovernanceStor
 	}, {
 		ID: "free-on-key-override", ScopeKind: string(datasheet.ScopeKindProviderKey), ProviderKeyID: &keyID,
 		MatchType: string(datasheet.MatchTypeExact), Pattern: "free-on-key", RequestTypes: []schemas.RequestType{schemas.ChatCompletionRequest},
+		PricingPatchJSON: `{"input_cost_per_token":0,"output_cost_per_token":0}`,
+	}, {
+		ID: "responses-free-override", ScopeKind: string(datasheet.ScopeKindGlobal),
+		MatchType: string(datasheet.MatchTypeExact), Pattern: "responses-free", RequestTypes: []schemas.RequestType{schemas.ResponsesRequest},
 		PricingPatchJSON: `{"input_cost_per_token":0,"output_cost_per_token":0}`,
 	}}))
 	catalog := modelcatalog.NewTestCatalogWithDatasheet(ds)
@@ -345,7 +352,7 @@ func TestUnpricedAnswerUnderADollarBudgetRefusesTheModelAfter(t *testing.T) {
 		if assert.NotNil(c, shortCircuit, "the model is refused under the budget once an answer priced at $0 against it") && assert.NotNil(c, shortCircuit.Error) {
 			assert.Equal(c, schemas.ErrorTypePolicyModelBlocked, shortCircuit.Error.ExtraFields.ErrorType)
 		}
-	}, time.Second, 10*time.Millisecond)
+	}, testtime.Scale(time.Second), testtime.Scale(10*time.Millisecond))
 
 	assert.NotNil(t, preLLM(t, plugin, "sk-bf-budget", image("TOKEN-IMAGE")), "a spelling of the model that resolves to the same row is refused too")
 	assert.Nil(t, preLLM(t, plugin, "sk-bf-open", image("token-image")), "a key with no dollar budget is not refused")
@@ -627,4 +634,41 @@ func TestQueuedPassthroughAcknowledgmentDoesNotRefuseTheModel(t *testing.T) {
 	require.NoError(t, err)
 	plugin.wg.Wait()
 	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", request(schemas.PassthroughStreamRequest)), "the stream's final chunk, answered with no usage")
+}
+
+// A container is priced from its memory tier's row when it asks for one: a deployment that prices
+// only 4g containers serves a 4g create under a budget and refuses one with no tier.
+func TestContainerCreateIsPricedByItsMemoryTier(t *testing.T) {
+	plugin, _ := unpricedBudgetPlugin(t)
+	create := func(memory string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.ContainerCreateRequest, ContainerCreateRequest: &schemas.BifrostContainerCreateRequest{
+			Provider: schemas.OpenAI, MemoryLimit: memory,
+		}}
+	}
+	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", create("4g")), "a 4g container is priced by the 4g row")
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", create("")), "a container with no tier, with no base container row")
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", create("64g")), "a tier with no row, and no base row to fall back to")
+}
+
+// A passthrough answer is judged in the mode accounting priced it in (inferred from its path), so an
+// override that makes the model free for Responses makes a $0 Responses passthrough its price.
+func TestPassthroughAnswerIsJudgedInItsPricedMode(t *testing.T) {
+	plugin, _ := unpricedBudgetPlugin(t)
+	budgets := []string{"budget-unpriced"}
+	assert.False(t, plugin.resolver.noteUnpricedAnswer(schemas.OpenAI, "responses-free", schemas.PassthroughRequest, schemas.ResponsesRequest, 0, nil, "r1", budgets),
+		"free in the mode it was priced in")
+	assert.True(t, plugin.resolver.noteUnpricedAnswer(schemas.OpenAI, "responses-free", schemas.PassthroughRequest, schemas.ChatCompletionRequest, 0, nil, "r2", budgets),
+		"priced in chat, so a $0 chat answer is unpriced")
+}
+
+// A live session's units are all live requests to governance: the voice is priced in the live
+// (realtime) mode, and a backend model's delegated turns in the Responses mode. A backend model
+// priced only for Responses is admitted under a budget; a model priced in neither is refused.
+func TestLiveUnitsArePricedInTheirAccountingMode(t *testing.T) {
+	plugin, _ := unpricedBudgetPlugin(t)
+	live := func(model string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.LiveRequest, ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: model}}
+	}
+	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", live("gpt-4o")), "a backend model priced for Responses (from its chat row) is admitted")
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", live("house-llm")), "a live unit on a model priced in neither mode")
 }

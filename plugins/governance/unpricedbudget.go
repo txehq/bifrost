@@ -313,6 +313,15 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 	}
 	model := pricedModel(requestType, evaluationRequest.Model)
 	scopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(provider))
+	// A container is priced from its memory tier's row ("container-4g") when it asks for one, as
+	// accounting prices the container it creates, and from the base row otherwise.
+	if requestType == schemas.ContainerCreateRequest && evaluationRequest.request != nil && evaluationRequest.request.ContainerCreateRequest != nil {
+		if memory := evaluationRequest.request.ContainerCreateRequest.MemoryLimit; memory != "" {
+			if _, status := r.priceIdentity(provider, "container-"+memory, requestType, scopes); status != modelcatalog.PriceUnpriced {
+				model = "container-" + memory
+			}
+		}
+	}
 	if _, status := r.priceIdentity(provider, model, requestType, scopes); status == modelcatalog.PriceUnpriced {
 		return &EvaluationResult{
 			Decision: DecisionModelUnpriced,
@@ -343,17 +352,31 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 // unpriced, and every price book row the request could be priced as (under each configured key's
 // scope) is refused for those budgets from now on (fail closed after the fact). Reports whether it
 // was unpriced.
-func (r *BudgetResolver) noteUnpricedAnswer(provider schemas.ModelProvider, model string, requestType schemas.RequestType, cost float64, scopes *modelcatalog.PricingLookupScopes, requestID string, budgetIDs []string) bool {
+//
+// pricedAs is the request type accounting priced the answer as (a passthrough is priced in the
+// mode its path implies); requestType is the request's own, which the gate reads rows under.
+func (r *BudgetResolver) noteUnpricedAnswer(provider schemas.ModelProvider, model string, requestType, pricedAs schemas.RequestType, cost float64, scopes *modelcatalog.PricingLookupScopes, requestID string, budgetIDs []string) bool {
 	if r == nil || r.modelCatalog == nil || cost > 0 || len(budgetIDs) == 0 {
 		return false
 	}
 	model = pricedModel(requestType, model)
-	// Whether $0 was the price is read under the scope that priced the answer: the key that served
-	// it is selected by now, and another key's override says nothing about this answer.
-	if r.servedPriceStatus(provider, model, requestType, scopes) == modelcatalog.PriceFree {
+	if pricedAs == "" || normalizesToUnknown(pricedAs) {
+		pricedAs = requestType
+	}
+	// Whether $0 was the price is read under the scope and mode that priced the answer: the key
+	// that served it is selected by now, and another key's override says nothing about this answer.
+	if r.servedPriceStatus(provider, model, pricedAs, scopes) == modelcatalog.PriceFree {
 		return false
 	}
 	_, rows := r.priceIdentities(provider, model, requestType, scopes)
+	if pricedAs != requestType {
+		_, pricedRows := r.priceIdentities(provider, model, pricedAs, scopes)
+		for _, row := range pricedRows {
+			if !slices.Contains(rows, row) {
+				rows = append(rows, row)
+			}
+		}
+	}
 	// A model with no row at all is refused before the call by the gate itself; there is no row
 	// to remember.
 	for _, row := range rows {
@@ -402,6 +425,27 @@ func deliveredAnswer(result *schemas.BifrostResponse) bool {
 // key that serves the request unpriced while another prices it is caught after the fact
 // (noteUnpricedAnswer).
 func (r *BudgetResolver) priceIdentity(provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) (string, modelcatalog.PriceStatus) {
+	bestRow, best := "", modelcatalog.PriceUnpriced
+	for _, mode := range pricingModesOf(requestType) {
+		if row, status := r.priceIdentityIn(provider, model, mode, scopes); row != "" && (bestRow == "" || status > best) {
+			bestRow, best = row, status
+		}
+	}
+	return bestRow, best
+}
+
+// pricingModesOf is the request types a request is priced as. A live session's units are all
+// live requests to governance, but accounting prices the voice in the live (realtime) mode and a
+// backend model's delegated turns in the Responses mode.
+func pricingModesOf(requestType schemas.RequestType) []schemas.RequestType {
+	if requestType == schemas.LiveRequest {
+		return []schemas.RequestType{schemas.LiveRequest, schemas.ResponsesRequest}
+	}
+	return []schemas.RequestType{requestType}
+}
+
+// priceIdentityIn is priceIdentity for one pricing mode.
+func (r *BudgetResolver) priceIdentityIn(provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) (string, modelcatalog.PriceStatus) {
 	bestRow, best := r.modelCatalog.PriceIdentity(provider, model, requestType, scopes)
 	if best == modelcatalog.PricePriced || model == "" || r.governanceInMemoryStore == nil {
 		return bestRow, best
@@ -443,6 +487,24 @@ func (r *BudgetResolver) priceIdentity(provider schemas.ModelProvider, model str
 // key's alias targets. The gate and the after-the-fact record both read this whole set, so a row
 // remembered under the key that served an answer is found by a request that has not chosen a key.
 func (r *BudgetResolver) priceIdentities(provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) (modelcatalog.PriceStatus, []string) {
+	best := modelcatalog.PriceUnpriced
+	var rows []string
+	for _, mode := range pricingModesOf(requestType) {
+		status, modeRows := r.priceIdentitiesIn(provider, model, mode, scopes)
+		if status > best {
+			best = status
+		}
+		for _, row := range modeRows {
+			if !slices.Contains(rows, row) {
+				rows = append(rows, row)
+			}
+		}
+	}
+	return best, rows
+}
+
+// priceIdentitiesIn is priceIdentities for one pricing mode.
+func (r *BudgetResolver) priceIdentitiesIn(provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) (modelcatalog.PriceStatus, []string) {
 	var rows []string
 	add := func(row string) {
 		if row != "" && !slices.Contains(rows, row) {
@@ -674,4 +736,9 @@ func passthroughBodyRepeatsModel(req *schemas.BifrostRequest) bool {
 		return repeated
 	}
 	return false
+}
+
+// normalizesToUnknown reports whether a request type has no pricing mode of its own.
+func normalizesToUnknown(requestType schemas.RequestType) bool {
+	return requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest || requestType == schemas.UnknownRequest
 }
