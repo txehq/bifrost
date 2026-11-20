@@ -1,0 +1,263 @@
+{
+  "name": "655. Chat reasoning effort is delivered, converted as documented, or refused (chat reasoning effort)",
+  "description": "Local fixture regression for TXE-7954 (Bifrost-Tokun contract C4), no live provider calls. Start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json, and run with providerErrorFixture=1; every case is skipped otherwise. The OpenAI-shape chat converter rewrote reasoning effort per provider without telling the caller. It now sends an effort as asked, converts it only in a documented way, or refuses the request with 400 caller_unsupported_parameter before any upstream call. 655.2 is Tokun's measured traffic (94% of chat reasoning requests, 2026-11-06 to 11-20): minimal on gpt-6-luna through the openai-based custom provider cp_plain, whose ladder has no minimal, is sent as the nearest level, low (a documented conversion). 655.3 sends an effort on the ladder unchanged. 655.4 and 655.5 send none to MiniMax M3.1, which always thinks and rejects none, unary and streamed: Bifrost used to drop the effort and bill the model's default reasoning; now the request is refused and nothing reaches the vendor. Against a gateway without the fix, 655.4 and 655.5 return 200.",
+  "item": [
+    {
+      "name": "655.1 fixture counters and recorded requests reset",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var j = pm.response.json();",
+              "pm.test('counters cleared', function () { pm.expect(j.data[0].reset, pm.response.text()).to.equal(true); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "{{providerErrorFixtureUrl}}/__reset"
+      }
+    },
+    {
+      "name": "655.2 minimal on gpt-6-luna through the openai-based custom provider cp_plain is sent as the nearest level, low (chat reasoning effort)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the request succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture reports what reached it', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/cp/v1/chat/completions' && c.body.indexOf('txe-7954-minimal') !== -1; });",
+              "  pm.test('one request reached the vendor', function () { pm.expect(calls.length, res.text()).to.equal(1); });",
+              "  var sent = JSON.parse(calls[0].body);",
+              "  pm.test('reasoning_effort reached the vendor as low', function () { pm.expect(sent.reasoning_effort, calls[0].body).to.equal('low'); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"cp_plain/gpt-6-luna\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"txe-7954-minimal\"\n    }\n  ],\n  \"reasoning_effort\": \"minimal\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "655.3 medium on gpt-6-luna through cp_plain is sent as asked (chat reasoning effort)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the request succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture reports what reached it', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/cp/v1/chat/completions' && c.body.indexOf('txe-7954-medium') !== -1; });",
+              "  pm.test('one request reached the vendor', function () { pm.expect(calls.length, res.text()).to.equal(1); });",
+              "  var sent = JSON.parse(calls[0].body);",
+              "  pm.test('reasoning_effort reached the vendor as medium', function () { pm.expect(sent.reasoning_effort, calls[0].body).to.equal('medium'); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"cp_plain/gpt-6-luna\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"txe-7954-medium\"\n    }\n  ],\n  \"reasoning_effort\": \"medium\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "655.4 [EXPECT-400] MiniMax M3.1 refuses reasoning effort none with 400 caller_unsupported_parameter and makes no upstream call (chat reasoning effort)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('refused with 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+              "var j = pm.response.json();",
+              "pm.test('error_type is caller_unsupported_parameter', function () { pm.expect((j.extra_fields || {}).error_type, pm.response.text()).to.equal('caller_unsupported_parameter'); });",
+              "pm.test('error.param names reasoning.effort', function () { pm.expect((j.error || {}).param, pm.response.text()).to.equal('reasoning.effort'); });",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture reports what reached it', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.body.indexOf('txe-7954-m31-none') !== -1; });",
+              "  pm.test('nothing reached the vendor', function () { pm.expect(calls.length, res.text()).to.equal(0); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"minimax/MiniMax-M3.1-txe-7954\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"txe-7954-m31-none\"\n    }\n  ],\n  \"reasoning_effort\": \"none\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "655.5 [EXPECT-400] MiniMax M3.1 refuses a streamed reasoning effort none with 400 caller_unsupported_parameter and makes no upstream call (chat reasoning effort)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('refused with 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+              "var j = pm.response.json();",
+              "pm.test('error_type is caller_unsupported_parameter', function () { pm.expect((j.extra_fields || {}).error_type, pm.response.text()).to.equal('caller_unsupported_parameter'); });",
+              "pm.test('error.param names reasoning.effort', function () { pm.expect((j.error || {}).param, pm.response.text()).to.equal('reasoning.effort'); });",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture reports what reached it', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.body.indexOf('txe-7954-m31-none-stream') !== -1; });",
+              "  pm.test('nothing reached the vendor', function () { pm.expect(calls.length, res.text()).to.equal(0); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"minimax/MiniMax-M3.1-txe-7954\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"txe-7954-m31-none-stream\"\n    }\n  ],\n  \"reasoning_effort\": \"none\",\n  \"stream\": true\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    }
+  ]
+}

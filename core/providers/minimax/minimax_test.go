@@ -205,9 +205,12 @@ func TestMiniMaxChatReasoningEffortNone(t *testing.T) {
 		name         string
 		model        string
 		wantThinking bool
+		refused      bool // 400 on reasoning.effort and no call to MiniMax (TXE-7954)
 	}{
 		{name: "M3 disables thinking", model: "MiniMax-M3", wantThinking: true},
-		{name: "M3.1 drops effort without disabling", model: "MiniMax-M3.1-Flash-Preview", wantThinking: false},
+		// M3.1 always thinks and rejects thinking disabled; dropping "none" would bill a reasoning
+		// level the caller did not ask for, so it is refused (contract C4, TXE-7954).
+		{name: "M3.1 refuses none", model: "MiniMax-M3.1-Flash-Preview", refused: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -218,7 +221,18 @@ func TestMiniMaxChatReasoningEffortNone(t *testing.T) {
 			req := userChatRequest(&schemas.ChatParameters{Reasoning: reasoning})
 			req.Model = tt.model
 
-			if _, bifrostErr := provider.ChatCompletion(testContext(t), testKey(), req); bifrostErr != nil {
+			_, bifrostErr := provider.ChatCompletion(testContext(t), testKey(), req)
+			if tt.refused {
+				if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest ||
+					bifrostErr.Error.Param != "reasoning.effort" || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter {
+					t.Fatalf("want 400 caller_unsupported_parameter on reasoning.effort, got %+v", bifrostErr)
+				}
+				if sent := captured(); len(sent) != 0 {
+					t.Fatalf("a refused request reached MiniMax: %s", sent[0].body)
+				}
+				return
+			}
+			if bifrostErr != nil {
 				t.Fatalf("ChatCompletion error: %+v", bifrostErr.Error)
 			}
 			body := captured()[0].body

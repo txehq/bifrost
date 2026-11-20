@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestMistral(t *testing.T) {
@@ -687,4 +689,65 @@ func TestMistralModelRetrieve(t *testing.T) {
 	_, bifrostErr = provider.ModelRetrieve(ctx, key, &schemas.BifrostModelRetrieveRequest{Model: "../models"})
 	require.NotNil(t, bifrostErr)
 	require.Equal(t, schemas.Ptr(http.StatusBadRequest), bifrostErr.StatusCode)
+}
+
+// TestMistralChatRefusesAnEffortItWouldForceToHigh: Mistral takes reasoning effort "none" or
+// "high" only, and Bifrost used to send any other effort as "high", billing reasoning at a level
+// the caller did not ask for. Such an effort is refused with 400 caller_unsupported_parameter on
+// reasoning.effort, unary and streamed, before anything reaches Mistral; "high" is sent as is
+// (contract C4; fork, TXE-7954).
+func TestMistralChatRefusesAnEffortItWouldForceToHigh(t *testing.T) {
+	var mu sync.Mutex
+	var bodies []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, string(raw))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"cmpl-1","object":"chat.completion","created":1,"model":"magistral-medium-latest","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer server.Close()
+	provider := mistral.NewMistralProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 30, AllowPrivateNetwork: true},
+	}, bifrost.NewNoOpLogger())
+	key := schemas.Key{Value: *schemas.NewSecretVar("mistral-test")}
+	request := func(effort string) *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Provider: schemas.Mistral,
+			Model:    "magistral-medium-latest",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}}},
+			Params:   &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr(effort)}},
+		}
+	}
+	requireRefused := func(t *testing.T, bifrostErr *schemas.BifrostError) {
+		t.Helper()
+		require.NotNil(t, bifrostErr, "the request was sent")
+		require.NotNil(t, bifrostErr.StatusCode)
+		require.Equal(t, http.StatusBadRequest, *bifrostErr.StatusCode)
+		require.Equal(t, schemas.ErrorTypeCallerUnsupportedParameter, bifrostErr.ExtraFields.ErrorType)
+		require.Equal(t, "reasoning.effort", bifrostErr.Error.Param)
+	}
+	ctx := func() *schemas.BifrostContext {
+		return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	}
+	for _, effort := range []string{"low", "medium"} {
+		_, bifrostErr := provider.ChatCompletion(ctx(), key, request(effort))
+		requireRefused(t, bifrostErr)
+		_, bifrostErr = provider.ChatCompletionStream(ctx(),
+			func(_ *schemas.BifrostContext, r *schemas.BifrostResponse, e *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				return r, e
+			}, nil, key, request(effort))
+		requireRefused(t, bifrostErr)
+	}
+	mu.Lock()
+	require.Empty(t, bodies, "a refused request reached Mistral")
+	mu.Unlock()
+
+	_, bifrostErr := provider.ChatCompletion(ctx(), key, request("high"))
+	require.Nil(t, bifrostErr)
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, bodies, 1)
+	require.Equal(t, "high", gjson.Get(bodies[0], "reasoning_effort").String(), bodies[0])
 }
