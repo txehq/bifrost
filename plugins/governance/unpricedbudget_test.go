@@ -264,6 +264,13 @@ func TestUnpricedModelUnderADollarBudgetIsRefusedBeforeTheCall(t *testing.T) {
 	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", passthrough(`[{"model":"gpt-4o"},{"prompt":"runs the provider's default model"}]`)), "a task array with a task naming no model")
 	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", passthrough(`[{"model":"gpt-4o","model":"house-llm"}]`)), "a task naming its model twice, gated on the first and run on the last")
 	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", passthrough(`{"model":"gpt-4o","prompt":"p","model":"house-llm"}`)), "a body naming its model twice")
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", passthrough(`{"model":"gpt-4o","Model":"house-llm"}`)), "a body naming its model twice in two cases, which encoding/json matches alike")
+	mismatched := passthrough(`{"model":"free-chat"}`)
+	mismatched.PassthroughRequest.Model = "gpt-4o"
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", mismatched), "a request naming one model whose body names another")
+	matched := passthrough(`{"model":"gpt-4o"}`)
+	matched.PassthroughRequest.Model = "gpt-4o"
+	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", matched), "a request whose body names the same model is served")
 	withModel := passthrough(`{"model":"gpt-4o","prompt":"p","model":"house-llm"}`)
 	withModel.PassthroughRequest.Model = "gpt-4o"
 	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", withModel), "a body naming its model twice, whatever model the request names")
@@ -669,6 +676,14 @@ func TestLiveUnitsArePricedInTheirAccountingMode(t *testing.T) {
 	live := func(model string) *schemas.BifrostRequest {
 		return &schemas.BifrostRequest{RequestType: schemas.LiveRequest, ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: model}}
 	}
-	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", live("gpt-4o")), "a backend model priced for Responses (from its chat row) is admitted")
-	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", live("house-llm")), "a live unit on a model priced in neither mode")
+	unit := func(kind, model string) *schemas.LLMPluginShortCircuit {
+		ctx := resolverCtx(plugin.store, "sk-bf-budget")
+		ctx.SetValue(schemas.BifrostContextKeyLiveUnit, kind)
+		_, shortCircuit, err := plugin.PreLLMHook(ctx, live(model))
+		require.NoError(t, err)
+		return shortCircuit
+	}
+	assert.Nil(t, unit("backend", "gpt-4o"), "a backend unit is priced in the Responses mode (from the model's chat row)")
+	requireUnpricedRefusal(t, unit("voice", "gpt-4o"), "a voice unit on a model with no live (realtime) price")
+	requireUnpricedRefusal(t, unit("backend", "house-llm"), "a backend unit on a model with no price")
 }

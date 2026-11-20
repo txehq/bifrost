@@ -2118,6 +2118,10 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifro
 			if priced == "" {
 				priced = bodyModel
 			}
+			// A container is priced from the memory tier it was created with, as accounting reads it.
+			if container := result.ContainerCreateResponse; container != nil && container.MemoryLimit != "" {
+				priced = "container-" + container.MemoryLimit
+			}
 			// The answer's own cost, without the calls Bifrost prices beside it (routing classifiers,
 			// guardrail judges, MCP tools, the semantic cache's embedding lookup): none of them may
 			// hide a $0 answer.

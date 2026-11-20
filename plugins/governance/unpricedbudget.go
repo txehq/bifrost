@@ -135,6 +135,9 @@ func budgetPricingOf(requestType schemas.RequestType) budgetPricing {
 // priced from the datasheet's container rows, not from a model.
 func pricedModel(requestType schemas.RequestType, model string) string {
 	if requestType == schemas.ContainerCreateRequest {
+		if strings.HasPrefix(model, "container-") {
+			return model
+		}
 		return "container"
 	}
 	return model
@@ -269,6 +272,16 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 			Reason:   "the request body names its model more than once, so the model it runs cannot be priced or charged to a dollar budget; name it once",
 		}
 	}
+	// A passthrough naming its model on the request whose body names another: the answer is priced
+	// as the request's model while the body's runs, so one answer cannot be charged model by model.
+	if (requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest) && evaluationRequest.Model != "" && evaluationRequest.request != nil {
+		if bodyModel, count := r.distinctBodyModels(provider, evaluationRequest.request); count > 1 || (count == 1 && bodyModel != evaluationRequest.Model) {
+			return &EvaluationResult{
+				Decision: DecisionModelUnpriced,
+				Reason:   fmt.Sprintf("the request names model %q and its body names another, and one answer cannot be charged to a dollar budget model by model; name one model", evaluationRequest.Model),
+			}
+		}
+	}
 	if (requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest) && evaluationRequest.Model == "" &&
 		evaluationRequest.request != nil && passthroughBodyNamesEveryModel(evaluationRequest.request) {
 		// One answer is priced for the whole body, so a body mixing models cannot say which of them
@@ -313,16 +326,17 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 	}
 	model := pricedModel(requestType, evaluationRequest.Model)
 	scopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(provider))
+	pricedAs := liveUnitPricingMode(ctx, requestType)
 	// A container is priced from its memory tier's row ("container-4g") when it asks for one, as
 	// accounting prices the container it creates, and from the base row otherwise.
 	if requestType == schemas.ContainerCreateRequest && evaluationRequest.request != nil && evaluationRequest.request.ContainerCreateRequest != nil {
 		if memory := evaluationRequest.request.ContainerCreateRequest.MemoryLimit; memory != "" {
-			if _, status := r.priceIdentity(provider, "container-"+memory, requestType, scopes); status != modelcatalog.PriceUnpriced {
+			if _, status := r.priceIdentity(provider, "container-"+memory, pricedAs, scopes); status != modelcatalog.PriceUnpriced {
 				model = "container-" + memory
 			}
 		}
 	}
-	if _, status := r.priceIdentity(provider, model, requestType, scopes); status == modelcatalog.PriceUnpriced {
+	if _, status := r.priceIdentity(provider, model, pricedAs, scopes); status == modelcatalog.PriceUnpriced {
 		return &EvaluationResult{
 			Decision: DecisionModelUnpriced,
 			Reason: fmt.Sprintf("model %q on provider %q has no price for %s requests, so it cannot be charged to a dollar budget; add a pricing override for it",
@@ -333,7 +347,7 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 	// every row the request could be priced as is checked against what its budgets remember.
 	budgetIDs := limitIDs(budgets)
 	if r.unpriced.holdsAny(budgetIDs) {
-		_, rows := r.priceIdentities(provider, model, requestType, scopes)
+		_, rows := r.priceIdentities(provider, model, pricedAs, scopes)
 		for _, row := range rows {
 			if _, refused := r.unpriced.refused(budgetIDs, row); refused {
 				return &EvaluationResult{
@@ -369,6 +383,15 @@ func (r *BudgetResolver) noteUnpricedAnswer(provider schemas.ModelProvider, mode
 		return false
 	}
 	_, rows := r.priceIdentities(provider, model, requestType, scopes)
+	// A container priced from its memory tier's row is admitted by that row or the base one.
+	if requestType == schemas.ContainerCreateRequest && model != "container" {
+		_, baseRows := r.priceIdentities(provider, "container", requestType, scopes)
+		for _, row := range baseRows {
+			if !slices.Contains(rows, row) {
+				rows = append(rows, row)
+			}
+		}
+	}
 	if pricedAs != requestType {
 		_, pricedRows := r.priceIdentities(provider, model, pricedAs, scopes)
 		for _, row := range pricedRows {
@@ -425,18 +448,25 @@ func deliveredAnswer(result *schemas.BifrostResponse) bool {
 // key that serves the request unpriced while another prices it is caught after the fact
 // (noteUnpricedAnswer).
 func (r *BudgetResolver) priceIdentity(provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) (string, modelcatalog.PriceStatus) {
-	bestRow, best := "", modelcatalog.PriceUnpriced
-	for _, mode := range pricingModesOf(requestType) {
-		if row, status := r.priceIdentityIn(provider, model, mode, scopes); row != "" && (bestRow == "" || status > best) {
-			bestRow, best = row, status
-		}
-	}
-	return bestRow, best
+	return r.priceIdentityIn(provider, model, requestType, scopes)
 }
 
-// pricingModesOf is the request types a request is priced as. A live session's units are all
-// live requests to governance, but accounting prices the voice in the live (realtime) mode and a
-// backend model's delegated turns in the Responses mode.
+// liveUnitPricingMode is the mode a live unit is priced in: the live transport marks each unit
+// (BifrostContextKeyLiveUnit), and accounting prices a voice window in the live (realtime) mode
+// and a backend model's delegated turn in the Responses mode. Any other request is priced in its
+// own type.
+func liveUnitPricingMode(ctx *schemas.BifrostContext, requestType schemas.RequestType) schemas.RequestType {
+	if requestType == schemas.LiveRequest && ctx != nil {
+		if unit, _ := ctx.Value(schemas.BifrostContextKeyLiveUnit).(string); unit == "backend" {
+			return schemas.ResponsesRequest
+		}
+	}
+	return requestType
+}
+
+// pricingModesOf is the request types an answer of a request type is remembered under: a live
+// answer under both of the modes its units are priced in, so the gate finds it whichever unit
+// asks next.
 func pricingModesOf(requestType schemas.RequestType) []schemas.RequestType {
 	if requestType == schemas.LiveRequest {
 		return []schemas.RequestType{schemas.LiveRequest, schemas.ResponsesRequest}
@@ -599,15 +629,15 @@ func passthroughBodyNamesEveryModel(req *schemas.BifrostRequest) bool {
 		return false
 	}
 	// A model key given twice is read as the first by gjson and as the last by most providers
-	// (encoding/json among them), so the body would be gated on one model and run on another: it
-	// is not read as naming its model.
+	// (encoding/json among them, which also matches "Model" or "MODEL"), so the body would be gated
+	// on one model and run on another: it is not read as naming its model.
 	names := func(object gjson.Result) bool {
 		if !object.IsObject() {
 			return false
 		}
 		count := 0
 		object.ForEach(func(key, _ gjson.Result) bool {
-			if key.Str == "model" {
+			if strings.EqualFold(key.Str, "model") {
 				count++
 			}
 			return count < 2
@@ -716,7 +746,7 @@ func passthroughBodyRepeatsModel(req *schemas.BifrostRequest) bool {
 	repeats := func(object gjson.Result) bool {
 		count := 0
 		object.ForEach(func(key, _ gjson.Result) bool {
-			if key.Str == "model" {
+			if strings.EqualFold(key.Str, "model") {
 				count++
 			}
 			return count < 2
