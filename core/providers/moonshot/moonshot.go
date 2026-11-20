@@ -208,6 +208,10 @@ func (provider *MoonshotProvider) ChatCompletionStream(ctx *schemas.BifrostConte
 // so Responses-only fields such as the server-side web_search tool reach Kimi and its
 // web_search_call output items and usage come back as Kimi reports them.
 func (provider *MoonshotProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	// A custom provider on this base serves responses only when its allowed_requests allows it (TXE-7027).
+	if err := providerUtils.CheckOperationAllowed(schemas.Moonshot, provider.customProviderConfig, schemas.ResponsesRequest); err != nil {
+		return nil, err
+	}
 	return openai.HandleOpenAIResponsesRequest(
 		ctx,
 		provider.client,
@@ -227,6 +231,10 @@ func (provider *MoonshotProvider) Responses(ctx *schemas.BifrostContext, key sch
 
 // ResponsesStream streams from Kimi's own Responses API; usage arrives on response.completed.
 func (provider *MoonshotProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	// A custom provider on this base serves responses stream only when its allowed_requests allows it (TXE-7027).
+	if err := providerUtils.CheckOperationAllowed(schemas.Moonshot, provider.customProviderConfig, schemas.ResponsesStreamRequest); err != nil {
+		return nil, err
+	}
 	return openai.HandleOpenAIResponsesStreaming(
 		ctx,
 		provider.streamingClient,

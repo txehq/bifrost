@@ -192,6 +192,10 @@ func (provider *GLMProvider) ChatCompletionStream(ctx *schemas.BifrostContext, p
 
 // Responses performs a responses request to the GLM API.
 func (provider *GLMProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	// A custom provider on this base serves responses only when its allowed_requests allows it (TXE-7027).
+	if err := providerUtils.CheckOperationAllowed(schemas.GLM, provider.customProviderConfig, schemas.ResponsesRequest); err != nil {
+		return nil, err
+	}
 	chatResponse, err := provider.servedChatCompletion(ctx, key, request.ToChatRequest())
 	if err != nil {
 		return nil, err
@@ -207,6 +211,10 @@ func (provider *GLMProvider) Responses(ctx *schemas.BifrostContext, key schemas.
 
 // ResponsesStream performs a streaming responses request to the GLM API.
 func (provider *GLMProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	// A custom provider on this base serves responses stream only when its allowed_requests allows it (TXE-7027).
+	if err := providerUtils.CheckOperationAllowed(schemas.GLM, provider.customProviderConfig, schemas.ResponsesStreamRequest); err != nil {
+		return nil, err
+	}
 	ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
 	return provider.ChatCompletionStream(
 		ctx,

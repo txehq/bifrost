@@ -1893,13 +1893,13 @@ func TestVideoSettle_UnpricedJobKeepsARenderedTierBesideARequestedSize(t *testin
 	assert.True(t, repricing.seen[0].ResolutionSettled)
 }
 
-// A reprice takes the recorded tier as settled. MiniMax reads its tier from extra_params only, and
-// a reprice hands pricing the tier in the typed field; judged again against the request sources it
-// would be an unread tier and lose to a dearer unbanded rate, so a 768P job settled at the band
-// would reprice above it (TXE-7349).
+// A reprice takes the recorded tier as settled: judged again against the request sources, a tier
+// the provider does not read from the typed field would lose to a dearer unbanded rate, so a 768P
+// job settled at the band would reprice above it (TXE-7349). MiniMax reads the typed tier, not
+// extra_params, since TXE-6428 (schemas.VideoTierReaderFor, TXE-7101).
 func TestVideoReprice_RecordedTierIsSettled(t *testing.T) {
 	dims := generationDims("sora-2-pro", "", 6)
-	dims.Extra = map[string]any{"resolution": "768P"}
+	dims.Resolution = "768P"
 	job := videoJob(t, "vid_minimax_tier", dims)
 	settlement, err := NewVideoSettler(nil).Settle(context.Background(), fakePricing{}, JobRequest{
 		Provider: schemas.MiniMax, ProviderJobID: job.JobID, FallbackModel: job.Model, Job: job,

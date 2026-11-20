@@ -49,7 +49,7 @@ type VideoPricingDimensions struct {
 	// set the band (VideoCostDetails.PricedResolution, or TierOnlyResolution on an unpriced job).
 	// That choice was made with the request's sources and the custom provider's base in hand,
 	// neither of which a reprice has, so the tier prices the job as recorded instead of being
-	// judged again against videoTierReaders. Only RepriceFromLog sets it; it is never persisted.
+	// judged again against schemas.VideoTierReaderFor. Only RepriceFromLog sets it; it is never persisted.
 	ResolutionSettled bool `json:"-"`
 	// BaseProvider is the base provider of a custom provider, set by the caller that can
 	// resolve it. Pricing reads it only to know which converter rendered the job (see
@@ -326,48 +326,66 @@ func (d VideoPricingDimensions) BandResolution() string {
 	return ""
 }
 
-// videoTierReader says where a provider's create converter reads the resolution tier from, so a
-// tier the provider renders can set the band and one it never reads cannot (TXE-7349). Typed is
-// the unified field (VideoGenerationParameters.Resolution); extra is extra_params.resolution.
-// The HTTP adapters fill both; a Go SDK caller may set one. Each entry names the code that reads
-// it, and a provider is added only from its converter.
-type videoTierReader struct {
-	typed, extra bool
-	source       string
-}
-
-var videoTierReaders = map[schemas.ModelProvider]videoTierReader{
-	schemas.Gemini:    {typed: true, extra: true, source: "gemini.ToGeminiVideoGenerationRequest: parameters.resolution from extra_params.resolution, else the typed field; size sets only aspectRatio"},
-	schemas.Vertex:    {typed: true, extra: true, source: "vertex sends Veo through gemini.ToGeminiVideoGenerationRequest"},
-	schemas.MiniMax:   {extra: true, source: "minimax video create: extra_params.resolution replaces the tier derived from size"},
-	schemas.DashScope: {typed: true, source: "dashscope video create: parameters.resolution from the typed field (Wan 2.7+, and image-to-video before it)"},
-	schemas.Kling:     {typed: true, source: "kling video create: settings.resolution from the typed field"},
-	schemas.BytePlus:  {typed: true, source: "byteplus video create: the typed field overrides the tier a size implies"},
-}
+// Where each provider's create converter reads the resolution tier from is
+// schemas.VideoTierReaderFor (TXE-7349, TXE-7101): a tier the provider renders can set the band
+// and one it never reads cannot. core's TestVideoTierReadersMatchConverters keeps that table in
+// step with the converters.
 
 // requestedTier is the resolution tier the request named and whether the provider that rendered
 // the job reads it from where it was named. A tier the provider reads from either source counts
 // as rendered.
 func (d VideoPricingDimensions) requestedTier(renderer schemas.ModelProvider) (string, bool) {
-	reader := videoTierReaders[renderer]
-	typed := ""
-	if videoResolutionBand(d.Resolution) > 0 {
-		typed = d.Resolution
-	}
-	extra := ""
-	if resolution, ok := d.Extra["resolution"].(string); ok && videoResolutionBand(resolution) > 0 {
-		extra = resolution
+	reader := schemas.VideoTierReaderFor(renderer)
+	typed, typedKnown := tierFor(reader, d.Resolution)
+	extraTier, _ := d.Extra["resolution"].(string)
+	extra, extraKnown := tierFor(reader, extraTier)
+	// Named both ways with different values, neither is trusted (conflictingTiers). Without rates
+	// the larger is returned; bandSize compares the two by charge instead.
+	if d.conflictingTiers() {
+		if videoResolutionBand(extra) > videoResolutionBand(typed) {
+			return extra, false
+		}
+		return typed, false
 	}
 	switch {
-	case typed != "" && reader.typed:
+	case typed != "" && reader.Typed && typedKnown:
 		return typed, true
-	case extra != "" && reader.extra:
+	case extra != "" && reader.Extra && extraKnown:
 		return extra, true
 	case typed != "":
 		return typed, false
 	default:
 		return extra, false
 	}
+}
+
+// conflictingTiers reports whether the request named its tier both typed and in extra params, with
+// different values. The converters disagree on which one is sent then: Gemini reads
+// extra_params.resolution first, xAI and BytePlus the typed field, falling back to the extra only
+// when the typed field is empty, whatever it holds. So neither can lower the price.
+func (d VideoPricingDimensions) conflictingTiers() bool {
+	extraTier, _ := d.Extra["resolution"].(string)
+	typedRaw, extraRaw := strings.TrimSpace(d.Resolution), strings.TrimSpace(extraTier)
+	return typedRaw != "" && extraRaw != "" && !strings.EqualFold(typedRaw, extraRaw)
+}
+
+// tierFor is the tier label a requested tier names a rate band by, or "" when it names none,
+// and whether it is one the provider documents (VideoTierReader.Tiers; any band tier when the
+// provider declares none). A tier the provider does not document is returned with false, so it
+// is priced by the rule for a tier the provider may ignore (TXE-7101).
+func tierFor(reader schemas.VideoTierReader, requested string) (string, bool) {
+	if requested == "" {
+		return "", false
+	}
+	if reader.Tiers != nil {
+		if tier, ok := reader.Tiers[strings.ToLower(strings.TrimSpace(requested))]; ok {
+			return tier, true
+		}
+	}
+	if videoResolutionBand(requested) > 0 {
+		return requested, reader.Tiers == nil
+	}
+	return "", false
 }
 
 func (d VideoPricingDimensions) renderer(provider schemas.ModelProvider) schemas.ModelProvider {
@@ -381,7 +399,7 @@ func (d VideoPricingDimensions) renderer(provider schemas.ModelProvider) schemas
 //   - a tier a settlement recorded as the one that set the band (ResolutionSettled), on a
 //     reprice;
 //   - a size the provider reported, which is what it rendered;
-//   - else a requested tier the provider reads (see videoTierReaders), which is what it
+//   - else a requested tier the provider reads (see schemas.VideoTierReaderFor), which is what it
 //     rendered whatever size was also asked for (Veo with size 3840x2160 and resolution 1080p
 //     renders 1080p);
 //   - else the requested size, or the unbanded rate when there is none, unless a tier the
@@ -394,6 +412,22 @@ func (d VideoPricingDimensions) bandSize(provider schemas.ModelProvider, pricing
 	if d.SizeReported && videoResolutionBand(d.Size) > 0 {
 		return d.Size
 	}
+	job := d.job()
+	if d.conflictingTiers() {
+		// Either tier may be the one rendered, so the job is charged the dearest of the two and the
+		// size, by what each is charged: an override can price a lower band above a higher one.
+		reader := schemas.VideoTierReaderFor(d.renderer(provider))
+		extraTier, _ := d.Extra["resolution"].(string)
+		best, bestCharge := d.Size, videoBandCharge(pricing, d.Size, audio, d.Seconds, job)
+		for _, requested := range []string{d.Resolution, extraTier} {
+			if tier, _ := tierFor(reader, requested); tier != "" {
+				if charge := videoBandCharge(pricing, tier, audio, d.Seconds, job); charge > bestCharge {
+					best, bestCharge = tier, charge
+				}
+			}
+		}
+		return best
+	}
 	tier, rendered := d.requestedTier(d.renderer(provider))
 	if tier == "" {
 		return d.Size
@@ -401,7 +435,6 @@ func (d VideoPricingDimensions) bandSize(provider schemas.ModelProvider, pricing
 	if rendered {
 		return tier
 	}
-	job := d.job()
 	if videoBandCharge(pricing, tier, audio, d.Seconds, job) > videoBandCharge(pricing, d.Size, audio, d.Seconds, job) {
 		return tier
 	}

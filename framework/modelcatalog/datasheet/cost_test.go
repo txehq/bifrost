@@ -9685,13 +9685,14 @@ func TestVideoPricingDimensions_BandSizePrecedence(t *testing.T) {
 	assert.Equal(t, "4k", band(VideoPricingDimensions{Size: "auto", Resolution: "4k"}, schemas.OpenAI))
 	// A tier alone: one the provider reads sets the band; one it never reads cannot price the
 	// job below what it would cost without it (the unbanded 0.40 here).
-	assert.Equal(t, "2K", band(VideoPricingDimensions{Extra: map[string]any{"resolution": "2K"}}, schemas.MiniMax))
+	assert.Equal(t, "2K", band(VideoPricingDimensions{Resolution: "2K"}, schemas.MiniMax))
 	assert.Equal(t, "480p", band(VideoPricingDimensions{Resolution: "480p"}, schemas.DashScope))
 	assert.Equal(t, "", band(VideoPricingDimensions{Resolution: "480p"}, schemas.OpenAI))
 	assert.Equal(t, "", band(VideoPricingDimensions{Extra: map[string]any{"resolution": "480p"}}, schemas.DashScope),
 		"DashScope reads the typed tier, not extra_params")
-	assert.Equal(t, "", band(VideoPricingDimensions{Resolution: "480p"}, schemas.MiniMax),
-		"MiniMax reads extra_params, not the typed tier")
+	// MiniMax reads the typed tier since TXE-6428 (#171), not extra_params (TXE-7101).
+	assert.Equal(t, "", band(VideoPricingDimensions{Extra: map[string]any{"resolution": "480p"}}, schemas.MiniMax),
+		"MiniMax reads the typed tier, not extra_params")
 	assert.Equal(t, "4k", band(VideoPricingDimensions{Resolution: "4k"}, schemas.OpenAI), "an unread tier that costs more still bills")
 	// Both named, a provider that renders the requested tier: the tier, cheaper or dearer.
 	assert.Equal(t, "1080p", band(VideoPricingDimensions{Size: "3840x2160", Resolution: "1080p"}, schemas.Gemini))
@@ -9731,21 +9732,23 @@ func TestVideoPricingDimensions_BandSizePrecedence(t *testing.T) {
 	assert.Equal(t, "", band(VideoPricingDimensions{Resolution: "480p"}, "my-wan"), "unsettled, the same tier is unread")
 }
 
-// The reviewed case end to end on a real store: a MiniMax override with a 768P band at 0.04/s and
-// an unbanded 0.08/s settles at the band and reprices at it too (TXE-7349).
+// The reviewed case end to end: an override with a 768P band at 0.04/s and an unbanded 0.08/s
+// settles at the band and reprices at it too (TXE-7349). The reprice runs under a custom provider
+// with no base provider recorded, which reads no tier, so only the settled flag keeps the band.
 func TestCalculateVideoCostDetails_SettledTierRepricesAtItsBand(t *testing.T) {
 	p := configstoreTables.TableModelPricing{
 		OutputCostPerSecond:     bifrost.Ptr(0.08),
 		OutputCostPerSecond768p: bifrost.Ptr(0.04),
 	}
 	seconds := 6
-	settled := VideoPricingDimensions{Extra: map[string]any{"resolution": "768P"}, Seconds: &seconds}
+	settled := VideoPricingDimensions{Resolution: "768P", Seconds: &seconds}
 	tier := settled.bandSize(schemas.MiniMax, &p, false)
 	require.Equal(t, "768P", tier)
+	const custom = schemas.ModelProvider("my-hailuo")
 	reprice := VideoPricingDimensions{Resolution: tier, ResolutionSettled: true, Seconds: &seconds}
-	assert.InDelta(t, 0.24, computeVideoCost(&p, nil, &seconds, reprice.bandSize(schemas.MiniMax, &p, false), 1, false, videoJob{}, serviceTier{}).TotalCost, 1e-9)
+	assert.InDelta(t, 0.24, computeVideoCost(&p, nil, &seconds, reprice.bandSize(custom, &p, false), 1, false, videoJob{}, serviceTier{}).TotalCost, 1e-9)
 	unsettled := VideoPricingDimensions{Resolution: tier, Seconds: &seconds}
-	assert.InDelta(t, 0.48, computeVideoCost(&p, nil, &seconds, unsettled.bandSize(schemas.MiniMax, &p, false), 1, false, videoJob{}, serviceTier{}).TotalCost, 1e-9,
+	assert.InDelta(t, 0.48, computeVideoCost(&p, nil, &seconds, unsettled.bandSize(custom, &p, false), 1, false, videoJob{}, serviceTier{}).TotalCost, 1e-9,
 		"without the settled flag the reprice would bill the unbanded rate")
 }
 
@@ -9763,11 +9766,73 @@ func TestCalculateVideoCostDetails_ReportsTheTierThatSetTheBand(t *testing.T) {
 	assert.Equal(t, "", priced(VideoPricingDimensions{Size: "3840x2160", SizeReported: true, Resolution: "1080p"}, schemas.Gemini).PricedResolution)
 }
 
+// A job sent with a resolution tier and no size is priced at that tier's band on every provider
+// whose converter renders the tier (TXE-7101). xAI and BFL send the tier but were missing from the
+// table of tier readers, so a cheap tier was charged the unbanded rate; MiniMax stopped reading
+// extra_params.resolution, so a tier named only there no longer sets the band.
+func TestVideoBandSize_RequestedTierOnEveryTierReader(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		OutputCostPerSecond:      bifrost.Ptr(0.40),
+		OutputCostPerSecond480p:  bifrost.Ptr(0.05),
+		OutputCostPerSecond720p:  bifrost.Ptr(0.10),
+		OutputCostPerSecond1080p: bifrost.Ptr(0.20),
+	}
+	seconds := 6
+	for _, tc := range []struct {
+		name     string
+		provider schemas.ModelProvider
+		dims     VideoPricingDimensions
+		want     string
+	}{
+		{name: "xai 480p typed", provider: schemas.XAI, dims: VideoPricingDimensions{Resolution: "480p"}, want: "480p"},
+		{name: "xai 720p extra only", provider: schemas.XAI, dims: VideoPricingDimensions{Extra: map[string]any{"resolution": "720p"}}, want: "720p"},
+		{name: "bfl fhd typed", provider: schemas.BFL, dims: VideoPricingDimensions{Resolution: "fhd"}, want: "1080p"},
+		{name: "bfl HD typed", provider: schemas.BFL, dims: VideoPricingDimensions{Resolution: "HD"}, want: "720p"},
+		// A tier xAI does not document is sent as given, and xAI may render something else: it
+		// cannot lower the price below the unbanded rate.
+		{name: "xai undocumented 540p is not trusted", provider: schemas.XAI, dims: VideoPricingDimensions{Resolution: "540p"}, want: ""},
+		// BFL's aliases are BFL's: on Gemini "hd" names no band.
+		{name: "gemini hd names no band", provider: schemas.Gemini, dims: VideoPricingDimensions{Resolution: "hd"}, want: ""},
+		// Typed and extra both named and different: xAI sends the typed tier whatever it holds and
+		// Gemini the extra, so neither cheaper one is trusted.
+		{name: "xai undocumented typed with a cheap extra is not trusted", provider: schemas.XAI, dims: VideoPricingDimensions{Resolution: "540p", Extra: map[string]any{"resolution": "480p"}}, want: ""},
+		{name: "xai unknown typed with a cheap extra is not trusted", provider: schemas.XAI, dims: VideoPricingDimensions{Resolution: "best", Extra: map[string]any{"resolution": "480p"}}, want: ""},
+		{name: "gemini typed and extra disagree", provider: schemas.Gemini, dims: VideoPricingDimensions{Resolution: "480p", Extra: map[string]any{"resolution": "720p"}}, want: ""},
+		{name: "xai the same tier both ways", provider: schemas.XAI, dims: VideoPricingDimensions{Resolution: "720p", Extra: map[string]any{"resolution": "720P"}}, want: "720p"},
+		{name: "bfl 720p typed", provider: schemas.BFL, dims: VideoPricingDimensions{Resolution: "720p"}, want: "720p"},
+		{name: "volcengine 480p extra only", provider: schemas.Volcengine, dims: VideoPricingDimensions{Extra: map[string]any{"resolution": "480p"}}, want: "480p"},
+		{name: "modelark 480p typed", provider: schemas.ModelArk, dims: VideoPricingDimensions{Resolution: "480p"}, want: "480p"},
+		{name: "byteplus 480p extra only", provider: schemas.BytePlus, dims: VideoPricingDimensions{Extra: map[string]any{"resolution": "480p"}}, want: "480p"},
+		// MiniMax renders its default tier when the tier is only in extra_params: a cheaper tier
+		// named there cannot lower the price.
+		{name: "minimax 480p extra only is not rendered", provider: schemas.MiniMax, dims: VideoPricingDimensions{Extra: map[string]any{"resolution": "480p"}}, want: ""},
+		{name: "minimax 480p typed", provider: schemas.MiniMax, dims: VideoPricingDimensions{Resolution: "480p"}, want: "480p"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.dims.Seconds = &seconds
+			assert.Equal(t, tc.want, tc.dims.bandSize(tc.provider, &p, false))
+		})
+	}
+	// Every listed reader, from where it reads: a tier cheaper than the unbanded rate prices the job.
+	for provider, reader := range schemas.VideoTierReaders() {
+		if reader.Typed {
+			d := VideoPricingDimensions{Resolution: "720p", Seconds: &seconds}
+			assert.Equal(t, "720p", d.bandSize(provider, &p, false), "%s typed", provider)
+		}
+		if reader.Extra {
+			d := VideoPricingDimensions{Extra: map[string]any{"resolution": "720p"}, Seconds: &seconds}
+			assert.Equal(t, "720p", d.bandSize(provider, &p, false), "%s extra", provider)
+		}
+	}
+}
+
 func TestVideoResolutionBand_TierLabels(t *testing.T) {
 	for label, want := range map[string]int{
 		"480p": 480, "480P": 480, "720p": 720, "768P": 768, "1080p": 1080,
 		"2K": 1440, "2k": 1440, "4k": 2160, "4K": 2160, " 4k ": 2160,
 		"540p": 540, "360P": 360, "576p": 0, "auto": 0, "": 0,
+		// BFL's own names are aliases on BFL only (schemas.VideoTierReaderFor), not band labels.
+		"hd": 0, "fhd": 0, "uhd": 0,
 	} {
 		assert.Equal(t, want, videoResolutionBand(label), label)
 	}
@@ -11462,4 +11527,25 @@ func TestKimiCacheWriteFromTheRequestContextIsPricedAtTheRequestedTTL(t *testing
 			assert.Nil(t, resp.ChatResponse.Usage.PromptTokensDetails.CachedWriteTokenDetails, "usage is not changed")
 		})
 	}
+}
+
+// Named both typed and in extra params with different values, either tier may be the one rendered,
+// so the job is charged the dearer by what each is charged, not by pixels: with an override that
+// prices 720p above the unbanded rate and no 1080p band, an xAI create with typed 720p (which xAI
+// sends) and extra 1080p is charged at 720p, not at the unbanded rate 1080p falls back to
+// (TXE-7101, review of #404).
+func TestVideoBandSize_ConflictingTiersChargeTheDearerByRate(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		OutputCostPerSecond:     bifrost.Ptr(0.10),
+		OutputCostPerSecond720p: bifrost.Ptr(0.20),
+	}
+	seconds := 6
+	d := VideoPricingDimensions{Resolution: "720p", Extra: map[string]any{"resolution": "1080p"}, Seconds: &seconds}
+	assert.Equal(t, "720p", d.bandSize(schemas.XAI, &p, false))
+	d = VideoPricingDimensions{Resolution: "1080p", Extra: map[string]any{"resolution": "720p"}, Seconds: &seconds}
+	assert.Equal(t, "720p", d.bandSize(schemas.Gemini, &p, false), "the extra tier, which Gemini sends, is the dearer")
+	// Both cheaper than the unbanded rate: neither lowers the price.
+	cheap := configstoreTables.TableModelPricing{OutputCostPerSecond: bifrost.Ptr(0.40), OutputCostPerSecond480p: bifrost.Ptr(0.05), OutputCostPerSecond720p: bifrost.Ptr(0.10)}
+	d = VideoPricingDimensions{Resolution: "480p", Extra: map[string]any{"resolution": "720p"}, Seconds: &seconds}
+	assert.Equal(t, "", d.bandSize(schemas.XAI, &cheap, false))
 }
