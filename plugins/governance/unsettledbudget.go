@@ -106,30 +106,39 @@ func isBackgroundResponsesCreate(req *schemas.BifrostRequest) bool {
 	return false
 }
 
-// passthroughIsBackground reports whether a passthrough request may ask the upstream to run a
-// Responses create in the background. background means nothing outside the Responses API, so only
-// a path that addresses it is read. On such a path the check fails closed, since the upstream's
-// decoder, not gjson, decides what runs:
-//   - every top-level key is read: gjson returns the first of a duplicated key and most decoders
-//     keep the last, so {"background":false,"background":true} must not pass;
-//   - key names compare case-insensitively, as Go's encoding/json matches them;
-//   - any value other than false or null counts, since a lenient decoder may coerce one;
-//   - a body gjson cannot read as JSON (compressed, UTF-16, malformed) counts: what an upstream
-//     makes of it cannot be judged here.
+// backgroundCapablePaths name the passthrough APIs that run a create in the background when
+// asked: OpenAI-style Responses, and the Gemini/Vertex Interactions API (gemini.IsInteractionsPassthroughPath).
+var backgroundCapablePaths = []string{"responses", "/interactions"}
+
+// passthroughIsBackground reports whether a passthrough request may ask the upstream to run a create
+// in the background. Every path's body is read; the upstream's decoder, not gjson, decides what
+// runs, so every top-level key is read (gjson returns the first of a duplicated key, most decoders
+// keep the last) and key names compare case-insensitively, as Go's encoding/json matches them.
+//
+// On a path known to run background creates the check fails closed: any value other than false or
+// null counts, and so does a body gjson cannot read as JSON (compressed, UTF-16, malformed). On any
+// other path only true or "true" counts: there a top-level background can mean something else, such
+// as an image background ("transparent"), and a non-JSON body (a multipart upload) is not a create
+// that could run in the background.
 func passthroughIsBackground(path string, body []byte) bool {
 	// The upstream decodes the path, so an escaped one (/v1/respons%65s) is read decoded too.
 	if decoded, err := url.PathUnescape(path); err == nil {
 		path = decoded
 	}
-	if !strings.Contains(strings.ToLower(path), "responses") {
-		return false
+	path = strings.ToLower(path)
+	capable := false
+	for _, marker := range backgroundCapablePaths {
+		if strings.Contains(path, marker) {
+			capable = true
+			break
+		}
 	}
 	body = bytes.TrimPrefix(body, []byte("\xef\xbb\xbf"))
 	if len(bytes.TrimSpace(body)) == 0 {
 		return false
 	}
 	if !gjson.ValidBytes(body) {
-		return true
+		return capable
 	}
 	root := gjson.ParseBytes(body)
 	if !root.IsObject() {
@@ -137,7 +146,11 @@ func passthroughIsBackground(path string, body []byte) bool {
 	}
 	background := false
 	root.ForEach(func(key, value gjson.Result) bool {
-		if strings.EqualFold(key.Str, "background") && value.Type != gjson.False && value.Type != gjson.Null {
+		if !strings.EqualFold(key.Str, "background") {
+			return true
+		}
+		truthy := value.Type == gjson.True || (value.Type == gjson.String && strings.EqualFold(value.Str, "true"))
+		if truthy || (capable && value.Type != gjson.False && value.Type != gjson.Null) {
 			background = true
 			return false
 		}

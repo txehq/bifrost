@@ -206,8 +206,15 @@ func TestPassthroughIsBackground(t *testing.T) {
 	for _, path := range []string{"/v1/responses", "/openai/v1/responses", "/openai/RESPONSES", "/v1/responses/", "/v1/respons%65s"} {
 		assert.True(t, passthroughIsBackground(path, []byte(`{"background":true}`)), path)
 	}
-	for _, path := range []string{"/v1/files", "/v1/fine_tuning/jobs", "/v1/images/generations"} {
-		assert.False(t, passthroughIsBackground(path, []byte(`{"background":true}`)), "%s is not a Responses create", path)
-		assert.False(t, passthroughIsBackground(path, []byte("--multipart-boundary")), "%s with a non-JSON body is not a Responses create", path)
+	for _, path := range []string{"/v1beta/interactions", "/v1/projects/p/locations/l/interactions"} {
+		assert.True(t, passthroughIsBackground(path, []byte(`{"model":"m","background":true}`)), "%s runs background interactions", path)
+		assert.True(t, passthroughIsBackground(path, []byte(`{"background":1}`)), "%s fails closed on a coercible value", path)
+		assert.True(t, passthroughIsBackground(path, []byte("\x1f\x8bgzip")), "%s fails closed on an unreadable body", path)
+	}
+	for _, path := range []string{"/v1/files", "/v1/fine_tuning/jobs", "/v1/images/generations", "/v1/some/new/api"} {
+		assert.True(t, passthroughIsBackground(path, []byte(`{"background":true}`)), "%s: an explicit background true is refused on any path", path)
+		assert.True(t, passthroughIsBackground(path, []byte(`{"Background":"TRUE"}`)), "%s: in any letter case", path)
+		assert.False(t, passthroughIsBackground(path, []byte(`{"model":"gpt-image-1","background":"transparent"}`)), "%s: an image background is not a background run", path)
+		assert.False(t, passthroughIsBackground(path, []byte("--multipart-boundary")), "%s with a non-JSON body is not a background create", path)
 	}
 }

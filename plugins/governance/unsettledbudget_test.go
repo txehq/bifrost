@@ -57,6 +57,10 @@ func TestBackgroundResponsesUnderADollarBudgetIsRefusedBeforeTheCall(t *testing.
 		"a passthrough Responses body with background: true")
 	requireUnsettledRefusal(t, pre("sk-bf-budget", passthroughResponses(`{"model":"gpt-4o","background":false,"input":"hi","background":true}`)), "background_unsettled",
 		"a passthrough body whose duplicated background key ends true, as a last-key-wins decoder reads it")
+	interactions := passthroughResponses(`{"model":"gemini-omni","input":"hi","background":true}`)
+	interactions.PassthroughRequest.Path = "/v1beta/interactions"
+	requireUnsettledRefusal(t, pre("sk-bf-budget", interactions), "background_unsettled",
+		"a passthrough Interactions body with background: true")
 
 	assert.Nil(t, pre("sk-bf-budget", responsesOn(schemas.ResponsesRequest, "gpt-4o", &foreground)), "background: false is a finished, priced answer")
 	assert.Nil(t, pre("sk-bf-budget", responsesOn(schemas.ResponsesRequest, "gpt-4o", nil)), "a Responses create with no background is served")
