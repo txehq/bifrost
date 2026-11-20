@@ -2888,8 +2888,9 @@ type GeminiBatchConfig struct {
 // GeminiBatchInputConfig represents the input configuration for batch requests.
 // Supports both inline requests and file-based input.
 type GeminiBatchInputConfig struct {
-	Requests *GeminiBatchRequestsWrapper `json:"requests,omitempty"`
-	FileName string                      `json:"fileName,omitempty"`
+	Requests      *GeminiBatchRequestsWrapper `json:"requests,omitempty"`
+	FileName      string                      `json:"fileName,omitempty"`
+	FileNameSnake string                      `json:"file_name,omitempty"` // SDK spelling for embedding batches; see GeminiBatchInputFileName
 }
 
 // GeminiBatchRequestsWrapper wraps the array of batch request items.
@@ -3298,6 +3299,7 @@ var GeminiRequestSuffixPaths = []string{
 	":embedContent",
 	":batchEmbedContents",
 	":batchGenerateContent",
+	":asyncBatchEmbedContent",
 	":predict",
 	":predictLongRunning",
 }

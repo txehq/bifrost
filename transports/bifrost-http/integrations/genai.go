@@ -32,6 +32,21 @@ const isGeminiVideoGenerationRequestContextKey schemas.BifrostContextKey = "bifr
 
 const isGeminiBatchCreateRequestContextKey schemas.BifrostContextKey = "bifrost-is-gemini-batch-create-request"
 
+// isGeminiAsyncBatchEmbedContentRequestContextKey marks a batch create sent to
+// models/{model}:asyncBatchEmbedContent (Google SDK batches.create_embeddings): an embedding
+// batch, which the Gemini provider sends to the same method (TXE-7030).
+const isGeminiAsyncBatchEmbedContentRequestContextKey schemas.BifrostContextKey = "bifrost-is-gemini-async-batch-embed-content-request"
+
+// geminiBatchCreateSuffixes is ":"+method for each of gemini.GeminiBatchCreateMethods, built
+// once so classifying a request does not build them.
+var geminiBatchCreateSuffixes = func() []string {
+	suffixes := make([]string, len(gemini.GeminiBatchCreateMethods))
+	for i, method := range gemini.GeminiBatchCreateMethods {
+		suffixes[i] = ":" + method
+	}
+	return suffixes
+}()
+
 const requestedGeminiModelMetadataContextKey schemas.BifrostContextKey = "bifrost-requested-gemini-model-metadata"
 
 const genAIRawRequestBodyContextKey schemas.BifrostContextKey = "bifrost-genai-raw-request-body"
@@ -212,9 +227,19 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 					bifrostBatchReq.DisplayName = &geminiReq.Batch.DisplayName
 				}
 
-				// Handle file-based input
-				if geminiReq.Batch.InputConfig.FileName != "" {
-					bifrostBatchReq.InputFileID = geminiReq.Batch.InputConfig.FileName
+				// Handle file-based input. The file is read from the body as Gemini reads it
+				// (both spellings, repeated keys), so the file whose ownership is checked is the
+				// one the vendor runs; two different names are refused.
+				fileName, err := gemini.GeminiBatchInputFileName(bifrostBatchReq.RawRequestBody, geminiReq.Batch.InputConfig)
+				if err != nil {
+					return nil, newParameterRefusal("batch.inputConfig.fileName", err.Error())
+				}
+				bifrostBatchReq.InputFileID = fileName
+
+				// models/{model}:asyncBatchEmbedContent creates an embedding batch: its lines
+				// are EmbedContentRequests, and the provider sends them to the same method.
+				if ctx.Value(isGeminiAsyncBatchEmbedContentRequestContextKey) != nil {
+					bifrostBatchReq.Endpoint = schemas.BatchEndpointEmbeddings
 				}
 
 				return &BatchRequest{
@@ -648,7 +673,9 @@ func CreateGenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 			if resp.ExtraFields.Provider == schemas.Gemini && resp.ExtraFields.RawResponse != nil {
 				return resp.ExtraFields.RawResponse, nil
 			}
-			return gemini.ToGeminiBatchRetrieveResponse(resp), nil
+			// The job's own output (inline responses included) goes back at metadata.output,
+			// where Google's SDK reads batch results (TXE-7030).
+			return gemini.ToGeminiBatchRetrieveBody(resp)
 		},
 		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return gemini.ToGeminiError(err)
@@ -1793,7 +1820,16 @@ func extractModelAndRequestType(ctx *fasthttp.RequestCtx) (string, schemas.Reque
 
 	isPredict := strings.HasSuffix(modelStr, ":predict")
 	isVideoGeneration := strings.HasSuffix(modelStr, ":predictLongRunning")
-	isBatchCreate := strings.HasSuffix(modelStr, ":batchGenerateContent")
+	// A batch create is sent to one of the methods the Gemini provider creates batches with
+	// (gemini.GeminiBatchCreateMethods), so every batch kind it runs has a native route.
+	batchMethod := ""
+	for i, suffix := range geminiBatchCreateSuffixes {
+		if strings.HasSuffix(modelStr, suffix) {
+			batchMethod = gemini.GeminiBatchCreateMethods[i]
+			break
+		}
+	}
+	isBatchCreate := batchMethod != ""
 
 	// Check if this is an embedding request
 	isEmbedding := false
@@ -1822,6 +1858,9 @@ func extractModelAndRequestType(ctx *fasthttp.RequestCtx) (string, schemas.Reque
 
 	if isBatchCreate {
 		ctx.SetUserValue(isGeminiBatchCreateRequestContextKey, true)
+		if batchMethod == gemini.GeminiAsyncBatchEmbedContentMethod {
+			ctx.SetUserValue(isGeminiAsyncBatchEmbedContentRequestContextKey, true)
+		}
 		return modelStr, schemas.BatchCreateRequest
 	}
 

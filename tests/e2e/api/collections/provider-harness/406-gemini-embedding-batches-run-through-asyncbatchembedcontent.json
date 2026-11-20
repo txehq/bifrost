@@ -1,6 +1,6 @@
 {
   "name": "406. Gemini embedding batches run through asyncBatchEmbedContent (gemini embedding-batch)",
-  "description": "Wire-level pins for Gemini embedding batches (TXE-6637; contract clauses C3, C8; Gemini batch B4). A batch of /v1/embeddings lines used to be refused on Gemini as a url a generateContent batch cannot run. Rows 406.1 to 406.4 run against a live gateway; rows 406.5 to 406.8 run against the provider error fixture and its isolated gateway (tests/e2e/api/README.md, --env-var providerErrorFixture=1) and are skipped otherwise, and the two rows that need the real vendor (406.1, 406.4) are skipped on the fixture. Live rows: (406.1) inline /v1/embeddings lines create one models/{model}:asyncBatchEmbedContent job: the echoed request body carries one EmbedContentRequest per line, each with the content, outputDimensionality and taskType the sync route sends, and the line's custom_id and url in its metadata; the batch is cancelled at once. (406.2) a chat line in an embedding batch and (406.3) an embeddings line with no input are refused naming the line; nothing is sent upstream. (406.4) retrieve, cancel and results of a Gemini batch call upstream with the key the caller names in x-bf-api-key and with no other key, and report it in x-bifrost-routing-info-key: a run-scoped provider on the Gemini base has a dead key and a live key, both enabled for batches, and the body says which answered (Gemini's own 400 \"API key not valid\" or the live key's answer for a batch id that does not exist). Fixture rows: (406.5) the fixture's recorded calls are reset. (406.6) the same create reaches the fixture as exactly one asyncBatchEmbedContent call whose recorded body is what the gateway reports it sent, two requests for two lines. (406.7) the results of the fixture's finished batch, seven vendor responses for four lines (a job created before TXE-7033, when a line with several inputs was sent as one request per input), are OpenAI-shape embeddings lines paged in lines: limit=2 returns the one-input line and the three-input line put back together (data[0..2], usage 15) with a next_cursor, the next page the two failed lines with the vendor's error codes, and retrieve reports completed. (406.8) a run-scoped provider pointed at the fixture has a dead and a live key: retrieve and results with each named key reach the fixture bearing that key and no other, read back from the fixture's record of the x-goog-api-key of every batch read. (406.9) TXE-7033 (contract C8): a line whose input holds two items is refused with a 400 caller_unsupported_parameter naming requests[1].body.input and the line's custom_id; one input per line is the caller's to send, because a line sent as several requests that partly failed came back failed with no usage while the vendor billed the inputs that succeeded. It runs on the live gateway and on the fixture (the refusal comes before any upstream call). The /genai route does not carry :asyncBatchEmbedContent and is not covered. Run with FEATURE=\"embedding-batch\".",
+  "description": "Wire-level pins for Gemini embedding batches (TXE-6637; contract clauses C3, C8; Gemini batch B4). A batch of /v1/embeddings lines used to be refused on Gemini as a url a generateContent batch cannot run. Rows 406.1 to 406.4 run against a live gateway; rows 406.5 to 406.8 run against the provider error fixture and its isolated gateway (tests/e2e/api/README.md, --env-var providerErrorFixture=1) and are skipped otherwise, and the two rows that need the real vendor (406.1, 406.4) are skipped on the fixture. Live rows: (406.1) inline /v1/embeddings lines create one models/{model}:asyncBatchEmbedContent job: the echoed request body carries one EmbedContentRequest per line, each with the content, outputDimensionality and taskType the sync route sends, and the line's custom_id and url in its metadata; the batch is cancelled at once. (406.2) a chat line in an embedding batch and (406.3) an embeddings line with no input are refused naming the line; nothing is sent upstream. (406.4) retrieve, cancel and results of a Gemini batch call upstream with the key the caller names in x-bf-api-key and with no other key, and report it in x-bifrost-routing-info-key: a run-scoped provider on the Gemini base has a dead key and a live key, both enabled for batches, and the body says which answered (Gemini's own 400 \"API key not valid\" or the live key's answer for a batch id that does not exist). Fixture rows: (406.5) the fixture's recorded calls are reset. (406.6) the same create reaches the fixture as exactly one asyncBatchEmbedContent call whose recorded body is what the gateway reports it sent, two requests for two lines. (406.7) the results of the fixture's finished batch, seven vendor responses for four lines (a job created before TXE-7033, when a line with several inputs was sent as one request per input), are OpenAI-shape embeddings lines paged in lines: limit=2 returns the one-input line and the three-input line put back together (data[0..2], usage 15) with a next_cursor, the next page the two failed lines with the vendor's error codes, and retrieve reports completed. (406.8) a run-scoped provider pointed at the fixture has a dead and a live key: retrieve and results with each named key reach the fixture bearing that key and no other, read back from the fixture's record of the x-goog-api-key of every batch read. (406.9) TXE-7033 (contract C8): a line whose input holds two items is refused with a 400 caller_unsupported_parameter naming requests[1].body.input and the line's custom_id; one input per line is the caller's to send, because a line sent as several requests that partly failed came back failed with no usage while the vendor billed the inputs that succeeded. It runs on the live gateway and on the fixture (the refusal comes before any upstream call). (406.10, TXE-7030) Google's SDK batches.create_embeddings through /genai models/{model}:asyncBatchEmbedContent reaches the fixture as one asyncBatchEmbedContent call carrying the SDK's EmbedContentRequests, and (406.11) batches.get through /genai returns the finished job's seven vendor responses at metadata.output.inlinedResponses.inlinedResponses, where python-genai reads them and names them inlined_embed_content_responses. (406.12) a /genai batch create that names one file as fileName and another as file_name (both spellings Gemini accepts) is refused with 400 before anything reaches the fixture, so the file whose ownership is checked is the file Gemini runs. Run with FEATURE=\"embedding-batch\".",
   "item": [
     {
       "name": "406.1 gemini/gemini-embedding-001 embedding-batch: inline /v1/embeddings lines create one asyncBatchEmbedContent job, one request per line",
@@ -736,6 +736,210 @@
           "path": [
             "v1",
             "batches"
+          ]
+        }
+      }
+    },
+    {
+      "name": "406.10 gemini/pp-embedding embedding-batch fixture: Google SDK batches.create_embeddings through /genai models/{model}:asyncBatchEmbedContent creates one asyncBatchEmbedContent job (TXE-7030)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function () {});",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// The body python-genai sends for batches.create_embeddings (_EmbedContentBatch_to_mldev): Gemini EmbedContentRequests, not /v1/embeddings lines.",
+              "var j = {}; try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+              "pm.test('the route answers with the vendor\\'s job, as the SDK reads a created batch', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  pm.expect(j.name, pm.response.text()).to.eql('batches/emb-fixture-created');",
+              "  // Not finished: the vendor said PENDING; the route's unified round trip reports it RUNNING (TXE-7953).",
+              "  pm.expect((j.metadata || {}).state, pm.response.text()).to.match(/_STATE_(PENDING|RUNNING)$/);",
+              "});",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  var calls = []; try { calls = res.json().data[0].calls; } catch (e) { calls = []; }",
+              "  var gemini = calls.filter(function (c) { return c.path.indexOf('/pp/gemini/') === 0; });",
+              "  pm.test('the vendor received exactly one asyncBatchEmbedContent call and nothing else', function () {",
+              "    pm.expect(err, String(err)).to.eql(null);",
+              "    pm.expect(gemini.map(function (c) { return c.path; })).to.eql(['/pp/gemini/models/pp-embedding:asyncBatchEmbedContent']);",
+              "  });",
+              "  var sent = {}; try { sent = JSON.parse(gemini[0].body); } catch (e) { sent = {}; }",
+              "  var lines = ((((sent.batch || {}).inputConfig || {}).requests || {}).requests) || [];",
+              "  pm.test('the SDK\\'s EmbedContentRequests reach the vendor as sent', function () {",
+              "    pm.expect(lines.length, gemini[0] && gemini[0].body).to.eql(2);",
+              "    pm.expect((sent.batch || {}).displayName).to.eql('harness-genai-embedding-batch');",
+              "    pm.expect((((lines[0] || {}).request || {}).content || {}).parts, JSON.stringify(lines[0])).to.eql([{ text: 'alpha' }]);",
+              "    pm.expect(((lines[0] || {}).request || {}).taskType, JSON.stringify(lines[0])).to.eql('RETRIEVAL_DOCUMENT');",
+              "    pm.expect(((lines[0] || {}).request || {}).outputDimensionality, JSON.stringify(lines[0])).to.eql(2);",
+              "    pm.expect((((lines[1] || {}).request || {}).content || {}).parts, JSON.stringify(lines[1])).to.eql([{ text: 'beta' }]);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"batch\": {\n    \"displayName\": \"harness-genai-embedding-batch\",\n    \"inputConfig\": {\n      \"requests\": {\n        \"requests\": [\n          {\n            \"request\": {\n              \"content\": {\n                \"parts\": [\n                  {\n                    \"text\": \"alpha\"\n                  }\n                ]\n              },\n              \"taskType\": \"RETRIEVAL_DOCUMENT\",\n              \"outputDimensionality\": 2\n            },\n            \"metadata\": {\n              \"key\": \"g-1\"\n            }\n          },\n          {\n            \"request\": {\n              \"content\": {\n                \"parts\": [\n                  {\n                    \"text\": \"beta\"\n                  }\n                ]\n              },\n              \"taskType\": \"RETRIEVAL_DOCUMENT\",\n              \"outputDimensionality\": 2\n            },\n            \"metadata\": {\n              \"key\": \"g-2\"\n            }\n          }\n        ]\n      }\n    }\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/pp-embedding:asyncBatchEmbedContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "pp-embedding:asyncBatchEmbedContent"
+          ]
+        }
+      }
+    },
+    {
+      "name": "406.11 gemini embedding-batch fixture: Google SDK batches.get through /genai returns the finished job's embeddings at metadata.output (TXE-7030)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// python-genai reads a job's results from metadata.output (_BatchJob_from_mldev) and, when the inline responses hold",
+              "// embeddings, renames inlinedResponses to inlinedEmbedContentResponses itself (t_recv_batch_job_destination).",
+              "var j = {}; try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+              "var md = j.metadata || {};",
+              "var inlined = (((md.output || {}).inlinedResponses || {}).inlinedResponses) || [];",
+              "pm.test('the finished job keeps its name, state and counts', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  pm.expect(j.name, pm.response.text()).to.eql('batches/emb-fixture-done');",
+              "  pm.expect(md.state, pm.response.text()).to.match(/_STATE_SUCCEEDED$/);",
+              "  pm.expect((md.batchStats || {}).requestCount, pm.response.text()).to.eql('7');",
+              "});",
+              "pm.test('the seven vendor responses are at metadata.output.inlinedResponses.inlinedResponses, in order, embeddings and errors as sent', function () {",
+              "  pm.expect(inlined.length, pm.response.text()).to.eql(7);",
+              "  pm.expect(((inlined[0].response || {}).embedding || {}).values, JSON.stringify(inlined[0])).to.eql([0.1, 0.2, 0.3]);",
+              "  pm.expect(((inlined[3].response || {}).embedding || {}).values, JSON.stringify(inlined[3])).to.eql([3, 3.5]);",
+              "  pm.expect((inlined[4].error || {}).status, JSON.stringify(inlined[4])).to.eql('INVALID_ARGUMENT');",
+              "  pm.expect((inlined[6].error || {}).code, JSON.stringify(inlined[6])).to.eql(429);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/batches/emb-fixture-done",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "batches",
+            "emb-fixture-done"
+          ]
+        }
+      }
+    },
+    {
+      "name": "406.12 [EXPECT-400] gemini embedding-batch fixture: a /genai batch create naming one file as fileName and another as file_name is refused before the vendor (TXE-7030)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function () {});",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Gemini accepts both spellings (ProtoJSON), and the raw passthrough forwards the body as sent: the file whose",
+              "// ownership is checked must be the file the vendor runs, so two different names are refused.",
+              "var j = {}; try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+              "pm.test('400 naming the two input files', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.eql(400);",
+              "  pm.expect(((j.error || {}).message) || '', pm.response.text()).to.include('two input files');",
+              "});",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  var calls = []; try { calls = res.json().data[0].calls; } catch (e) { calls = []; }",
+              "  pm.test('nothing reached the vendor', function () {",
+              "    pm.expect(err, String(err)).to.eql(null);",
+              "    pm.expect(calls.filter(function (c) { return c.path.indexOf('/pp/gemini/') === 0; }).map(function (c) { return c.path; })).to.eql([]);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-model-provider",
+            "value": "gemini"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"batch\": {\n    \"displayName\": \"harness-genai-file-alias\",\n    \"inputConfig\": {\n      \"fileName\": \"files/harness-mine\",\n      \"file_name\": \"files/harness-theirs\"\n    }\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/pp-embedding:asyncBatchEmbedContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "pp-embedding:asyncBatchEmbedContent"
           ]
         }
       }

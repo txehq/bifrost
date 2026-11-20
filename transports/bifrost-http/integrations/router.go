@@ -868,7 +868,7 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 		// or performing request validation after parsing
 		if config.PreCallback != nil {
 			if err := config.PreCallback(ctx, bifrostCtx, req); err != nil {
-				g.sendError(ctx, bifrostCtx, config.ErrorConverter, preCallbackError(err))
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, refusalError(err, "failed to execute pre-request callback: "))
 				return
 			}
 		}
@@ -920,7 +920,7 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 		if useBatchPath {
 			batchReq, err := config.BatchRequestConverter(bifrostCtx, req)
 			if err != nil {
-				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to convert batch request"))
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, refusalError(err, "failed to convert batch request: "))
 				return
 			}
 			if batchReq == nil {

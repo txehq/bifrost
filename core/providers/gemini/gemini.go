@@ -2835,9 +2835,9 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 
 	// A batch of /v1/embeddings lines is a different vendor method with the same job object.
 	embeddingBatch := IsEmbeddingBatch(request)
-	batchMethod := "batchGenerateContent"
+	batchMethod := GeminiBatchGenerateContentMethod
 	if embeddingBatch {
-		batchMethod = "asyncBatchEmbedContent"
+		batchMethod = GeminiAsyncBatchEmbedContentMethod
 	}
 	// The number of requests sent inline, for a create response that reports no stats.
 	sentRequests := 0
@@ -3347,6 +3347,7 @@ func (provider *GeminiProvider) batchRetrieveByKey(ctx *schemas.BifrostContext, 
 			Latency:     latency.Milliseconds(),
 			RawResponse: rawResponse,
 		},
+		NativeOutput: geminiBatchNativeOutput(body),
 	}
 
 	// The end time is the time of the terminal phase the batch reached.

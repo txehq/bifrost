@@ -1,6 +1,7 @@
 package gemini
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -10,8 +11,110 @@ import (
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
+
+// The model methods BatchCreate sends a batch to, models/{model}:<method>. The /genai
+// ingress classifies a request by the same list, so a batch method the provider sends has a
+// native route to create it (TXE-7030; transports' genai tests fail on one without).
+const (
+	GeminiBatchGenerateContentMethod   = "batchGenerateContent"
+	GeminiAsyncBatchEmbedContentMethod = "asyncBatchEmbedContent"
+)
+
+// GeminiBatchCreateMethods lists every batch-create method BatchCreate sends.
+var GeminiBatchCreateMethods = []string{GeminiBatchGenerateContentMethod, GeminiAsyncBatchEmbedContentMethod}
+
+// geminiBatchInputConfigKeys and geminiBatchFileNameKeys are every spelling Gemini accepts for
+// batch.inputConfig and its fileName: ProtoJSON reads a field by its JSON name and by its
+// proto name.
+var (
+	geminiBatchInputConfigKeys = map[string]bool{"inputConfig": true, "input_config": true}
+	geminiBatchFileNameKeys    = map[string]bool{"fileName": true, "file_name": true}
+)
+
+// GeminiBatchInputFileName returns the one input file a native batch create names, read from
+// the body as Gemini reads it, so the file whose ownership is checked is the file the vendor
+// runs (TXE-7030). raw is the request body when it is forwarded as it is (raw passthrough);
+// every occurrence of batch, inputConfig/input_config and fileName/file_name in it is read,
+// repeated keys included, because a parser that keeps the last of a repeated key would run a
+// file the first one does not name. When raw is empty the parsed config is the body sent.
+// Two different names are refused: the caller states one file, or none.
+func GeminiBatchInputFileName(raw []byte, parsed GeminiBatchInputConfig) (string, error) {
+	names := make([]string, 0, 2)
+	if len(raw) == 0 {
+		names = append(names, parsed.FileName, parsed.FileNameSnake)
+	} else {
+		gjson.ParseBytes(raw).ForEach(func(key, batch gjson.Result) bool {
+			if key.String() != "batch" {
+				return true
+			}
+			batch.ForEach(func(key, config gjson.Result) bool {
+				if !geminiBatchInputConfigKeys[key.String()] {
+					return true
+				}
+				config.ForEach(func(key, value gjson.Result) bool {
+					if geminiBatchFileNameKeys[key.String()] {
+						names = append(names, value.String())
+					}
+					return true
+				})
+				return true
+			})
+			return true
+		})
+	}
+	file := ""
+	for _, name := range names {
+		if name == "" || name == file {
+			continue
+		}
+		if file != "" {
+			return "", fmt.Errorf("batch.inputConfig names two input files (%q and %q): send one fileName", file, name)
+		}
+		file = name
+	}
+	return file, nil
+}
+
+// geminiBatchNativeOutput returns a batch job's output object as the vendor sent it:
+// metadata.output, or the done operation's response when the metadata carries none. It is a
+// copy, so it outlives the pooled response body. Nil when the job has no output yet.
+func geminiBatchNativeOutput(body []byte) []byte {
+	for _, path := range []string{"metadata.output", "response"} {
+		if out := providerUtils.GetJSONField(body, path); out.Exists() && out.IsObject() {
+			return append([]byte(nil), out.Raw...)
+		}
+	}
+	return nil
+}
+
+// ToGeminiBatchRetrieveBody is the body the native /genai route returns for a batch job:
+// ToGeminiBatchRetrieveResponse, with the vendor's own output object, inline responses
+// included, at metadata.output, where Google's SDK reads it. The SDK takes
+// metadata.output.inlinedResponses as a generateContent batch's results and, when they hold
+// embeddings, as an embedding batch's (python-genai t_recv_batch_job_destination renames them
+// to inlinedEmbedContentResponses), so the object goes back unchanged. The unified retrieve
+// response has no field for inline results, so the provider keeps the vendor's output object
+// on BifrostBatchRetrieveResponse.NativeOutput (metadata.output, or a done operation's
+// response; not serialised, and never part of the unified response). Without it the route
+// returned the job's state and counts and no results.
+func ToGeminiBatchRetrieveBody(resp *schemas.BifrostBatchRetrieveResponse) (interface{}, error) {
+	job := ToGeminiBatchRetrieveResponse(resp)
+	if job == nil || len(resp.NativeOutput) == 0 {
+		return job, nil
+	}
+	encoded, err := providerUtils.MarshalSorted(job)
+	if err != nil {
+		return nil, err
+	}
+	withOutput, err := providerUtils.SetRawJSONField(encoded, "metadata.output", resp.NativeOutput)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(withOutput), nil
+}
 
 // ToGeminiBatchGenerateContentRequest converts one Bifrost batch request body into the
 // Gemini GenerateContentRequest shape used for batch input. OpenAI-style bodies (with

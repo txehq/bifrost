@@ -887,3 +887,228 @@ func TestGenAISpeechRouteAnswersDashScopeAudioLink(t *testing.T) {
 		t.Fatalf("x-bifrost-usage = %q, want billed_characters 5", got)
 	}
 }
+
+// TestGenAIRoutesEveryGeminiBatchCreateMethod is the class check for TXE-7030: every method
+// the Gemini provider creates a batch with (gemini.GeminiBatchCreateMethods) is a batch create
+// on the native /genai route, with the method suffix stripped from the model. A batch method
+// the provider gains without a native route fails here.
+func TestGenAIRoutesEveryGeminiBatchCreateMethod(t *testing.T) {
+	require.NotEmpty(t, gemini.GeminiBatchCreateMethods)
+	for _, method := range gemini.GeminiBatchCreateMethods {
+		t.Run(method, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.SetUserValue("model", "gemini-embedding-001:"+method)
+			_, requestType := extractModelAndRequestType(ctx)
+			assert.Equal(t, schemas.BatchCreateRequest, requestType)
+			assert.NotNil(t, ctx.UserValue(isGeminiBatchCreateRequestContextKey), "the router sends a batch create only when this marker is set")
+			assert.Contains(t, gemini.GeminiRequestSuffixPaths, ":"+method, "the model keeps the method suffix")
+			if method == gemini.GeminiAsyncBatchEmbedContentMethod {
+				assert.NotNil(t, ctx.UserValue(isGeminiAsyncBatchEmbedContentRequestContextKey))
+			} else {
+				assert.Nil(t, ctx.UserValue(isGeminiAsyncBatchEmbedContentRequestContextKey))
+			}
+		})
+	}
+}
+
+// TestGenAIAsyncBatchEmbedContentCreatesAndReadsEmbeddingBatch (TXE-7030): Google's SDK
+// batches.create_embeddings through /genai creates one asyncBatchEmbedContent job at the
+// vendor, and batches.get through /genai returns the job's embedding responses at
+// metadata.output, where the SDK reads them (as dest.inlined_embed_content_responses). Run on the typed
+// path (bare model) and on the raw passthrough (x-model-provider: gemini).
+func TestGenAIAsyncBatchEmbedContentCreatesAndReadsEmbeddingBatch(t *testing.T) {
+	// The request body Google's SDK sends (python-genai batches.py, _EmbedContentBatch_to_mldev).
+	sdkBody := `{"batch":{"displayName":"emb-batch","inputConfig":{"requests":{"requests":[` +
+		`{"request":{"content":{"parts":[{"text":"alpha"}]},"taskType":"RETRIEVAL_DOCUMENT","outputDimensionality":2}},` +
+		`{"request":{"content":{"parts":[{"text":"beta"}]},"taskType":"RETRIEVAL_DOCUMENT","outputDimensionality":2}}]}}}}`
+	const createdJob = `{"name":"batches/emb1","metadata":{"@type":"type.googleapis.com/google.ai.generativelanguage.v1main.EmbedContentBatch",` +
+		`"name":"batches/emb1","model":"models/gemini-embedding-001","displayName":"emb-batch","state":"BATCH_STATE_PENDING",` +
+		`"createTime":"2026-11-20T08:00:00Z","updateTime":"2026-11-20T08:00:00Z","batchStats":{"requestCount":"2","pendingRequestCount":"2"}}}`
+	const doneJob = `{"name":"batches/emb1","done":true,"metadata":{"@type":"type.googleapis.com/google.ai.generativelanguage.v1main.EmbedContentBatch",` +
+		`"name":"batches/emb1","model":"models/gemini-embedding-001","displayName":"emb-batch","state":"BATCH_STATE_SUCCEEDED",` +
+		`"createTime":"2026-11-20T08:00:00Z","updateTime":"2026-11-20T08:05:00Z","endTime":"2026-11-20T08:05:00Z",` +
+		`"batchStats":{"requestCount":"2","successfulRequestCount":"2"},` +
+		`"output":{"inlinedResponses":{"inlinedResponses":[` +
+		`{"response":{"embedding":{"values":[0.11,0.12]}}},{"response":{"embedding":{"values":[0.21,0.22]}}}]}}}}`
+
+	for _, tc := range []struct {
+		name   string
+		header string
+	}{
+		{"typed path", ""},
+		{"raw passthrough", "gemini"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			type call struct{ method, path, body string }
+			var calls []call
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				calls = append(calls, call{r.Method, r.URL.Path, string(body)})
+				w.Header().Set("Content-Type", "application/json")
+				if r.Method == http.MethodGet {
+					_, _ = w.Write([]byte(doneJob))
+					return
+				}
+				_, _ = w.Write([]byte(createdJob))
+			}))
+			defer upstream.Close()
+
+			account := &nativeMessagesTestAccount{
+				configs: map[schemas.ModelProvider]*schemas.ProviderConfig{
+					schemas.Gemini: {NetworkConfig: schemas.NetworkConfig{BaseURL: upstream.URL + "/v1beta", AllowPrivateNetwork: true}},
+				},
+				keys: map[schemas.ModelProvider][]schemas.Key{
+					schemas.Gemini: {{ID: "gemini-key", Value: schemas.SecretVar{Val: "gemini-secret"}, Models: schemas.WhiteList{"*"}, Weight: 1, UseForBatchAPI: schemas.Ptr(true)}},
+				},
+			}
+			client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: bifrost.NewNoOpLogger(), InitialPoolSize: 1})
+			require.NoError(t, err)
+			defer client.Shutdown()
+			router := NewGenericRouter(client, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
+			routes := CreateGenAIRouteConfigs("/genai")
+
+			// batches.create_embeddings
+			create := &fasthttp.RequestCtx{}
+			create.Request.Header.SetMethod(fasthttp.MethodPost)
+			create.Request.SetRequestURI("/genai/v1beta/models/gemini-embedding-001:asyncBatchEmbedContent")
+			create.SetUserValue("model", "gemini-embedding-001:asyncBatchEmbedContent")
+			create.Request.Header.SetContentType("application/json")
+			if tc.header != "" {
+				create.Request.Header.Set("x-model-provider", tc.header)
+			}
+			create.Request.SetBody([]byte(sdkBody))
+			createRoute := findGenAIRouteForTest(t, routes, "/genai/v1beta/models/{model:*}", "POST")
+			// The router's request-type middleware runs before the handler.
+			create.SetUserValue(schemas.BifrostContextKeyHTTPRequestType, createRoute.GetHTTPRequestType(create))
+			router.createHandler(createRoute)(create)
+
+			require.Equal(t, fasthttp.StatusOK, create.Response.StatusCode(), "%s", create.Response.Body())
+			require.Len(t, calls, 1, "one create call: %+v", calls)
+			assert.Equal(t, http.MethodPost, calls[0].method)
+			assert.Equal(t, "/v1beta/models/gemini-embedding-001:asyncBatchEmbedContent", calls[0].path)
+			sent := []byte(calls[0].body)
+			assert.Equal(t, "alpha", gjson.GetBytes(sent, "batch.inputConfig.requests.requests.0.request.content.parts.0.text").String(), "%s", sent)
+			assert.Equal(t, "beta", gjson.GetBytes(sent, "batch.inputConfig.requests.requests.1.request.content.parts.0.text").String(), "%s", sent)
+			assert.Equal(t, "RETRIEVAL_DOCUMENT", gjson.GetBytes(sent, "batch.inputConfig.requests.requests.0.request.taskType").String(), "%s", sent)
+			assert.Equal(t, "emb-batch", gjson.GetBytes(sent, "batch.displayName").String(), "%s", sent)
+			created := create.Response.Body()
+			assert.Equal(t, "batches/emb1", gjson.GetBytes(created, "name").String(), "%s", created)
+
+			// batches.get
+			get := &fasthttp.RequestCtx{}
+			get.Request.Header.SetMethod(fasthttp.MethodGet)
+			get.Request.SetRequestURI("/genai/v1beta/batches/emb1")
+			get.SetUserValue("batch_id", "batches/emb1")
+			getRoute := findGenAIRouteForTest(t, CreateGenAIBatchRouteConfigs("/genai", &mockHandlerStore{}), "/genai/v1beta/batches/{batch_id}", "GET")
+			get.SetUserValue(schemas.BifrostContextKeyHTTPRequestType, getRoute.GetHTTPRequestType(get))
+			router.createHandler(getRoute)(get)
+
+			require.Equal(t, fasthttp.StatusOK, get.Response.StatusCode(), "%s", get.Response.Body())
+			require.Len(t, calls, 2, "%+v", calls)
+			assert.Equal(t, "/v1beta/batches/emb1", calls[1].path)
+			job := get.Response.Body()
+			assert.Equal(t, "batches/emb1", gjson.GetBytes(job, "name").String(), "%s", job)
+			assert.Equal(t, "BATCH_STATE_SUCCEEDED", gjson.GetBytes(job, "metadata.state").String(), "%s", job)
+			// python-genai reads metadata.output (_BatchJob_from_mldev) and, when an inline response
+			// holds an embedding, renames inlinedResponses to inlinedEmbedContentResponses itself
+			// (t_recv_batch_job_destination); it maps BATCH_STATE_* to JOB_STATE_* (t_job_state).
+			// So the route hands back the vendor's output object unchanged.
+			inlined := gjson.GetBytes(job, "metadata.output.inlinedResponses.inlinedResponses")
+			require.True(t, inlined.IsArray(), "the SDK reads metadata.output.inlinedResponses.inlinedResponses: %s", job)
+			require.Len(t, inlined.Array(), 2, "%s", job)
+			assert.Equal(t, []float64{0.11, 0.12}, floats(inlined.Array()[0].Get("response.embedding.values")), "%s", job)
+			assert.Equal(t, []float64{0.21, 0.22}, floats(inlined.Array()[1].Get("response.embedding.values")), "%s", job)
+		})
+	}
+}
+
+// TestGenAIBatchCreateChecksTheFileGeminiRuns (TXE-7030, Codex security finding on #407): a
+// raw-passthrough batch create is forwarded as sent, so the file whose ownership is checked
+// (InputFileID) is read from the body as Gemini reads it. A body that names one file in one
+// spelling and another file in another is refused before anything reaches the vendor; a file
+// named only in a proto-name spelling is still the file checked.
+func TestGenAIBatchCreateChecksTheFileGeminiRuns(t *testing.T) {
+	var calls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"name":"batches/f1","metadata":{"name":"batches/f1","state":"BATCH_STATE_PENDING"}}`))
+	}))
+	defer upstream.Close()
+	account := &nativeMessagesTestAccount{
+		configs: map[schemas.ModelProvider]*schemas.ProviderConfig{
+			schemas.Gemini: {NetworkConfig: schemas.NetworkConfig{BaseURL: upstream.URL + "/v1beta", AllowPrivateNetwork: true}},
+		},
+		keys: map[schemas.ModelProvider][]schemas.Key{
+			schemas.Gemini: {{ID: "gemini-key", Value: schemas.SecretVar{Val: "gemini-secret"}, Models: schemas.WhiteList{"*"}, Weight: 1, UseForBatchAPI: schemas.Ptr(true)}},
+		},
+	}
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: bifrost.NewNoOpLogger(), InitialPoolSize: 1})
+	require.NoError(t, err)
+	defer client.Shutdown()
+	router := NewGenericRouter(client, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
+	createRoute := findGenAIRouteForTest(t, CreateGenAIRouteConfigs("/genai"), "/genai/v1beta/models/{model:*}", "POST")
+
+	for _, body := range []string{
+		`{"batch":{"inputConfig":{"fileName":"files/mine","file_name":"files/theirs"}}}`,
+		`{"batch":{"inputConfig":{"fileName":"files/mine"},"input_config":{"file_name":"files/theirs"}}}`,
+	} {
+		for _, method := range gemini.GeminiBatchCreateMethods {
+			t.Run(method+" "+body, func(t *testing.T) {
+				calls = 0
+				create := &fasthttp.RequestCtx{}
+				create.Request.Header.SetMethod(fasthttp.MethodPost)
+				create.Request.SetRequestURI("/genai/v1beta/models/gemini-embedding-001:" + method)
+				create.SetUserValue("model", "gemini-embedding-001:"+method)
+				create.Request.Header.SetContentType("application/json")
+				create.Request.Header.Set("x-model-provider", "gemini")
+				create.Request.SetBody([]byte(body))
+				create.SetUserValue(schemas.BifrostContextKeyHTTPRequestType, createRoute.GetHTTPRequestType(create))
+				router.createHandler(createRoute)(create)
+
+				assert.Equal(t, fasthttp.StatusBadRequest, create.Response.StatusCode(), "%s", create.Response.Body())
+				assert.Contains(t, string(create.Response.Body()), "two input files", "%s", create.Response.Body())
+				assert.Zero(t, calls, "a refused create reaches no vendor")
+			})
+		}
+	}
+
+	t.Run("proto-name spelling is the file checked", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		raw := []byte(`{"batch":{"input_config":{"file_name":"files/theirs"}}}`)
+		ctx.SetValue(genAIRawRequestBodyContextKey, raw)
+		req := &gemini.GeminiBatchCreateRequest{}
+		require.NoError(t, sonic.Unmarshal(raw, req))
+		batch, err := createRoute.BatchRequestConverter(ctx, req)
+		require.NoError(t, err)
+		assert.Equal(t, "files/theirs", batch.CreateRequest.InputFileID, "the governance file-ownership check reads InputFileID")
+	})
+}
+
+func floats(r gjson.Result) []float64 {
+	var out []float64
+	for _, v := range r.Array() {
+		out = append(out, v.Float())
+	}
+	return out
+}
+
+// BenchmarkExtractModelAndRequestType measures the /genai ingress classification every native
+// request runs. TXE-7030 replaced one HasSuffix(":batchGenerateContent") with a loop over
+// gemini.GeminiBatchCreateMethods (two entries).
+func BenchmarkExtractModelAndRequestType(b *testing.B) {
+	for _, model := range []string{
+		"gemini-2.5-flash:generateContent",
+		"gemini-2.5-flash:batchGenerateContent",
+		"gemini-embedding-001:asyncBatchEmbedContent",
+	} {
+		b.Run(model, func(b *testing.B) {
+			ctx := &fasthttp.RequestCtx{}
+			b.ReportAllocs()
+			for b.Loop() {
+				ctx.SetUserValue("model", model)
+				_, _ = extractModelAndRequestType(ctx)
+			}
+		})
+	}
+}

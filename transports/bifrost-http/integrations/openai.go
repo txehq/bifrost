@@ -2596,7 +2596,7 @@ func extractVideoIDFromPath(_ lib.HandlerStore) PreRequestCallback {
 			// Fork (TXE-7040): index names one of the task's videos (default 0).
 			index, indexErr := schemas.ParseVideoDownloadIndex(string(ctx.QueryArgs().Peek(schemas.VideoDownloadIndexParam)))
 			if indexErr != nil {
-				return &preCallbackRefusal{bifrostErr: indexErr}
+				return &requestRefusal{bifrostErr: indexErr}
 			}
 			r.Provider = providerName
 			r.ID = rawVideoID
