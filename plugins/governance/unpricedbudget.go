@@ -427,8 +427,15 @@ func deliveredAnswer(result *schemas.BifrostResponse) bool {
 	if image := result.ImageGenerationResponse; image != nil && image.ContentFilter != nil && len(image.Data) == 0 {
 		return false
 	}
-	if passthrough := result.PassthroughResponse; passthrough != nil && passthroughQueuedAcknowledgment(passthrough.Body) {
-		return false
+	// A passthrough the provider refused (any status but 2xx) delivered nothing, and nothing is
+	// priced on it; one that only acknowledges queued work has not finished.
+	if passthrough := result.PassthroughResponse; passthrough != nil {
+		if passthrough.StatusCode != 0 && (passthrough.StatusCode < 200 || passthrough.StatusCode >= 300) {
+			return false
+		}
+		if passthroughQueuedAcknowledgment(passthrough.Body) {
+			return false
+		}
 	}
 	if result.ResponsesResponse != nil && result.ResponsesResponse.Status != nil {
 		switch *result.ResponsesResponse.Status {
@@ -650,16 +657,14 @@ func passthroughBodyNamesEveryModel(req *schemas.BifrostRequest) bool {
 	case root.IsObject():
 		return names(root)
 	case root.IsArray():
-		tasks := root.Array()
-		if len(tasks) == 0 {
-			return false
-		}
-		for _, task := range tasks {
-			if !names(task) {
-				return false
-			}
-		}
-		return true
+		// Walked in place rather than materialised: a body may hold millions of tasks.
+		tasks, all := 0, true
+		root.ForEach(func(_, task gjson.Result) bool {
+			tasks++
+			all = names(task)
+			return all
+		})
+		return tasks > 0 && all
 	}
 	return false
 }
@@ -715,11 +720,12 @@ func passthroughQueuedAcknowledgment(body []byte) bool {
 		return false
 	}
 	data := gjson.GetBytes(body, "data")
-	if !data.IsArray() || len(data.Array()) == 0 {
+	if !data.IsArray() {
 		return false
 	}
-	queued := true
+	items, queued := 0, true
 	data.ForEach(func(_, item gjson.Result) bool {
+		items++
 		if !item.IsObject() {
 			queued = false
 			return false
@@ -734,7 +740,7 @@ func passthroughQueuedAcknowledgment(body []byte) bool {
 		})
 		return queued
 	})
-	return queued
+	return items > 0 && queued
 }
 
 // passthroughBodyRepeatsModel reports whether a passthrough body gives a "model" key twice in one

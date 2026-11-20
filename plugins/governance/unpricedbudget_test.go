@@ -628,6 +628,18 @@ func TestQueuedPassthroughAcknowledgmentDoesNotRefuseTheModel(t *testing.T) {
 	plugin.wg.Wait()
 	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", request(schemas.PassthroughRequest)), "a queued acknowledgment does not refuse the model")
 
+	// A passthrough the provider refused (a 4xx relayed as the answer) delivered nothing.
+	ctx = resolverCtx(plugin.store, "sk-bf-budget")
+	_, shortCircuit, err = plugin.PreLLMHook(ctx, request(schemas.PassthroughRequest))
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit)
+	refused := answer(schemas.PassthroughRequest, `{"error":{"message":"invalid request"}}`)
+	refused.PassthroughResponse.StatusCode = 400
+	_, _, err = plugin.PostLLMHook(ctx, refused, nil)
+	require.NoError(t, err)
+	plugin.wg.Wait()
+	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", request(schemas.PassthroughRequest)), "a refused passthrough does not refuse the model")
+
 	ctx = resolverCtx(plugin.store, "sk-bf-budget")
 	_, shortCircuit, err = plugin.PreLLMHook(ctx, request(schemas.PassthroughStreamRequest))
 	require.NoError(t, err)
