@@ -919,10 +919,12 @@ func TestRepeatedBodyModelCannotRunAModelTheKeyIsNotAllowed(t *testing.T) {
 }
 
 // TestBodyDeclaredAsAnotherTypeNamesNoModel: core's guard reads a forwarded body by its declared
-// type (TXE-8012), and so does governance, so JSON sent as text/plain or octet-stream is content
-// with no model in it. A key restricted to some models refuses it as naming none, so the body
+// type (TXE-8012), and so does governance, so a body declared text/plain or octet-stream is
+// content with no model in it. JSON naming a model under such a type is refused 400 by the guard
+// (a vendor parsing it would run a model no gate saw, past a model's own limits), so the body
 // that once ran a model the key forbids ({"model":"gpt-4o","model":"o1"} as text/plain) is still
-// refused, by the model gate rather than by the guard.
+// refused. A text upload that only opens with "{" reaches governance, and a key restricted to
+// some models refuses it as naming none.
 func TestBodyDeclaredAsAnotherTypeNamesNoModel(t *testing.T) {
 	vk := buildVirtualKeyWithProviders("vk-typed", "sk-bf-typed", "Typed VK", []configstoreTables.TableVirtualKeyProviderConfig{
 		buildProviderConfig("openai", []string{"gpt-4o"}),
@@ -942,24 +944,33 @@ func TestBodyDeclaredAsAnotherTypeNamesNoModel(t *testing.T) {
 	}
 	for _, tc := range []struct {
 		name, contentType, body string
-		want                    Decision
+		mislabeled              bool     // refused 400 by core's guard
+		want                    Decision // otherwise governance's decision
 	}{
-		{"repeated model as text/plain", "text/plain", `{"model":"gpt-4o","model":"o1"}`, DecisionModelBlocked},
-		{"allowed model as octet-stream", "application/octet-stream", `{"model":"gpt-4o"}`, DecisionModelBlocked},
-		{"text upload opening with a brace", "text/plain", `{hello`, DecisionModelBlocked},
-		{"allowed model as JSON", "application/json", `{"model":"gpt-4o"}`, DecisionAllow},
+		{"repeated model as text/plain", "text/plain", `{"model":"gpt-4o","model":"o1"}`, true, ""},
+		{"allowed model as octet-stream", "application/octet-stream", `{"model":"gpt-4o"}`, true, ""},
+		{"text upload opening with a brace", "text/plain", `{hello`, false, DecisionModelBlocked},
+		{"allowed model as JSON", "application/json", `{"model":"gpt-4o"}`, false, DecisionAllow},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, preErr := client.RunStreamPreHooks(presentCtx("sk-bf-typed"), passthrough(tc.contentType, tc.body))
-			if tc.want == DecisionAllow {
+			switch {
+			case tc.mislabeled:
+				require.NotNil(t, preErr, "JSON naming a model declared %s was admitted", tc.contentType)
+				require.NotNil(t, preErr.StatusCode)
+				assert.Equal(t, 400, *preErr.StatusCode)
+				assert.Equal(t, schemas.ErrorTypeCallerInvalidRequest, preErr.ExtraFields.ErrorType)
+				require.NotNil(t, preErr.Error)
+				assert.Contains(t, preErr.Error.Message, "is JSON naming model but is declared "+tc.contentType)
+			case tc.want == DecisionAllow:
 				assert.Nil(t, preErr)
-				return
+			default:
+				require.NotNil(t, preErr, "a body declared %s was admitted under a model restriction", tc.contentType)
+				require.NotNil(t, preErr.Type)
+				assert.Equal(t, string(tc.want), *preErr.Type)
+				require.NotNil(t, preErr.Error)
+				assert.Contains(t, preErr.Error.Message, "names none that can be checked")
 			}
-			require.NotNil(t, preErr, "a body declared %s was admitted under a model restriction", tc.contentType)
-			require.NotNil(t, preErr.Type)
-			assert.Equal(t, string(tc.want), *preErr.Type)
-			require.NotNil(t, preErr.Error)
-			assert.Contains(t, preErr.Error.Message, "names none that can be checked")
 		})
 	}
 }

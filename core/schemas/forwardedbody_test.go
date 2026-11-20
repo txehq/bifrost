@@ -332,3 +332,28 @@ func TestAmbiguousMultipartJSONPart(t *testing.T) {
 		})
 	}
 }
+
+// TestMislabeledJSONBody: a body declared as a non-JSON type that is strict JSON naming a gated
+// key at its root is reported (TXE-8012); uploads that only look like JSON are not.
+func TestMislabeledJSONBody(t *testing.T) {
+	for _, tc := range []struct {
+		contentType, body, mediaType, key string
+	}{
+		{"text/plain", `{"model":"gpt-4o"}`, "text/plain", "model"},
+		{"application/octet-stream", ` [{"task":1},{"Model":"x"}]`, "application/octet-stream", "model"},
+		{"text/plain; charset=utf-8", "\ufeff{\"MODEL\":\"x\"}", "text/plain", "model"},
+		{"text/plain", `{hello`, "", ""},
+		{"text/plain", `{"model":"a",}`, "", ""},
+		{"application/octet-stream", "{\"model\":\"a\"}\n{\"model\":\"b\"}\n", "", ""},
+		{"text/plain", `{"metadata":{"model":"a"}}`, "", ""},
+		{"text/plain", `["model"]`, "", ""},
+		{"application/json", `{"model":"a"}`, "", ""},
+		{"", `{"model":"a"}`, "", ""},
+		{"application/x-ndjson", `{"model":"a"}`, "", ""},
+	} {
+		mediaType, key, mislabeled := MislabeledJSONBody([]byte(tc.body), tc.contentType)
+		if mislabeled != (tc.key != "") || mediaType != tc.mediaType || key != tc.key {
+			t.Errorf("MislabeledJSONBody(%q, %q) = %q, %q, %t; want %q, %q", tc.body, tc.contentType, mediaType, key, mislabeled, tc.mediaType, tc.key)
+		}
+	}
+}

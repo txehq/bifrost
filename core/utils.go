@@ -1204,17 +1204,26 @@ func setAssistantRoleOnce(resp *schemas.BifrostChatResponse, roleSent bool) bool
 // refuseAmbiguousForwardedBody refuses a request whose forwarded body (a passthrough body, or a
 // raw request body sent as written) repeats a member: gjson keeps the first of two equal keys,
 // encoding/json, sonic and most vendors the last, so a gate would judge one model, storage URI or
-// price dimension while the vendor ran another (TXE-7994). See schemas.AmbiguousBodyMember.
+// price dimension while the vendor ran another (TXE-7994). See schemas.AmbiguousBodyMember. It also
+// refuses a body declared as a non-JSON type that is JSON naming a gated key: no gate reads such a
+// body as JSON, so a vendor parsing it would run a model no gate saw (TXE-8012,
+// schemas.MislabeledJSONBody).
 func refuseAmbiguousForwardedBody(req *schemas.BifrostRequest) *schemas.LLMPluginShortCircuit {
 	if req == nil {
 		return nil
 	}
-	member, ambiguous := schemas.AmbiguousBodyMember(req.ForwardedBody(), req.ForwardedBodyContentType())
-	if !ambiguous {
+	body, contentType := req.ForwardedBody(), req.ForwardedBodyContentType()
+	var message string
+	if member, ambiguous := schemas.AmbiguousBodyMember(body, contentType); ambiguous {
+		message = fmt.Sprintf("request body gives %s more than once; Bifrost and the provider could read different values, so give each member once", member)
+	} else if mediaType, key, mislabeled := schemas.MislabeledJSONBody(body, contentType); mislabeled {
+		// Bifrost reads a body by its declared type (TXE-8012), so a JSON body naming a model under
+		// another type would run a model no gate saw.
+		message = fmt.Sprintf("request body is JSON naming %s but is declared %s; Bifrost reads a body by its declared type, so send it as application/json", key, mediaType)
+	} else {
 		return nil
 	}
-	bifrostErr := newBifrostErrorFromMsg(schemas.ErrorTypeCallerInvalidRequest,
-		fmt.Sprintf("request body gives %s more than once; Bifrost and the provider could read different values, so give each member once", member))
+	bifrostErr := newBifrostErrorFromMsg(schemas.ErrorTypeCallerInvalidRequest, message)
 	bifrostErr.StatusCode = schemas.Ptr(400)
 	bifrostErr.AllowFallbacks = schemas.Ptr(false)
 	return &schemas.LLMPluginShortCircuit{Error: bifrostErr}

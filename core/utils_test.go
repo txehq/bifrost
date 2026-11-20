@@ -1136,6 +1136,18 @@ func TestRunLLMPreHooksForwardsABodyDeclaredAsAnotherType(t *testing.T) {
 		typed("application/json", `{"model":"a","model":"b"}`))
 	require.NotNil(t, shortCircuit, "a body declared JSON that repeats a member was admitted")
 	assert.Contains(t, shortCircuit.Error.Error.Message, "gives model more than once")
+
+	// JSON naming a model under another type would run a model no gate read: refused, 400.
+	for _, contentType := range []string{"text/plain", "application/octet-stream"} {
+		gate := &bodyReadingGate{fakeRoutingPlugin: fakeRoutingPlugin{name: "gate"}}
+		_, shortCircuit, _ = newRoutingCommitPipeline(gate).RunLLMPreHooks(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+			typed(contentType, `{"model":"o1","messages":[]}`))
+		require.NotNil(t, shortCircuit, "JSON naming a model declared %s was admitted", contentType)
+		assert.Equal(t, 400, *shortCircuit.Error.StatusCode)
+		assert.Equal(t, schemas.ErrorTypeCallerInvalidRequest, shortCircuit.Error.ExtraFields.ErrorType)
+		assert.Contains(t, shortCircuit.Error.Error.Message, "is JSON naming model but is declared "+contentType)
+		assert.False(t, gate.ran)
+	}
 }
 
 // TestEveryPluginGateRunsBehindTheForwardedBodyGuard is the class check for TXE-7994: plugin
@@ -1349,4 +1361,101 @@ func TestEveryForwardedBodyReaderUsesTheSharedClassifier(t *testing.T) {
 	for site := range exempt {
 		assert.Contains(t, readers, site, "exemption %s names no reader; drop it", site)
 	}
+}
+
+// TestBodyReadersGateOnlyOnTheSharedKeyList: the guard's case-folding and mislabeled-JSON
+// refusal cover the keys in schemas.GatedBodyKeys, so a reader that gates on another key would be
+// read one way by it and another by the vendor (TXE-8012). It fails when a forwarded-body reader
+// compares a body key to a string literal instead of a schemas.Body*Key constant, or uses a
+// constant that is neither in GatedBodyKeys nor the named non-gate BodyStreamKey.
+func TestBodyReadersGateOnlyOnTheSharedKeyList(t *testing.T) {
+	readers := map[string]bool{
+		"../plugins/governance/main.go:passthroughBodyModels":                             true,
+		"../transports/bifrost-http/integrations/router.go:parsePassthroughBody":          true,
+		"../transports/bifrost-http/integrations/router.go:passthroughObjectModel":        true,
+		"../transports/bifrost-http/integrations/router.go:parseMultipartPassthroughBody": true,
+	}
+	allowed := map[string]bool{"BodyStreamKey": true}
+	for _, key := range schemas.GatedBodyKeys {
+		switch key {
+		case schemas.BodyModelKey:
+			allowed["BodyModelKey"] = true
+		default:
+			t.Fatalf("GatedBodyKeys holds %q with no Body*Key constant; add one", key)
+		}
+	}
+	found := map[string]bool{}
+	var literals, unlisted []string
+	for _, root := range []string{"../transports", "../plugins"} {
+		require.NoError(t, filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				if name := d.Name(); name == "node_modules" || name == "vendor" || name == "testdata" || (strings.HasPrefix(name, ".") && path != root) {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			file, parseErr := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+			require.NoError(t, parseErr, path)
+			for _, decl := range file.Decls {
+				fn, ok := decl.(*ast.FuncDecl)
+				site := filepath.ToSlash(path) + ":"
+				if !ok || fn.Body == nil || !readers[site+fn.Name.Name] {
+					continue
+				}
+				site += fn.Name.Name
+				found[site] = true
+				literal := func(e ast.Expr) {
+					if lit, ok := e.(*ast.BasicLit); ok && lit.Kind == token.STRING && lit.Value != `""` {
+						literals = append(literals, site+" "+lit.Value)
+					}
+				}
+				ast.Inspect(fn.Body, func(n ast.Node) bool {
+					switch node := n.(type) {
+					case *ast.CallExpr:
+						if sel, ok := node.Fun.(*ast.SelectorExpr); ok && (sel.Sel.Name == "Get" || sel.Sel.Name == "GetBytes" || sel.Sel.Name == "EqualFold") {
+							for _, arg := range node.Args {
+								literal(arg)
+							}
+						}
+					case *ast.CaseClause:
+						for _, e := range node.List {
+							literal(e)
+						}
+					case *ast.BinaryExpr:
+						// A key read from the body (gjson's key.Str) compared to a literal; a value
+						// compared to one ("true", "1") is not a key.
+						isKey := func(e ast.Expr) bool {
+							sel, ok := e.(*ast.SelectorExpr)
+							return ok && sel.Sel.Name == "Str"
+						}
+						if node.Op == token.EQL || node.Op == token.NEQ {
+							if isKey(node.X) {
+								literal(node.Y)
+							}
+							if isKey(node.Y) {
+								literal(node.X)
+							}
+						}
+					case *ast.SelectorExpr:
+						if pkg, ok := node.X.(*ast.Ident); ok && pkg.Name == "schemas" && strings.HasPrefix(node.Sel.Name, "Body") && strings.HasSuffix(node.Sel.Name, "Key") && !allowed[node.Sel.Name] {
+							unlisted = append(unlisted, site+" schemas."+node.Sel.Name)
+						}
+					}
+					return true
+				})
+			}
+			return nil
+		}))
+	}
+	for site := range readers {
+		assert.True(t, found[site], "reader %s not found; update the list", site)
+	}
+	assert.Empty(t, literals, "a forwarded-body reader compares a key to a string literal; use schemas.BodyModelKey (gated, in GatedBodyKeys) or schemas.BodyStreamKey")
+	assert.Empty(t, unlisted, "a forwarded-body reader gates on a key not in schemas.GatedBodyKeys; add it there so the guard covers it")
 }

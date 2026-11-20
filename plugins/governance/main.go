@@ -1365,7 +1365,7 @@ func passthroughBodyModels(req *schemas.BifrostRequest) []string {
 	seen := make(map[string]struct{})
 	var models []string
 	add := func(object gjson.Result) bool {
-		if value := object.Get("model"); value.Type == gjson.String {
+		if value := object.Get(schemas.BodyModelKey); value.Type == gjson.String {
 			if m := strings.TrimSpace(value.Str); m != "" {
 				if _, ok := seen[m]; !ok {
 					seen[m] = struct{}{}

@@ -3684,7 +3684,7 @@ func parsePassthroughBody(contentType string, body []byte) (model string, isStre
 	if err != nil {
 		return "", false, err
 	}
-	isStream = root.Get("stream").Type == gjson.True
+	isStream = root.Get(schemas.BodyStreamKey).Type == gjson.True
 	return
 }
 
@@ -3694,9 +3694,9 @@ func passthroughObjectModel(object gjson.Result) (string, error) {
 	var modelKeys int
 	var modelValue gjson.Result
 	object.ForEach(func(key, value gjson.Result) bool {
-		if strings.EqualFold(key.Str, "model") {
+		if strings.EqualFold(key.Str, schemas.BodyModelKey) {
 			modelKeys++
-			if key.Str == "model" {
+			if key.Str == schemas.BodyModelKey {
 				modelValue = value
 			}
 		}
@@ -3727,11 +3727,11 @@ func parseMultipartPassthroughBody(body []byte, boundary string) (model string, 
 		}
 		// Plain form field — check by name.
 		switch part.FormName() {
-		case "model":
+		case schemas.BodyModelKey:
 			val, _ := io.ReadAll(part)
 			part.Close()
 			model = strings.TrimSpace(string(val))
-		case "stream":
+		case schemas.BodyStreamKey:
 			val, _ := io.ReadAll(part)
 			part.Close()
 			s := strings.TrimSpace(strings.ToLower(string(val)))

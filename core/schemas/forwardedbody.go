@@ -224,7 +224,7 @@ func trimForwardedBody(body []byte) []byte {
 //
 //   - JSON: an object anywhere in the document that gives one key twice, compared as decoded,
 //     so "model" and "mod\u0065l" are the same key. In the root object and the objects of a
-//     root array, a gated key (gatedBodyKeys) is also compared without case, since
+//     root array, a gated key (GatedBodyKeys) is also compared without case, since
 //     encoding/json and sonic fill a struct field from any casing. A document nested deeper
 //     than maxForwardedBodyDepth is refused, and so is one that does not parse strictly: a
 //     lenient vendor parser might read members gjson does not see.
@@ -251,6 +251,51 @@ func AmbiguousBodyMember(body []byte, contentType string) (string, bool) {
 		return ambiguousMultipartField(trimmed, class.Boundary)
 	}
 	return "", false
+}
+
+// MislabeledJSONBody reports a forwarded body declared as a non-JSON type that is nonetheless a
+// strict JSON document naming a gated key (GatedBodyKeys, compared without case) in its root
+// object or an object of a root array: the media type it declares and the key it names. No
+// reader reads such a body as JSON (ClassifyForwardedBody calls it content), so the gates see no
+// model, while a vendor that parses its declared type as JSON would run the one it names, past a
+// model's own budget or rate limit. Core refuses it and asks for application/json (TXE-8012).
+// A text upload opening with "{", a JSON Lines file, and JSON naming no gated key at the root
+// are not refused: nothing in them selects a model.
+func MislabeledJSONBody(body []byte, contentType string) (mediaType, key string, mislabeled bool) {
+	class := ClassifyForwardedBody(contentType, body)
+	if class.Format != ForwardedBodyOpaque || !class.Declared {
+		return "", "", false
+	}
+	trimmed := trimForwardedBody(body)
+	if len(trimmed) == 0 || (trimmed[0] != '{' && trimmed[0] != '[') {
+		return "", "", false
+	}
+	if _, deep := jsonNestedTooDeep(trimmed); deep || !gjson.ValidBytes(trimmed) {
+		return "", "", false
+	}
+	mediaType, _, _ = mime.ParseMediaType(contentType)
+	named := func(object gjson.Result) bool {
+		object.ForEach(func(member, _ gjson.Result) bool {
+			if gated := gatedBodyKey(member.Str); gated != "" {
+				key = gated
+				return false
+			}
+			return true
+		})
+		return key != ""
+	}
+	root := gjson.ParseBytes(trimmed)
+	if root.IsObject() {
+		named(root)
+	} else {
+		root.ForEach(func(_, element gjson.Result) bool {
+			return !(element.IsObject() && named(element))
+		})
+	}
+	if key == "" {
+		return "", "", false
+	}
+	return mediaType, key, true
 }
 
 // ambiguousJSONDocument checks one JSON document: nested no deeper than maxForwardedBodyDepth
@@ -361,17 +406,26 @@ func plainHeaderValue(value string) bool {
 // utf8ByteOrderMark opens some JSON documents; Python's json.loads, among others, skips it.
 var utf8ByteOrderMark = []byte{0xef, 0xbb, 0xbf}
 
-// gatedBodyKeys are the members an access gate or the router reads from a forwarded body by
+// GatedBodyKeys are the members an access gate or the router reads from a forwarded body by
 // name. Two of them that differ only in case are ambiguous too: a typed decoder fills the field
 // from either, gjson and the vendor read the exact spelling. They are read only from the root
 // object and from the objects of a root array (governance's passthrough models, a typed decoder
 // of the request), so only those objects are compared without case: elsewhere, such as a tool's
 // input_schema.properties, keys are user-defined and case-sensitive.
-var gatedBodyKeys = []string{"model"}
+var GatedBodyKeys = []string{BodyModelKey}
+
+// BodyModelKey is the member the gates (governance's model access and limits) and the router read
+// a forwarded body's model from. Readers use this constant, never a literal:
+// TestBodyReadersGateOnlyOnTheSharedKeyList fails otherwise.
+const BodyModelKey = "model"
+
+// BodyStreamKey is the member the passthrough router reads a stream flag from. It is not gated: a
+// misread changes how the answer is framed, not what the caller may run.
+const BodyStreamKey = "stream"
 
 // gatedBodyKey returns the gated key name folds to, or "".
 func gatedBodyKey(name string) string {
-	for _, key := range gatedBodyKeys {
+	for _, key := range GatedBodyKeys {
 		if strings.EqualFold(name, key) {
 			return key
 		}
