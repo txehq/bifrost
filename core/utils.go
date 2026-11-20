@@ -578,6 +578,10 @@ func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	// inherit it. Cleared here, not when the invoke method returns, because the
 	// in-flight stream still reads it asynchronously (#6825).
 	ctx.ClearValue(schemas.BifrostContextKeySSEReaderFactory)
+	// azurespeech's estimate of the characters Azure bills is Azure's alone: a fallback to
+	// another speech provider that is then interrupted must be priced on its own input
+	// characters, not on Azure's SSML markup and doubled Han characters (TXE-7073).
+	ctx.ClearValue(schemas.BifrostContextKeySpeechStreamEstimatedBilledChars)
 }
 
 // restoreProviderResponseHeaders puts headers, the primary attempt's provider response headers,
