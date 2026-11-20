@@ -112,6 +112,12 @@ func (mc *ModelCatalog) PriceStatus(provider schemas.ModelProvider, model string
 	return mc.datasheet.PriceStatus(provider, model, requestType, (*datasheet.LookupScopes)(scopes))
 }
 
+// PriceIdentity is PriceStatus with the identity of the pricing row that decided it; see
+// datasheet.PriceIdentity.
+func (mc *ModelCatalog) PriceIdentity(provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *PricingLookupScopes) (string, PriceStatus) {
+	return mc.datasheet.PriceIdentity(provider, model, requestType, (*datasheet.LookupScopes)(scopes))
+}
+
 // SetIgnoreProviderCost toggles whether the provider's self-reported usage.cost
 // is ignored, so the request is priced from the catalog and pricing overrides.
 func (mc *ModelCatalog) SetIgnoreProviderCost(provider schemas.ModelProvider, ignore bool) {

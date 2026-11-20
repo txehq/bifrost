@@ -2093,7 +2093,7 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifro
 		// An answer charged to a dollar budget that priced at $0 spent nothing against it: logged,
 		// and the model refused under a budget from now on (TXE-7957, unpricedbudget.go).
 		if len(budgets) > 0 && budgetPricingOf(requestType) == budgetPricingAnswer && deliveredAnswer(result) {
-			p.resolver.noteUnpricedAnswer(provider, model, requestType, cost, pricingScopes, requestID)
+			p.resolver.noteUnpricedAnswer(provider, model, requestType, cost, pricingScopes, requestID, limitIDs(budgets))
 		}
 
 		// Create usage update for tracker (business logic)
@@ -2128,18 +2128,9 @@ func (p *GovernancePlugin) GetGovernanceStore() GovernanceStore {
 func (p *GovernancePlugin) ReportUsage(ctx context.Context, usage jobaccounting.UsageReport) error {
 	var errs []error
 
-	// A settled job charged to a dollar budget that priced at $0 spent nothing against it: logged,
-	// and its models refused under a budget from now on (TXE-7957, unpricedbudget.go). A job is
-	// priced per model when it reports models, so each is judged on its own share.
-	if len(usage.BudgetIDs) > 0 {
-		if len(usage.ModelUsage) == 0 {
-			p.resolver.noteUnpricedAnswer(usage.Provider, usage.Model, schemas.BatchCreateRequest, usage.Cost, nil, usage.RequestID)
-		}
-		for _, modelUsage := range usage.ModelUsage {
-			p.resolver.noteUnpricedAnswer(usage.Provider, modelUsage.Model, schemas.BatchCreateRequest, modelUsage.Cost, nil, usage.RequestID)
-		}
-	}
-
+	// A settled job's cost is always a price (TXE-7957): job accounting reports a settlement only
+	// when it is priced and complete, and parks one it cannot price instead. A cost of $0 here is a
+	// job that owed nothing (a failed, cancelled or expired video), not an unpriced answer.
 	if usage.Cost > 0 {
 		for _, budgetID := range usage.BudgetIDs {
 			billingKey := fmt.Sprintf("%s:budget:%s", usage.RequestID, budgetID)

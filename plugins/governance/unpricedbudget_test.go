@@ -1,13 +1,22 @@
 package governance
 
 import (
+	"context"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
+	"path/filepath"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/capsohq/bifrost/core/schemas"
+	"github.com/capsohq/bifrost/framework/configstore"
+	configstoreTables "github.com/capsohq/bifrost/framework/configstore/tables"
+	"github.com/capsohq/bifrost/framework/jobaccounting"
+	"github.com/capsohq/bifrost/framework/modelcatalog"
+	"github.com/capsohq/bifrost/framework/modelcatalog/datasheet"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -77,23 +86,256 @@ func TestEveryRequestTypeHasABudgetPricing(t *testing.T) {
 	}
 }
 
-// The unpriced set refuses a triple it holds, folds a stream onto its request type, keeps every
-// settled job type under one key, and once full refuses rather than forgets.
+// The unpriced set refuses a row only for the budgets its $0 answer was charged to, and a budget
+// that fills is refused on every row while other budgets are not.
 func TestUnpricedAnswers(t *testing.T) {
 	u := newUnpricedAnswers()
-	u.record(schemas.OpenAI, "m", schemas.ChatCompletionStreamRequest)
-	assert.True(t, u.contains(schemas.OpenAI, "m", schemas.ChatCompletionRequest))
-	assert.False(t, u.contains(schemas.OpenAI, "m", schemas.EmbeddingRequest))
-	assert.False(t, u.contains(schemas.Anthropic, "m", schemas.ChatCompletionRequest))
+	u.record([]string{"team", "key-a"}, "openai|image_generation|token-image")
 
-	u.record(schemas.OpenAI, "clip", schemas.BatchCreateRequest)
-	assert.True(t, u.contains(schemas.OpenAI, "clip", schemas.VideoGenerationRequest))
+	budget, refused := u.refused([]string{"key-b", "team"}, "openai|image_generation|token-image")
+	assert.True(t, refused, "a budget the $0 answer was charged to is refused on that row")
+	assert.Equal(t, "team", budget)
+	_, refused = u.refused([]string{"key-b"}, "openai|image_generation|token-image")
+	assert.False(t, refused, "another tenant's budget is not refused")
+	_, refused = u.refused([]string{"key-a"}, "openai|chat|gpt-4o")
+	assert.False(t, refused, "another row is not refused")
+	u.record([]string{"key-a"}, "")
+	_, refused = u.refused([]string{"key-a"}, "")
+	assert.False(t, refused, "a request with no row is the gate's to refuse, not the set's")
 
-	for i := 0; len(u.seen) < maxUnpricedAnswers; i++ {
-		u.record(schemas.OpenAI, strconv.Itoa(i), schemas.ChatCompletionRequest)
+	for i := 0; len(u.byBudget["key-a"].rows) < maxUnpricedRowsPerBudget; i++ {
+		u.record([]string{"key-a"}, "row-"+strconv.Itoa(i))
 	}
-	assert.False(t, u.contains(schemas.OpenAI, "never-seen", schemas.ChatCompletionRequest))
-	u.record(schemas.OpenAI, "one-too-many", schemas.ChatCompletionRequest)
-	assert.True(t, u.contains(schemas.OpenAI, "never-seen", schemas.ChatCompletionRequest), "a full set refuses every triple rather than forget one")
-	assert.LessOrEqual(t, len(u.seen), maxUnpricedAnswers)
+	_, refused = u.refused([]string{"key-a"}, "never-seen")
+	assert.False(t, refused)
+	u.record([]string{"key-a"}, "one-too-many")
+	_, refused = u.refused([]string{"key-a"}, "never-seen")
+	assert.True(t, refused, "a full budget is refused on every row rather than forget one")
+	_, refused = u.refused([]string{"key-b"}, "never-seen")
+	assert.False(t, refused, "a full budget refuses only itself")
+	assert.LessOrEqual(t, len(u.byBudget["key-a"].rows), maxUnpricedRowsPerBudget)
+}
+
+// The hook tests below drive PreLLMHook, PostLLMHook and ReportUsage, which exist before TXE-7957.
+
+// unpricedBudgetPlugin is a governance plugin over a price book with a priced chat model (gpt-4o),
+// a free one (free-chat), an image model priced only per image token (token-image), a video model
+// priced per second (clip-1), a model priced only by an override scoped to the openai provider key
+// (key-priced), and none for house-llm. vk-budget and vk-other-tenant each have their own $100
+// budget; vk-open has none.
+func unpricedBudgetPlugin(t testing.TB) (*GovernancePlugin, *LocalGovernanceStore) {
+	t.Helper()
+	sheet := filepath.Join(t.TempDir(), "pricing.json")
+	require.NoError(t, os.WriteFile(sheet, []byte(`{
+		"gpt-4o":{"provider":"openai","mode":"chat","input_cost_per_token":0.0000025,"output_cost_per_token":0.00001},
+		"free-chat":{"provider":"openai","mode":"chat","input_cost_per_token":0,"output_cost_per_token":0},
+		"token-image":{"provider":"openai","mode":"image_generation","output_cost_per_image_token":0.00004},
+		"clip-1":{"provider":"openai","mode":"video_generation","output_cost_per_second":0.1}
+	}`), 0o600))
+	ds := datasheet.New(nil, NewMockLogger(), datasheet.Config{URL: "file://" + sheet})
+	require.NoError(t, ds.LoadFromURLIntoMemory(context.Background()))
+	keyID := "openai-key-1"
+	require.NoError(t, ds.SetOverrides([]configstoreTables.TablePricingOverride{{
+		ID: "key-priced-override", ScopeKind: string(datasheet.ScopeKindProviderKey), ProviderKeyID: &keyID,
+		MatchType: string(datasheet.MatchTypeExact), Pattern: "key-priced", RequestTypes: []schemas.RequestType{schemas.ChatCompletionRequest},
+		PricingPatchJSON: `{"input_cost_per_token":0.000001,"output_cost_per_token":0.000002}`,
+	}}))
+	catalog := modelcatalog.NewTestCatalogWithDatasheet(ds)
+
+	logger := NewMockLogger()
+	budget := buildBudgetWithUsage("budget-unpriced", 100.0, 0, "1d")
+	budgeted := buildVirtualKeyWithBudget("vk-budget", "sk-bf-budget", "Budget VK", budget)
+	otherBudget := buildBudgetWithUsage("budget-other-tenant", 100.0, 0, "1d")
+	otherTenant := buildVirtualKeyWithBudget("vk-other-tenant", "sk-bf-other", "Other tenant VK", otherBudget)
+	open := buildVirtualKey("vk-open", "sk-bf-open", "Open VK", true)
+	open.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{buildProviderConfig("openai", []string{"*"})}
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*budgeted, *otherTenant, *open},
+		Budgets:     []configstoreTables.TableBudget{*budget, *otherBudget},
+	}, nil, nil)
+	require.NoError(t, err)
+	providers := &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.OpenAI: {Keys: []schemas.Key{{ID: keyID}}},
+	}}
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, catalog, nil, providers)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+	return plugin, store
+}
+
+func requireUnpricedRefusal(t *testing.T, shortCircuit *schemas.LLMPluginShortCircuit, what string) {
+	t.Helper()
+	require.NotNil(t, shortCircuit, "%s: a request under a dollar budget that cannot be priced must be refused before the call", what)
+	require.NotNil(t, shortCircuit.Error, what)
+	require.NotNil(t, shortCircuit.Error.StatusCode, what)
+	assert.Equal(t, 403, *shortCircuit.Error.StatusCode, what)
+	assert.Equal(t, schemas.ErrorTypePolicyModelBlocked, shortCircuit.Error.ExtraFields.ErrorType, what)
+	require.NotNil(t, shortCircuit.Error.Type, what)
+	assert.Equal(t, "model_unpriced", *shortCircuit.Error.Type, what)
+}
+
+func chatOn(model string) *schemas.BifrostRequest {
+	return &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: model}}
+}
+
+func preLLM(t testing.TB, plugin *GovernancePlugin, vk string, req *schemas.BifrostRequest) *schemas.LLMPluginShortCircuit {
+	t.Helper()
+	_, shortCircuit, err := plugin.PreLLMHook(resolverCtx(plugin.store, vk), req)
+	require.NoError(t, err)
+	return shortCircuit
+}
+
+// A virtual key with a dollar budget cannot obtain answers from a model the price book cannot
+// price: each request is refused before the upstream call, however often it is repeated. Priced
+// and free models, a model priced only once its key is selected, a key with no budget, an inline
+// batch whose items are all priced, and an operation that is never charged are unaffected.
+func TestUnpricedModelUnderADollarBudgetIsRefusedBeforeTheCall(t *testing.T) {
+	plugin, _ := unpricedBudgetPlugin(t)
+
+	for i := 0; i < 3; i++ {
+		requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", chatOn("house-llm")), "chat on a model with no row")
+	}
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionStreamRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "house-llm"},
+	}), "a streamed chat on a model with no row")
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", &schemas.BifrostRequest{
+		RequestType: schemas.EmbeddingRequest, EmbeddingRequest: &schemas.BifrostEmbeddingRequest{Provider: schemas.OpenAI, Model: "gpt-4o"},
+	}), "an embedding on a model priced only for chat")
+
+	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", chatOn("gpt-4o")), "a priced model is served under a budget")
+	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", chatOn("free-chat")), "a model the price book prices at $0 is free, not unpriced")
+	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", chatOn("key-priced")), "a model priced by an override on the provider's key is priced before the key is selected")
+	assert.Nil(t, preLLM(t, plugin, "sk-bf-open", chatOn("house-llm")), "a key with no dollar budget has nothing to charge, so it is not refused")
+	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", &schemas.BifrostRequest{
+		RequestType: schemas.FileListRequest, FileListRequest: &schemas.BifrostFileListRequest{Provider: schemas.OpenAI},
+	}), "an operation that is never charged is not priced")
+
+	inlineBatch := func(model string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{
+			Provider: schemas.OpenAI,
+			Requests: []schemas.BatchRequestItem{{CustomID: "1", Body: map[string]any{"model": model}}},
+		}}
+	}
+	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", inlineBatch("gpt-4o")), "an inline batch naming no model of its own, whose items are priced, is served")
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", inlineBatch("house-llm")), "an inline batch with an item on a model with no row")
+}
+
+// An answer the gate admitted that still priced at $0 under a dollar budget fails closed for that
+// budget: the next request charged to it on the same price book row, however the model is spelled,
+// is refused before the call. Another tenant's budget and a key with no budget are not refused.
+// Image tokens are the row's only price here, and the answer reports none.
+func TestUnpricedAnswerUnderADollarBudgetRefusesTheModelAfter(t *testing.T) {
+	plugin, store := unpricedBudgetPlugin(t)
+	image := func(model string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{
+			RequestType:            schemas.ImageGenerationRequest,
+			ImageGenerationRequest: &schemas.BifrostImageGenerationRequest{Provider: schemas.OpenAI, Model: model},
+		}
+	}
+	ctx := resolverCtx(plugin.store, "sk-bf-budget")
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-image-1")
+	_, shortCircuit, err := plugin.PreLLMHook(ctx, image("token-image"))
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit, "a model with a price is admitted")
+	_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{ImageGenerationResponse: &schemas.BifrostImageGenerationResponse{
+		Data: []schemas.ImageData{{URL: "https://example.invalid/1.png"}},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.ImageGenerationRequest, Provider: schemas.OpenAI, OriginalModelRequested: "token-image",
+			RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenAI, Model: "token-image"},
+		},
+	}}, nil)
+	require.NoError(t, err)
+	plugin.wg.Wait()
+	assert.Zero(t, store.GetGovernanceData(context.Background()).Budgets["budget-unpriced"].CurrentUsage, "the first answer priced at $0")
+
+	assert.EventuallyWithT(t, func(c *assert.CollectT) {
+		_, shortCircuit, err := plugin.PreLLMHook(resolverCtx(plugin.store, "sk-bf-budget"), image("token-image"))
+		assert.NoError(c, err)
+		if assert.NotNil(c, shortCircuit, "the model is refused under the budget once an answer priced at $0 against it") && assert.NotNil(c, shortCircuit.Error) {
+			assert.Equal(c, schemas.ErrorTypePolicyModelBlocked, shortCircuit.Error.ExtraFields.ErrorType)
+		}
+	}, time.Second, 10*time.Millisecond)
+
+	assert.NotNil(t, preLLM(t, plugin, "sk-bf-budget", image("TOKEN-IMAGE")), "a spelling of the model that resolves to the same row is refused too")
+	assert.Nil(t, preLLM(t, plugin, "sk-bf-open", image("token-image")), "a key with no dollar budget is not refused")
+	assert.Nil(t, preLLM(t, plugin, "sk-bf-other", image("token-image")), "another tenant's budget never saw the $0 answer, so it is not refused")
+}
+
+// A background Responses create that is still queued, one that failed, and an answer served from
+// the semantic cache carry no vendor usage: none is an unpriced answer, and none refuses the model.
+func TestQueuedOrCachedAnswerDoesNotRefuseTheModel(t *testing.T) {
+	plugin, _ := unpricedBudgetPlugin(t)
+	responses := func(status string) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{Status: &status, ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.ResponsesRequest, Provider: schemas.OpenAI, OriginalModelRequested: "gpt-4o",
+			RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenAI, Model: "gpt-4o"},
+		}}}
+	}
+	responsesRequest := &schemas.BifrostRequest{RequestType: schemas.ResponsesRequest, ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "gpt-4o"}}
+	cases := map[string]struct {
+		request *schemas.BifrostRequest
+		answer  *schemas.BifrostResponse
+	}{
+		"queued": {responsesRequest, responses("queued")},
+		"failed": {responsesRequest, responses("failed")},
+		"cached": {chatOn("gpt-4o"), &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.ChatCompletionRequest, Provider: schemas.OpenAI, OriginalModelRequested: "gpt-4o",
+			RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenAI, Model: "gpt-4o"},
+			CacheDebug:  &schemas.BifrostCacheMetadata{CacheHit: true},
+		}}}},
+	}
+	for name, tc := range cases {
+		ctx := resolverCtx(plugin.store, "sk-bf-budget")
+		_, shortCircuit, err := plugin.PreLLMHook(ctx, tc.request)
+		require.NoError(t, err)
+		require.Nil(t, shortCircuit, name)
+		_, _, err = plugin.PostLLMHook(ctx, tc.answer, nil)
+		require.NoError(t, err)
+		plugin.wg.Wait()
+		assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", tc.request), "%s: the model is still served", name)
+	}
+}
+
+// A job settles at $0 only when it owed nothing: job accounting reports a settlement to governance
+// only when it is priced and complete. A failed or cancelled video settled at $0 does not refuse
+// the model.
+func TestUnbilledSettledJobDoesNotRefuseTheModel(t *testing.T) {
+	plugin, _ := unpricedBudgetPlugin(t)
+	video := &schemas.BifrostRequest{
+		RequestType:            schemas.VideoGenerationRequest,
+		VideoGenerationRequest: &schemas.BifrostVideoGenerationRequest{Provider: schemas.OpenAI, Model: "clip-1"},
+	}
+	require.Nil(t, preLLM(t, plugin, "sk-bf-budget", video), "a priced video model is admitted")
+	require.NoError(t, plugin.ReportUsage(context.Background(), jobaccounting.UsageReport{
+		RequestID: "video-job-1", Provider: schemas.OpenAI, Model: "clip-1", Cost: 0, BudgetIDs: []string{"budget-unpriced"},
+	}))
+	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", video), "a cancelled video's $0 settlement is its price, not a missing one")
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", &schemas.BifrostRequest{
+		RequestType:            schemas.VideoGenerationRequest,
+		VideoGenerationRequest: &schemas.BifrostVideoGenerationRequest{Provider: schemas.OpenAI, Model: "house-video"},
+	}), "a video on a model with no row")
+}
+
+// BenchmarkUnpricedBudgetGate measures PreLLMHook on the paths TXE-7957 touches: a key with no
+// dollar budget (the gate returns at once), a priced model under a budget (one price book lookup),
+// and a model priced only by a key-scoped override under a budget (a lookup per configured key).
+func BenchmarkUnpricedBudgetGate(b *testing.B) {
+	plugin, _ := unpricedBudgetPlugin(b)
+	for _, bc := range []struct {
+		name, vk, model string
+	}{
+		{"no_budget", "sk-bf-open", "gpt-4o"},
+		{"budget_priced", "sk-bf-budget", "gpt-4o"},
+		{"budget_key_scoped_override", "sk-bf-budget", "key-priced"},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			req := chatOn(bc.model)
+			b.ReportAllocs()
+			for b.Loop() {
+				if shortCircuit := preLLM(b, plugin, bc.vk, req); shortCircuit != nil {
+					b.Fatalf("refused: %v", shortCircuit.Error)
+				}
+			}
+		})
+	}
 }

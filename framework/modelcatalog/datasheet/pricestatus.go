@@ -64,8 +64,18 @@ var anyModePricingRequestTypes = []schemas.RequestType{
 // only per token prices an answer with no token usage at $0. Governance charges such an answer
 // as unpriced after the fact (TXE-7957).
 func (s *Store) PriceStatus(provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *LookupScopes) PriceStatus {
+	_, status := s.PriceIdentity(provider, model, requestType, scopes)
+	return status
+}
+
+// PriceIdentity is PriceStatus with the identity of the pricing row that decided it: the row's
+// provider, mode and model as the price book files them, so every spelling of a model a lookup
+// folds onto one row (case, aliases, a custom provider's base) has one identity. A request priced
+// by an override alone, with no row, is identified by the provider, mode and the lowercased model.
+// Empty when unpriced with no row at all.
+func (s *Store) PriceIdentity(provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *LookupScopes) (string, PriceStatus) {
 	if model == "" {
-		return Unpriced
+		return "", Unpriced
 	}
 	var lookupScopes LookupScopes
 	if scopes != nil {
@@ -73,18 +83,34 @@ func (s *Store) PriceStatus(provider schemas.ModelProvider, model string, reques
 	}
 	routing := schemas.RoutingInfo{Provider: provider, Model: model}
 	if normalizeRequestType(requestType) != "unknown" {
-		return rowPriceStatus(s.resolvePricing(routing, requestType, lookupScopes))
+		row := s.resolvePricing(routing, requestType, lookupScopes)
+		return rowIdentity(row, provider, model, requestType), rowPriceStatus(row)
 	}
-	best := Unpriced
+	bestIdentity, best := "", Unpriced
 	for _, mode := range anyModePricingRequestTypes {
-		if status := rowPriceStatus(s.resolvePricing(routing, mode, lookupScopes)); status > best {
-			best = status
-			if best == Priced {
-				break
-			}
+		row := s.resolvePricing(routing, mode, lookupScopes)
+		if row == nil {
+			continue
+		}
+		if status := rowPriceStatus(row); bestIdentity == "" || status > best {
+			best, bestIdentity = status, rowIdentity(row, provider, model, mode)
+		}
+		if best == Priced {
+			break
 		}
 	}
-	return best
+	return bestIdentity, best
+}
+
+// rowIdentity names a resolved pricing row; see PriceIdentity.
+func rowIdentity(row *configstoreTables.TableModelPricing, provider schemas.ModelProvider, model string, requestType schemas.RequestType) string {
+	if row == nil {
+		return ""
+	}
+	if row.Model != "" {
+		return row.Provider + "|" + row.Mode + "|" + row.Model
+	}
+	return "override|" + string(provider) + "|" + normalizeRequestType(requestType) + "|" + strings.ToLower(model)
 }
 
 // rowPriceStatus classifies a resolved pricing row by the prices it sets.

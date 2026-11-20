@@ -132,97 +132,90 @@ func pricedModel(requestType schemas.RequestType, model string) string {
 	return model
 }
 
-// unpricedAnswers remembers the (provider, model, request type) triples whose admitted answers
-// still priced at $0 under a dollar budget, so the next request on one is refused before the
-// upstream call. It is bounded: past maxUnpricedAnswers distinct triples, every request under a
-// budget whose answer is charged by this replica is refused until restart, rather than letting a
-// caller grow the set without limit or slip past a full one.
+// unpricedAnswers remembers, per dollar budget, the pricing rows whose admitted answers still
+// priced at $0 against that budget, so the next request charged to it on such a row is refused
+// before the upstream call.
+//
+// It is keyed on what governance controls, never on what a caller sends: a budget id (budgets
+// are made by operators) and the identity of the price book row the model resolved to (every
+// spelling of a model the lookup folds onto one row has one identity). A $0 answer refuses that
+// row only for the budgets it was charged to, so one tenant's answer never refuses another's.
+// Each budget holds at most maxUnpricedRowsPerBudget rows; a budget that fills is refused on
+// every row it would be charged for, until restart, rather than forgetting one. Other budgets
+// are unaffected.
 type unpricedAnswers struct {
-	mu   sync.RWMutex
-	seen map[unpricedTriple]struct{}
+	mu       sync.RWMutex
+	byBudget map[string]*unpricedRows
+}
+
+type unpricedRows struct {
+	rows map[string]struct{}
 	full bool
 }
 
-type unpricedTriple struct {
-	provider    schemas.ModelProvider
-	model       string
-	requestType schemas.RequestType
-}
-
-const maxUnpricedAnswers = 4096
+const maxUnpricedRowsPerBudget = 1024
 
 func newUnpricedAnswers() *unpricedAnswers {
-	return &unpricedAnswers{seen: make(map[unpricedTriple]struct{})}
+	return &unpricedAnswers{byBudget: make(map[string]*unpricedRows)}
 }
 
-// settledJobs is the request type every job priced at settlement is remembered under: settlement
-// reports a job's provider and models, not the create that started it.
-const settledJobs schemas.RequestType = "settled_job"
-
-func unpricedKey(provider schemas.ModelProvider, model string, requestType schemas.RequestType) unpricedTriple {
-	if budgetPricingOf(requestType) == budgetPricingSettled {
-		requestType = settledJobs
-	}
-	// Streamed and unstreamed requests share their answer's pricing.
-	return unpricedTriple{provider: provider, model: model, requestType: baseRequestType(requestType)}
-}
-
-func (u *unpricedAnswers) record(provider schemas.ModelProvider, model string, requestType schemas.RequestType) {
-	if u == nil {
+func (u *unpricedAnswers) record(budgetIDs []string, row string) {
+	if u == nil || row == "" {
 		return
 	}
-	key := unpricedKey(provider, model, requestType)
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	if _, ok := u.seen[key]; ok {
-		return
+	for _, budgetID := range budgetIDs {
+		rows := u.byBudget[budgetID]
+		if rows == nil {
+			rows = &unpricedRows{rows: make(map[string]struct{})}
+			u.byBudget[budgetID] = rows
+		}
+		if _, ok := rows.rows[row]; ok {
+			continue
+		}
+		if len(rows.rows) >= maxUnpricedRowsPerBudget {
+			rows.full = true
+			continue
+		}
+		rows.rows[row] = struct{}{}
 	}
-	if len(u.seen) >= maxUnpricedAnswers {
-		u.full = true
-		return
-	}
-	u.seen[key] = struct{}{}
 }
 
-func (u *unpricedAnswers) contains(provider schemas.ModelProvider, model string, requestType schemas.RequestType) bool {
+// refused reports the first of budgetIDs that has seen a $0 answer on row, or is full.
+func (u *unpricedAnswers) refused(budgetIDs []string, row string) (string, bool) {
 	if u == nil {
-		return false
+		return "", false
 	}
 	u.mu.RLock()
 	defer u.mu.RUnlock()
-	if u.full {
-		return true
+	for _, budgetID := range budgetIDs {
+		rows := u.byBudget[budgetID]
+		if rows == nil {
+			continue
+		}
+		if rows.full {
+			return budgetID, true
+		}
+		if _, ok := rows.rows[row]; ok {
+			return budgetID, true
+		}
 	}
-	_, ok := u.seen[unpricedKey(provider, model, requestType)]
-	return ok
+	return "", false
 }
 
-// baseRequestType folds a streamed request type onto the unstreamed one it is priced as.
-func baseRequestType(requestType schemas.RequestType) schemas.RequestType {
-	switch requestType {
-	case schemas.TextCompletionStreamRequest:
-		return schemas.TextCompletionRequest
-	case schemas.ChatCompletionStreamRequest:
-		return schemas.ChatCompletionRequest
-	case schemas.ResponsesStreamRequest:
-		return schemas.ResponsesRequest
-	case schemas.SpeechStreamRequest:
-		return schemas.SpeechRequest
-	case schemas.TranscriptionStreamRequest:
-		return schemas.TranscriptionRequest
-	case schemas.ImageGenerationStreamRequest:
-		return schemas.ImageGenerationRequest
-	case schemas.ImageEditStreamRequest:
-		return schemas.ImageEditRequest
-	case schemas.PassthroughStreamRequest:
-		return schemas.PassthroughRequest
+func limitIDs(limits []schemas.Limit) []string {
+	ids := make([]string, 0, len(limits))
+	for _, limit := range limits {
+		ids = append(ids, limit.ID)
 	}
-	return requestType
+	return ids
 }
 
 // refuseUnpricedUnderBudget is the gate evaluateLimits runs once a request's budgets have passed:
 // a request answering to any dollar budget is refused when what it will be charged cannot be
-// priced. Nil when the request is allowed. A deployment with no price book has no prices to
+// priced, or when an earlier answer on the same price book row priced at $0 against one of its
+// budgets. Nil when the request is allowed. A deployment with no price book has no prices to
 // charge at all and is not gated here.
 func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, evaluationRequest *EvaluationRequest, budgets []schemas.Limit) *EvaluationResult {
 	if len(budgets) == 0 || r.modelCatalog == nil {
@@ -232,49 +225,59 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 	if budgetPricingOf(requestType) == budgetPricingNone {
 		return nil
 	}
+	// A batch create naming no model of its own: its inline requests were each gated as their own
+	// model before the envelope (PreLLMHook), and an uploaded input's lines are settled per model by
+	// job accounting, which parks a line it cannot price rather than charging it $0.
+	if requestType == schemas.BatchCreateRequest && evaluationRequest.Model == "" {
+		return nil
+	}
 	provider := evaluationRequest.Provider
 	model := pricedModel(requestType, evaluationRequest.Model)
-	if r.unpriced.contains(provider, model, requestType) {
-		return &EvaluationResult{
-			Decision: DecisionModelUnpriced,
-			Reason: fmt.Sprintf("model %q on provider %q delivered an answer the price book could not price, so it cannot be charged to a dollar budget; add a pricing override for it",
-				model, provider),
-		}
-	}
 	scopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(provider))
-	if r.priceStatus(provider, model, requestType, scopes) == modelcatalog.PriceUnpriced {
+	row, status := r.priceIdentity(provider, model, requestType, scopes)
+	if status == modelcatalog.PriceUnpriced {
 		return &EvaluationResult{
 			Decision: DecisionModelUnpriced,
 			Reason: fmt.Sprintf("model %q on provider %q has no price for %s requests, so it cannot be charged to a dollar budget; add a pricing override for it",
 				model, provider, requestType),
 		}
 	}
+	if _, refused := r.unpriced.refused(limitIDs(budgets), row); refused {
+		return &EvaluationResult{
+			Decision: DecisionModelUnpriced,
+			Reason: fmt.Sprintf("model %q on provider %q delivered an answer the price book could not price against this request's dollar budget, so it cannot be charged to it; add a pricing override for it",
+				model, provider),
+		}
+	}
 	return nil
 }
 
-// noteUnpricedAnswer is called for an answer charged to at least one dollar budget. When the
+// noteUnpricedAnswer is called for an answer charged to the dollar budgets budgetIDs. When the
 // answer priced at $0 and the price book does not say the model is free, it is logged as
-// unpriced and its triple is refused under a budget from now on (fail closed after the fact).
-// Reports whether it was unpriced.
-func (r *BudgetResolver) noteUnpricedAnswer(provider schemas.ModelProvider, model string, requestType schemas.RequestType, cost float64, scopes *modelcatalog.PricingLookupScopes, requestID string) bool {
-	if r == nil || r.modelCatalog == nil || cost > 0 {
+// unpriced and its price book row is refused for those budgets from now on (fail closed after
+// the fact). Reports whether it was unpriced.
+func (r *BudgetResolver) noteUnpricedAnswer(provider schemas.ModelProvider, model string, requestType schemas.RequestType, cost float64, scopes *modelcatalog.PricingLookupScopes, requestID string, budgetIDs []string) bool {
+	if r == nil || r.modelCatalog == nil || cost > 0 || len(budgetIDs) == 0 {
 		return false
 	}
 	model = pricedModel(requestType, model)
-	if r.priceStatus(provider, model, requestType, scopes) == modelcatalog.PriceFree {
+	row, status := r.priceIdentity(provider, model, requestType, scopes)
+	if status == modelcatalog.PriceFree {
 		return false
 	}
-	r.unpriced.record(provider, model, requestType)
+	// A model with no row at all is refused before the call by the gate itself; there is no row
+	// to remember.
+	r.unpriced.record(budgetIDs, row)
 	if r.logger != nil {
-		r.logger.Warn("governance: unpriced answer under a dollar budget (TXE-7957): request %s, provider %s, model %s, request type %s was charged $0; requests under a budget on it are refused from now on until it is priced",
-			requestID, provider, model, requestType)
+		r.logger.Warn("governance: unpriced answer under a dollar budget (TXE-7957): request %s, provider %s, model %s, request type %s was charged $0 against budgets %v; requests charged to them on it are refused from now on until it is priced",
+			requestID, provider, model, requestType, budgetIDs)
 	}
 	return true
 }
 
 // deliveredAnswer reports whether a response is an answer the vendor has finished and priced. A
-// cache hit was answered by Bifrost, not the vendor, and a background Responses create that is
-// still queued or in progress has no usage yet.
+// cache hit was answered by Bifrost, not the vendor. A background Responses create that is still
+// queued or in progress has no usage yet, and one that failed or was cancelled delivered nothing.
 func deliveredAnswer(result *schemas.BifrostResponse) bool {
 	if result == nil {
 		return false
@@ -284,47 +287,54 @@ func deliveredAnswer(result *schemas.BifrostResponse) bool {
 	}
 	if result.ResponsesResponse != nil && result.ResponsesResponse.Status != nil {
 		switch *result.ResponsesResponse.Status {
-		case "queued", "in_progress":
+		case "queued", "in_progress", "failed", "cancelled":
 			return false
 		}
 	}
 	return true
 }
 
-// priceStatus is the best status over the request's model and every model a configured key of
-// its provider aliases it to. Which key serves the request is chosen after governance runs, and
-// pricing reads the alias's target first, so a label that is not a catalog row is priced as the
-// model it names. A key that serves the label unpriced while another prices it is caught after
-// the fact (noteUnpricedAnswer).
-func (r *BudgetResolver) priceStatus(provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) modelcatalog.PriceStatus {
-	best := r.modelCatalog.PriceStatus(provider, model, requestType, scopes)
+// priceIdentity is the best status, and the row that decided it, over every way the request can
+// be priced once a key serves it. Which key serves it is chosen after governance runs, so each
+// configured key of the provider is tried: under that key's pricing scope (an override scoped to a
+// provider key, a virtual key's provider key or a user's provider key applies only once the key is
+// selected), for the request's model and every model that key aliases it to (pricing reads an
+// alias's target first, so a label that is not a catalog row is priced as the model it names). A
+// key that serves the request unpriced while another prices it is caught after the fact
+// (noteUnpricedAnswer).
+func (r *BudgetResolver) priceIdentity(provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) (string, modelcatalog.PriceStatus) {
+	bestRow, best := r.modelCatalog.PriceIdentity(provider, model, requestType, scopes)
 	if best == modelcatalog.PricePriced || model == "" || r.governanceInMemoryStore == nil {
-		return best
+		return bestRow, best
 	}
 	config, ok := configuredProvider(r.governanceInMemoryStore, provider)
 	if !ok {
-		return best
+		return bestRow, best
 	}
 	for _, key := range config.Keys {
-		alias := key.Aliases.ResolveConfig(model)
-		if alias == nil {
-			continue
+		keyScopes := modelcatalog.PricingLookupScopes{}
+		if scopes != nil {
+			keyScopes = *scopes
 		}
-		candidates := [2]string{alias.ModelID}
-		if alias.ModelName != nil {
-			candidates[1] = *alias.ModelName
+		keyScopes.SelectedKeyID = key.ID
+		candidates := [3]string{model}
+		if alias := key.Aliases.ResolveConfig(model); alias != nil {
+			candidates[1] = alias.ModelID
+			if alias.ModelName != nil {
+				candidates[2] = *alias.ModelName
+			}
 		}
 		for _, candidate := range candidates {
-			if candidate == "" || candidate == model {
+			if candidate == "" {
 				continue
 			}
-			if status := r.modelCatalog.PriceStatus(provider, candidate, requestType, scopes); status > best {
-				best = status
+			if row, status := r.modelCatalog.PriceIdentity(provider, candidate, requestType, &keyScopes); status > best {
+				bestRow, best = row, status
 				if best == modelcatalog.PricePriced {
-					return best
+					return bestRow, best
 				}
 			}
 		}
 	}
-	return best
+	return bestRow, best
 }

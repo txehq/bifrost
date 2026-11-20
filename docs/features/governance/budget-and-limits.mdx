@@ -126,7 +126,7 @@ A budget is charged what the [model catalog](../../architecture/framework/model-
 
 The refusal is HTTP 403 with `type` `model_unpriced` and `extra_fields.error_type` `policy_model_blocked`. Nothing is sent to the provider and nothing is charged. To serve the model under a budget, add a pricing override for it. A model whose prices are all `$0` is free, not unpriced, and is served.
 
-Some rows set a price that an answer can still miss: a row priced only per image token, for example, when the provider reports no tokens. When an answer like that is charged `$0` under a dollar budget, Bifrost logs a warning naming the provider, model and request type. Requests under a budget on that model and request type are then refused the same way until the gateway restarts. A video or batch job that settles at `$0` is handled the same way.
+Some rows set a price that an answer can still miss: a row priced only per image token, for example, when the provider reports no tokens. When an answer like that is charged `$0` under a dollar budget, Bifrost logs a warning naming the provider, model, request type and budgets. Requests charged to any of those budgets on that model are then refused the same way until the gateway restarts. Other budgets are not affected. A video or batch job that settles at `$0` owed nothing (it failed, was cancelled or expired) and is not treated as unpriced: a job Bifrost cannot price is held unpriced rather than settled.
 
 Requests from a virtual key with no dollar budget are not affected.
 

@@ -54,6 +54,25 @@ func TestPriceStatus(t *testing.T) {
 		Pattern: "no-row", RequestTypes: []schemas.RequestType{schemas.ChatCompletionRequest}, PricingPatchJSON: `{"input_cost_per_token":0.000001}`,
 	}}))
 	assert.Equal(t, Priced, s.PriceStatus(schemas.OpenAI, "no-row", schemas.ChatCompletionRequest, nil))
+
+	// Every spelling a lookup folds onto one row has that row's identity, so governance cannot be
+	// handed a new key by respelling a model.
+	identity, status := s.PriceIdentity(schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, nil)
+	assert.Equal(t, Priced, status)
+	assert.Equal(t, "openai|chat|gpt-4o", identity)
+	for _, spelling := range []string{"GPT-4O", "Gpt-4o"} {
+		respelled, _ := s.PriceIdentity(schemas.OpenAI, spelling, schemas.ChatCompletionStreamRequest, nil)
+		assert.Equal(t, identity, respelled, spelling)
+	}
+	overrideOnly, _ := s.PriceIdentity(schemas.OpenAI, "no-row", schemas.ChatCompletionRequest, nil)
+	assert.Equal(t, "override|openai|chat|no-row", overrideOnly)
+	// An exact override matches its own spelling only: another spelling is unpriced and refused
+	// before the call, so it never reaches the after-the-fact set.
+	_, status = s.PriceIdentity(schemas.OpenAI, "No-Row", schemas.ChatCompletionRequest, nil)
+	assert.Equal(t, Unpriced, status)
+	none, status := s.PriceIdentity(schemas.OpenAI, "still-no-row", schemas.ChatCompletionRequest, nil)
+	assert.Equal(t, Unpriced, status)
+	assert.Empty(t, none)
 }
 
 // Every TableModelPricing *float64 column that is not a price must be named here. A price column
