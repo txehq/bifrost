@@ -1591,3 +1591,12 @@ func TestRunLLMPreHooksForwardsABatchInputFileUpload(t *testing.T) {
 		assert.Contains(t, shortCircuit.Error.Error.Message, "is JSON naming model but is declared "+contentType)
 	}
 }
+
+// TestRefuseAmbiguousForwardedBodyCostsNothingWithoutABody: a typed request forwarding no body
+// passes the guard with no allocation (TXE-8012).
+func TestRefuseAmbiguousForwardedBodyCostsNothingWithoutABody(t *testing.T) {
+	req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o"}}
+	if allocs := testing.AllocsPerRun(100, func() { refuseAmbiguousForwardedBody(req) }); allocs != 0 {
+		t.Errorf("the guard allocates %v times for a request with no forwarded body", allocs)
+	}
+}

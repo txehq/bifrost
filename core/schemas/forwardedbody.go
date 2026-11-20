@@ -291,6 +291,10 @@ func AmbiguousBodyMember(body []byte, contentType string) (string, bool) {
 // upload routes are exempt in core (IsFileUploadPath): the vendor stores those bytes and runs no
 // model.
 func MislabeledJSONBody(body []byte, contentType string) (mediaType, key string, mislabeled bool) {
+	if len(body) == 0 {
+		// Most requests forward no body: nothing to read, nothing allocated.
+		return "", "", false
+	}
 	format := ClassifyForwardedBody(contentType, body).Format
 	mediaType, _, _ = mime.ParseMediaType(contentType)
 	if format == ForwardedBodyJSONLines {
@@ -482,9 +486,40 @@ func MayNameProviderObject(body []byte) bool {
 			return true
 		}
 	}
-	lower := bytes.ToLower(body)
 	for _, marker := range StorageURIMarkers {
-		if bytes.Contains(lower, []byte(marker)) {
+		if containsFold(body, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// containsFold reports whether s contains the lower-case ASCII marker in any case, without
+// copying s: the prefilter runs on every passthrough body, most of which name nothing.
+func containsFold(s []byte, marker string) bool {
+	if len(marker) == 0 {
+		return true
+	}
+	first, upper := marker[0], marker[0]
+	if 'a' <= first && first <= 'z' {
+		upper = first - 'a' + 'A'
+	}
+	for i := 0; i+len(marker) <= len(s); i++ {
+		if c := s[i]; c != first && c != upper {
+			continue
+		}
+		match := true
+		for j := 1; j < len(marker); j++ {
+			c := s[i+j]
+			if 'A' <= c && c <= 'Z' {
+				c += 'a' - 'A'
+			}
+			if c != marker[j] {
+				match = false
+				break
+			}
+		}
+		if match {
 			return true
 		}
 	}
@@ -497,9 +532,8 @@ func providerObjectMention(doc []byte) string {
 	if MayNameProviderObject(doc) {
 		return "a provider object"
 	}
-	lower := bytes.ToLower(doc)
 	for _, marker := range ProviderObjectBodyMarkers {
-		if bytes.Contains(lower, bytes.ToLower([]byte(marker))) {
+		if containsFold(doc, strings.ToLower(marker)) {
 			return "a provider object"
 		}
 	}

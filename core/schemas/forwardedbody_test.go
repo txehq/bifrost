@@ -475,3 +475,19 @@ func TestIsFileUploadPath(t *testing.T) {
 		}
 	}
 }
+
+// TestForwardedBodyChecksAllocateNothingWhenThereIsNothingToRead: most requests forward no body,
+// and most passthrough bodies name no provider object, so neither check may allocate then
+// (TXE-8012; AGENTS.md: a feature not in use costs a nil or empty check).
+func TestForwardedBodyChecksAllocateNothingWhenThereIsNothingToRead(t *testing.T) {
+	if allocs := testing.AllocsPerRun(100, func() { MislabeledJSONBody(nil, "") }); allocs != 0 {
+		t.Errorf("MislabeledJSONBody(nil) allocates %v times", allocs)
+	}
+	chat := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"` + strings.Repeat("Hello World ", 100000) + `"}]}`)
+	if allocs := testing.AllocsPerRun(10, func() { MayNameProviderObject(chat) }); allocs != 0 {
+		t.Errorf("MayNameProviderObject on a body naming nothing allocates %v times", allocs)
+	}
+	if !MayNameProviderObject([]byte(`see GS://bucket/o`)) || !MayNameProviderObject([]byte(`x.AmazonAWS.com`)) {
+		t.Error("storage URIs are matched without case")
+	}
+}

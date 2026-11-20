@@ -1220,7 +1220,12 @@ func refuseAmbiguousForwardedBody(req *schemas.BifrostRequest) *schemas.LLMPlugi
 	if req == nil {
 		return nil
 	}
-	body, contentType := req.ForwardedBody(), req.ForwardedBodyContentType()
+	body := req.ForwardedBody()
+	if len(body) == 0 {
+		// Most requests forward no body: the guard costs a nil check.
+		return nil
+	}
+	contentType := req.ForwardedBodyContentType()
 	if contentType == "" && forwardsAFile(req) && !gjson.ValidBytes(body) {
 		// A file with no declared type that is not one JSON document (a JSON Lines batch file) is
 		// a file: no reader reads a member from it. A strict JSON document there is still checked,
