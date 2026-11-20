@@ -914,6 +914,8 @@ Image generation streaming is supported and uses OpenAI's streaming format with 
 
 A request whose model resolves to the `mai-image` family (an alias's `model_family: "mai-image"`, or a model, deployment or alias name containing `mai-image` in any letter case) goes to `{endpoint}/mai/v1/images/generations` instead of `/openai/v1/images/generations`. Set the key's endpoint to the Foundry resource, `https://<resource>.services.ai.azure.com`.
 
+Only MAI models whose price-book row prices them per image are served: today `MAI-Image-2.5`, `MAI-Image-2.5-Flash` and `MAI-Image-2.5-Pro`. MAI reports no token usage, so a model priced only per image token (`MAI-Image-2.6`, `MAI-Image-2.6-Flash`) or with no row would cost $0 and never charge a budget; it is refused with 400 `caller_unsupported_parameter` naming `model`, before any upstream call. The name is matched exactly against the alias's `model_name` (else its `model_id`, else the request's model), so a deployment named differently needs an alias with `model_name`.
+
 | Unified field | MAI-Image body |
 |---------------|----------------|
 | `model` | `model` (the deployment) |

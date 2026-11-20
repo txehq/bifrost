@@ -2124,9 +2124,9 @@ func TestAzureMAIImageRouteFollowsModelFamily(t *testing.T) {
 		alias    *schemas.ResolvedAlias
 		wantPath string
 	}{
-		{"lower-case deployment", "mai-image-2-6-flash", nil, "/mai/v1/images/generations"},
-		{"alias model_family", "foundry-dep-1", &schemas.ResolvedAlias{Key: "house-image", Config: &schemas.AliasConfig{ModelID: "foundry-dep-1", ModelFamily: schemas.Ptr(schemas.ModelFamily("mai-image"))}}, "/mai/v1/images/generations"},
-		{"alias key", "foundry-dep-1", &schemas.ResolvedAlias{Key: "MAI-Image-2.6", Config: &schemas.AliasConfig{ModelID: "foundry-dep-1"}}, "/mai/v1/images/generations"},
+		{"catalog name", "MAI-Image-2.5-Flash", nil, "/mai/v1/images/generations"},
+		{"alias model_family with model_name", "foundry-dep-1", &schemas.ResolvedAlias{Key: "house-image", Config: &schemas.AliasConfig{ModelID: "foundry-dep-1", ModelName: schemas.Ptr("MAI-Image-2.5"), ModelFamily: schemas.Ptr(schemas.ModelFamily("mai-image"))}}, "/mai/v1/images/generations"},
+		{"alias key with model_name", "foundry-dep-1", &schemas.ResolvedAlias{Key: "MAI-Image-2.5-Pro", Config: &schemas.AliasConfig{ModelID: "foundry-dep-1", ModelName: schemas.Ptr("MAI-Image-2.5-Pro")}}, "/mai/v1/images/generations"},
 		{"gpt-image", "gpt-image-1.5", nil, "/openai/v1/images/generations"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2150,6 +2150,47 @@ func TestAzureMAIImageRouteFollowsModelFamily(t *testing.T) {
 			}
 			if got[0].body["model"] != tc.model {
 				t.Fatalf("body model = %v, want the deployment %q", got[0].body["model"], tc.model)
+			}
+		})
+	}
+}
+
+// A MAI model the price book cannot price from MAI's answer (no per-image price; MAI reports no
+// token usage) is refused naming model before any upstream call, so it never bills a dollar
+// budget $0 (TXE-6543, Codex security P1). The name is matched exactly, as the price lookup
+// matches it: a lower-case deployment needs an alias model_name.
+func TestAzureMAIImageRefusesUnpricedModels(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		model string
+		alias *schemas.ResolvedAlias
+	}{
+		{"2.6 priced per image token only", "MAI-Image-2.6", nil},
+		{"2.6-Flash priced per image token only", "MAI-Image-2.6-Flash", nil},
+		{"MAI-Image-2 has no datasheet row", "MAI-Image-2", nil},
+		{"lower-case deployment with no alias", "mai-image-2.5", nil},
+		{"alias family with only a deployment id", "foundry-dep-1", &schemas.ResolvedAlias{Key: "house-image", Config: &schemas.AliasConfig{ModelID: "foundry-dep-1", ModelFamily: schemas.Ptr(schemas.ModelFamily("mai-image"))}}},
+		{"alias key names 2.6", "foundry-dep-1", &schemas.ResolvedAlias{Key: "MAI-Image-2.6", Config: &schemas.AliasConfig{ModelID: "foundry-dep-1"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, calls := maiImageUpstream(t, http.StatusOK, maiImageSample)
+			provider := newAzureDecisionProvider(t)
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if tc.alias != nil {
+				ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, tc.alias)
+			}
+			_, bifrostErr := provider.ImageGeneration(ctx, newAzureDecisionKey(server.URL), &schemas.BifrostImageGenerationRequest{
+				Provider: schemas.Azure, Model: tc.model, Input: &schemas.ImageGenerationInput{Prompt: "a fox"},
+			})
+			if bifrostErr == nil || bifrostErr.Error == nil || bifrostErr.Error.Param != "model" ||
+				bifrostErr.ResolveErrorType() != schemas.ErrorTypeCallerUnsupportedParameter {
+				t.Fatalf("err = %+v, want caller_unsupported_parameter naming model", bifrostErr)
+			}
+			if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status = %v, want 400", bifrostErr.StatusCode)
+			}
+			if n := len(calls()); n != 0 {
+				t.Fatalf("upstream calls = %d, want 0", n)
 			}
 		})
 	}
@@ -2197,7 +2238,7 @@ func TestAzureMAIImageRefusesUndeliverableFields(t *testing.T) {
 		provider := newAzureDecisionProvider(t)
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		_, bifrostErr := provider.ImageGeneration(ctx, newAzureDecisionKey(server.URL), &schemas.BifrostImageGenerationRequest{
-			Provider: schemas.Azure, Model: "MAI-Image-2.7",
+			Provider: schemas.Azure, Model: "MAI-Image-2.5",
 			Input: &schemas.ImageGenerationInput{Prompt: "a fox"},
 			Params: &schemas.ImageGenerationParameters{Size: schemas.Ptr("auto"), N: schemas.Ptr(1), ResponseFormat: schemas.Ptr("b64_json"),
 				OutputFormat: schemas.Ptr("png"), Background: schemas.Ptr("transparent"), Seed: schemas.Ptr(7)},

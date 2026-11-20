@@ -1,6 +1,6 @@
 {
   "name": "650. Microsoft MAI-Image on Azure AI Foundry: size to width and height, data[].b64_json, output_images, undeliverable fields refused, named key (azure mai-image)",
-  "description": "Pins contract C3, C4, C5 and C9 for MAI-Image on Azure AI Foundry (TXE-6543). Local fixture regression, no live provider calls: start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json and run with providerErrorFixture=1; every case is skipped otherwise. The azure-mai key's endpoint is the fixture's /mai-a resource, so a request goes to /mai-a/mai/v1/images/generations. Rows 4 to 8 are refused before any upstream call; the last row proves rows 2 and 9 each made exactly one call, with the named key.",
+  "description": "Pins contract C3, C4, C5 and C9 for MAI-Image on Azure AI Foundry (TXE-6543). Local fixture regression, no live provider calls: start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json and run with providerErrorFixture=1; every case is skipped otherwise. The azure-mai key's endpoint is the fixture's /mai-a resource, so a request goes to /mai-a/mai/v1/images/generations. Rows 4 to 8 and 10 are refused before any upstream call; row 10 is a MAI model with no per-image price, which would bill $0 because MAI reports no token usage; the last row proves rows 2 and 9 each made exactly one call, with the named key.",
   "item": [
     {
       "name": "650.1 reset the fixture's hit counters (azure mai-image)",
@@ -473,7 +473,65 @@
       ]
     },
     {
-      "name": "650.10 only rows 2 and 9 reached MAI, once each, with the named key (azure mai-image)",
+      "name": "650.10 [EXPECT-400] MAI-Image-2.6 has no per-image price and is refused naming model, before any upstream call (azure mai-image)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "azure-mai"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"azure/MAI-Image-2.6\", \"prompt\": \"a fox\"}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('400 caller_unsupported_parameter naming model', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields.error_type, pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error.param, pm.response.text()).to.eql('model');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "650.11 only rows 2 and 9 reached MAI, once each, with the named key (azure mai-image)",
       "request": {
         "method": "GET",
         "header": [],

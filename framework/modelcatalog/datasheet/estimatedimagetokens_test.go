@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -212,4 +213,46 @@ func writeUpstreamImageTokenRowsSnapshot(t *testing.T, source string) {
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Clean(upstreamImageTokenRowsSnapshotPath), append(out, '\n'), 0o644))
 	t.Logf("wrote %d upstream image token rows to %s", len(rows), upstreamImageTokenRowsSnapshotPath)
+}
+
+// TestMAIImagePricedModelsMatchTheDatasheet keeps schemas.MAIImagePricedModels, the MAI-Image models
+// the azure provider serves (TXE-6543), equal to the azure MAI-Image rows of the upstream snapshot
+// that price one image with no token usage above $0. MAI's answer reports no tokens, so a served
+// model that prices $0 here would never charge a dollar budget (Codex security P1 on PR #405), and a
+// row that gains a per-image price is not served until it is listed. Every MAI-Image row upstream
+// publishes today carries an image token price, so the snapshot holds them all.
+func TestMAIImagePricedModelsMatchTheDatasheet(t *testing.T) {
+	raw, err := os.ReadFile(upstreamImageTokenRowsSnapshotPath)
+	require.NoError(t, err)
+	var snapshot upstreamImageTokenRowsSnapshot
+	require.NoError(t, json.Unmarshal(raw, &snapshot))
+
+	entries := make(map[string]Entry, len(snapshot.Rows))
+	for key, row := range snapshot.Rows {
+		var entry Entry
+		require.NoError(t, json.Unmarshal(row, &entry), key)
+		entries[key] = entry
+	}
+	s := testStoreWithPricing(nil)
+	s.applyPricingData(entries)
+
+	var priced []string
+	maiRows := 0
+	for _, key := range sortedKeys(entries) {
+		model, ok := strings.CutPrefix(key, "azure/")
+		if !ok || !schemas.IsMAIImageModel(model) {
+			continue
+		}
+		maiRows++
+		cost := s.CalculateCostForEstimatedImageUsage(&schemas.EstimatedImageUsage{OutputImages: 1},
+			schemas.RoutingInfo{Provider: schemas.Azure, Model: model}, schemas.ImageGenerationRequest, nil)
+		if cost > 0 {
+			priced = append(priced, model)
+		}
+	}
+	require.NotZero(t, maiRows, "%s has no azure MAI-Image rows; the check is not seeing them", upstreamImageTokenRowsSnapshotPath)
+	served := append([]string(nil), schemas.MAIImagePricedModels...)
+	slices.Sort(served)
+	slices.Sort(priced)
+	assert.Equal(t, priced, served, "schemas.MAIImagePricedModels must list exactly the azure MAI-Image rows that price one image with no token usage above $0")
 }

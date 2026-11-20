@@ -3,6 +3,7 @@ package azure
 import (
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -32,6 +33,9 @@ import (
 //   - every other unified field but background, which the page's MAI-Image-2.7 sample sends and
 //     which is passed as given, and the unpriced seed and negative_prompt, which are not sent.
 //
+// Only the models in schemas.MAIImagePricedModels are served: any other MAI model is refused naming
+// model, because MAI reports no token usage and a model with no per-image price would bill $0.
+//
 // Streaming is not documented for MAI, so a streamed request is refused naming stream. Edits
 // (/mai/v1/images/edits) are out of TXE-6543's scope and still take the Azure OpenAI route.
 
@@ -56,6 +60,20 @@ func (r *maiImageGenerationRequest) GetExtraParams() map[string]interface{} {
 // isMAIImageRequest reports whether a request for model goes to the MAI images API.
 func isMAIImageRequest(ctx *schemas.BifrostContext, model string) bool {
 	return schemas.ResolveFamily(ctx, model) == schemas.ModelFamilyMAIImage
+}
+
+// checkMAIImageModelPriced refuses, before any upstream call, a MAI model whose answer the price
+// book cannot price (schemas.MAIImagePricedModels): MAI reports no token usage, so a model priced
+// only per image token would be served at $0 and never charge a dollar budget. An alias names the
+// served model with model_name (or model_id) when the deployment name differs.
+func checkMAIImageModelPriced(ctx *schemas.BifrostContext, model string) *schemas.BifrostError {
+	canonical := schemas.ResolveCanonicalModel(ctx, model)
+	if slices.Contains(schemas.MAIImagePricedModels, canonical) {
+		return nil
+	}
+	return schemas.NewUnsupportedParameterError("model", fmt.Sprintf(
+		"MAI-Image model %q has no per-image price, so its images cannot be billed; served MAI models are %s (name one with the alias's model_name when the deployment name differs)",
+		canonical, strings.Join(schemas.MAIImagePricedModels, ", ")))
 }
 
 // toMAIImageGenerationRequest builds the MAI body, or the 400 that refuses a field it cannot carry.
@@ -114,6 +132,9 @@ func (provider *AzureProvider) maiImageGeneration(ctx *schemas.BifrostContext, k
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
+	if bifrostErr := checkMAIImageModelPriced(ctx, request.Model); bifrostErr != nil {
+		return nil, bifrostErr
+	}
 	body, convErr := toMAIImageGenerationRequest(request)
 	if convErr != nil {
 		return nil, convErr
