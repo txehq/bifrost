@@ -400,6 +400,7 @@ const (
 	BifrostContextKeyParentSpanID                        BifrostContextKey = "bifrost-parent-span-id"                           // string (parent span ID from W3C traceparent header - set by tracing middleware)
 	BifrostContextKeyStreamStartTime                     BifrostContextKey = "bifrost-stream-start-time"                        // time.Time (start time for streaming TTFT calculation - set by bifrost)
 	BifrostContextKeyRequestStartTime                    BifrostContextKey = "bifrost-request-start-time"                       // time.Time (whole-request start for overhead - set by bifrost)
+	BifrostContextKeyRequestedPromptCacheTTL             BifrostContextKey = "bifrost-requested-prompt-cache-ttl"               // string (prompt_cache_options.ttl of the request sent to the provider, "" when none; set by bifrost on every attempt and read by pricing for a vendor that prices a cache write by it and reports no tier, TXE-7069)
 	BifrostContextKeyTracer                              BifrostContextKey = "bifrost-tracer"                                   // Tracer (tracer instance for completing deferred spans - set by bifrost)
 	BifrostContextKeyModelCatalog                        BifrostContextKey = "bifrost-model-catalog"                            // ModelInfoProvider (model pricing/capability catalog backing ctx.GetModelInfo, ctx.CalculateCost and ctx.CalculateCostBreakdown - set by bifrost)
 	BifrostContextKeyDeferTraceCompletion                BifrostContextKey = "bifrost-defer-trace-completion"                   // bool (signals trace completion should be deferred for streaming - set by streaming handlers)
@@ -1101,6 +1102,44 @@ func (br *BifrostRequest) GetRequestFields() (provider ModelProvider, model stri
 }
 
 // SetProvider sets the provider on the active request variant.
+// RequestedPromptCacheTTL returns the prompt_cache_options.ttl the request carries, or "" when
+// it carries none. Bifrost stamps it on the context of every provider attempt
+// (BifrostContextKeyRequestedPromptCacheTTL) so pricing can cost a cache write a vendor prices by
+// that TTL without reporting the tier, without writing a request parameter into usage (fork,
+// TXE-7069). TestRequestedPromptCacheTTLReadsEveryRequestWithPromptCacheOptions fails when a
+// request whose parameters carry PromptCacheOptions is not read here.
+func (br *BifrostRequest) RequestedPromptCacheTTL() string {
+	if br == nil {
+		return ""
+	}
+	var opts *PromptCacheOptions
+	switch {
+	case br.ChatRequest != nil && br.ChatRequest.Params != nil:
+		opts = br.ChatRequest.Params.PromptCacheOptions
+	case br.ResponsesRequest != nil && br.ResponsesRequest.Params != nil:
+		opts = br.ResponsesRequest.Params.PromptCacheOptions
+	case br.CountTokensRequest != nil && br.CountTokensRequest.Params != nil:
+		opts = br.CountTokensRequest.Params.PromptCacheOptions
+	}
+	if opts == nil || opts.TTL == nil {
+		return ""
+	}
+	return *opts.TTL
+}
+
+// PricingContextKeys are the context values datasheet.LookupScopesFromContext reads. A context
+// built apart from the request's (the tracer's stream accumulator) copies exactly these, so a
+// streamed total is priced like the request's own breakdown. TestLookupScopesFromContextReads
+// OnlyPricingContextKeys (framework/modelcatalog/datasheet) fails when a scope field is read from
+// a key missing here.
+var PricingContextKeys = []BifrostContextKey{
+	BifrostContextKeySelectedKeyID,
+	BifrostContextKeyGovernanceVirtualKeyID,
+	BifrostContextKeyUserID,
+	BifrostContextKeyRequestStartTime,
+	BifrostContextKeyRequestedPromptCacheTTL,
+}
+
 func (br *BifrostRequest) SetProvider(provider ModelProvider) {
 	switch {
 	case br.ListModelsRequest != nil:

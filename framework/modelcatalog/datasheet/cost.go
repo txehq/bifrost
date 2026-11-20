@@ -794,6 +794,7 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 		}
 		return total
 	}
+	input.usage = usageWithRequestedCacheWriteTier(input.usage, routingInfo.Provider, scopes.RequestedPromptCacheTTL)
 	// When a pricing model override is set (e.g. container creates always look
 	// up "container"), it replaces the lookup hierarchy entirely. Build a
 	// synthetic RoutingInfo that reuses Provider but pins the model fields to
@@ -3387,6 +3388,48 @@ func tieredCacheCreationInputAbove12hrTokenRate(pricing *configstoreTables.Table
 		return *r
 	}
 	return tieredCacheCreationInputAbove1hrTokenRate(pricing, totalTokens, tier)
+}
+
+// RequestTTLPricedCacheWrites lists the providers whose vendor prices a prompt-cache write by the
+// TTL the request asked for (prompt_cache_options.ttl) and reports the write as one figure, with
+// no tier (fork, TXE-7069). For these, a write the response reports without a tier is costed at
+// the tier the request asked for. A provider whose usage reports the tier (Anthropic's
+// ephemeral_1h_input_tokens, OpenAI's ttl_30m/ttl_12h tokens) is never listed: its reported split
+// is what the vendor billed. TestRequestTTLPricedCacheWritesCostTheRequestedTier runs every entry.
+var RequestTTLPricedCacheWrites = map[schemas.ModelProvider]string{
+	schemas.Moonshot: "Kimi bills a cache write by the request's prompt_cache_options.ttl and reports one cache_write_tokens figure without the TTL (the datasheet's moonshot/kimi-k3 row: $3/M base write, $6/M above 1 hour); TXE-6527 delivers the TTL to the vendor as sent",
+}
+
+// usageWithRequestedCacheWriteTier returns the usage to price. For a provider in
+// RequestTTLPricedCacheWrites whose usage reports cache writes with no tier, and a requested TTL
+// of an hour or more, it returns a copy whose writes sit in the tier asked for: 12 hours or more
+// in the 12h tier, otherwise the 1h tier. The copy is local to pricing; the response's usage is
+// never changed (contract C5). Any other case returns usage itself, with no allocation. A TTL
+// that is not a Go duration ("1h", "5m", "30m", "24h") is priced at the base write rate.
+func usageWithRequestedCacheWriteTier(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, requestedTTL string) *schemas.BifrostLLMUsage {
+	if requestedTTL == "" || usage == nil || usage.PromptTokensDetails == nil ||
+		usage.PromptTokensDetails.CachedWriteTokens <= 0 || usage.PromptTokensDetails.CachedWriteTokenDetails != nil {
+		return usage
+	}
+	if _, ok := RequestTTLPricedCacheWrites[provider]; !ok {
+		return usage
+	}
+	ttl, err := time.ParseDuration(requestedTTL)
+	if err != nil || ttl < time.Hour {
+		return usage
+	}
+	writes := usage.PromptTokensDetails.CachedWriteTokens
+	details := &schemas.ChatCachedWriteTokenDetails{}
+	if ttl >= 12*time.Hour {
+		details.CachedWriteTokens12h = writes
+	} else {
+		details.CachedWriteTokens1h = writes
+	}
+	priced := *usage
+	promptDetails := *usage.PromptTokensDetails
+	promptDetails.CachedWriteTokenDetails = details
+	priced.PromptTokensDetails = &promptDetails
+	return &priced
 }
 
 // longLivedCacheWriteTokens splits the cache writes priced above the base write rate into
