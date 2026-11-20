@@ -14969,6 +14969,12 @@ var allowedRequestsGateCalls = map[schemas.RequestType]resourceOverrideCall{
 		_, err := p.ChatCompletion(ctx, keys[0], &schemas.BifrostChatRequest{Provider: base, Model: "m", Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &text}}}})
 		return err
 	},
+	schemas.ResponsesRequest: func(ctx *schemas.BifrostContext, p schemas.Provider, keys []schemas.Key, base schemas.ModelProvider, _ []string) *schemas.BifrostError {
+		text := "hi"
+		role := schemas.ResponsesInputMessageRoleUser
+		_, err := p.Responses(ctx, keys[0], &schemas.BifrostResponsesRequest{Provider: base, Model: "m", Input: []schemas.ResponsesMessage{{Role: &role, Content: &schemas.ResponsesMessageContent{ContentStr: &text}}}})
+		return err
+	},
 	schemas.EmbeddingRequest: func(ctx *schemas.BifrostContext, p schemas.Provider, keys []schemas.Key, base schemas.ModelProvider, _ []string) *schemas.BifrostError {
 		text := "hi"
 		_, err := p.Embedding(ctx, keys[0], &schemas.BifrostEmbeddingRequest{Provider: base, Model: "m", Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}}})

@@ -829,6 +829,18 @@ func (config *ProviderConfig) CheckAndSetDefaults() {
 
 type PostHookRunner func(ctx *BifrostContext, result *BifrostResponse, err *BifrostError) (*BifrostResponse, *BifrostError)
 
+// UpstreamOperationConverter is implemented by a provider whose method serves a request type
+// through a different operation of its own accord, such as the OpenAI provider answering a
+// Responses request with a chat completion when a custom provider allows chat but not
+// responses. It is the one source for that conversion (fork, TXE-7027): the provider method
+// follows it, and core's allowed_requests gate checks the operation it returns, so the gate
+// and the provider agree on what reaches the vendor.
+type UpstreamOperationConverter interface {
+	// UpstreamOperation returns the operation the provider sends upstream for requestType;
+	// requestType itself when the provider does not convert it.
+	UpstreamOperation(requestType RequestType) RequestType
+}
+
 // Provider defines the interface for AI model providers.
 type Provider interface {
 	// GetProviderKey returns the provider's identifier

@@ -1990,7 +1990,7 @@ func HandleOpenAIChatCompletionStreaming(
 
 // Responses performs a responses request to the OpenAI API.
 func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-	if provider.shouldFallbackResponsesToChat(schemas.ResponsesRequest, schemas.ChatCompletionRequest) {
+	if provider.UpstreamOperation(schemas.ResponsesRequest) == schemas.ChatCompletionRequest {
 		chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
 		if err != nil {
 			return nil, err
@@ -2196,7 +2196,7 @@ func HandleOpenAIResponsesRequest(
 
 // ResponsesStream performs a streaming responses request to the OpenAI API.
 func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	if provider.shouldFallbackResponsesToChat(schemas.ResponsesStreamRequest, schemas.ChatCompletionStreamRequest) {
+	if provider.UpstreamOperation(schemas.ResponsesStreamRequest) == schemas.ChatCompletionStreamRequest {
 		ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
 		return provider.ChatCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, request.ToChatRequest())
 	}
@@ -2729,15 +2729,29 @@ func HandleOpenAIEmbeddingRequest(
 	return response, nil
 }
 
-// shouldFallbackResponsesToChat reports whether a Responses call should be
-// transparently translated into Chat Completions. This applies when a custom
-// provider disables the Responses operation but still allows Chat Completions.
-func (provider *OpenAIProvider) shouldFallbackResponsesToChat(responsesOp, chatOp schemas.RequestType) bool {
+// UpstreamOperation implements schemas.UpstreamOperationConverter. A custom provider that
+// disables Responses but allows Chat Completions has its Responses calls translated into Chat
+// Completions (upstream #3505). Responses and ResponsesStream follow this method, and core's
+// allowed_requests gate checks what it returns (fork, TXE-7027), so a Responses request on
+// such a provider is served as chat and checked as chat.
+func (provider *OpenAIProvider) UpstreamOperation(requestType schemas.RequestType) schemas.RequestType {
 	cfg := provider.customProviderConfig
 	if cfg == nil || cfg.AllowedRequests == nil {
-		return false
+		return requestType
 	}
-	return !cfg.IsOperationAllowed(responsesOp) && cfg.IsOperationAllowed(chatOp)
+	var chatOp schemas.RequestType
+	switch requestType {
+	case schemas.ResponsesRequest:
+		chatOp = schemas.ChatCompletionRequest
+	case schemas.ResponsesStreamRequest:
+		chatOp = schemas.ChatCompletionStreamRequest
+	default:
+		return requestType
+	}
+	if !cfg.IsOperationAllowed(requestType) && cfg.IsOperationAllowed(chatOp) {
+		return chatOp
+	}
+	return requestType
 }
 
 // Speech handles non-streaming speech synthesis requests.

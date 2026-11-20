@@ -22,7 +22,12 @@ import (
 // checked it: a text completion served as chat is checked as chat, a chat request served
 // through the Responses API (compat conversion or reasoning.mode) as responses, a Responses
 // request served as chat as chat, and an emulated decision as responses. Streams keep their
-// stream flag.
+// stream flag. A conversion a provider makes on its own is declared through
+// schemas.UpstreamOperationConverter and checked the same way: an OpenAI-base custom provider
+// that allows chat but not responses serves a Responses request as chat (upstream #3505), so
+// it is checked as chat (TXE-7027). TestAllowedRequestsGateAgreesWithEveryProvider fails when
+// a provider serves a request through an operation the gate does not know about, or the other
+// way round.
 //
 // Request types Bifrost issues on its own behalf:
 //
@@ -33,11 +38,23 @@ import (
 //     sweeper only reads the state of a job a caller was allowed to create, so it can bill it;
 //     a refusal is final to the sweeper and would leave the job unbilled. The provider methods
 //     that gate these operations themselves still refuse them, as they did before.
-//   - responses, from a GPT Live session's backend delegation: checked as responses. The
-//     OpenAI provider already refused it when responses was not allowed.
+//   - responses, from a GPT Live session's backend delegation: checked as the OpenAI provider
+//     serves it, as responses, or as chat when only chat is allowed (TXE-7027).
 
-// upstreamOperation returns the operation dispatch sends to the provider for req.
+// upstreamOperation returns the operation dispatch sends to the provider for req, then the
+// operation the provider sends upstream for that, when the provider converts it on its own
+// (schemas.UpstreamOperationConverter, TXE-7027).
 func upstreamOperation(ctx *schemas.BifrostContext, provider schemas.Provider, req *schemas.BifrostRequest) schemas.RequestType {
+	operation := dispatchOperation(ctx, provider, req)
+	if converter, ok := provider.(schemas.UpstreamOperationConverter); ok {
+		return converter.UpstreamOperation(operation)
+	}
+	return operation
+}
+
+// dispatchOperation returns the provider method dispatch calls for req: the request's own
+// type, or the type a core conversion changes it to.
+func dispatchOperation(ctx *schemas.BifrostContext, provider schemas.Provider, req *schemas.BifrostRequest) schemas.RequestType {
 	var changeType schemas.RequestType
 	if ctx != nil {
 		changeType, _ = ctx.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType)
