@@ -55,6 +55,9 @@ type EvaluationRequest struct {
 	// BodyModels are the distinct models a passthrough body names when the request names none of
 	// its own, as each was evaluated.
 	BodyModels []string `json:"body_models,omitempty"`
+	// InlineBatchModelsComplete marks an inline batch create every request of which names its
+	// model, each evaluated on its own before the request's pass (TXE-7957).
+	InlineBatchModelsComplete bool `json:"inline_batch_models_complete,omitempty"`
 }
 
 // EvaluationResult is a governance verdict: whether the request may proceed, and why not when it

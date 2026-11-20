@@ -223,6 +223,10 @@ func TestUnpricedModelUnderADollarBudgetIsRefusedBeforeTheCall(t *testing.T) {
 	}
 	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", inlineBatch("gpt-4o")), "an inline batch naming no model of its own, whose items are priced, is served")
 	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", inlineBatch("house-llm")), "an inline batch with an item on a model with no row")
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{
+		Provider: schemas.OpenAI,
+		Requests: []schemas.BatchRequestItem{{CustomID: "1", Body: map[string]any{"model": "gpt-4o"}}, {CustomID: "2", Body: map[string]any{"messages": []any{}}}},
+	}}), "an inline batch with a request naming no model")
 
 	fileBatch := func(model *string) *schemas.BifrostRequest {
 		return &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{
@@ -440,4 +444,32 @@ func TestUnpricedPassthroughAnswerRefusesItsBodyModels(t *testing.T) {
 	require.NoError(t, err)
 	plugin.wg.Wait()
 	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", req), "the same passthrough after its answer priced at $0")
+}
+
+// A routing classifier priced beside a $0 answer does not hide it: the answer is judged by its
+// own cost.
+func TestUnpricedAnswerBesideAPricedRoutingCallRefusesTheModelAfter(t *testing.T) {
+	plugin, _ := unpricedBudgetPlugin(t)
+	image := &schemas.BifrostRequest{
+		RequestType:            schemas.ImageGenerationRequest,
+		ImageGenerationRequest: &schemas.BifrostImageGenerationRequest{Provider: schemas.OpenAI, Model: "token-image"},
+	}
+	ctx := resolverCtx(plugin.store, "sk-bf-budget")
+	_, shortCircuit, err := plugin.PreLLMHook(ctx, image)
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit)
+	classifier, classifierModel, tokens := "openai", "gpt-4o", 1000
+	_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{ImageGenerationResponse: &schemas.BifrostImageGenerationResponse{
+		Data: []schemas.ImageData{{URL: "https://example.invalid/1.png"}},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.ImageGenerationRequest, Provider: schemas.OpenAI, OriginalModelRequested: "token-image",
+			RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenAI, Model: "token-image"},
+			RoutingMetadata: &schemas.BifrostRoutingMetadata{Calls: []schemas.BifrostRoutingCall{{
+				RequestType: schemas.ChatCompletionRequest, ProviderUsed: &classifier, ModelUsed: &classifierModel, InputTokens: &tokens, CountTowardBudgets: true,
+			}}},
+		},
+	}}, nil)
+	require.NoError(t, err)
+	plugin.wg.Wait()
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", image), "the model whose answer priced at $0 beside a priced classifier")
 }

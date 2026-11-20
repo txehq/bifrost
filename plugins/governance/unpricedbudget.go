@@ -275,9 +275,16 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 	}
 	if requestType == schemas.BatchCreateRequest {
 		// An inline batch naming no model of its own: each request was gated as its own model before
-		// the envelope (PreLLMHook), so the envelope has nothing left to price.
+		// the envelope (PreLLMHook), so the envelope has nothing left to price, provided every
+		// request names one. A request naming none runs a model nothing priced.
 		if evaluationRequest.Model == "" && !evaluationRequest.OpaqueBatchInput {
-			return nil
+			if evaluationRequest.InlineBatchModelsComplete {
+				return nil
+			}
+			return &EvaluationResult{
+				Decision: DecisionModelUnpriced,
+				Reason:   "a batch request names no model, on itself or on the batch, so it cannot be priced or charged to a dollar budget; name the model on every request",
+			}
 		}
 		// An uploaded input runs the models its rows name. Only where the provider's batch API runs
 		// the model named on the request does that model say what will be charged; elsewhere
@@ -518,4 +525,25 @@ func passthroughBodyNamesEveryModel(req *schemas.BifrostRequest) bool {
 		return true
 	}
 	return false
+}
+
+// inlineBatchNamesEveryModel reports whether an inline batch create names a model on every one of
+// its requests, read as BatchCreateModels reads them (the OpenAI-shaped body or the Anthropic-shaped
+// params).
+func inlineBatchNamesEveryModel(req *schemas.BifrostRequest) bool {
+	if req.RequestType != schemas.BatchCreateRequest || req.BatchCreateRequest == nil || len(req.BatchCreateRequest.Requests) == 0 {
+		return false
+	}
+	for _, item := range req.BatchCreateRequest.Requests {
+		named := false
+		for _, body := range []map[string]any{item.Body, item.Params} {
+			if m, ok := body["model"].(string); ok && strings.TrimSpace(m) != "" {
+				named = true
+			}
+		}
+		if !named {
+			return false
+		}
+	}
+	return true
 }

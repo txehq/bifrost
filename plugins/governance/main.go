@@ -1218,6 +1218,8 @@ func (p *GovernancePlugin) preLLMHook(ctx *schemas.BifrostContext, req *schemas.
 		Provider:         provider,
 		Model:            model,
 		OpaqueBatchInput: isOpaqueBatchInput(req),
+		// TXE-7957: an inline batch naming no model of its own is priced by its items' models.
+		InlineBatchModelsComplete: inlineBatchNamesEveryModel(req),
 	}
 	// A passthrough body is forwarded as the provider reads it, and a task array (Runware) names a
 	// model per task that the request itself may not carry. Every model the body names is
@@ -2119,8 +2121,20 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifro
 			if model == "" && len(bodyModels) > 0 {
 				models = bodyModels
 			}
+			// The answer's own cost, without the routing and guardrail calls priced beside it: a
+			// classifier's cost must not hide a $0 answer.
+			answerCost := cost
+			if answerCost > 0 && result != nil && p.modelCatalog != nil {
+				answerCost = 0
+				if breakdown := p.modelCatalog.CalculateCostBreakdown(result, pricingScopes); breakdown != nil {
+					answerCost = breakdown.TotalCost
+					if sidecars := breakdown.AdditionalCostDetails; sidecars != nil {
+						answerCost -= sidecars.GuardrailCost + sidecars.RoutingCost
+					}
+				}
+			}
 			for _, priced := range models {
-				p.resolver.noteUnpricedAnswer(provider, priced, requestType, cost, pricingScopes, requestID, limitIDs(budgets))
+				p.resolver.noteUnpricedAnswer(provider, priced, requestType, answerCost, pricingScopes, requestID, limitIDs(budgets))
 			}
 		}
 
