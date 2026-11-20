@@ -735,9 +735,9 @@ func TestContainerCreateIsPricedByItsMemoryTier(t *testing.T) {
 func TestPassthroughAnswerIsJudgedInItsPricedMode(t *testing.T) {
 	plugin, _ := unpricedBudgetPlugin(t)
 	budgets := []string{"budget-unpriced"}
-	assert.False(t, plugin.resolver.noteUnpricedAnswer(schemas.OpenAI, "responses-free", schemas.PassthroughRequest, schemas.ResponsesRequest, 0, nil, "r1", budgets),
+	assert.False(t, plugin.resolver.noteUnpricedAnswer(schemas.OpenAI, "responses-free", "", schemas.PassthroughRequest, schemas.ResponsesRequest, 0, nil, "r1", budgets),
 		"free in the mode it was priced in")
-	assert.True(t, plugin.resolver.noteUnpricedAnswer(schemas.OpenAI, "responses-free", schemas.PassthroughRequest, schemas.ChatCompletionRequest, 0, nil, "r2", budgets),
+	assert.True(t, plugin.resolver.noteUnpricedAnswer(schemas.OpenAI, "responses-free", "", schemas.PassthroughRequest, schemas.ChatCompletionRequest, 0, nil, "r2", budgets),
 		"priced in chat, so a $0 chat answer is unpriced")
 }
 
@@ -800,12 +800,13 @@ func TestServerSideFallbackAnswerIsJudgedAsTheServingModel(t *testing.T) {
 		_, shortCircuit, err := plugin.PreLLMHook(ctx, chat)
 		require.NoError(t, err)
 		require.Nil(t, shortCircuit)
+		model := chat.ChatRequest.Model
 		answer := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
-			Model: "gpt-4o",
+			Model: model,
 			Usage: &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType: schemas.ChatCompletionRequest, Provider: schemas.OpenAI, OriginalModelRequested: "gpt-4o",
-				RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenAI, Model: "gpt-4o", ServerSideFallbackModel: &fallback},
+				RequestType: schemas.ChatCompletionRequest, Provider: schemas.OpenAI, OriginalModelRequested: model,
+				RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenAI, Model: model, ServerSideFallbackModel: &fallback},
 			},
 		}}
 		breakdown := plugin.modelCatalog.CalculateCostBreakdown(answer, nil)
@@ -819,4 +820,9 @@ func TestServerSideFallbackAnswerIsJudgedAsTheServingModel(t *testing.T) {
 	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", chat), "a free fallback answer does not refuse the requested model")
 	answerOn("seconds-chat")
 	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", chat), "an unpriced fallback answer refuses the requested model")
+
+	// A requested model the price book makes free does not make its unpriced fallback free.
+	chat = &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "free-chat"}}
+	answerOn("seconds-chat")
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", chat), "an unpriced fallback answer refuses a free requested model")
 }

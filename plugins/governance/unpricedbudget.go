@@ -374,7 +374,10 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 //
 // pricedAs is the request type accounting priced the answer as (a passthrough is priced in the
 // mode its path implies); requestType is the request's own, which the gate reads rows under.
-func (r *BudgetResolver) noteUnpricedAnswer(provider schemas.ModelProvider, model string, requestType, pricedAs schemas.RequestType, cost float64, scopes *modelcatalog.PricingLookupScopes, requestID string, budgetIDs []string) bool {
+// servedModel is the model that served the answer when it is not model (a provider's server-side
+// fallback): its price decides whether $0 was free, and model's rows, which admission checks, are
+// the ones refused.
+func (r *BudgetResolver) noteUnpricedAnswer(provider schemas.ModelProvider, model, servedModel string, requestType, pricedAs schemas.RequestType, cost float64, scopes *modelcatalog.PricingLookupScopes, requestID string, budgetIDs []string) bool {
 	if r == nil || r.modelCatalog == nil || cost > 0 || len(budgetIDs) == 0 {
 		return false
 	}
@@ -384,7 +387,11 @@ func (r *BudgetResolver) noteUnpricedAnswer(provider schemas.ModelProvider, mode
 	}
 	// Whether $0 was the price is read under the scope and mode that priced the answer: the key
 	// that served it is selected by now, and another key's override says nothing about this answer.
-	if r.servedPriceStatus(provider, model, pricedAs, scopes) == modelcatalog.PriceFree {
+	served := model
+	if servedModel != "" {
+		served = servedModel
+	}
+	if r.servedPriceStatus(provider, served, pricedAs, scopes) == modelcatalog.PriceFree {
 		return false
 	}
 	_, rows := r.priceIdentities(provider, model, requestType, scopes)
