@@ -19,7 +19,8 @@ const seedreamMaxImages = 15
 // receive fewer than n; usage.output_images is the count delivered (Ark's generated_images),
 // and that is what is billed. This is TXE-6605 B3's one exception: n becomes "up to n" for
 // Seedream only. n is the one way in: Seedream's own group fields stay refused as extra
-// params (TXE-7124), and ValidateBytePlusImageParams has refused an n out of range.
+// params (TXE-7124), and ValidateBytePlusImageParams has refused an n out of range. This is the only
+// place that sets SequentialImageGenerationOptions, which Ark reads only beside "auto".
 func applyBytePlusImageCount(req *BytePlusImageGenerationRequest, n *int) {
 	if n == nil || *n < 2 {
 		return

@@ -8,19 +8,17 @@ type BytePlusError struct {
 
 // BytePlusImageGenerationRequest is the body for POST /api/v3/images/generations.
 type BytePlusImageGenerationRequest struct {
-	Model                     string   `json:"model"`
-	Prompt                    string   `json:"prompt"`
-	Image                     []string `json:"image,omitempty"` // reference images as URLs or data URIs
-	Size                      *string  `json:"size,omitempty"`  // "WIDTHxHEIGHT" or a tier such as "2K"
-	Seed                      *int     `json:"seed,omitempty"`
-	ResponseFormat            *string  `json:"response_format,omitempty"` // "url" or "b64_json"
-	OutputFormat              *string  `json:"output_format,omitempty"`
-	Background                *string  `json:"background,omitempty"` // "transparent", "opaque", "auto"
-	Watermark                 *bool    `json:"watermark,omitempty"`
-	SequentialImageGeneration *string  `json:"sequential_image_generation,omitempty"` // "auto" or "disabled"
-	// SequentialImageGenerationOptions is sent with SequentialImageGeneration "auto": the
-	// gateway sets it from n alone (TXE-7304), never from an extra param.
-	SequentialImageGenerationOptions *BytePlusSequentialImageGenerationOptions `json:"sequential_image_generation_options,omitempty"`
+	Model                            string                                    `json:"model"`
+	Prompt                           string                                    `json:"prompt"`
+	Image                            []string                                  `json:"image,omitempty"` // reference images as URLs or data URIs
+	Size                             *string                                   `json:"size,omitempty"`  // "WIDTHxHEIGHT" or a tier such as "2K"
+	Seed                             *int                                      `json:"seed,omitempty"`
+	ResponseFormat                   *string                                   `json:"response_format,omitempty"` // "url" or "b64_json"
+	OutputFormat                     *string                                   `json:"output_format,omitempty"`
+	Background                       *string                                   `json:"background,omitempty"` // "transparent", "opaque", "auto"
+	Watermark                        *bool                                     `json:"watermark,omitempty"`
+	SequentialImageGeneration        *string                                   `json:"sequential_image_generation,omitempty"`         // "auto" or "disabled"
+	SequentialImageGenerationOptions *BytePlusSequentialImageGenerationOptions `json:"sequential_image_generation_options,omitempty"` // set from n only
 	Stream                           *bool                                     `json:"stream,omitempty"`
 	ExtraParams                      map[string]interface{}                    `json:"-"`
 }
