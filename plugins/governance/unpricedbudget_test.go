@@ -262,19 +262,14 @@ func TestUnpricedModelUnderADollarBudgetIsRefusedBeforeTheCall(t *testing.T) {
 	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", passthrough(`[{"model":"gpt-4o"},{"model":"house-llm"}]`)), "a passthrough with a body model that has no row")
 	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", passthrough(`{"prompt":"no model anywhere"}`)), "a passthrough naming no model anywhere")
 	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", passthrough(`[{"model":"gpt-4o"},{"prompt":"runs the provider's default model"}]`)), "a task array with a task naming no model")
-	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", passthrough(`[{"model":"gpt-4o","model":"house-llm"}]`)), "a task naming its model twice, gated on the first and run on the last")
-	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", passthrough(`{"model":"gpt-4o","prompt":"p","model":"house-llm"}`)), "a body naming its model twice")
-	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", passthrough(`{"model":"gpt-4o","Model":"house-llm"}`)), "a body naming its model twice in two cases, which encoding/json matches alike")
+	// A body naming its model twice never reaches governance: core refuses a forwarded body that
+	// repeats a member (TXE-7994, TestRepeatedBodyModelCannotRunAModelTheKeyIsNotAllowed).
 	mismatched := passthrough(`{"model":"free-chat"}`)
 	mismatched.PassthroughRequest.Model = "gpt-4o"
 	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", mismatched), "a request naming one model whose body names another")
 	matched := passthrough(`{"model":"gpt-4o"}`)
 	matched.PassthroughRequest.Model = "gpt-4o"
 	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", matched), "a request whose body names the same model is served")
-	withModel := passthrough(`{"model":"gpt-4o","prompt":"p","model":"house-llm"}`)
-	withModel.PassthroughRequest.Model = "gpt-4o"
-	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", withModel), "a body naming its model twice, whatever model the request names")
-	assert.Nil(t, preLLM(t, plugin, "sk-bf-open", withModel), "a key with no dollar budget is not refused for it")
 
 	// Creating Gemini cached content is charged by the vendor but priced by no Bifrost answer.
 	cachedContent := &schemas.BifrostRequest{RequestType: schemas.CachedContentCreateRequest, CachedContentCreateRequest: &schemas.BifrostCachedContentCreateRequest{

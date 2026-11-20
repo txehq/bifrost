@@ -263,15 +263,8 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 	// (the object, or every task of an array): each was gated as its own model before the envelope
 	// (PreLLMHook). One with a task naming no model runs the provider's default, which cannot be
 	// priced, and is gated as the envelope, which names none.
-	// A body naming a model twice is gated on the first and run on the last by most providers,
-	// whichever model the request names: under a dollar budget it cannot be priced.
-	if (requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest) &&
-		evaluationRequest.request != nil && passthroughBodyRepeatsModel(evaluationRequest.request) {
-		return &EvaluationResult{
-			Decision: DecisionModelUnpriced,
-			Reason:   "the request body names its model more than once, so the model it runs cannot be priced or charged to a dollar budget; name it once",
-		}
-	}
+	// A body naming a model twice never gets here: core refuses a forwarded body that repeats a
+	// member before any plugin reads it (TXE-7994).
 	// A passthrough naming its model on the request whose body names another: the answer is priced
 	// as the request's model while the body's runs, so one answer cannot be charged model by model.
 	if (requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest) && evaluationRequest.Model != "" && evaluationRequest.request != nil {
@@ -741,37 +734,6 @@ func passthroughQueuedAcknowledgment(body []byte) bool {
 		return queued
 	})
 	return items > 0 && queued
-}
-
-// passthroughBodyRepeatsModel reports whether a passthrough body gives a "model" key twice in one
-// object: the JSON object it is, or any object of the array it is.
-func passthroughBodyRepeatsModel(req *schemas.BifrostRequest) bool {
-	if req.PassthroughRequest == nil || len(req.PassthroughRequest.Body) == 0 || !gjson.ValidBytes(req.PassthroughRequest.Body) {
-		return false
-	}
-	repeats := func(object gjson.Result) bool {
-		count := 0
-		object.ForEach(func(key, _ gjson.Result) bool {
-			if strings.EqualFold(key.Str, "model") {
-				count++
-			}
-			return count < 2
-		})
-		return count > 1
-	}
-	root := gjson.ParseBytes(req.PassthroughRequest.Body)
-	switch {
-	case root.IsObject():
-		return repeats(root)
-	case root.IsArray():
-		repeated := false
-		root.ForEach(func(_, task gjson.Result) bool {
-			repeated = task.IsObject() && repeats(task)
-			return !repeated
-		})
-		return repeated
-	}
-	return false
 }
 
 // normalizesToUnknown reports whether a request type has no pricing mode of its own.
