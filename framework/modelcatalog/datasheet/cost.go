@@ -866,7 +866,9 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 		}
 		return total
 	}
-	input.usage = usageWithRequestedCacheWriteTier(input.usage, routingInfo.Provider, scopes.RequestedPromptCacheTTL)
+	if scopes.RequestedPromptCacheTTL != "" {
+		input.usage = usageWithRequestedCacheWriteTier(input.usage, s.requestTTLPricingProvider(routingInfo.Provider), scopes.RequestedPromptCacheTTL)
+	}
 	// When a pricing model override is set (e.g. container creates always look
 	// up "container"), it replaces the lookup hierarchy entirely. Build a
 	// synthetic RoutingInfo that reuses Provider but pins the model fields to
@@ -3476,14 +3478,24 @@ func tieredCacheCreationInputAbove12hrTokenRate(pricing *configstoreTables.Table
 	return tieredCacheCreationInputAbove1hrTokenRate(pricing, totalTokens, tier)
 }
 
-// RequestTTLPricedCacheWrites lists the providers whose vendor prices a prompt-cache write by the
-// TTL the request asked for (prompt_cache_options.ttl) and reports the write as one figure, with
-// no tier (fork, TXE-7069). For these, a write the response reports without a tier is costed at
-// the tier the request asked for. A provider whose usage reports the tier (Anthropic's
-// ephemeral_1h_input_tokens, OpenAI's ttl_30m/ttl_12h tokens) is never listed: its reported split
-// is what the vendor billed. TestRequestTTLPricedCacheWritesCostTheRequestedTier runs every entry.
-var RequestTTLPricedCacheWrites = map[schemas.ModelProvider]string{
-	schemas.Moonshot: "Kimi bills a cache write by the request's prompt_cache_options.ttl and reports one cache_write_tokens figure without the TTL (the datasheet's moonshot/kimi-k3 row: $3/M base write, $6/M above 1 hour); TXE-6527 delivers the TTL to the vendor as sent",
+// RequestTTLPricedCacheWrites is schemas.RequestTTLPricedCacheWrites: the providers whose vendor
+// prices a cache write by the requested TTL. The list lives in core so the request path reads the
+// TTL from the body only for them (fork, TXE-7996); pricing and the request path share one list.
+// TestRequestTTLPricedCacheWritesCostTheRequestedTier runs every entry.
+var RequestTTLPricedCacheWrites = schemas.RequestTTLPricedCacheWrites
+
+// requestTTLPricingProvider returns the provider whose RequestTTLPricedCacheWrites entry applies to
+// a request on provider: provider itself, or, for a custom provider configured on a listed base
+// (base_provider_type: moonshot), that base, since the vendor behind it bills the same way (fork,
+// TXE-7996). TestCustomProviderOnARequestTTLPricedBaseCostsTheRequestedTier runs every entry.
+func (s *Store) requestTTLPricingProvider(provider schemas.ModelProvider) schemas.ModelProvider {
+	if _, ok := RequestTTLPricedCacheWrites[provider]; ok {
+		return provider
+	}
+	if base, ok := s.CustomProviderBase(provider); ok {
+		return base
+	}
+	return provider
 }
 
 // usageWithRequestedCacheWriteTier returns the usage to price. For a provider in

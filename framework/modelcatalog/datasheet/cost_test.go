@@ -11549,3 +11549,47 @@ func TestVideoBandSize_ConflictingTiersChargeTheDearerByRate(t *testing.T) {
 	d = VideoPricingDimensions{Resolution: "480p", Extra: map[string]any{"resolution": "720p"}, Seconds: &seconds}
 	assert.Equal(t, "", d.bandSize(schemas.XAI, &cheap, false))
 }
+
+// TestCustomProviderOnARequestTTLPricedBaseCostsTheRequestedTier: a custom provider configured on a
+// base listed in RequestTTLPricedCacheWrites (base_provider_type: moonshot) reaches the same vendor,
+// which bills a cache write by the requested TTL, so its write is costed at the requested tier like
+// the base's own (fork, TXE-7996). Before, the custom provider's own name was looked up in the list
+// and a 1-hour write was costed at the base rate. Every entry and every text request type runs.
+func TestCustomProviderOnARequestTTLPricedBaseCostsTheRequestedTier(t *testing.T) {
+	const (
+		input     = 0.0000006
+		output    = 0.0000025
+		baseWrite = 0.000003
+		hourWrite = 0.000006
+	)
+	require.NotEmpty(t, RequestTTLPricedCacheWrites)
+	for base := range RequestTTLPricedCacheWrites {
+		pricing := chatPricing(input, output)
+		pricing.Model, pricing.Provider = "ttl-priced-model", string(base)
+		pricing.CacheCreationInputTokenCost = bifrost.Ptr(baseWrite)
+		pricing.CacheCreationInputTokenCostAbove1hr = bifrost.Ptr(hourWrite)
+		s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{makeKey(pricing.Model, pricing.Provider, pricing.Mode): pricing})
+		custom := schemas.ModelProvider("tkp_on_" + string(base))
+		s.SetCustomProviderBase(custom, base)
+		for _, requestType := range []schemas.RequestType{
+			schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest, schemas.ResponsesRequest, schemas.ResponsesStreamRequest,
+		} {
+			for ttl, writeRate := range map[string]float64{"1h": hourWrite, "5m": baseWrite, "": baseWrite} {
+				t.Run(fmt.Sprintf("%s/%s/ttl=%s", custom, requestType, ttl), func(t *testing.T) {
+					usage := &schemas.BifrostLLMUsage{
+						PromptTokens: 3000, CompletionTokens: 200, TotalTokens: 3200,
+						PromptTokensDetails: &schemas.ChatPromptTokensDetails{CachedWriteTokens: 2000},
+					}
+					cost := s.CalculateCostForUsage(usage, custom, pricing.Model, requestType, &LookupScopes{RequestedPromptCacheTTL: ttl})
+					assert.InDelta(t, 1000*input+2000*writeRate+200*output, cost, 1e-12)
+					assert.Nil(t, usage.PromptTokensDetails.CachedWriteTokenDetails, "usage is not changed")
+				})
+			}
+		}
+	}
+	// A custom provider on a base that is not listed keeps the base write rate.
+	s := testStoreWithPricing(nil)
+	s.SetCustomProviderBase("tkp_on_openai", schemas.OpenAI)
+	_, listed := RequestTTLPricedCacheWrites[s.requestTTLPricingProvider("tkp_on_openai")]
+	assert.False(t, listed)
+}

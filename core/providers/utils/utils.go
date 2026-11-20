@@ -28,6 +28,7 @@ import (
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
+	"unsafe"
 	"weak"
 
 	"github.com/bytedance/sonic"
@@ -3580,10 +3581,68 @@ func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGette
 		if mt != nil {
 			mt.EndSpan(mhdl, schemas.SpanStatusOk, "")
 		}
+		stampPromptCacheTTLFromBody(ctx, jsonBody)
 		return jsonBody, nil
 	} else {
+		stampPromptCacheTTLFromBody(ctx, rawBody)
 		return rawBody, nil
 	}
+}
+
+// stampPromptCacheTTLFromBody records, for pricing, the prompt_cache_options.ttl of the body this
+// attempt sends the vendor (BifrostContextKeyRequestedPromptCacheTTL). Bifrost stamps the typed or
+// merged TTL before the attempt; this replaces it with what the body actually carries, so a raw
+// body, an extra param in a spelling the vendor does not read, or any later rewrite is priced as
+// sent (fork, TXE-7996). TestPricedPromptCacheTTLIsTheTTLKimiReceives (core/providers/moonshot)
+// fails when they differ. Pricing reads the TTL only for a vendor in
+// schemas.RequestTTLPricedCacheWrites, so the body is scanned only when the attempt's base
+// provider (a custom provider's included) is one of them.
+func stampPromptCacheTTLFromBody(ctx context.Context, body []byte) {
+	bifrostCtx, ok := ctx.(*schemas.BifrostContext)
+	if !ok || bifrostCtx == nil {
+		return
+	}
+	base, _ := bifrostCtx.Value(schemas.BifrostContextKeyBaseProviderType).(schemas.ModelProvider)
+	if _, priced := schemas.RequestTTLPricedCacheWrites[base]; !priced {
+		return
+	}
+	bifrostCtx.SetValue(schemas.BifrostContextKeyRequestedPromptCacheTTL, PromptCacheTTLInBody(body))
+}
+
+// PromptCacheTTLInBody returns the string prompt_cache_options.ttl of a JSON request body, or ""
+// when the body has none. It scans without decoding, so a body with no such field costs one pass.
+// A body that repeats prompt_cache_options or ttl is read differently by different decoders (the
+// first member or the last), so every occurrence is read and the longest TTL is returned: an
+// ambiguous body is priced at the highest tier it may be billed at, never below it.
+func PromptCacheTTLInBody(body []byte) string {
+	// Read in place: body is not changed while it is scanned. A gjson string can point into its
+	// input, so the TTL returned is cloned and never aliases body, whose buffer may be reused.
+	root := gjson.Parse(unsafe.String(unsafe.SliceData(body), len(body)))
+	if !root.IsObject() {
+		return ""
+	}
+	best, bestDuration := "", time.Duration(-1)
+	root.ForEach(func(key, options gjson.Result) bool {
+		if key.Str != "prompt_cache_options" || !options.IsObject() {
+			return true
+		}
+		options.ForEach(func(field, ttl gjson.Result) bool {
+			if field.Str != "ttl" || ttl.Type != gjson.String {
+				return true
+			}
+			// An unparseable TTL ranks below any duration: pricing costs it at the base rate.
+			duration, err := time.ParseDuration(ttl.Str)
+			if err != nil {
+				duration = 0
+			}
+			if duration > bestDuration {
+				best, bestDuration = ttl.Str, duration
+			}
+			return true
+		})
+		return true
+	})
+	return strings.Clone(best)
 }
 
 // MarshalConvertedRequestBody encodes a converted provider request as the JSON sent to the
