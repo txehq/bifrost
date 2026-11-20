@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
@@ -143,6 +144,25 @@ func (provider *AzureSpeechProvider) newSpeechRequest(ctx *schemas.BifrostContex
 	return ssml, nil
 }
 
+// estimatedSpeechUsage is the usage of a synthesis: estimate, Bifrost's estimate of the
+// characters Azure bills for its SSML (EstimateBilledCharacters). input_chars is filled by
+// BackfillParams.
+func estimatedSpeechUsage(estimate int) *schemas.SpeechUsage {
+	return &schemas.SpeechUsage{EstimatedBilledCharacters: &estimate}
+}
+
+// emptySynthesisBilledUsage is the BilledUsage of a request Azure answered 200 with no audio.
+// Azure bills "each successfully processed request ... regardless of whether audio output is
+// produced", so it is priced as the synthesis would have been: on the estimate, with the
+// input's code-point count beside it (TXE-7073).
+func emptySynthesisBilledUsage(request *schemas.BifrostSpeechRequest, estimate int) *schemas.BifrostLLMUsage {
+	billed := &schemas.BifrostLLMUsage{EstimatedBilledCharacters: &estimate}
+	if request != nil && request.Input != nil {
+		billed.SpeechInputChars = utf8.RuneCountInString(request.Input.Input)
+	}
+	return billed
+}
+
 // audioContentType returns the Content-Type Azure AI Speech sent with the audio, which names
 // the format it actually returned, or "" when the header is missing or is not an audio type.
 func audioContentType(resp *fasthttp.Response) string {
@@ -154,7 +174,9 @@ func audioContentType(resp *fasthttp.Response) string {
 }
 
 // Speech performs a text to speech request: one POST of the SSML, answered with the audio
-// bytes and the vendor's Content-Type for them. Usage stays empty: real-time synthesis reports no billed character count.
+// bytes and the vendor's Content-Type for them. Real-time synthesis reports no billed
+// character count, so usage carries Bifrost's estimate of it (EstimateBilledCharacters,
+// TXE-7073); core fills input_chars.
 func (provider *AzureSpeechProvider) Speech(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -193,13 +215,17 @@ func (provider *AzureSpeechProvider) Speech(ctx *schemas.BifrostContext, key sch
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), nil, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 	if len(body) == 0 {
-		// 200 with no audio and no error object (contract C6).
-		return nil, providerUtils.EnrichError(ctx, schemas.NewProviderEmptyResultError("Azure AI Speech returned a successful response with no audio"), nil, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+		// 200 with no audio and no error object (contract C6). Azure bills a processed request
+		// whether or not audio came out, so the error carries the estimate (TXE-7073).
+		emptyErr := schemas.NewProviderEmptyResultError("Azure AI Speech returned a successful response with no audio")
+		emptyErr.ExtraFields.BilledUsage = emptySynthesisBilledUsage(request, EstimateBilledCharacters(ssml))
+		return nil, providerUtils.EnrichError(ctx, emptyErr, nil, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	bifrostResponse := &schemas.BifrostSpeechResponse{
 		Audio:       body,
 		ContentType: audioContentType(resp),
+		Usage:       estimatedSpeechUsage(EstimateBilledCharacters(ssml)),
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Latency:                 latency.Milliseconds(),
 			ProviderResponseHeaders: providerUtils.ExtractProviderResponseHeaders(resp),
@@ -225,6 +251,11 @@ func (provider *AzureSpeechProvider) SpeechStream(ctx *schemas.BifrostContext, p
 		providerUtils.ReleaseStreamingResponse(ctx, resp)
 		return nil, bifrostErr
 	}
+
+	// Azure bills the whole SSML once synthesis starts, so a stream that is cancelled, times
+	// out or is truncated is billed on the same estimate as a finished one.
+	billedEstimate := EstimateBilledCharacters(ssml)
+	ctx.SetValue(schemas.BifrostContextKeySpeechStreamEstimatedBilledChars, billedEstimate)
 
 	startTime := time.Now()
 	err := providerUtils.DoStreamingRequest(ctx, provider.streamingClient, req, resp)
@@ -333,9 +364,11 @@ func (provider *AzureSpeechProvider) SpeechStream(ctx *schemas.BifrostContext, p
 		}
 
 		if chunkIndex < 0 {
-			// 200 with no audio and no error object (contract C6).
+			// 200 with no audio and no error object (contract C6), billed by Azure all the same.
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-			providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, schemas.NewProviderEmptyResultError("Azure AI Speech returned a successful response with no audio"), responseChan, provider.logger, postHookSpanFinalizer)
+			emptyErr := schemas.NewProviderEmptyResultError("Azure AI Speech returned a successful response with no audio")
+			emptyErr.ExtraFields.BilledUsage = emptySynthesisBilledUsage(request, billedEstimate)
+			providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, emptyErr, responseChan, provider.logger, postHookSpanFinalizer)
 			return
 		}
 
@@ -347,8 +380,10 @@ func (provider *AzureSpeechProvider) SpeechStream(ctx *schemas.BifrostContext, p
 				Latency:    time.Since(startTime).Milliseconds(),
 			},
 		}
-		// The same input_chars a buffered response gets from core, so a streamed call is
-		// priced and budgeted like a buffered one. The vendor reports no count of its own.
+		// The same usage a buffered response gets, so a streamed call is priced and budgeted
+		// like a buffered one: the estimate of Azure's billed characters, and input_chars.
+		// The vendor reports no count of its own.
+		finalResponse.Usage = estimatedSpeechUsage(billedEstimate)
 		finalResponse.BackfillParams(request)
 		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
 			finalResponse.ExtraFields.RawRequest = string(ssml)

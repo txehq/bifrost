@@ -2615,6 +2615,10 @@
                           "type": "integer",
                           "description": "Characters the provider reported it billed. Absent when the provider reported none; never Bifrost's own count of the input"
                         },
+                        "estimated_billed_characters": {
+                          "type": "integer",
+                          "description": "Bifrost's estimate of the characters the provider bills, set only for a per-character provider that reports no count and bills more than the input's code points (Azure AI Speech: every code point of the SSML Bifrost sent except the speak and voice tags, each Han character counted twice). Never a provider report; absent for every other provider"
+                        },
                         "vendor_cost": {
                           "type": "object",
                           "description": "Money or credits the provider reported, copied from its response in its own unit. Never\ncomputed by Bifrost; the catalog-priced `cost` is a separate field.\n",
@@ -21730,6 +21734,10 @@
                           "type": "integer",
                           "description": "Characters the provider reported it billed. Absent when the provider reported none; never Bifrost's own count of the input"
                         },
+                        "estimated_billed_characters": {
+                          "type": "integer",
+                          "description": "Bifrost's estimate of the characters the provider bills, set only for a per-character provider that reports no count and bills more than the input's code points (Azure AI Speech: every code point of the SSML Bifrost sent except the speak and voice tags, each Han character counted twice). Never a provider report; absent for every other provider"
+                        },
                         "vendor_cost": {
                           "type": "object",
                           "description": "Money or credits the provider reported, copied from its response in its own unit. Never\ncomputed by Bifrost; the catalog-priced `cost` is a separate field.\n",
@@ -21908,6 +21916,10 @@
                         "billed_characters": {
                           "type": "integer",
                           "description": "Characters the provider reported it billed. Absent when the provider reported none; never Bifrost's own count of the input"
+                        },
+                        "estimated_billed_characters": {
+                          "type": "integer",
+                          "description": "Bifrost's estimate of the characters the provider bills, set only for a per-character provider that reports no count and bills more than the input's code points (Azure AI Speech: every code point of the SSML Bifrost sent except the speak and voice tags, each Han character counted twice). Never a provider report; absent for every other provider"
                         },
                         "vendor_cost": {
                           "type": "object",
@@ -35768,6 +35780,10 @@
                           "type": "integer",
                           "description": "Characters the provider reported it billed. Absent when the provider reported none; never Bifrost's own count of the input"
                         },
+                        "estimated_billed_characters": {
+                          "type": "integer",
+                          "description": "Bifrost's estimate of the characters the provider bills, set only for a per-character provider that reports no count and bills more than the input's code points (Azure AI Speech: every code point of the SSML Bifrost sent except the speak and voice tags, each Han character counted twice). Never a provider report; absent for every other provider"
+                        },
                         "vendor_cost": {
                           "type": "object",
                           "description": "Money or credits the provider reported, copied from its response in its own unit. Never\ncomputed by Bifrost; the catalog-priced `cost` is a separate field.\n",
@@ -38971,6 +38987,10 @@
                         "billed_characters": {
                           "type": "integer",
                           "description": "Characters the provider reported it billed. Absent when the provider reported none; never Bifrost's own count of the input"
+                        },
+                        "estimated_billed_characters": {
+                          "type": "integer",
+                          "description": "Bifrost's estimate of the characters the provider bills, set only for a per-character provider that reports no count and bills more than the input's code points (Azure AI Speech: every code point of the SSML Bifrost sent except the speak and voice tags, each Han character counted twice). Never a provider report; absent for every other provider"
                         },
                         "vendor_cost": {
                           "type": "object",
@@ -42286,6 +42306,10 @@
                         "billed_characters": {
                           "type": "integer",
                           "description": "Characters the provider reported it billed. Absent when the provider reported none; never Bifrost's own count of the input"
+                        },
+                        "estimated_billed_characters": {
+                          "type": "integer",
+                          "description": "Bifrost's estimate of the characters the provider bills, set only for a per-character provider that reports no count and bills more than the input's code points (Azure AI Speech: every code point of the SSML Bifrost sent except the speak and voice tags, each Han character counted twice). Never a provider report; absent for every other provider"
                         },
                         "vendor_cost": {
                           "type": "object",
@@ -115932,6 +115956,10 @@
             "type": "integer",
             "description": "Number of characters the provider billed (Vertex AI text embeddings report it as metadata.billableCharacterCount). Present only when the provider reports it.\n"
           },
+          "estimated_billed_characters": {
+            "type": "integer",
+            "description": "Bifrost's estimate of the characters a provider that reports no count bills (Azure AI Speech), carried on the billed usage of an interrupted or empty speech stream. Never a provider report.\n"
+          },
           "tool_usage": {
             "type": "object",
             "description": "Counts of provider-hosted (server-side) tool calls billed per call.\n",
@@ -122895,6 +122923,10 @@
               "billed_characters": {
                 "type": "integer",
                 "description": "Characters the provider reported it billed. Absent when the provider reported none; never Bifrost's own count of the input"
+              },
+              "estimated_billed_characters": {
+                "type": "integer",
+                "description": "Bifrost's estimate of the characters the provider bills, set only for a per-character provider that reports no count and bills more than the input's code points (Azure AI Speech: every code point of the SSML Bifrost sent except the speak and voice tags, each Han character counted twice). Never a provider report; absent for every other provider"
               },
               "vendor_cost": {
                 "type": "object",

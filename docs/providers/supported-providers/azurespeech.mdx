@@ -151,7 +151,22 @@ Set `stream_format: "sse"` to receive `speech.audio.delta` events as the audio a
 
 ### Usage
 
-The response's `Content-Type` is the one Azure AI Speech sent with the audio (`audio/mpeg`, `audio/x-wav`, ...). Real-time synthesis reports no billed character count, so the provider fills no usage and the `x-bifrost-usage` response header carries no `billed_characters`. A streamed response carries the same `usage.input_chars` on its final `speech.audio.done` event. `usage.input_chars` is Bifrost's own code-point count of `input`; it is not what Azure bills (Azure counts CJK characters twice and bills the SSML text).
+The response's `Content-Type` is the one Azure AI Speech sent with the audio (`audio/mpeg`, `audio/x-wav`, ...). Real-time synthesis reports no billed character count, so `billed_characters` is never set. Instead, the `x-bifrost-usage` response header carries two counts:
+
+- `usage.input_chars` is Bifrost's own code-point count of `input`.
+- `usage.estimated_billed_characters` is Bifrost's estimate of what Azure bills.
+
+A streamed response carries both on its final `speech.audio.done` event.
+
+The estimate applies [Azure's billable-character rule](https://learn.microsoft.com/en-us/azure/ai-services/Speech-Service/text-to-speech#pricing-note) to the SSML Bifrost sent:
+
+- Every character is billed, markup included, except the `<speak>` and `<voice>` tags. When you send `speed`, Bifrost adds a `<prosody rate="...">` element, and Azure bills that element.
+- Each Chinese character counts as two. This includes kanji in Japanese and hanja in Korean.
+- An XML escape that Bifrost writes into your text, such as `&amp;`, counts as the one character it stands for.
+
+For example, `input: "你", speed: 1` sends `<prosody rate="1">你</prosody>`. That is `input_chars` 1 and `estimated_billed_characters` 30 (18 + 2 + 10).
+
+Bifrost prices per-character speech on `billed_characters` when the provider reports it, else on `estimated_billed_characters`, else on `input_chars`. When Azure answers `200` with no audio, it still bills the request. The `provider_empty_result` error carries the estimate in its billed usage, and so does a stream that is cancelled, times out or is cut off. The estimate is not a vendor report: reconcile it against the **Synthesized Characters** metric of the Speech resource in Azure Monitor.
 
 ## Transcription
 

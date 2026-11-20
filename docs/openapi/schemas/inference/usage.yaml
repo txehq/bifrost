@@ -41,6 +41,12 @@ BifrostLLMUsage:
       description: >
         Number of characters the provider billed (Vertex AI text embeddings report it as
         metadata.billableCharacterCount). Present only when the provider reports it.
+    estimated_billed_characters:
+      type: integer
+      description: >
+        Bifrost's estimate of the characters a provider that reports no count bills (Azure AI
+        Speech), carried on the billed usage of an interrupted or empty speech stream. Never a
+        provider report.
     tool_usage:
       $ref: "#/ToolUsage"
     search_context_size:

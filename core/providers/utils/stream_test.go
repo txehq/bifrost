@@ -1266,6 +1266,44 @@ func TestInterruptedSpeechStreamBillsItsInputCharacters(t *testing.T) {
 	}
 }
 
+// TXE-7073: a provider that estimates what the vendor bills (azurespeech) records the estimate
+// on the context; an interrupted stream carries it on BilledUsage next to the input's
+// code-point count, so it is priced on the estimate a finished stream reports.
+func TestInterruptedSpeechStreamCarriesTheBilledCharacterEstimate(t *testing.T) {
+	for _, withInput := range []bool{true, false} {
+		t.Run(fmt.Sprintf("input recorded=%v", withInput), func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if withInput {
+				SetSpeechStreamInput(ctx, &schemas.BifrostSpeechRequest{Input: &schemas.SpeechInput{Input: "你"}})
+			}
+			ctx.SetValue(schemas.BifrostContextKeySpeechStreamEstimatedBilledChars, 30)
+			var seen *schemas.BifrostError
+			hook := func(_ *schemas.BifrostContext, r *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				seen = err
+				return r, err
+			}
+			HandleStreamCancellation(ctx, hook, make(chan *schemas.BifrostStreamChunk, 4), nil, nil, nil)
+			if seen == nil || seen.ExtraFields.BilledUsage == nil {
+				t.Fatalf("no BilledUsage on the cancel error: %+v", seen)
+			}
+			billed := seen.ExtraFields.BilledUsage
+			if billed.EstimatedBilledCharacters == nil || *billed.EstimatedBilledCharacters != 30 {
+				t.Errorf("EstimatedBilledCharacters = %v, want 30", billed.EstimatedBilledCharacters)
+			}
+			wantInput := 0
+			if withInput {
+				wantInput = 1
+			}
+			if billed.SpeechInputChars != wantInput {
+				t.Errorf("SpeechInputChars = %d, want %d", billed.SpeechInputChars, wantInput)
+			}
+			if billed.BilledCharacters != nil {
+				t.Errorf("BilledCharacters = %d, want nil: an estimate is never a vendor report", *billed.BilledCharacters)
+			}
+		})
+	}
+}
+
 // A context with no speech input recorded (every non-speech stream) gets no BilledUsage from
 // the speech rule, and an empty input records nothing.
 func TestSpeechStreamInputNotRecordedLeavesErrorsUnbilled(t *testing.T) {

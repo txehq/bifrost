@@ -2647,6 +2647,23 @@ func TestWrapSpeechStreamPostHookRunner(t *testing.T) {
 		t.Fatal("BilledUsage aliases the chunk's billed characters")
 	}
 
+	// azurespeech reports Bifrost's estimate of the characters Azure bills (TXE-7073): the
+	// error keeps it, a copy, so the empty synthesis is priced on what a finished one would be.
+	estimate := 30
+	estimated := &schemas.BifrostSpeechStreamResponse{
+		Type:        schemas.SpeechStreamResponseTypeDone,
+		Usage:       &schemas.SpeechUsage{InputChars: 1, EstimatedBilledCharacters: &estimate},
+		ExtraFields: schemas.BifrostResponseExtraFields{Provider: schemas.AzureSpeech, RequestType: schemas.SpeechStreamRequest},
+	}
+	estBilled := run(empty, estimated)[1].err.ExtraFields.BilledUsage
+	if estBilled == nil || estBilled.SpeechInputChars != 1 || estBilled.EstimatedBilledCharacters == nil || *estBilled.EstimatedBilledCharacters != 30 || estBilled.BilledCharacters != nil {
+		t.Fatalf("BilledUsage = %+v, want the done chunk's 1 input character and 30 estimated billed characters", estBilled)
+	}
+	estimate = 1
+	if *estBilled.EstimatedBilledCharacters != 30 {
+		t.Fatal("BilledUsage aliases the chunk's estimate")
+	}
+
 	if got := run(empty, &schemas.BifrostSpeechStreamResponse{Type: schemas.SpeechStreamResponseTypeDone, Usage: &schemas.SpeechUsage{}})[1].err.ExtraFields.BilledUsage; got != nil {
 		t.Fatalf("a done chunk with empty usage bills nothing, got %+v", got)
 	}

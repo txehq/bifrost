@@ -5235,14 +5235,22 @@ func attachSpeechStreamInputFromContext(ctx *schemas.BifrostContext, bifrostErr 
 	if ctx == nil || bifrostErr == nil {
 		return
 	}
-	chars, ok := ctx.Value(schemas.BifrostContextKeySpeechStreamInputChars).(int)
-	if !ok || chars <= 0 {
+	chars, _ := ctx.Value(schemas.BifrostContextKeySpeechStreamInputChars).(int)
+	estimate, _ := ctx.Value(schemas.BifrostContextKeySpeechStreamEstimatedBilledChars).(int)
+	if chars <= 0 && estimate <= 0 {
 		return
 	}
 	if bifrostErr.ExtraFields.BilledUsage == nil {
 		bifrostErr.ExtraFields.BilledUsage = &schemas.BifrostLLMUsage{}
 	}
-	bifrostErr.ExtraFields.BilledUsage.SpeechInputChars = chars
+	if chars > 0 {
+		bifrostErr.ExtraFields.BilledUsage.SpeechInputChars = chars
+	}
+	// A provider's estimate of what the vendor bills (azurespeech, TXE-7073) travels with it,
+	// so the interrupted synthesis is priced on the estimate a finished one carries.
+	if estimate > 0 {
+		bifrostErr.ExtraFields.BilledUsage.EstimatedBilledCharacters = &estimate
+	}
 }
 
 // HandleStreamTimeout should be called when a streaming goroutine exits

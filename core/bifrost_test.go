@@ -3988,6 +3988,15 @@ func TestClearCtxForFallback_DropsCallerSuppliedKey(t *testing.T) {
 		t.Fatalf("ProviderResponseHeaders survived clearCtxForFallback: %v", headers)
 	}
 
+	// TXE-7073: azurespeech's billed-character estimate belongs to Azure. A fallback speech
+	// stream that is then interrupted is billed by the shared cancel handler from the
+	// context, so the estimate must not survive into the fallback attempt.
+	ctx.SetValue(schemas.BifrostContextKeySpeechStreamEstimatedBilledChars, 30)
+	clearCtxForFallback(ctx)
+	if estimate, ok := ctx.Value(schemas.BifrostContextKeySpeechStreamEstimatedBilledChars).(int); ok {
+		t.Fatalf("SpeechStreamEstimatedBilledChars survived clearCtxForFallback: %d", estimate)
+	}
+
 	keys, _, err := bifrost.selectKeyFromProviderForModelWithPool(ctx, schemas.ChatCompletionRequest, schemas.Anthropic, "claude-opus-4-5", schemas.Anthropic)
 	if err != nil {
 		t.Fatalf("selectKeyFromProviderForModelWithPool: %v", err)

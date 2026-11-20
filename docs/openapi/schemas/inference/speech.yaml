@@ -122,6 +122,13 @@ SpeechUsage:
     billed_characters:
       type: integer
       description: Characters the provider reported it billed. Absent when the provider reported none; never Bifrost's own count of the input
+    estimated_billed_characters:
+      type: integer
+      description: >-
+        Bifrost's estimate of the characters the provider bills, set only for a per-character
+        provider that reports no count and bills more than the input's code points (Azure AI
+        Speech: every code point of the SSML Bifrost sent except the speak and voice tags, each
+        Han character counted twice). Never a provider report; absent for every other provider
     vendor_cost:
       $ref: './usage.yaml#/VendorCost'
 

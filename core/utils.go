@@ -578,6 +578,10 @@ func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	// inherit it. Cleared here, not when the invoke method returns, because the
 	// in-flight stream still reads it asynchronously (#6825).
 	ctx.ClearValue(schemas.BifrostContextKeySSEReaderFactory)
+	// azurespeech's estimate of the characters Azure bills is Azure's alone: a fallback to
+	// another speech provider that is then interrupted must be priced on its own input
+	// characters, not on Azure's SSML markup and doubled Han characters (TXE-7073).
+	ctx.ClearValue(schemas.BifrostContextKeySpeechStreamEstimatedBilledChars)
 }
 
 // restoreProviderResponseHeaders puts headers, the primary attempt's provider response headers,
@@ -1094,12 +1098,17 @@ func wrapSpeechStreamPostHookRunner(postHookRunner schemas.PostHookRunner) schem
 		emptyErr.ExtraFields = schemas.ErrorExtraFieldsFromResponse(chunk.ExtraFields, schemas.ErrorTypeProviderEmptyResult)
 		// The done chunk's usage is what a finished stream would have been priced from, so it
 		// moves onto the error whole: tokens, the input characters (a vendor such as MiniMax
-		// reports only characters), the vendor-billed characters and the vendor cost.
-		if u := chunk.Usage; u != nil && (u.InputTokens > 0 || u.OutputTokens > 0 || u.TotalTokens > 0 || u.InputChars > 0 || u.BilledCharacters != nil || u.VendorCost != nil) {
+		// reports only characters), the vendor-billed characters, Bifrost's estimate of them
+		// (azurespeech) and the vendor cost.
+		if u := chunk.Usage; u != nil && (u.InputTokens > 0 || u.OutputTokens > 0 || u.TotalTokens > 0 || u.InputChars > 0 || u.BilledCharacters != nil || u.EstimatedBilledCharacters != nil || u.VendorCost != nil) {
 			billed := &schemas.BifrostLLMUsage{PromptTokens: u.InputTokens, CompletionTokens: u.OutputTokens, TotalTokens: u.TotalTokens, SpeechInputChars: u.InputChars}
 			if u.BilledCharacters != nil {
 				billedChars := *u.BilledCharacters
 				billed.BilledCharacters = &billedChars
+			}
+			if u.EstimatedBilledCharacters != nil {
+				estimate := *u.EstimatedBilledCharacters
+				billed.EstimatedBilledCharacters = &estimate
 			}
 			if u.VendorCost != nil {
 				vendorCost := *u.VendorCost

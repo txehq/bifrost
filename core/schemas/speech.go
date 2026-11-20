@@ -242,4 +242,28 @@ type SpeechUsage struct {
 	// not report it.
 	BilledCharacters *int        `json:"billed_characters,omitempty"`
 	VendorCost       *VendorCost `json:"vendor_cost,omitempty"`
+
+	// EstimatedBilledCharacters is Bifrost's estimate of the characters the vendor bills, set
+	// only for a per-character vendor that reports no count and bills more than the input's
+	// code points (fork, TXE-7073). azurespeech applies Azure's documented rule to the SSML it
+	// sent: every code point except the <speak> and <voice> tags, a Han character counted
+	// twice. It is never a vendor report, so it never goes into BilledCharacters (contract C5
+	// agreement two). Nil for every other provider.
+	EstimatedBilledCharacters *int `json:"estimated_billed_characters,omitempty"`
+}
+
+// BilledInputChars is the input character count a per-character price applies to: the
+// count the vendor reported, else Bifrost's estimate of the vendor's count, else InputChars,
+// Bifrost's code-point count of the input (fork, TXE-7073).
+func (u *SpeechUsage) BilledInputChars() int {
+	if u == nil {
+		return 0
+	}
+	if u.BilledCharacters != nil && *u.BilledCharacters > 0 {
+		return *u.BilledCharacters
+	}
+	if u.EstimatedBilledCharacters != nil && *u.EstimatedBilledCharacters > 0 {
+		return *u.EstimatedBilledCharacters
+	}
+	return u.InputChars
 }
