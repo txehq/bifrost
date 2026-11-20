@@ -52,6 +52,9 @@ type EvaluationRequest struct {
 	// work it carries (the object, or every task of an array), each of which was evaluated on its
 	// own before the request's pass (TXE-7957).
 	BodyModelsComplete bool `json:"body_models_complete,omitempty"`
+	// BodyModels are the distinct models a passthrough body names when the request names none of
+	// its own, as each was evaluated.
+	BodyModels []string `json:"body_models,omitempty"`
 }
 
 // EvaluationResult is a governance verdict: whether the request may proceed, and why not when it

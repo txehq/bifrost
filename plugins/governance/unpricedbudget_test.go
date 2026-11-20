@@ -243,7 +243,9 @@ func TestUnpricedModelUnderADollarBudgetIsRefusedBeforeTheCall(t *testing.T) {
 			Provider: schemas.OpenAI, Method: "POST", Path: "/v1/tasks", Body: []byte(body),
 		}}
 	}
-	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", passthrough(`[{"model":"gpt-4o"},{"model":"free-chat"}]`)), "a passthrough whose body models are all priced is served")
+	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", passthrough(`[{"model":"gpt-4o"},{"model":"gpt-4o"}]`)), "a passthrough whose tasks all name one priced model is served")
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", passthrough(`[{"model":"gpt-4o"},{"model":"free-chat"}]`)), "a task array mixing models, whose one answer cannot be priced model by model")
+	assert.Nil(t, preLLM(t, plugin, "sk-bf-open", passthrough(`[{"model":"gpt-4o"},{"model":"free-chat"}]`)), "a mixed task array on a key with no dollar budget is served")
 	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", passthrough(`[{"model":"gpt-4o"},{"model":"house-llm"}]`)), "a passthrough with a body model that has no row")
 	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", passthrough(`{"prompt":"no model anywhere"}`)), "a passthrough naming no model anywhere")
 	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", passthrough(`[{"model":"gpt-4o"},{"prompt":"runs the provider's default model"}]`)), "a task array with a task naming no model")

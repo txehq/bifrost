@@ -261,6 +261,16 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 	// (PreLLMHook). One with a task naming no model runs the provider's default, which cannot be
 	// priced, and is gated as the envelope, which names none.
 	if (requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest) && evaluationRequest.Model == "" && evaluationRequest.BodyModelsComplete {
+		// One answer is priced for the whole body, so a body mixing models cannot say which of them
+		// a $0 answer was not priced for. Under a dollar budget it sends one model per request, as
+		// refuseUnchargedBodyModelLimits asks of a body whose models carry their own limits.
+		if len(evaluationRequest.BodyModels) > 1 {
+			return &EvaluationResult{
+				Decision: DecisionModelUnpriced,
+				Reason: fmt.Sprintf("the request body names several models (%s), and one answer priced for all of them cannot be charged to a dollar budget model by model; send one model per request",
+					strings.Join(evaluationRequest.BodyModels, ", ")),
+			}
+		}
 		return nil
 	}
 	if requestType == schemas.BatchCreateRequest {

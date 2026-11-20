@@ -1230,12 +1230,23 @@ func (p *GovernancePlugin) preLLMHook(ctx *schemas.BifrostContext, req *schemas.
 		bodyModels := passthroughBodyModels(req)
 		evaluationRequest.ModelUnseen = model == "" && len(bodyModels) == 0
 		evaluationRequest.BodyModelsComplete = passthroughBodyNamesEveryModel(req)
-		if model == "" && len(bodyModels) > 0 {
-			// The answer is charged under no model of its own; the body's models are what an
-			// unpriced answer refuses (TXE-7957, unpricedbudget.go).
-			ctx.SetValue(passthroughBodyModelsContextKey, bodyModels)
-		}
 		resourceNamed := p.namesModelsAsResources(provider)
+		if model == "" && len(bodyModels) > 0 {
+			// The answer is charged under no model of its own; the body's models, named as they are
+			// evaluated below, are what prices it and what an unpriced answer refuses (TXE-7957,
+			// unpricedbudget.go).
+			evaluated := make([]string, 0, len(bodyModels))
+			for _, bodyModel := range bodyModels {
+				if resourceNamed {
+					bodyModel = bareResourceModel(bodyModel)
+				}
+				if !slices.Contains(evaluated, bodyModel) {
+					evaluated = append(evaluated, bodyModel)
+				}
+			}
+			evaluationRequest.BodyModels = evaluated
+			ctx.SetValue(passthroughBodyModelsContextKey, evaluated)
+		}
 		for _, bodyModel := range bodyModels {
 			if resourceNamed {
 				bodyModel = bareResourceModel(bodyModel)
