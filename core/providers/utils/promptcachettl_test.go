@@ -81,3 +81,25 @@ func BenchmarkStampPromptCacheTTLFromBody(b *testing.B) {
 		})
 	}
 }
+
+// TestPromptCacheTTLInBodyPricesAnAmbiguousBodyAtItsLongestTTL: a decoder may keep the first or the
+// last of a repeated member, so a body that repeats prompt_cache_options or ttl is priced at the
+// longest TTL it carries, never below the tier the vendor may bill (fork, TXE-7996).
+func TestPromptCacheTTLInBodyPricesAnAmbiguousBodyAtItsLongestTTL(t *testing.T) {
+	for body, want := range map[string]string{
+		`{"prompt_cache_options":{"ttl":"1h"}}`:                                          "1h",
+		`{"prompt_cache_options":{"ttl":"5m"},"prompt_cache_options":{"ttl":"1h"}}`:      "1h",
+		`{"prompt_cache_options":{"ttl":"1h"},"prompt_cache_options":{"ttl":"5m"}}`:      "1h",
+		`{"prompt_cache_options":{"ttl":"5m","ttl":"24h"}}`:                              "24h",
+		`{"prompt_cache_options":{"ttl":"1h"},"prompt_cache_options":{}}`:                "1h",
+		`{"prompt_cache_options":{"ttl":"forever"}}`:                                     "forever",
+		`{"prompt_cache_options":{"ttl":"forever"},"prompt_cache_options":{"ttl":"5m"}}`: "5m",
+		`{"prompt_cache_options":{"ttl":3600}}`:                                          "",
+		`{"model":"m","messages":[{"prompt_cache_options":{"ttl":"1h"}}]}`:               "",
+		`not json`: "",
+	} {
+		if got := PromptCacheTTLInBody([]byte(body)); got != want {
+			t.Errorf("%s: got %q, want %q", body, got, want)
+		}
+	}
+}
