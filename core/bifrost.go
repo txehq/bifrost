@@ -9727,8 +9727,8 @@ func (bifrost *Bifrost) dispatchResponsesStream(ctx *schemas.BifrostContext, pro
 	return provider.ResponsesStream(ctx, providerUtils.WrapNamespaceRestorePostHookRunner(postHookRunner, preparedRequest.NamespaceToolAliases), postHookSpanFinalizer, key, preparedRequest)
 }
 
-// stampRequestedPromptCacheTTL records the prompt_cache_options.ttl of the request this attempt
-// sends, after pre-hooks ran, on the request's context, and clears it when the request carries
+// stampRequestedPromptCacheTTL records the prompt_cache_options.ttl the request this attempt
+// sends carries on the wire (typed, or an extra param the passthrough merge sends), after pre-hooks ran, on the request's context, and clears it when the request carries
 // none, so a value a caller or an earlier attempt left there is never priced. Pricing reads it
 // through datasheet.LookupScopesFromContext to cost a cache write for a vendor that prices it by
 // the TTL and reports no tier (Kimi; fork, TXE-7069). usage is left as the vendor reported it.
@@ -9736,7 +9736,8 @@ func stampRequestedPromptCacheTTL(req *ChannelMessage) {
 	if req == nil || req.Context == nil {
 		return
 	}
-	req.Context.SetValue(schemas.BifrostContextKeyRequestedPromptCacheTTL, req.BifrostRequest.RequestedPromptCacheTTL())
+	merged, _ := req.Context.Value(schemas.BifrostContextKeyPassthroughExtraParams).(bool)
+	req.Context.SetValue(schemas.BifrostContextKeyRequestedPromptCacheTTL, req.BifrostRequest.RequestedPromptCacheTTLOnWire(merged))
 }
 
 // handleProviderRequest handles the request to the provider based on the request type

@@ -1126,6 +1126,32 @@ func (br *BifrostRequest) RequestedPromptCacheTTL() string {
 	return *opts.TTL
 }
 
+// RequestedPromptCacheTTLOnWire is the prompt_cache_options.ttl the vendor receives: the typed
+// field when it carries a TTL, and otherwise, when the extra-params merge is on for this call
+// (extraParamsMerged, BifrostContextKeyPassthroughExtraParams), the ttl of an extra param
+// "prompt_cache_options". The merge fills only what the converter left unset, so a typed TTL is
+// never replaced by an extra one. Bifrost stamps this value for pricing (TXE-7069).
+func (br *BifrostRequest) RequestedPromptCacheTTLOnWire(extraParamsMerged bool) string {
+	if ttl := br.RequestedPromptCacheTTL(); ttl != "" || !extraParamsMerged || br == nil {
+		return ttl
+	}
+	var extra map[string]interface{}
+	switch {
+	case br.ChatRequest != nil && br.ChatRequest.Params != nil:
+		extra = br.ChatRequest.Params.ExtraParams
+	case br.ResponsesRequest != nil && br.ResponsesRequest.Params != nil:
+		extra = br.ResponsesRequest.Params.ExtraParams
+	case br.CountTokensRequest != nil && br.CountTokensRequest.Params != nil:
+		extra = br.CountTokensRequest.Params.ExtraParams
+	}
+	options, ok := ExtraParamObject(extra["prompt_cache_options"])
+	if !ok {
+		return ""
+	}
+	ttl, _ := options["ttl"].(string)
+	return ttl
+}
+
 // PricingContextKeys are the context values datasheet.LookupScopesFromContext reads. A context
 // built apart from the request's (the tracer's stream accumulator) copies exactly these, so a
 // streamed total is priced like the request's own breakdown. TestLookupScopesFromContextReads

@@ -103,3 +103,11 @@ func TestRequestedPromptCacheTTLReadsEveryRequestWithPromptCacheOptions(t *testi
 		t.Fatalf("nil request: RequestedPromptCacheTTL() = %q, want \"\"", got)
 	}
 }
+
+// The dispatch tests in package core spell the key out so they fail on a tree without it by
+// assertion; this pins that spelling.
+func TestRequestedPromptCacheTTLKeyIsStable(t *testing.T) {
+	if BifrostContextKeyRequestedPromptCacheTTL != BifrostContextKey("bifrost-requested-prompt-cache-ttl") {
+		t.Fatalf("BifrostContextKeyRequestedPromptCacheTTL = %q; update requestedPromptCacheTTLKey in core/promptcachedispatch_test.go", BifrostContextKeyRequestedPromptCacheTTL)
+	}
+}
