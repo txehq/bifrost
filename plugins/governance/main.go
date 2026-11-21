@@ -1648,7 +1648,8 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 			// Use the requested model for usage tracking
 			p.postHookWorker(result, err, provider, requestedModel, requestType, requestID, billingNonce, isFinalChunk, attemptNumber, fallbackIndex, sessionContinuation, pricingScopes, accountedBudgets, accountedRateLimits, routingMetadata, bodyModel, read, holder, workerProbe)
 		}()
-	} else if bodyModel, _ := ctx.Value(passthroughBodyModelContextKey).(string); bodyModel != "" && (!bifrost.IsStreamRequestType(requestType) || isFinalChunk) && (passthroughGenerated(result) || passthroughEscapedQueue(result, nil, requestID)) {
+	} else if bodyModel, _ := ctx.Value(passthroughBodyModelContextKey).(string); bodyModel != "" && (!bifrost.IsStreamRequestType(requestType) || isFinalChunk) &&
+		!passthroughCountsTokens(passthroughPath(result)) && (passthroughGenerated(result) || passthroughEscapedQueue(result, nil, requestID)) {
 		// A passthrough whose body named the model it runs, answered with no usage the provider
 		// could read (Runware without includeCost), is not charged and counts no request. It is
 		// still an answer under the budgets it was admitted against, priced at $0 (TXE-7957).
@@ -1663,7 +1664,8 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 					passthroughEscapedQueue(result, p.logger, requestID)
 				}
 				pricedAs := modelcatalog.PassthroughPricingRequestType(provider, result.GetExtraFields().PassthroughPath, nil)
-				p.resolver.noteUnpricedAnswer(provider, bodyModel, "", requestType, pricedAs, 0, pricingScopes, requestID, limitIDs(budgets), unpricedHolder(ctx))
+				p.resolver.noteUnpricedAnswer(provider, bodyModel, requestType, pricedAs, p.resolver.usagelessAnswerVerdict(provider, bodyModel, pricedAs, pricingScopes),
+					pricingScopes, requestID, limitIDs(budgets), unpricedHolder(ctx))
 			}
 		}
 	}
@@ -2209,7 +2211,13 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifro
 			if answerCost > 0 && fallback == "" {
 				p.resolver.confirmProbe(probe, pricedAs, pricingScopes)
 			}
-			p.resolver.noteUnpricedAnswer(provider, priced, fallback, requestType, pricedAs, answerCost, pricingScopes, requestID, limitIDs(budgets), holder)
+			// The verdict is the cost calculation's own: priced, free (the rates the answer met are
+			// zero: a free model, zero flex rates, a free fallback), or unpriced (it met no rate).
+			verdict := modelcatalog.PricePriced
+			if answerCost <= 0 {
+				verdict = p.modelCatalog.AnswerPriceStatus(result, pricingScopes)
+			}
+			p.resolver.noteUnpricedAnswer(provider, priced, requestType, pricedAs, verdict, pricingScopes, requestID, limitIDs(budgets), holder)
 		}
 
 		// Create usage update for tracker (business logic)

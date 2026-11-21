@@ -17,6 +17,49 @@ import (
 
 // PriceStatus tells a model a dollar budget cannot be charged for (no row, or a row that sets no
 // price) from a free one (prices set, all $0) and a priced one (TXE-7957).
+// The verdict on a delivered answer comes from the cost calculation that charges it (TXE-8016): an
+// answer met priced rates, zero rates (free), or no rate at all (unpriced).
+func TestAnswerPriceStatus(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o", "openai", "chat"):     {Model: "gpt-4o", Provider: "openai", Mode: "chat", InputCostPerToken: schemas.Ptr(2.5e-06), OutputCostPerToken: schemas.Ptr(1e-05)},
+		makeKey("free-model", "openai", "chat"): {Model: "free-model", Provider: "openai", Mode: "chat", InputCostPerToken: schemas.Ptr(0.0), OutputCostPerToken: schemas.Ptr(0.0)},
+		makeKey("flex-free", "openai", "chat"): {Model: "flex-free", Provider: "openai", Mode: "chat",
+			InputCostPerToken: schemas.Ptr(2.5e-06), OutputCostPerToken: schemas.Ptr(1e-05), InputCostPerTokenFlex: schemas.Ptr(0.0), OutputCostPerTokenFlex: schemas.Ptr(0.0)},
+		makeKey("per-second", "openai", "chat"): {Model: "per-second", Provider: "openai", Mode: "chat", InputCostPerSecond: schemas.Ptr(0.001)},
+	})
+	answer := func(model string, tier *schemas.BifrostServiceTier, usage *schemas.BifrostLLMUsage) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+			Model: model, ServiceTier: tier, Usage: usage,
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ChatCompletionRequest, Provider: schemas.OpenAI, OriginalModelRequested: model,
+				RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenAI, Model: model},
+			},
+		}}
+	}
+	tokens := &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}
+	flex := schemas.BifrostServiceTierFlex
+	cases := []struct {
+		name string
+		got  *schemas.BifrostResponse
+		want PriceStatus
+	}{
+		{"a token-priced answer", answer("gpt-4o", nil, tokens), Priced},
+		{"an answer on a model priced at zero", answer("free-model", nil, tokens), Free},
+		{"a flex answer whose flex rates are zero", answer("flex-free", &flex, tokens), Free},
+		{"the same model's standard answer", answer("flex-free", nil, tokens), Priced},
+		{"a free model's answer with no usage", answer("free-model", nil, nil), Free},
+		{"tokens on a row priced only per second", answer("per-second", nil, tokens), Unpriced},
+		{"a token-priced model's answer with no usage", answer("gpt-4o", nil, nil), Unpriced},
+		{"a model with no row", answer("no-row", nil, tokens), Unpriced},
+	}
+	for _, tc := range cases {
+		assert.Equal(t, tc.want, s.AnswerPriceStatus(tc.got, nil), tc.name)
+	}
+	assert.Equal(t, Unpriced, s.AnswerPriceStatus(nil, nil))
+	// The stand-in never reaches the price book: the free model still costs nothing.
+	assert.Zero(t, s.CalculateCostBreakdown(answer("free-model", nil, tokens), nil).TotalCost)
+}
+
 // A batch line is priced only by the rates batch settlement applies (CalculateBatchCostDetailsForUsage):
 // a row priced per image or per second has a synchronous price and no batch one.
 func TestBatchPriceStatus(t *testing.T) {

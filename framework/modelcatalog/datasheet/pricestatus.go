@@ -147,6 +147,83 @@ func (s *Store) PriceIdentityForRouting(routing schemas.RoutingInfo, requestType
 	return s.rowIdentity(row, overrideKey, requestType, lookupScopes)
 }
 
+// AnswerPriceStatus is the verdict on a delivered answer, read from the cost calculation that
+// charges it rather than from its total alone (fork, TXE-8016):
+//
+//   - Priced: its own cost (without guardrail, routing, MCP and semantic-cache calls priced beside
+//     it) is above $0.
+//   - Free: it costs $0 because the rates its usage met are set to zero (a free model, zero flex
+//     rates, an override pricing it at $0), or its row prices nothing above zero at all. Read by
+//     pricing it again with every explicit zero rate replaced by a positive stand-in: an answer
+//     that then costs something met those rates.
+//   - Unpriced: it costs $0 and met no rate: no row prices it, or its usage is in units its row
+//     does not price.
+//
+// The calculation is accounting's own (CalculateCostBreakdown), so the verdict follows the same
+// alias, server-side fallback, service tier and override accounting chose.
+func (s *Store) AnswerPriceStatus(result *schemas.BifrostResponse, scopes *LookupScopes) PriceStatus {
+	if result == nil {
+		return Unpriced
+	}
+	own := func(cost *schemas.BifrostCost) float64 {
+		if cost == nil {
+			return 0
+		}
+		total := cost.TotalCost
+		if details := cost.AdditionalCostDetails; details != nil {
+			total -= details.GuardrailCost + details.RoutingCost + details.MCPCost + details.SemanticCacheCost
+		}
+		return total
+	}
+	if own(s.CalculateCostBreakdown(result, scopes)) > 0 {
+		return Priced
+	}
+	var standIn LookupScopes
+	if scopes != nil {
+		standIn = *scopes
+	}
+	standIn.zeroRatesAs = 1
+	if own(s.CalculateCostBreakdown(result, &standIn)) > 0 {
+		return Free
+	}
+	// A row that prices nothing above zero is free whatever usage its answer reported.
+	if extra := result.GetExtraFields(); extra != nil {
+		routing := extra.RoutingInfo
+		if routing.Provider == "" {
+			routing.Provider = extra.Provider
+		}
+		if routing.Model == "" {
+			routing.Model = extra.OriginalModelRequested
+		}
+		requestType := extra.PricingRequestType
+		if requestType == "" {
+			requestType = extra.RequestType
+		}
+		var lookupScopes LookupScopes
+		if scopes != nil {
+			lookupScopes = *scopes
+		}
+		if routing.Model != "" && rowPriceStatus(s.resolvePricingRow(routing, requestType, lookupScopes)) == Free {
+			return Free
+		}
+	}
+	return Unpriced
+}
+
+// zeroRatesAs replaces every price explicitly set to zero on row with standIn. row is a resolved
+// copy: each field gets a new pointer, so the price book's own values are never written.
+func zeroRatesAs(row *configstoreTables.TableModelPricing, standIn float64) {
+	v := reflect.ValueOf(row).Elem()
+	for _, i := range priceFieldIndexes() {
+		field := v.Field(i)
+		if field.IsNil() || field.Elem().Float() != 0 {
+			continue
+		}
+		value := standIn
+		field.Set(reflect.ValueOf(&value))
+	}
+}
+
 // InferPassthroughRequestType is the request type a passthrough answer is priced as; see
 // inferPassthroughRequestType.
 func InferPassthroughRequestType(provider schemas.ModelProvider, path string, usage *schemas.BifrostPassthroughUsage) schemas.RequestType {

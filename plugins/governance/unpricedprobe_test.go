@@ -90,7 +90,7 @@ func TestRefusalRecordedBeforeTheHoldIsTakenIsReadAgain(t *testing.T) {
 	plugin, _ := unpricedBudgetPlugin(t)
 	plugin.resolver.probes.afterAcquire = func() {
 		plugin.resolver.probes.afterAcquire = nil
-		require.True(t, plugin.resolver.noteUnpricedAnswer(schemas.OpenAI, "token-image", "", schemas.ImageGenerationRequest, schemas.ImageGenerationRequest, 0, nil, "settled-meanwhile", []string{"budget-unpriced"}, "vk:vk-budget"))
+		require.True(t, plugin.resolver.noteUnpricedAnswer(schemas.OpenAI, "token-image", schemas.ImageGenerationRequest, schemas.ImageGenerationRequest, modelcatalog.PriceUnpriced, nil, "settled-meanwhile", []string{"budget-unpriced"}, "vk:vk-budget"))
 	}
 	ctx := resolverCtx(plugin.store, "sk-bf-budget")
 	_, shortCircuit, err := plugin.PreLLMHook(ctx, probeImageRequest("token-image"))
