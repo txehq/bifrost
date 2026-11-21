@@ -7,7 +7,9 @@ import (
 	"time"
 
 	"github.com/capsohq/bifrost/core/schemas"
+	"github.com/capsohq/bifrost/framework/configstore"
 	"github.com/capsohq/bifrost/framework/modelcatalog"
+	"github.com/tidwall/gjson"
 )
 
 // A dollar budget refuses a price book row for a virtual key once an answer on it priced at $0
@@ -94,17 +96,22 @@ type unpricedProbe struct {
 // acquire holds every (scope, row) not yet confirmed for the request. It reports busy when another
 // request already holds one of them; a request whose rows are all confirmed holds nothing.
 func (p *unpricedProbes) acquire(scopes, rows []string) (probe *unpricedProbe, busy bool) {
+	return p.acquireRows(scopes, rows, false)
+}
+
+// acquireRows is acquire; always holds the rows whether or not they are confirmed.
+func (p *unpricedProbes) acquireRows(scopes, rows []string, always bool) (probe *unpricedProbe, busy bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := p.now()
 	var keys []string
 	for _, scope := range scopes {
 		confirmed := p.confirmed[scope]
-		if confirmed != nil && confirmed.full {
+		if !always && confirmed != nil && confirmed.full {
 			continue
 		}
 		for _, row := range rows {
-			if confirmed != nil {
+			if !always && confirmed != nil {
 				if _, ok := confirmed.rows[row]; ok {
 					continue
 				}
@@ -218,11 +225,27 @@ func probesUnpriced(requestType schemas.RequestType) bool {
 // The hold is per principal (unpricedHolder): a virtual key, a user, or a presented credential each
 // hold their own. Requests that presented nothing share one hold on the budget, which serializes
 // them until the first priced answer rather than leaving them unprobed.
-func (r *BudgetResolver) probeUnconfirmed(ctx *schemas.BifrostContext, requestType schemas.RequestType, provider schemas.ModelProvider, model string, mode schemas.RequestType, scopes *modelcatalog.PricingLookupScopes, budgetIDs []string) *EvaluationResult {
+//
+// A request that turns off the usage it would be priced by (stream_options.include_usage false) is
+// held even on a confirmed row: a priced answer before it says nothing about an answer that
+// reports no usage, so such requests run one at a time and the first $0 one refuses the rest.
+func (r *BudgetResolver) probeUnconfirmed(ctx *schemas.BifrostContext, requestType schemas.RequestType, req *schemas.BifrostRequest, provider schemas.ModelProvider, model string, mode schemas.RequestType, scopes *modelcatalog.PricingLookupScopes, budgetIDs []string) *EvaluationResult {
 	if r.probes == nil || ctx == nil || model == "" || !probesUnpriced(requestType) {
 		return nil
 	}
-	_, rows := r.priceIdentities(provider, model, mode, scopes)
+	// A passthrough is priced in the mode its path implies; the probe reads its rows in that mode
+	// where the model has a row in it, as confirmation will, and in the gate's mode otherwise.
+	var rows []string
+	if req != nil && req.PassthroughRequest != nil {
+		if pathMode := modelcatalog.PassthroughPricingRequestType(provider, req.PassthroughRequest.Path, nil); !normalizesToUnknown(pathMode) {
+			if pathRows := r.probeRows(ctx, provider, model, pathMode, scopes); len(pathRows) > 0 {
+				mode, rows = pathMode, pathRows
+			}
+		}
+	}
+	if rows == nil {
+		rows = r.probeRows(ctx, provider, model, mode, scopes)
+	}
 	if len(rows) == 0 {
 		return nil
 	}
@@ -234,7 +257,7 @@ func (r *BudgetResolver) probeUnconfirmed(ctx *schemas.BifrostContext, requestTy
 		held.release()
 		ctx.ClearValue(unpricedProbeContextKey)
 	}
-	probe, busy := r.probes.acquire(holderScopes, rows)
+	probe, busy := r.probes.acquireRows(holderScopes, rows, suppressesUsage(req))
 	if busy {
 		return &EvaluationResult{
 			Decision: DecisionModelPricingUnconfirmed,
@@ -250,6 +273,94 @@ func (r *BudgetResolver) probeUnconfirmed(ctx *schemas.BifrostContext, requestTy
 		}
 	}
 	return nil
+}
+
+// probeRows is every row a request can be priced on, one per key that may serve it: the key it
+// pinned, else each configured key its access allows for the model, read as confirmation reads it
+// (the key's alias, then the label; servedCandidates). A provider with no configured key, or with
+// none the request may use, is read under the scopes given. A row no serving key can price is never
+// held, since no answer could confirm it.
+func (r *BudgetResolver) probeRows(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, mode schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) []string {
+	read := func(keyScopes *modelcatalog.PricingLookupScopes) string {
+		for _, candidate := range r.servedCandidates(provider, model, keyScopes) {
+			if row, _ := r.modelCatalog.PriceIdentity(provider, candidate, mode, keyScopes); row != "" {
+				return row
+			}
+		}
+		return ""
+	}
+	if scopes != nil && scopes.SelectedKeyID != "" {
+		if row := read(scopes); row != "" {
+			return []string{row}
+		}
+		return nil
+	}
+	var config configstore.ProviderConfig
+	ok := false
+	if r.governanceInMemoryStore != nil {
+		config, ok = configuredProvider(r.governanceInMemoryStore, provider)
+	}
+	if !ok || len(config.Keys) == 0 {
+		if row := read(scopes); row != "" {
+			return []string{row}
+		}
+		return nil
+	}
+	var allowed []string
+	restricted := false
+	if ctx != nil && ctx.Grant() != nil {
+		if access := ctx.Grant().Access(); access != nil {
+			allowed, restricted = access.KeysForModel(string(provider), model)
+		}
+	}
+	var rows []string
+	for _, key := range config.Keys {
+		if restricted && !slices.Contains(allowed, key.ID) {
+			continue
+		}
+		keyScopes := modelcatalog.PricingLookupScopes{}
+		if scopes != nil {
+			keyScopes = *scopes
+		}
+		keyScopes.SelectedKeyID = key.ID
+		if row := read(&keyScopes); row != "" && !slices.Contains(rows, row) {
+			rows = append(rows, row)
+		}
+	}
+	if len(rows) == 0 {
+		// No configured key may serve it (it will fail key selection): read under the scopes given.
+		if row := read(scopes); row != "" {
+			return []string{row}
+		}
+	}
+	return rows
+}
+
+// suppressesUsage reports whether a request turns off the usage its answer would be priced by:
+// stream_options.include_usage false on a chat or text completion, in its raw body, or in a
+// passthrough body.
+func suppressesUsage(req *schemas.BifrostRequest) bool {
+	if req == nil {
+		return false
+	}
+	off := func(options *schemas.ChatStreamOptions) bool {
+		return options != nil && options.IncludeUsage != nil && !*options.IncludeUsage
+	}
+	offInBody := func(body []byte) bool {
+		if len(body) == 0 || !gjson.ValidBytes(body) {
+			return false
+		}
+		return gjson.GetBytes(body, "stream_options.include_usage").Type == gjson.False
+	}
+	switch {
+	case req.ChatRequest != nil:
+		return (req.ChatRequest.Params != nil && off(req.ChatRequest.Params.StreamOptions)) || offInBody(req.ChatRequest.RawRequestBody)
+	case req.TextCompletionRequest != nil:
+		return (req.TextCompletionRequest.Params != nil && off(req.TextCompletionRequest.Params.StreamOptions)) || offInBody(req.TextCompletionRequest.RawRequestBody)
+	case req.PassthroughRequest != nil:
+		return offInBody(req.PassthroughRequest.Body)
+	}
+	return false
 }
 
 // takeUnpricedProbe removes the request's probe from its context when this post-hook call is the

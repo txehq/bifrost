@@ -236,7 +236,7 @@ func TestProbeHolderIsTheMostSpecificPrincipal(t *testing.T) {
 
 	budgets := []string{"budget-unpriced"}
 	probe := func(ctx *schemas.BifrostContext) *EvaluationResult {
-		return plugin.resolver.probeUnconfirmed(ctx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, nil, budgets)
+		return plugin.resolver.probeUnconfirmed(ctx, schemas.ChatCompletionRequest, nil, schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, nil, budgets)
 	}
 	require.Nil(t, probe(alice))
 	assert.Nil(t, probe(bob), "another user holds their own probe")
@@ -258,7 +258,7 @@ func TestProbeIsReleasedWhenTheRequestContextEnds(t *testing.T) {
 	g.SetIdentity(grant.NewIdentity(grant.NewCredential(grant.CredentialVirtualKey, "v"), nil, &schemas.EntityRef{ID: "vk-ctx"}, nil, nil, nil, nil))
 	ctx.SetGrant(g)
 	budgets := []string{"budget-unpriced"}
-	require.Nil(t, plugin.resolver.probeUnconfirmed(ctx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, nil, budgets))
+	require.Nil(t, plugin.resolver.probeUnconfirmed(ctx, schemas.ChatCompletionRequest, nil, schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, nil, budgets))
 	scopes := unpricedScopes(budgets, "vk:vk-ctx")
 	_, rows := plugin.resolver.priceIdentities(schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, nil)
 	_, busy := plugin.resolver.probes.acquire(scopes, rows)
@@ -281,7 +281,7 @@ func TestTakenProbeOutlivesTheRequestContext(t *testing.T) {
 	g.SetIdentity(grant.NewIdentity(grant.NewCredential(grant.CredentialVirtualKey, "v"), nil, &schemas.EntityRef{ID: "vk-taken"}, nil, nil, nil, nil))
 	ctx.SetGrant(g)
 	budgets := []string{"budget-unpriced"}
-	require.Nil(t, plugin.resolver.probeUnconfirmed(ctx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, nil, budgets))
+	require.Nil(t, plugin.resolver.probeUnconfirmed(ctx, schemas.ChatCompletionRequest, nil, schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, nil, budgets))
 	taken := takeUnpricedProbe(ctx, nil, false, true)
 	require.NotNil(t, taken)
 	cancel()
@@ -353,6 +353,51 @@ func TestProbeConfirmsOnlyTheRowTheAnswerWasPricedOn(t *testing.T) {
 	plugin.resolver.confirmProbe(again, schemas.ChatCompletionRequest, nil)
 	confirmed, _ := plugin.resolver.probes.acquire(scopes, []string{chatRow})
 	assert.Nil(t, confirmed, "an answer priced on the chat row confirms it")
+}
+
+// A request that turns off its usage (stream_options.include_usage false) is held even on a row an
+// earlier answer confirmed: a confirmed row says nothing about an answer that reports no usage.
+func TestRequestSuppressingUsageIsProbedOnAConfirmedRow(t *testing.T) {
+	off, on := false, true
+	chat := func(include *bool) *schemas.BifrostRequest {
+		req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionStreamRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o"}}
+		if include != nil {
+			req.ChatRequest.Params = &schemas.ChatParameters{StreamOptions: &schemas.ChatStreamOptions{IncludeUsage: include}}
+		}
+		return req
+	}
+	assert.True(t, suppressesUsage(chat(&off)))
+	assert.False(t, suppressesUsage(chat(&on)))
+	assert.False(t, suppressesUsage(chat(nil)))
+	assert.True(t, suppressesUsage(&schemas.BifrostRequest{PassthroughRequest: &schemas.BifrostPassthroughRequest{Body: []byte(`{"model":"m","stream_options":{"include_usage":false}}`)}}))
+	assert.False(t, suppressesUsage(&schemas.BifrostRequest{PassthroughRequest: &schemas.BifrostPassthroughRequest{Body: []byte(`{"model":"m","stream_options":{"include_usage":true}}`)}}))
+	assert.True(t, suppressesUsage(&schemas.BifrostRequest{ChatRequest: &schemas.BifrostChatRequest{RawRequestBody: []byte(`{"stream_options":{"include_usage":false}}`)}}))
+
+	probes := newUnpricedProbes()
+	scopes := []string{"s"}
+	first, _ := probes.acquire(scopes, []string{"row"})
+	first.confirm("row")
+	first.release()
+	confirmed, busy := probes.acquire(scopes, []string{"row"})
+	require.False(t, busy)
+	require.Nil(t, confirmed, "the row is confirmed")
+	held, busy := probes.acquireRows(scopes, []string{"row"}, true)
+	require.False(t, busy)
+	require.NotNil(t, held, "a usage-suppressing request holds the confirmed row")
+	_, busy = probes.acquireRows(scopes, []string{"row"}, true)
+	assert.True(t, busy, "a concurrent usage-suppressing request is held off")
+	_, busy = probes.acquire(scopes, []string{"row"})
+	assert.False(t, busy, "a request reporting usage is not")
+}
+
+// A request holds one row per key that may serve it, read under that key: a single key whose override
+// patches a catalog row holds only that key's row, never the unpatched default no answer can confirm.
+func TestProbeRowsAreTheServingKeysRows(t *testing.T) {
+	plugin, _ := unpricedBudgetPlugin(t)
+	rows := plugin.resolver.probeRows(nil, schemas.OpenAI, "free-on-key", schemas.ChatCompletionRequest, nil)
+	assert.Equal(t, []string{"openai|chat|free-on-key|override|free-on-key-override"}, rows)
+	pinned := plugin.resolver.probeRows(nil, schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, &modelcatalog.PricingLookupScopes{SelectedKeyID: "openai-key-1"})
+	assert.Equal(t, []string{"openai|chat|gpt-4o"}, pinned)
 }
 
 // A stream holds its row until its final chunk.

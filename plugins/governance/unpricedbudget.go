@@ -353,7 +353,7 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 		// The answer is charged under no model of its own: the body's model, named as it was
 		// evaluated, is what an unpriced answer refuses.
 		ctx.SetValue(passthroughBodyModelContextKey, bodyModel)
-		return r.probeUnconfirmed(ctx, requestType, provider, bodyModel, liveUnitPricingMode(ctx, requestType),
+		return r.probeUnconfirmed(ctx, requestType, evaluationRequest.request, provider, bodyModel, liveUnitPricingMode(ctx, requestType),
 			modelcatalog.PricingLookupScopesFromContext(ctx, string(provider)), limitIDs(budgets))
 	}
 	if requestType == schemas.BatchCreateRequest {
@@ -448,7 +448,7 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 	if refusal := rememberedRefusal(); refusal != nil {
 		return refusal
 	}
-	if probed := r.probeUnconfirmed(ctx, requestType, provider, model, pricedAs, scopes, limitIDs(budgets)); probed != nil {
+	if probed := r.probeUnconfirmed(ctx, requestType, evaluationRequest.request, provider, model, pricedAs, scopes, limitIDs(budgets)); probed != nil {
 		return probed
 	}
 	// The request that held the row may have recorded its $0 answer and released the hold between
