@@ -105,6 +105,48 @@ func (s *Store) PriceIdentity(provider schemas.ModelProvider, model string, requ
 	return bestIdentity, best
 }
 
+// PriceIdentityForRouting is the identity of the row accounting prices an answer on for routing:
+// resolvePricing on the same routing (a key alias's catalog name and wire model id, a server-side
+// fallback), with overrides keyed as resolvePricing keys them (the fallback, else the alias's wire
+// model id, else the model). Reading each candidate model alone would key the override by the
+// catalog name, so two keys with different overrides on their wire ids would share one identity
+// (TXE-7977). Empty when no row prices it.
+func (s *Store) PriceIdentityForRouting(routing schemas.RoutingInfo, requestType schemas.RequestType, scopes *LookupScopes) string {
+	var lookupScopes LookupScopes
+	if scopes != nil {
+		lookupScopes = *scopes
+	}
+	if lookupScopes.Provider == "" {
+		lookupScopes.Provider = string(routing.Provider)
+	}
+	overrideKey := ""
+	if routing.ServerSideFallbackModel != nil {
+		overrideKey = *routing.ServerSideFallbackModel
+	}
+	if overrideKey == "" && routing.ResolvedKeyAlias != nil {
+		overrideKey = routing.ResolvedKeyAlias.ModelID
+	}
+	if overrideKey == "" {
+		overrideKey = routing.Model
+	}
+	if overrideKey == "" {
+		return ""
+	}
+	if normalizeRequestType(requestType) == "unknown" {
+		for _, mode := range anyModePricingRequestTypes {
+			if row := s.resolvePricing(routing, mode, lookupScopes); row != nil && rowPriceStatus(row) != Unpriced {
+				return s.rowIdentity(row, overrideKey, mode, lookupScopes)
+			}
+		}
+		return ""
+	}
+	row := s.resolvePricing(routing, requestType, lookupScopes)
+	if row == nil {
+		return ""
+	}
+	return s.rowIdentity(row, overrideKey, requestType, lookupScopes)
+}
+
 // InferPassthroughRequestType is the request type a passthrough answer is priced as; see
 // inferPassthroughRequestType.
 func InferPassthroughRequestType(provider schemas.ModelProvider, path string, usage *schemas.BifrostPassthroughUsage) schemas.RequestType {
@@ -118,17 +160,24 @@ func (s *Store) rowIdentity(row *configstoreTables.TableModelPricing, model stri
 	if row == nil {
 		return ""
 	}
-	if row.Model != "" {
-		return row.Provider + "|" + row.Mode + "|" + row.Model
-	}
 	mode := normalizeRequestType(requestType)
 	s.overridesMu.RLock()
 	custom := s.customPricing
 	s.overridesMu.RUnlock()
+	var entry *customPricingEntry
 	if custom != nil {
-		if entry := custom.resolveEntry(model, mode, scopes); entry != nil {
-			return "override|" + entry.id + "|" + mode
+		entry = custom.resolveEntry(model, mode, scopes)
+	}
+	if row.Model != "" {
+		// A row an override patched is priced by the override under these scopes: two keys whose
+		// overrides price one catalog row differently are two identities (TXE-7977).
+		if entry != nil {
+			return row.Provider + "|" + row.Mode + "|" + row.Model + "|override|" + entry.id
 		}
+		return row.Provider + "|" + row.Mode + "|" + row.Model
+	}
+	if entry != nil {
+		return "override|" + entry.id + "|" + mode
 	}
 	return "override||" + mode + "|" + model
 }

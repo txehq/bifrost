@@ -86,6 +86,8 @@ type BudgetResolver struct {
 	// deployment, so a job priced at settlement is charged to its budgets (TXE-7963). Off until
 	// the transport says otherwise: a job nothing settles must not be admitted under a budget.
 	providerJobAccounting atomic.Bool
+	// probes holds the rows a budgeted request runs on until an answer on them is priced (TXE-7977).
+	probes *unpricedProbes
 }
 
 // NewBudgetResolver creates a new budget-based governance resolver
@@ -96,6 +98,7 @@ func NewBudgetResolver(store GovernanceStore, modelCatalog *modelcatalog.ModelCa
 		modelCatalog:            modelCatalog,
 		governanceInMemoryStore: governanceInMemoryStore,
 		unpriced:                newUnpricedAnswers(),
+		probes:                  newUnpricedProbes(),
 	}
 }
 

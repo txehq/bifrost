@@ -2,6 +2,8 @@ package governance
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"slices"
 	"strings"
@@ -244,9 +246,10 @@ func unpricedScopes(budgetIDs []string, holder string) []string {
 	return scopes
 }
 
-// unpricedHolder is the virtual key a request was admitted under, which an unpriced answer is
-// remembered for; empty for a request presenting none, whose answers are remembered for every
-// such request on the budget.
+// unpricedHolder is the principal a request was admitted under, which an unpriced answer is
+// remembered for and an unconfirmed row is probed for: its virtual key, else its user, else a
+// digest of the credential it presented (never the credential itself). Empty for a request that
+// presented nothing; such requests share one holder on a budget.
 func unpricedHolder(ctx *schemas.BifrostContext) string {
 	if ctx == nil || ctx.Grant() == nil {
 		return ""
@@ -255,8 +258,15 @@ func unpricedHolder(ctx *schemas.BifrostContext) string {
 	if identity == nil {
 		return ""
 	}
-	if vk := identity.VirtualKey(); vk != nil {
-		return vk.ID
+	if vk := identity.VirtualKey(); vk != nil && vk.ID != "" {
+		return "vk:" + vk.ID
+	}
+	if user := identity.User(); user != nil && user.ID != "" {
+		return "user:" + user.ID
+	}
+	if credential := identity.Credential(); credential.Kind != "" && credential.Value != "" {
+		sum := sha256.Sum256([]byte(credential.Value))
+		return "credential:" + credential.Kind + ":" + hex.EncodeToString(sum[:12])
 	}
 	return ""
 }
@@ -343,7 +353,8 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 		// The answer is charged under no model of its own: the body's model, named as it was
 		// evaluated, is what an unpriced answer refuses.
 		ctx.SetValue(passthroughBodyModelContextKey, bodyModel)
-		return nil
+		return r.probeUnconfirmed(ctx, requestType, evaluationRequest.request, provider, bodyModel, liveUnitPricingMode(ctx, requestType),
+			modelcatalog.PricingLookupScopesFromContext(ctx, string(provider)), limitIDs(budgets))
 	}
 	if requestType == schemas.BatchCreateRequest {
 		// An inline batch naming no model of its own: each request was gated as its own model before
@@ -416,7 +427,10 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 	// Which key serves the request, and so which override prices it, is chosen after this runs:
 	// every row the request could be priced as is checked against what its budgets remember.
 	budgetIDs := unpricedScopes(limitIDs(budgets), unpricedHolder(ctx))
-	if r.unpriced.holdsAny(budgetIDs) {
+	rememberedRefusal := func() *EvaluationResult {
+		if !r.unpriced.holdsAny(budgetIDs) {
+			return nil
+		}
 		for _, mode := range checkedModes {
 			_, rows := r.priceIdentities(provider, model, mode, scopes)
 			for _, row := range rows {
@@ -428,6 +442,23 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 					}
 				}
 			}
+		}
+		return nil
+	}
+	if refusal := rememberedRefusal(); refusal != nil {
+		return refusal
+	}
+	if probed := r.probeUnconfirmed(ctx, requestType, evaluationRequest.request, provider, model, pricedAs, scopes, limitIDs(budgets)); probed != nil {
+		return probed
+	}
+	// The request that held the row may have recorded its $0 answer and released the hold between
+	// the check above and this request taking the hold (the usage worker records before it
+	// releases): read the record again now that this request holds the row.
+	if held, ok := ctx.Value(unpricedProbeContextKey).(*unpricedProbe); ok && held != nil {
+		if refusal := rememberedRefusal(); refusal != nil {
+			held.release()
+			ctx.ClearValue(unpricedProbeContextKey)
+			return refusal
 		}
 	}
 	return nil
@@ -710,6 +741,18 @@ func (r *BudgetResolver) priceIdentitiesIn(provider schemas.ModelProvider, model
 // and the model resolved the way accounting resolves it (resolvePricing tries the key alias's model
 // name, then its model id, then the requested model, and prices from the first that has a row).
 func (r *BudgetResolver) servedPriceStatus(provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) modelcatalog.PriceStatus {
+	for _, candidate := range r.servedCandidates(provider, model, scopes) {
+		if row, status := r.modelCatalog.PriceIdentity(provider, candidate, requestType, scopes); row != "" {
+			return status
+		}
+	}
+	return modelcatalog.PriceUnpriced
+}
+
+// servedCandidates is the order accounting resolves a served model's price in: under the serving
+// key's alias, its model name, then its model id, then the label itself; the label alone when no
+// key is selected or the key has no alias for it.
+func (r *BudgetResolver) servedCandidates(provider schemas.ModelProvider, model string, scopes *modelcatalog.PricingLookupScopes) []string {
 	candidates := []string{model}
 	if scopes != nil && scopes.SelectedKeyID != "" && r.governanceInMemoryStore != nil {
 		if config, ok := configuredProvider(r.governanceInMemoryStore, provider); ok {
@@ -731,12 +774,7 @@ func (r *BudgetResolver) servedPriceStatus(provider schemas.ModelProvider, model
 			}
 		}
 	}
-	for _, candidate := range candidates {
-		if row, status := r.modelCatalog.PriceIdentity(provider, candidate, requestType, scopes); row != "" {
-			return status
-		}
-	}
-	return modelcatalog.PriceUnpriced
+	return candidates
 }
 
 // passthroughGenerated reports whether a passthrough answer is a provider's success: a body that

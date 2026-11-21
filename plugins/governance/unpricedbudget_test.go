@@ -202,10 +202,15 @@ func chatOn(model string) *schemas.BifrostRequest {
 	return &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: model}}
 }
 
+// preLLM runs one request's admission and ends it there, as a request that never reached the
+// provider: whatever row it held for a budgeted key (TXE-7977) is released, so the next call is
+// admitted as a request that follows it, not one concurrent with it.
 func preLLM(t testing.TB, plugin *GovernancePlugin, vk string, req *schemas.BifrostRequest) *schemas.LLMPluginShortCircuit {
 	t.Helper()
-	_, shortCircuit, err := plugin.PreLLMHook(resolverCtx(plugin.store, vk), req)
+	ctx := resolverCtx(plugin.store, vk)
+	_, shortCircuit, err := plugin.PreLLMHook(ctx, req)
 	require.NoError(t, err)
+	takeUnpricedProbe(ctx, nil, false, true).release()
 	return shortCircuit
 }
 
@@ -830,7 +835,9 @@ func TestQueuedPassthroughAcknowledgmentUnderABudgetRefusesTheModel(t *testing.T
 	_, _, err = plugin.PostLLMHook(ctx, answer(schemas.PassthroughStreamRequest, `data: chunk`), nil)
 	require.NoError(t, err)
 	plugin.wg.Wait()
-	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", request(schemas.PassthroughStreamRequest)), "a chunk before the last does not refuse the model")
+	// A chunk before the last does not refuse the model as unpriced; while the stream is in flight
+	// on a row no answer has priced, a concurrent request of the key is held off (TXE-7977).
+	requireProbeRefusal(t, preLLM(t, plugin, "sk-bf-budget", request(schemas.PassthroughStreamRequest)), "a chunk before the last does not refuse the model")
 	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 	_, _, err = plugin.PostLLMHook(ctx, answer(schemas.PassthroughStreamRequest, `data: last`), nil)
 	require.NoError(t, err)
@@ -857,9 +864,9 @@ func TestContainerCreateIsPricedByItsMemoryTier(t *testing.T) {
 func TestPassthroughAnswerIsJudgedInItsPricedMode(t *testing.T) {
 	plugin, _ := unpricedBudgetPlugin(t)
 	budgets := []string{"budget-unpriced"}
-	assert.False(t, plugin.resolver.noteUnpricedAnswer(schemas.OpenAI, "responses-free", "", schemas.PassthroughRequest, schemas.ResponsesRequest, 0, nil, "r1", budgets, "vk-budget"),
+	assert.False(t, plugin.resolver.noteUnpricedAnswer(schemas.OpenAI, "responses-free", "", schemas.PassthroughRequest, schemas.ResponsesRequest, 0, nil, "r1", budgets, "vk:vk-budget"),
 		"free in the mode it was priced in")
-	assert.True(t, plugin.resolver.noteUnpricedAnswer(schemas.OpenAI, "responses-free", "", schemas.PassthroughRequest, schemas.ChatCompletionRequest, 0, nil, "r2", budgets, "vk-budget"),
+	assert.True(t, plugin.resolver.noteUnpricedAnswer(schemas.OpenAI, "responses-free", "", schemas.PassthroughRequest, schemas.ChatCompletionRequest, 0, nil, "r2", budgets, "vk:vk-budget"),
 		"priced in chat, so a $0 chat answer is unpriced")
 }
 
@@ -931,9 +938,9 @@ func TestLiveUnitsArePricedInTheirAccountingMode(t *testing.T) {
 func TestUnpricedAnswerRefusesOnlyTheHolderThatReceivedIt(t *testing.T) {
 	plugin, _ := unpricedBudgetPlugin(t)
 	chat := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o"}}
-	require.True(t, plugin.resolver.noteUnpricedAnswer(schemas.OpenAI, "gpt-4o", "", schemas.ChatCompletionRequest, schemas.ChatCompletionRequest, 0, nil, "r", []string{"budget-unpriced"}, "another-vk"))
+	require.True(t, plugin.resolver.noteUnpricedAnswer(schemas.OpenAI, "gpt-4o", "", schemas.ChatCompletionRequest, schemas.ChatCompletionRequest, 0, nil, "r", []string{"budget-unpriced"}, "vk:another-vk"))
 	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", chat), "another key's $0 answer on the shared budget does not refuse this key")
-	require.True(t, plugin.resolver.noteUnpricedAnswer(schemas.OpenAI, "gpt-4o", "", schemas.ChatCompletionRequest, schemas.ChatCompletionRequest, 0, nil, "r", []string{"budget-unpriced"}, "vk-budget"))
+	require.True(t, plugin.resolver.noteUnpricedAnswer(schemas.OpenAI, "gpt-4o", "", schemas.ChatCompletionRequest, schemas.ChatCompletionRequest, 0, nil, "r", []string{"budget-unpriced"}, "vk:vk-budget"))
 	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", chat), "this key's own $0 answer refuses it")
 }
 
@@ -942,7 +949,7 @@ func TestUnpricedAnswerRefusesOnlyTheHolderThatReceivedIt(t *testing.T) {
 func TestRefusedRowIsCheckedInEachInlineBatchMode(t *testing.T) {
 	plugin, _ := unpricedBudgetPlugin(t)
 	plugin.SetProviderJobAccountingEnabled(true) // a batch is otherwise refused as unsettled first (TXE-7963)
-	require.True(t, plugin.resolver.noteUnpricedAnswer(schemas.OpenAI, "dual-1", "", schemas.EmbeddingRequest, schemas.EmbeddingRequest, 0, nil, "r", []string{"budget-unpriced"}, "vk-budget"))
+	require.True(t, plugin.resolver.noteUnpricedAnswer(schemas.OpenAI, "dual-1", "", schemas.EmbeddingRequest, schemas.EmbeddingRequest, 0, nil, "r", []string{"budget-unpriced"}, "vk:vk-budget"))
 	batch := &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{
 		Provider: schemas.OpenAI, Endpoint: schemas.BatchEndpointEmbeddings,
 		Requests: []schemas.BatchRequestItem{{CustomID: "1", Body: map[string]any{"model": "dual-1"}}},
