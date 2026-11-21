@@ -1435,3 +1435,20 @@ func BenchmarkPreLLMHookPassthroughBodyModels(b *testing.B) {
 		})
 	}
 }
+
+// TestBodyNamesEveryModelReadsOnlyAClassifiedJSONBody: the unpriced-budget gate reads a body's
+// models only when the shared classifier reads it as JSON, as passthroughBodyModels does
+// (TXE-8012). A text upload that happens to name a model (forwarded on a file route) names none,
+// so it is gated as the envelope rather than as a model the vendor never reads.
+func TestBodyNamesEveryModelReadsOnlyAClassifiedJSONBody(t *testing.T) {
+	request := func(contentType string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+			Provider: schemas.OpenAI, Method: "POST", Path: "/v1/files", Body: []byte(`{"model":"gpt-4o"}`),
+			SafeHeaders: map[string]string{"content-type": contentType},
+		}}
+	}
+	assert.True(t, passthroughBodyNamesEveryModel(request("application/json")))
+	assert.True(t, passthroughBodyNamesEveryModel(request("")), "an undeclared body opening with { is classified JSON")
+	assert.False(t, passthroughBodyNamesEveryModel(request("text/plain")))
+	assert.False(t, passthroughBodyNamesEveryModel(request("application/octet-stream")))
+}

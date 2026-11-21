@@ -1352,6 +1352,14 @@ func TestEveryForwardedBodyReaderUsesTheSharedClassifier(t *testing.T) {
 		// Rewrites project and region placeholders in the bytes of a body its callers check is
 		// declared application/json; reads no member a gate acts on.
 		"providers/vertex/utils.go:rewritePassthroughBody": "byte rewrite after the vendor call is built",
+		// Reads only whether a body is present (a GET or HEAD with none runs no model).
+		"../plugins/governance/unpricedbudget.go:passthroughRead": "presence only",
+		// The deferred-delivery gate only refuses, and reads every way a vendor might: a declared or
+		// boundary-led form and JSON whatever the declared type, every key case-folded at each
+		// occurrence. That reading is a superset of the classified one, so it refuses whatever the
+		// classified reading would.
+		"../plugins/governance/unsettledbudget.go:isDeferredDelivery":     "refuse-only superset reading",
+		"../plugins/governance/unsettledbudget.go:requestForwardedInputs": "hands the raw body to isDeferredDelivery",
 	}
 	var readers, unclassified []string
 	for _, root := range []string{".", "../transports", "../framework", "../plugins"} {
@@ -1435,6 +1443,7 @@ func TestEveryForwardedBodyReaderUsesTheSharedClassifier(t *testing.T) {
 func TestBodyReadersGateOnlyOnTheSharedKeyList(t *testing.T) {
 	readers := map[string]bool{
 		"../plugins/governance/main.go:passthroughBodyModels":                             true,
+		"../plugins/governance/unpricedbudget.go:passthroughBodyNamesEveryModel":          true,
 		"../transports/bifrost-http/integrations/router.go:parsePassthroughBody":          true,
 		"../transports/bifrost-http/integrations/router.go:passthroughObjectModel":        true,
 		"../transports/bifrost-http/integrations/router.go:parseMultipartPassthroughBody": true,
