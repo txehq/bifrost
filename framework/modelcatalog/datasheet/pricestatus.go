@@ -152,10 +152,12 @@ func (s *Store) PriceIdentityForRouting(routing schemas.RoutingInfo, requestType
 //
 //   - Priced: its own cost (without guardrail, routing, MCP and semantic-cache calls priced beside
 //     it) is above $0.
-//   - Free: it costs $0 because the rates its usage met are set to zero (a free model, zero flex
-//     rates, an override pricing it at $0), or its row prices nothing above zero at all. Read by
-//     pricing it again with every explicit zero rate replaced by a positive stand-in: an answer
-//     that then costs something met those rates.
+//   - Free: its row prices nothing above zero at all (a free model, an override pricing it at $0, a
+//     free server-side fallback), or it costs $0 because the service-tier rates its usage met are
+//     set to zero (flex, priority, fast or ultrafast). The second is read by pricing it again with
+//     each explicit zero tier rate replaced by a positive stand-in: an answer that then costs
+//     something met those rates. Only tier rates are stood in for: an answer whose usage met a zero
+//     standard rate while the units its row prices above zero went unreported is unpriced.
 //   - Unpriced: it costs $0 and met no rate: no row prices it, or its usage is in units its row
 //     does not price.
 //
@@ -210,11 +212,12 @@ func (s *Store) AnswerPriceStatus(result *schemas.BifrostResponse, scopes *Looku
 	return Unpriced
 }
 
-// zeroRatesAs replaces every price explicitly set to zero on row with standIn. row is a resolved
-// copy: each field gets a new pointer, so the price book's own values are never written.
+// zeroRatesAs replaces every service-tier price (tierPriceFieldIndexes) explicitly set to zero on
+// row with standIn. row is a resolved copy: each field gets a new pointer, so the price book's own
+// values are never written.
 func zeroRatesAs(row *configstoreTables.TableModelPricing, standIn float64) {
 	v := reflect.ValueOf(row).Elem()
-	for _, i := range priceFieldIndexes() {
+	for _, i := range tierPriceFieldIndexes() {
 		field := v.Field(i)
 		if field.IsNil() || field.Elem().Float() != 0 {
 			continue
@@ -289,6 +292,29 @@ var (
 // unmeasured_video_seconds, inference_geo_us_multiplier, ...) are not prices. A new price column
 // is picked up without editing this list; TestPriceFieldIndexesCoverEveryPriceColumn keeps the
 // naming rule honest.
+var (
+	tierPriceFieldIndexesOnce sync.Once
+	tierPriceFieldIndexesList []int
+)
+
+// tierPriceFieldIndexes are the price columns of a service tier (flex, priority, fast, ultrafast):
+// a rate an answer meets only because it was served on that tier.
+func tierPriceFieldIndexes() []int {
+	tierPriceFieldIndexesOnce.Do(func() {
+		t := reflect.TypeOf(configstoreTables.TableModelPricing{})
+		for _, i := range priceFieldIndexes() {
+			name, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ",")
+			for _, tier := range []string{"_flex", "_priority", "_ultrafast", "_fast"} {
+				if strings.HasSuffix(name, tier) || strings.Contains(name, tier+"_") {
+					tierPriceFieldIndexesList = append(tierPriceFieldIndexesList, i)
+					break
+				}
+			}
+		}
+	})
+	return tierPriceFieldIndexesList
+}
+
 func priceFieldIndexes() []int {
 	priceFieldIndexesOnce.Do(func() {
 		t := reflect.TypeOf(configstoreTables.TableModelPricing{})

@@ -26,6 +26,7 @@ func TestAnswerPriceStatus(t *testing.T) {
 		makeKey("flex-free", "openai", "chat"): {Model: "flex-free", Provider: "openai", Mode: "chat",
 			InputCostPerToken: schemas.Ptr(2.5e-06), OutputCostPerToken: schemas.Ptr(1e-05), InputCostPerTokenFlex: schemas.Ptr(0.0), OutputCostPerTokenFlex: schemas.Ptr(0.0)},
 		makeKey("per-second", "openai", "chat"): {Model: "per-second", Provider: "openai", Mode: "chat", InputCostPerSecond: schemas.Ptr(0.001)},
+		makeKey("free-input", "openai", "chat"): {Model: "free-input", Provider: "openai", Mode: "chat", InputCostPerToken: schemas.Ptr(0.0), OutputCostPerToken: schemas.Ptr(1e-05)},
 	})
 	answer := func(model string, tier *schemas.BifrostServiceTier, usage *schemas.BifrostLLMUsage) *schemas.BifrostResponse {
 		return &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
@@ -51,11 +52,26 @@ func TestAnswerPriceStatus(t *testing.T) {
 		{"tokens on a row priced only per second", answer("per-second", nil, tokens), Unpriced},
 		{"a token-priced model's answer with no usage", answer("gpt-4o", nil, nil), Unpriced},
 		{"a model with no row", answer("no-row", nil, tokens), Unpriced},
+		// A zero standard rate is not a tier rate: an answer that met only it, while the output its
+		// row prices went unreported, is unpriced.
+		{"prompt tokens only on a row whose input is free", answer("free-input", nil, &schemas.BifrostLLMUsage{PromptTokens: 10, TotalTokens: 10}), Unpriced},
 	}
 	for _, tc := range cases {
 		assert.Equal(t, tc.want, s.AnswerPriceStatus(tc.got, nil), tc.name)
 	}
 	assert.Equal(t, Unpriced, s.AnswerPriceStatus(nil, nil))
+	tiers := map[string]bool{}
+	pricing := reflect.TypeOf(configstoreTables.TableModelPricing{})
+	for _, i := range tierPriceFieldIndexes() {
+		name, _, _ := strings.Cut(pricing.Field(i).Tag.Get("json"), ",")
+		tiers[name] = true
+	}
+	for _, name := range []string{"input_cost_per_token_flex", "output_cost_per_token_priority", "input_cost_per_token_fast", "input_cost_per_token_flex_above_272k_tokens", "cache_read_input_token_cost_ultrafast"} {
+		assert.True(t, tiers[name], "%s is a tier rate", name)
+	}
+	for _, name := range []string{"input_cost_per_token", "output_cost_per_token", "output_cost_per_image_token"} {
+		assert.False(t, tiers[name], "%s is not a tier rate", name)
+	}
 	// The stand-in never reaches the price book: the free model still costs nothing.
 	assert.Zero(t, s.CalculateCostBreakdown(answer("free-model", nil, tokens), nil).TotalCost)
 }

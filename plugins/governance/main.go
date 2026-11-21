@@ -2215,7 +2215,10 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifro
 			// zero: a free model, zero flex rates, a free fallback), or unpriced (it met no rate).
 			verdict := modelcatalog.PricePriced
 			if answerCost <= 0 {
-				verdict = p.modelCatalog.AnswerPriceStatus(result, pricingScopes)
+				verdict = modelcatalog.PriceUnpriced
+				if p.modelCatalog != nil {
+					verdict = p.modelCatalog.AnswerPriceStatus(result, pricingScopes)
+				}
 			}
 			p.resolver.noteUnpricedAnswer(provider, priced, requestType, pricedAs, verdict, pricingScopes, requestID, limitIDs(budgets), holder)
 		}
