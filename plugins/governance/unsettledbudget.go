@@ -2,7 +2,6 @@ package governance
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"mime"
@@ -11,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 
+	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
 )
@@ -132,7 +132,7 @@ func isDeferredDelivery(req *schemas.BifrostRequest, baseProvider schemas.ModelP
 		return true
 	}
 	if extraNamesDelivery(extra) {
-		if encoded, err := json.Marshal(extra); err == nil {
+		if encoded, err := providerUtils.MarshalSorted(extra); err == nil {
 			return unitDefersDelivery(gjson.ParseBytes(encoded), capable || route != "")
 		}
 		return true // extra params that cannot be read are not judged foreground
@@ -300,7 +300,8 @@ func formFields(body []byte, contentType string) (fields []gjson.Result, isForm,
 			mediaType, boundary = "multipart/form-data", strings.TrimRight(string(line), "\r")
 		}
 	}
-	field := func(name, value string) {
+	// field records one delivery field; false when it cannot be encoded, which fails the form closed.
+	field := func(name, value string) bool {
 		var v interface{} = value
 		switch {
 		case strings.EqualFold(value, "true"):
@@ -308,9 +309,12 @@ func formFields(body []byte, contentType string) (fields []gjson.Result, isForm,
 		case strings.EqualFold(value, "false"):
 			v = false
 		}
-		if encoded, err := json.Marshal(map[string]interface{}{name: v}); err == nil {
-			fields = append(fields, gjson.ParseBytes(encoded))
+		encoded, err := providerUtils.MarshalSorted(map[string]interface{}{name: v})
+		if err != nil {
+			return false
 		}
+		fields = append(fields, gjson.ParseBytes(encoded))
+		return true
 	}
 	switch mediaType {
 	case "multipart/form-data":
@@ -333,7 +337,9 @@ func formFields(body []byte, contentType string) (fields []gjson.Result, isForm,
 			if err != nil || len(text) > maxFormFieldBytes {
 				return nil, true, false
 			}
-			field(part.FormName(), string(text))
+			if !field(part.FormName(), string(text)) {
+				return nil, true, false
+			}
 		}
 	case "application/x-www-form-urlencoded":
 		values, err := url.ParseQuery(string(body))
@@ -345,7 +351,9 @@ func formFields(body []byte, contentType string) (fields []gjson.Result, isForm,
 				continue
 			}
 			for _, value := range all {
-				field(name, value)
+				if !field(name, value) {
+					return nil, true, false
+				}
 			}
 		}
 		return fields, true, true
