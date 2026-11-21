@@ -3,16 +3,21 @@ package azurespeech_test
 import (
 	"bytes"
 	"context"
+	"encoding/xml"
 	"io"
+	"maps"
 	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	bifrost "github.com/capsohq/bifrost/core"
@@ -439,6 +444,292 @@ func TestEstimateBilledCharactersExemptsOnlySpeakAndVoiceTags(t *testing.T) {
 	other := []byte(`<speak><voice name="a"><break/>Hi<voiceover/></voice></speak>`)
 	if got := azurespeech.EstimateBilledCharacters(other); got != 22 {
 		t.Errorf("other markup = %d, want 22", got)
+	}
+}
+
+// tokunAzureTTSRule is the failure message of every check on the billed markup
+// ToAzureSpeechSSML writes (TXE-8029). Tokun holds an Azure TTS request at what its
+// azure_tts_characters rule computes from the request (TXE-8024): the input's characters
+// plus a copy of this markup. The settlement takes the estimate Bifrost reports
+// (EstimateBilledCharacters of the SSML it sent), so billed markup the rule does not count
+// settles above the hold, and Tokun absorbs the difference as a hold_shortfall cost line.
+const tokunAzureTTSRule = "Tokun's azure_tts_characters rule (txehq/txe tokun/internal/metering/ruletype_azure_tts.go, " +
+	"a units_rule quantity source of tokun/internal/billingmap meters; TXE-8024) copies the billed markup " +
+	"ToAzureSpeechSSML writes. Change ssmlBilledOverhead and that rule in step with the builder, " +
+	"or Tokun's hold falls short of what Azure bills"
+
+// ssmlOverheadCase is one value of a speech parameter and the billed characters the markup
+// ToAzureSpeechSSML writes for it adds to the document, beyond the input's own characters.
+type ssmlOverheadCase struct {
+	value string
+	set   func(*schemas.SpeechParameters)
+	want  int
+}
+
+// ssmlBilledOverhead pins the billed markup ToAzureSpeechSSML writes for each speech
+// parameter azurespeech takes (SupportedUnifiedFields(SpeechRequest)), one row per field.
+// Azure bills every code point of the SSML except the <speak> and <voice> tags, so a value
+// rendered inside those tags adds nothing and one rendered anywhere else adds its markup.
+// Tokun's azure_tts_characters rule is this table in code: speed adds
+// <prosody rate=""></prosody> (27 characters) and the rate in Go's shortest decimal form,
+// every other field adds 0.
+var ssmlBilledOverhead = map[string][]ssmlOverheadCase{
+	// The voice name is an attribute of <voice>.
+	"voice": {
+		{value: "zh-CN-XiaoxiaoMultilingualNeural", set: setVoice("zh-CN-XiaoxiaoMultilingualNeural"), want: 0},
+		{value: `x"><b>`, set: setVoice(`x"><b>`), want: 0},
+	},
+	// language_code is the xml:lang attribute of <speak>.
+	"language_code": {
+		{value: "es-ES", set: func(p *schemas.SpeechParameters) { p.LanguageCode = schemas.Ptr("es-ES") }, want: 0},
+		{value: "zh-CN", set: func(p *schemas.SpeechParameters) { p.LanguageCode = schemas.Ptr("zh-CN") }, want: 0},
+	},
+	// response_format is the X-Microsoft-OutputFormat header, never in the SSML.
+	"response_format": {
+		{value: "wav", set: func(p *schemas.SpeechParameters) { p.ResponseFormat = "wav" }, want: 0},
+		{value: "audio-48khz-192kbitrate-mono-mp3", set: func(p *schemas.SpeechParameters) { p.ResponseFormat = "audio-48khz-192kbitrate-mono-mp3" }, want: 0},
+	},
+	// speed is <prosody rate="R"> around the input: 15 + len(R) + 2 + 10 characters.
+	"speed": {
+		{value: "1", set: setSpeed(1), want: 28},
+		{value: "2", set: setSpeed(2), want: 28},
+		{value: "0.5", set: setSpeed(0.5), want: 30},
+		{value: "1.5", set: setSpeed(1.5), want: 30},
+		{value: "1.25", set: setSpeed(1.25), want: 31},
+		{value: "0.875", set: setSpeed(0.875), want: 32},
+		{value: "1.0000001", set: setSpeed(1.0000001), want: 36},
+	},
+}
+
+func setVoice(voice string) func(*schemas.SpeechParameters) {
+	return func(p *schemas.SpeechParameters) { p.VoiceConfig = &schemas.SpeechVoiceInput{Voice: &voice} }
+}
+
+func setSpeed(speed float64) func(*schemas.SpeechParameters) {
+	return func(p *schemas.SpeechParameters) { p.Speed = &speed }
+}
+
+// ssmlOverheadInput is the input every overhead check synthesizes: Latin, Han and text
+// Bifrost escapes, whose billed characters are 3 + 4 + 1 + 1 + 1 + 3 = 13.
+const ssmlOverheadInput = `Hi 你好 & <b>`
+
+// azureBilledText is what Azure bills for text: its code points, each Han code point
+// counted twice. Tokun counts the input the same way (AzureTTSInputCharacters).
+func azureBilledText(s string) int {
+	n := 0
+	for _, r := range s {
+		n++
+		if unicode.Is(unicode.Han, r) {
+			n++
+		}
+	}
+	return n
+}
+
+// azureBilledSSML counts an SSML document by Azure's rule, independently of
+// EstimateBilledCharacters: it parses the document, bills every tag as written except a
+// <speak> or <voice> tag, and bills text as the characters it decodes to. It also returns
+// the element names, in document order.
+func azureBilledSSML(t *testing.T, ssml []byte) (billed int, elements []string) {
+	t.Helper()
+	decoder := xml.NewDecoder(bytes.NewReader(ssml))
+	var offset int64
+	for {
+		token, err := decoder.RawToken()
+		if err == io.EOF {
+			return billed, elements
+		}
+		if err != nil {
+			t.Fatalf("ToAzureSpeechSSML wrote a document that does not parse: %v\n%s", err, ssml)
+		}
+		end := decoder.InputOffset()
+		raw := string(ssml[offset:end])
+		offset = end
+		switch token := token.(type) {
+		case xml.CharData:
+			billed += azureBilledText(string(token))
+		case xml.StartElement:
+			elements = append(elements, token.Name.Space+":"+token.Name.Local)
+			if !unbilledSSMLElement(token.Name) {
+				billed += azureBilledText(raw)
+			}
+		case xml.EndElement:
+			if !unbilledSSMLElement(token.Name) {
+				billed += azureBilledText(raw)
+			}
+		default:
+			billed += azureBilledText(raw)
+		}
+	}
+}
+
+func unbilledSSMLElement(name xml.Name) bool {
+	return name.Space == "" && (name.Local == "speak" || name.Local == "voice")
+}
+
+// billedSSML builds the SSML for ssmlOverheadInput with params and returns what Azure bills
+// for it, failing when Bifrost's own estimate disagrees: the estimate is what Tokun settles.
+func billedSSML(t *testing.T, params *schemas.SpeechParameters) (billed int, elements []string, ssml []byte) {
+	t.Helper()
+	request := speechRequest("", params)
+	request.Input.Input = ssmlOverheadInput
+	ssml, _, bifrostErr := azurespeech.ToAzureSpeechSSML(request)
+	if bifrostErr != nil {
+		t.Fatalf("ToAzureSpeechSSML error: %+v", bifrostErr.Error)
+	}
+	billed, elements = azureBilledSSML(t, ssml)
+	if estimate := azurespeech.EstimateBilledCharacters(ssml); estimate != billed {
+		t.Errorf("EstimateBilledCharacters = %d, Azure's rule = %d, for\n%s", estimate, billed, ssml)
+	}
+	return billed, elements, ssml
+}
+
+// baseSpeechParameters is the request every overhead is measured against: a voice, nothing
+// else.
+func baseSpeechParameters() *schemas.SpeechParameters {
+	params := &schemas.SpeechParameters{}
+	setVoice(maiVoice)(params)
+	return params
+}
+
+// TXE-8029: the billed markup ToAzureSpeechSSML writes for each parameter it renders is
+// pinned, and is the markup Tokun's azure_tts_characters rule copies. The document without
+// parameters bills the input alone; each parameter adds exactly its row; together they add
+// the sum; no element other than speak, voice and prosody is written.
+func TestToAzureSpeechSSMLBilledOverheadIsTokunsRule(t *testing.T) {
+	provider, _ := newMockAzureSpeech(t, nil)
+	for _, requestType := range []schemas.RequestType{schemas.SpeechRequest, schemas.SpeechStreamRequest} {
+		declared, ok := provider.SupportedUnifiedFields(requestType)
+		if !ok {
+			t.Fatalf("azurespeech declares no unified fields for %s", requestType)
+		}
+		for _, field := range declared {
+			if _, ok := ssmlBilledOverhead[field]; !ok {
+				t.Errorf("%s takes %q, which has no row in ssmlBilledOverhead: pin the billed markup ToAzureSpeechSSML writes for it.\n%s",
+					requestType, field, tokunAzureTTSRule)
+			}
+		}
+		for field := range ssmlBilledOverhead {
+			if !slices.Contains(declared, field) {
+				t.Errorf("ssmlBilledOverhead has a row for %q, which %s no longer takes: remove it.\n%s", field, requestType, tokunAzureTTSRule)
+			}
+		}
+	}
+
+	inputBilled := azureBilledText(ssmlOverheadInput)
+	if inputBilled != 13 {
+		t.Fatalf("billed characters of %q = %d, want 13", ssmlOverheadInput, inputBilled)
+	}
+	base, _, baseSSML := billedSSML(t, baseSpeechParameters())
+	if base != inputBilled {
+		t.Errorf("a request with only a voice bills %d characters for input %q, want %d (the <speak> and <voice> tags are not billed): ToAzureSpeechSSML wrote billed markup outside every parameter:\n%s\n%s",
+			base, ssmlOverheadInput, inputBilled, baseSSML, tokunAzureTTSRule)
+	}
+
+	fields := slices.Sorted(maps.Keys(ssmlBilledOverhead))
+	all := baseSpeechParameters()
+	wantAll := 0
+	for _, field := range fields {
+		for i, tc := range ssmlBilledOverhead[field] {
+			params := baseSpeechParameters()
+			tc.set(params)
+			billed, _, ssml := billedSSML(t, params)
+			if got := billed - inputBilled; got != tc.want {
+				t.Errorf("%s %s adds %d billed characters, ssmlBilledOverhead pins %d:\n%s\n%s", field, tc.value, got, tc.want, ssml, tokunAzureTTSRule)
+			}
+			if i == 0 {
+				tc.set(all)
+				wantAll += tc.want
+			}
+		}
+	}
+
+	billed, elements, ssml := billedSSML(t, all)
+	if got := billed - inputBilled; got != wantAll {
+		t.Errorf("every parameter together adds %d billed characters, the rows add %d:\n%s\n%s", got, wantAll, ssml, tokunAzureTTSRule)
+	}
+	for _, element := range elements {
+		switch element {
+		case ":speak", ":voice", ":prosody":
+		default:
+			t.Errorf("ToAzureSpeechSSML writes element %q, which ssmlBilledOverhead does not know:\n%s\n%s", element, ssml, tokunAzureTTSRule)
+		}
+	}
+}
+
+// TXE-8029: a speech parameter azurespeech does not take renders no markup. Core refuses the
+// typed ones before the provider (CheckDeclaredUnifiedFields), but nothing refuses extra
+// params, so a builder that rendered one would bill markup no row pins. Every field of
+// SpeechParameters without a row is filled and the document must not change; a field of a
+// kind the filler does not know fails, never passes unchecked.
+func TestToAzureSpeechSSMLRendersNoMarkupForOtherParameters(t *testing.T) {
+	_, _, baseSSML := billedSSML(t, baseSpeechParameters())
+	parametersType := reflect.TypeFor[schemas.SpeechParameters]()
+	for i := range parametersType.NumField() {
+		field := parametersType.Field(i)
+		name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+		if name == "" || name == "-" {
+			name = field.Name
+		}
+		if _, ok := ssmlBilledOverhead[name]; ok {
+			continue
+		}
+		t.Run(name, func(t *testing.T) {
+			params := baseSpeechParameters()
+			fillNonZero(t, reflect.ValueOf(params).Elem().Field(i), name)
+			if name == "ExtraParams" {
+				// SSML's own names for what a caller might send as extra params.
+				for key, value := range map[string]any{"style": "cheerful", "styledegree": 2, "role": "Girl", "pitch": "+10%", "volume": "loud", "rate": "fast", "lang": "fr-FR", "ssml": "<break/>"} {
+					params.ExtraParams[key] = value
+				}
+			}
+			_, _, ssml := billedSSML(t, params)
+			if !bytes.Equal(ssml, baseSSML) {
+				t.Errorf("%s changes the SSML ToAzureSpeechSSML writes:\n%s\nwant\n%s\nGive it a row in ssmlBilledOverhead and declare it in speechUnifiedFields.\n%s",
+					name, ssml, baseSSML, tokunAzureTTSRule)
+			}
+		})
+	}
+}
+
+// fillNonZero sets v to a value that is not its zero value, recursively.
+func fillNonZero(t *testing.T, v reflect.Value, name string) {
+	t.Helper()
+	switch v.Kind() {
+	case reflect.Pointer:
+		v.Set(reflect.New(v.Type().Elem()))
+		fillNonZero(t, v.Elem(), name)
+	case reflect.String:
+		v.SetString("x")
+	case reflect.Bool:
+		v.SetBool(true)
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		v.SetInt(1)
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		v.SetUint(1)
+	case reflect.Float32, reflect.Float64:
+		v.SetFloat(1.5)
+	case reflect.Interface:
+		v.Set(reflect.ValueOf("x"))
+	case reflect.Slice:
+		slice := reflect.MakeSlice(v.Type(), 1, 1)
+		fillNonZero(t, slice.Index(0), name)
+		v.Set(slice)
+	case reflect.Map:
+		m := reflect.MakeMap(v.Type())
+		key, value := reflect.New(v.Type().Key()).Elem(), reflect.New(v.Type().Elem()).Elem()
+		fillNonZero(t, key, name)
+		fillNonZero(t, value, name)
+		m.SetMapIndex(key, value)
+		v.Set(m)
+	case reflect.Struct:
+		for i := range v.NumField() {
+			if v.Type().Field(i).IsExported() {
+				fillNonZero(t, v.Field(i), name)
+			}
+		}
+	default:
+		t.Fatalf("SpeechParameters.%s holds a %s, which fillNonZero cannot fill: teach it, so the field is checked", name, v.Type())
 	}
 }
 
