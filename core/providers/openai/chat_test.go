@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -3506,6 +3507,44 @@ func BenchmarkChatReasoningRefusal(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
 				_ = chatReasoningRefusal(ctx, req)
+			}
+		})
+	}
+}
+
+// BenchmarkDeepSeekChatRefusalAndConversion: what a DeepSeek chat request pays in ChatRequestRefusal
+// and ToOpenAIChatRequest, now that the thinking-off rule runs in the converter and in the refusal
+// probe (fork, TXE-8011). The history is 20 tool-call turns with reasoning replayed, the longest
+// scan the rule makes.
+func BenchmarkDeepSeekChatRefusalAndConversion(b *testing.B) {
+	user := schemas.ChatMessage{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}
+	history := []schemas.ChatMessage{user}
+	for i := range 20 {
+		id := fmt.Sprintf("call_%d", i)
+		history = append(history,
+			schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, ChatAssistantMessage: &schemas.ChatAssistantMessage{
+				Reasoning: schemas.Ptr("thought"),
+				ToolCalls: []schemas.ChatAssistantMessageToolCall{{ID: schemas.Ptr(id), Type: schemas.Ptr("function"), Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("lookup"), Arguments: "{}"}}},
+			}},
+			schemas.ChatMessage{Role: schemas.ChatMessageRoleTool, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("42")}, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr(id)}},
+		)
+	}
+	cases := map[string]*schemas.BifrostChatRequest{
+		"plain, no reasoning": {Provider: schemas.DeepSeek, Model: "deepseek-v4-flash", Input: []schemas.ChatMessage{user}, Params: &schemas.ChatParameters{}},
+		"plain, effort high": {Provider: schemas.DeepSeek, Model: "deepseek-v4-flash", Input: []schemas.ChatMessage{user},
+			Params: &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr("high")}}},
+		"20 tool turns, effort high": {Provider: schemas.DeepSeek, Model: "deepseek-v4-flash", Input: history,
+			Params: &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr("high")}}},
+	}
+	for name, req := range cases {
+		b.Run(name, func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			b.ReportAllocs()
+			for b.Loop() {
+				if refusal := ChatRequestRefusal(ctx, req); refusal != nil {
+					b.Fatal(refusal.Error.Message)
+				}
+				_ = ToOpenAIChatRequest(ctx, req)
 			}
 		})
 	}

@@ -1,6 +1,6 @@
 {
   "name": "656. DeepSeek turns thinking off for a forced tool choice only when no reasoning level was asked (deepseek thinking off)",
-  "description": "Local fixture regression for TXE-8011 (Bifrost-Tokun contract C4), no live provider calls. Start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json, and run with providerErrorFixture=1; every case is skipped otherwise. DeepSeek rejects thinking with a forced tool_choice, and the DeepSeek provider turned thinking off before the chat converter ran, so a requested reasoning level was dropped without a judgement (the converter then failed on the extra param the provider had injected, blaming the caller). The rule now runs inside the converter: with no level asked, thinking is turned off (656.4); with a level, the request is refused with 400 caller_unsupported_parameter on reasoning.effort before anything reaches DeepSeek, unary (656.2) and streamed (656.3). own_deepseek is a custom provider on the deepseek base, answered by /pp/ownkey.",
+  "description": "Local fixture regression for TXE-8011 (Bifrost-Tokun contract C4), no live provider calls. Start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json, and run with providerErrorFixture=1; every case is skipped otherwise. DeepSeek rejects thinking with a forced tool_choice, and the DeepSeek provider turned thinking off before the chat converter ran, so a requested reasoning level was dropped without a judgement (the converter then failed on the extra param the provider had injected, blaming the caller). The rule now runs inside the converter: with no level asked, thinking is turned off (656.4); with a level, the request is refused with 400 caller_unsupported_parameter on reasoning.effort before anything reaches DeepSeek, unary (656.2) and streamed (656.3). own_deepseek is a custom provider on the deepseek base, answered by /pp/ownkey. 656.5 and 656.6 pin the other refusal the cross-provider check found: Perplexity's own converter dropped reasoning.max_tokens sent without an effort (its request takes reasoning_effort only), so the budget is now refused with 400 caller_unsupported_parameter on reasoning.max_tokens, unary and streamed, before anything reaches the fixture.",
   "item": [
     {
       "name": "656.1 fixture counters and recorded requests reset",
@@ -189,6 +189,120 @@
         "body": {
           "mode": "raw",
           "raw": "{\n  \"model\": \"own_deepseek/deepseek-v4-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"txe-8011-no-level\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"lookup\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {}\n        }\n      }\n    }\n  ],\n  \"tool_choice\": \"required\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "656.5 [EXPECT-400] Perplexity refuses a reasoning budget sent without an effort, which it would drop, with 400 and makes no upstream call (deepseek thinking off)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('refused with 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+              "var j = pm.response.json();",
+              "pm.test('error_type is caller_unsupported_parameter', function () { pm.expect((j.extra_fields || {}).error_type, pm.response.text()).to.equal('caller_unsupported_parameter'); });",
+              "pm.test('error.param names reasoning.max_tokens', function () { pm.expect((j.error || {}).param, pm.response.text()).to.equal('reasoning.max_tokens'); });",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture reports what reached it', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.body.indexOf('txe-8011-perplexity-budget') !== -1; });",
+              "  pm.test('nothing reached the vendor', function () { pm.expect(calls.length, res.text()).to.equal(0); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"perplexity/sonar-search-usage\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"txe-8011-perplexity-budget\"\n    }\n  ],\n  \"reasoning\": {\n    \"max_tokens\": 2048\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "656.6 [EXPECT-400] Perplexity refuses a streamed reasoning budget sent without an effort with 400 and makes no upstream call (deepseek thinking off)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('refused with 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+              "var j = pm.response.json();",
+              "pm.test('error_type is caller_unsupported_parameter', function () { pm.expect((j.extra_fields || {}).error_type, pm.response.text()).to.equal('caller_unsupported_parameter'); });",
+              "pm.test('error.param names reasoning.max_tokens', function () { pm.expect((j.error || {}).param, pm.response.text()).to.equal('reasoning.max_tokens'); });",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture reports what reached it', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.body.indexOf('txe-8011-perplexity-budget-stream') !== -1; });",
+              "  pm.test('nothing reached the vendor', function () { pm.expect(calls.length, res.text()).to.equal(0); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"perplexity/sonar-search-usage\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"txe-8011-perplexity-budget-stream\"\n    }\n  ],\n  \"reasoning\": {\n    \"max_tokens\": 2048\n  },\n  \"stream\": true\n}"
         },
         "url": {
           "raw": "{{baseUrl}}/v1/chat/completions",
