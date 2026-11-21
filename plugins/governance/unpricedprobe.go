@@ -332,20 +332,12 @@ func (r *BudgetResolver) probeRows(ctx *schemas.BifrostContext, provider schemas
 		}
 		return r.everyCandidateRow(provider, model, mode, scopes)
 	}
-	var allowed []string
-	restricted := false
-	if ctx != nil && ctx.Grant() != nil {
-		if access := ctx.Grant().Access(); access != nil {
-			allowed, restricted = access.KeysForModel(string(provider), model)
-		}
-	}
+	// The keys that may serve it are the ones admission reads (servingKeys): a disabled key serves
+	// nothing, so its row is never held.
+	serves := r.servingKeys(ctx, provider, model, scopes, false)
 	var rows []string
 	for _, key := range config.Keys {
-		// A disabled key serves nothing (core skips it in key selection), so its row is never held.
-		if key.Enabled != nil && !*key.Enabled {
-			continue
-		}
-		if restricted && !slices.Contains(allowed, key.ID) {
+		if !serves(key) {
 			continue
 		}
 		keyScopes := modelcatalog.PricingLookupScopes{}

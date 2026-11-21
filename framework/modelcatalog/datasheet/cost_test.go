@@ -11460,6 +11460,11 @@ func TestLookupScopesFromContextReadsOnlyPricingContextKeys(t *testing.T) {
 	want := LookupScopesFromContext(src, "moonshot")
 	scopeValue := reflect.ValueOf(*want)
 	for i := 0; i < scopeValue.NumField(); i++ {
+		// An unexported field is set inside this package for one calculation (zeroRatesAs,
+		// AnswerPriceStatus), never read from a context, so it has no key to list.
+		if !scopeValue.Type().Field(i).IsExported() {
+			continue
+		}
 		require.False(t, scopeValue.Field(i).IsZero(), "LookupScopes.%s is not set by any key in this test; read it from a key in schemas.PricingContextKeys", scopeValue.Type().Field(i).Name)
 	}
 

@@ -147,6 +147,115 @@ func (s *Store) PriceIdentityForRouting(routing schemas.RoutingInfo, requestType
 	return s.rowIdentity(row, overrideKey, requestType, lookupScopes)
 }
 
+// AnswerPriceStatus is the verdict on a delivered answer, read from the cost calculation that
+// charges it rather than from its total alone (fork, TXE-8016):
+//
+//   - Priced: its own cost (without guardrail, routing, MCP and semantic-cache calls priced beside
+//     it) is above $0.
+//   - Free: its row prices nothing above zero at all (a free model, an override pricing it at $0, a
+//     free server-side fallback), or it costs $0 because the service-tier rates its usage met are
+//     set to zero (flex, priority, fast or ultrafast). The second is read by pricing it again with
+//     each explicit zero tier rate replaced by a positive stand-in: an answer that then costs
+//     something met those rates. Only tier rates are stood in for: an answer whose usage met a zero
+//     standard rate while the units its row prices above zero went unreported is unpriced.
+//   - Unpriced: it costs $0 and met no rate: no row prices it, or its usage is in units its row
+//     does not price.
+//
+// The calculation is accounting's own (CalculateCostBreakdown), so the verdict follows the same
+// alias, server-side fallback, service tier and override accounting chose.
+func (s *Store) AnswerPriceStatus(result *schemas.BifrostResponse, scopes *LookupScopes) PriceStatus {
+	if result == nil {
+		return Unpriced
+	}
+	own := func(cost *schemas.BifrostCost) float64 {
+		if cost == nil {
+			return 0
+		}
+		total := cost.TotalCost
+		if details := cost.AdditionalCostDetails; details != nil {
+			total -= details.GuardrailCost + details.RoutingCost + details.MCPCost + details.SemanticCacheCost
+		}
+		return total
+	}
+	if own(s.CalculateCostBreakdown(result, scopes)) > 0 {
+		return Priced
+	}
+	var standIn LookupScopes
+	if scopes != nil {
+		standIn = *scopes
+	}
+	standIn.zeroRatesAs = 1
+	if own(s.CalculateCostBreakdown(result, &standIn)) > 0 {
+		return Free
+	}
+	// A row that prices nothing above zero is free whatever usage its answer reported.
+	if extra := result.GetExtraFields(); extra != nil {
+		routing := extra.RoutingInfo
+		if routing.Provider == "" {
+			routing.Provider = extra.Provider
+		}
+		if routing.Model == "" {
+			routing.Model = extra.OriginalModelRequested
+		}
+		requestType := extra.PricingRequestType
+		if requestType == "" {
+			requestType = extra.RequestType
+		}
+		// A passthrough is priced in the mode accounting infers from its path and usage
+		// (calculateBaseCost); its free row is read in that mode.
+		if passthrough := result.PassthroughResponse; passthrough != nil && normalizeRequestType(requestType) == "unknown" {
+			path := passthrough.Path
+			if path == "" {
+				path = extra.PassthroughPath
+			}
+			requestType = inferPassthroughRequestType(routing.Provider, path, passthrough.PassthroughUsage)
+		}
+		// A container create is priced under its container identifier, not a model (extractCostInput):
+		// its memory tier's row, else the base container row.
+		containers := []string(nil)
+		if created := result.ContainerCreateResponse; created != nil {
+			if created.MemoryLimit != "" {
+				containers = append(containers, "container-"+created.MemoryLimit)
+			}
+			containers = append(containers, "container")
+		} else if passthrough := result.PassthroughResponse; passthrough != nil && passthrough.PassthroughUsage != nil && passthrough.PassthroughUsage.ContainerIdentifier != "" {
+			containers = append(containers, passthrough.PassthroughUsage.ContainerIdentifier, "container")
+			requestType = schemas.ContainerCreateRequest
+		}
+		var lookupScopes LookupScopes
+		if scopes != nil {
+			lookupScopes = *scopes
+		}
+		for _, container := range containers {
+			if row := s.resolvePricingRow(schemas.RoutingInfo{Provider: routing.Provider, Model: container}, requestType, lookupScopes); row != nil {
+				if rowPriceStatus(row) == Free {
+					return Free
+				}
+				return Unpriced
+			}
+		}
+		if len(containers) == 0 && routing.Model != "" && rowPriceStatus(s.resolvePricingRow(routing, requestType, lookupScopes)) == Free {
+			return Free
+		}
+	}
+	return Unpriced
+}
+
+// zeroRatesAs replaces every service-tier price (tierPriceFieldIndexes) explicitly set to zero on
+// row with standIn. row is a resolved copy: each field gets a new pointer, so the price book's own
+// values are never written.
+func zeroRatesAs(row *configstoreTables.TableModelPricing, standIn float64) {
+	v := reflect.ValueOf(row).Elem()
+	for _, i := range tierPriceFieldIndexes() {
+		field := v.Field(i)
+		if field.IsNil() || field.Elem().Float() != 0 {
+			continue
+		}
+		value := standIn
+		field.Set(reflect.ValueOf(&value))
+	}
+}
+
 // InferPassthroughRequestType is the request type a passthrough answer is priced as; see
 // inferPassthroughRequestType.
 func InferPassthroughRequestType(provider schemas.ModelProvider, path string, usage *schemas.BifrostPassthroughUsage) schemas.RequestType {
@@ -212,6 +321,29 @@ var (
 // unmeasured_video_seconds, inference_geo_us_multiplier, ...) are not prices. A new price column
 // is picked up without editing this list; TestPriceFieldIndexesCoverEveryPriceColumn keeps the
 // naming rule honest.
+var (
+	tierPriceFieldIndexesOnce sync.Once
+	tierPriceFieldIndexesList []int
+)
+
+// tierPriceFieldIndexes are the price columns of a service tier (flex, priority, fast, ultrafast):
+// a rate an answer meets only because it was served on that tier.
+func tierPriceFieldIndexes() []int {
+	tierPriceFieldIndexesOnce.Do(func() {
+		t := reflect.TypeOf(configstoreTables.TableModelPricing{})
+		for _, i := range priceFieldIndexes() {
+			name, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ",")
+			for _, tier := range []string{"_flex", "_priority", "_ultrafast", "_fast"} {
+				if strings.HasSuffix(name, tier) || strings.Contains(name, tier+"_") {
+					tierPriceFieldIndexesList = append(tierPriceFieldIndexesList, i)
+					break
+				}
+			}
+		}
+	})
+	return tierPriceFieldIndexesList
+}
+
 func priceFieldIndexes() []int {
 	priceFieldIndexesOnce.Do(func() {
 		t := reflect.TypeOf(configstoreTables.TableModelPricing{})

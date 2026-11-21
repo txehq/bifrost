@@ -112,6 +112,13 @@ func (mc *ModelCatalog) PriceStatus(provider schemas.ModelProvider, model string
 	return mc.datasheet.PriceStatus(provider, model, requestType, (*datasheet.LookupScopes)(scopes))
 }
 
+// AnswerPriceStatus is the verdict on a delivered answer from the cost calculation that charges it:
+// priced, free (the rates it met are zero), or unpriced (it met no rate); see
+// datasheet.Store.AnswerPriceStatus.
+func (mc *ModelCatalog) AnswerPriceStatus(result *schemas.BifrostResponse, scopes *PricingLookupScopes) PriceStatus {
+	return mc.datasheet.AnswerPriceStatus(result, (*datasheet.LookupScopes)(scopes))
+}
+
 // PriceIdentityForRouting is the identity of the row accounting prices routing on; see
 // datasheet.Store.PriceIdentityForRouting.
 func (mc *ModelCatalog) PriceIdentityForRouting(routing schemas.RoutingInfo, requestType schemas.RequestType, scopes *PricingLookupScopes) string {

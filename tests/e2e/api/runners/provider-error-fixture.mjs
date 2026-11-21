@@ -291,6 +291,16 @@ behaviours["upstream-slow"] = () => ({ ...behaviours["upstream-ok"](), delayMs: 
 // upstream-slow-priced answers as upstream-slow does under a model the price book prices per token (folder 658,
 // TXE-7977): its first answer is in flight long enough for a concurrent request to arrive, and it prices above $0.
 behaviours["upstream-slow-priced"] = () => ({ ...behaviours["upstream-ok"](), delayMs: SLOW_MS });
+// upstream-flex-free answers as upstream-ok does on the flex service tier, under a model the price book
+// prices per token at standard rates and at zero on flex (TXE-8016): its answer costs $0 because the rates
+// it met are zero, so it is free, not unpriced, and a dollar budget keeps serving it.
+behaviours["upstream-flex-free"] = () => {
+	const r = behaviours["upstream-ok"]();
+	const body = JSON.parse(r.body);
+	body.model = "upstream-flex-free";
+	body.service_tier = "flex";
+	return { ...r, body: JSON.stringify(body) };
+};
 // upstream-ok with every usage field a vendor reports beyond tokens, TXE-6522 (contract C10 BF21): web search calls,
 // a reported cost and xAI's cost_in_usd_ticks. Streamed, they arrive once, on the trailing usage frame, and must reach
 // the gateway's final frame as they reach its non-streamed response.
@@ -600,6 +610,8 @@ const fixturePricing = {
 	"gpt-6-luna": { provider: "openai", mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002, input_cost_per_token_decisions: 0.000003, output_cost_per_token_decisions: 0.000004, supports_decisions: true },
 	// Folder 658 (TXE-7977): a slow chat model priced per token, so its first answer confirms the row for a budgeted key.
 	"upstream-slow-priced": { provider: "openai", mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002 },
+	// Folder 659 (TXE-8016): standard rates priced, flex rates zero, so a flex answer is free.
+	"upstream-flex-free": { provider: "openai", mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002, input_cost_per_token_flex: 0, output_cost_per_token_flex: 0 },
 	// Folder 565 (TXE-7353): the live datasheet's gpt-6-luna decision rates above 272k and its decision cache rates,
 	// gemini-3.1-pro-preview's flex rates above 200k, and gemini-2.5-flash's priority audio rate.
 	"gpt-6-luna-long": {

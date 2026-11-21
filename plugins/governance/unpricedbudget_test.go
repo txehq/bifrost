@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -140,6 +141,7 @@ func unpricedBudgetPlugin(t testing.TB) (*GovernancePlugin, *LocalGovernanceStor
 		"responses-free":{"provider":"openai","mode":"chat","input_cost_per_token":0.000001,"output_cost_per_token":0.000002},
 		"seconds-chat":{"provider":"openai","mode":"chat","input_cost_per_second":0.001},
 		"dual-1":{"provider":"openai","mode":"chat","input_cost_per_token":0.000001,"output_cost_per_token":0.000002},
+		"flex-free":{"provider":"openai","mode":"chat","input_cost_per_token":0.000001,"output_cost_per_token":0.000002,"input_cost_per_token_flex":0,"output_cost_per_token_flex":0},
 		"gem-embed":{"provider":"gemini","mode":"embedding","input_cost_per_token":0.0000001},
 		"gem-chat":{"provider":"gemini","mode":"chat","input_cost_per_token":0.000001,"output_cost_per_token":0.000002}
 	}`), 0o600))
@@ -659,6 +661,98 @@ func TestPassthroughAnswerWithoutUsageRefusesItsBodyModel(t *testing.T) {
 	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", req), "the same passthrough after an answer with no usage")
 }
 
+// A token count sent through a passthrough that names its model only in its body generates nothing
+// and refuses nothing, as on any other path (TXE-8016); the same answer on a generation path does.
+func TestTokenCountThroughABodyModelPassthroughRefusesNothing(t *testing.T) {
+	plugin, _ := unpricedBudgetPlugin(t)
+	answer := func(path string) {
+		t.Helper()
+		req := &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+			Provider: schemas.OpenAI, Method: "POST", Path: path, Body: []byte(`{"model":"gpt-4o"}`),
+		}}
+		ctx := resolverCtx(plugin.store, "sk-bf-budget")
+		_, shortCircuit, err := plugin.PreLLMHook(ctx, req)
+		require.NoError(t, err)
+		require.Nil(t, shortCircuit)
+		_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{PassthroughResponse: &schemas.BifrostPassthroughResponse{
+			StatusCode: 200, Body: []byte(`{"input_tokens":12}`), Path: path,
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.PassthroughRequest, Provider: schemas.OpenAI, RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenAI},
+			},
+		}}, nil)
+		require.NoError(t, err)
+		plugin.wg.Wait()
+	}
+	chat := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o"}}
+	answer("/v1/messages/count_tokens")
+	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", chat), "a token count refuses nothing")
+	answer("/v1/chat/completions")
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", chat), "a generation with no usage still does")
+}
+
+// Admission prices a request only under keys that may serve it (TXE-8016): a model priced only by
+// one key's override is unpriced for a request pinned to another key, when that key is disabled,
+// and for a batch when the key serves no batches.
+func TestAdmissionReadsOnlyKeysThatMayServeTheRequest(t *testing.T) {
+	plugin, _ := unpricedBudgetPlugin(t)
+	disabled, batchKey := false, true
+	withKeys := func(keys ...schemas.Key) {
+		plugin.resolver.governanceInMemoryStore = &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.OpenAI: {Keys: keys},
+		}}
+	}
+	status := func(selected string, requestType schemas.RequestType) modelcatalog.PriceStatus {
+		scopes := &modelcatalog.PricingLookupScopes{SelectedKeyID: selected}
+		if requestType == schemas.BatchCreateRequest {
+			return plugin.resolver.batchPriceStatus(nil, schemas.OpenAI, "key-priced", schemas.ChatCompletionRequest, scopes)
+		}
+		return plugin.resolver.admissionPriceStatus(nil, schemas.OpenAI, "key-priced", schemas.ChatCompletionRequest, scopes)
+	}
+
+	withKeys(schemas.Key{ID: "openai-key-1"}, schemas.Key{ID: "other-key"})
+	assert.Equal(t, modelcatalog.PricePriced, status("", schemas.ChatCompletionRequest), "either key may serve it, and one prices it")
+	assert.Equal(t, modelcatalog.PricePriced, status("openai-key-1", schemas.ChatCompletionRequest))
+	assert.Equal(t, modelcatalog.PriceUnpriced, status("other-key", schemas.ChatCompletionRequest), "pinned to a key that does not price it")
+
+	withKeys(schemas.Key{ID: "openai-key-1", Enabled: &disabled}, schemas.Key{ID: "other-key"})
+	assert.Equal(t, modelcatalog.PriceUnpriced, status("", schemas.ChatCompletionRequest), "the key that prices it is disabled")
+
+	withKeys(schemas.Key{ID: "openai-key-1"}, schemas.Key{ID: "other-key", UseForBatchAPI: &batchKey})
+	assert.Equal(t, modelcatalog.PriceUnpriced, status("", schemas.BatchCreateRequest), "only a key that prices it serves no batches")
+	withKeys(schemas.Key{ID: "openai-key-1", UseForBatchAPI: &batchKey}, schemas.Key{ID: "other-key"})
+	assert.Equal(t, modelcatalog.PricePriced, status("", schemas.BatchCreateRequest), "the batch key prices it")
+}
+
+// A flex answer priced at $0 because the row's flex rates are zero met those rates: it is free, not
+// unpriced, and refuses nothing, though the row's standard rates are positive (TXE-8016).
+func TestFlexAnswerAtZeroFlexRatesDoesNotRefuseTheModel(t *testing.T) {
+	plugin, _ := unpricedBudgetPlugin(t)
+	chat := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "flex-free"}}
+	answer := func(tier *schemas.BifrostServiceTier, usage *schemas.BifrostLLMUsage) {
+		t.Helper()
+		ctx := resolverCtx(plugin.store, "sk-bf-budget")
+		_, shortCircuit, err := plugin.PreLLMHook(ctx, chat)
+		require.NoError(t, err)
+		require.Nil(t, shortCircuit)
+		response := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+			Model: "flex-free", ServiceTier: tier, Usage: usage,
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ChatCompletionRequest, Provider: schemas.OpenAI, OriginalModelRequested: "flex-free",
+				RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenAI, Model: "flex-free"},
+			},
+		}}
+		require.Zero(t, plugin.modelCatalog.CalculateCost(response, nil), "the answer is charged $0")
+		_, _, err = plugin.PostLLMHook(ctx, response, nil)
+		require.NoError(t, err)
+		plugin.wg.Wait()
+	}
+	flex := schemas.BifrostServiceTierFlex
+	answer(&flex, &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15})
+	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", chat), "a flex answer at zero flex rates is free")
+	answer(nil, nil)
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", chat), "an answer with no usage on the same row met no rate")
+}
+
 // A key alias that serves a priced label as a free model prices the answer as accounting does,
 // from the alias's target: its $0 is the price, and refuses nothing.
 func TestAnswerFreeUnderTheServingAliasDoesNotRefuseTheModel(t *testing.T) {
@@ -859,15 +953,19 @@ func TestContainerCreateIsPricedByItsMemoryTier(t *testing.T) {
 	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", create("64g")), "a tier with no row, and no base row to fall back to")
 }
 
-// A passthrough answer is judged in the mode accounting priced it in (inferred from its path), so an
-// override that makes the model free for Responses makes a $0 Responses passthrough its price.
+// A passthrough answer that reported no usage is judged by its row in the mode accounting priced it
+// in (inferred from its path), so an override that makes the model free for Responses makes a $0
+// Responses passthrough its price.
 func TestPassthroughAnswerIsJudgedInItsPricedMode(t *testing.T) {
 	plugin, _ := unpricedBudgetPlugin(t)
-	budgets := []string{"budget-unpriced"}
-	assert.False(t, plugin.resolver.noteUnpricedAnswer(schemas.OpenAI, "responses-free", "", schemas.PassthroughRequest, schemas.ResponsesRequest, 0, nil, "r1", budgets, "vk:vk-budget"),
+	assert.Equal(t, modelcatalog.PriceFree, plugin.resolver.usagelessAnswerVerdict(schemas.OpenAI, "responses-free", schemas.ResponsesRequest, nil),
 		"free in the mode it was priced in")
-	assert.True(t, plugin.resolver.noteUnpricedAnswer(schemas.OpenAI, "responses-free", "", schemas.PassthroughRequest, schemas.ChatCompletionRequest, 0, nil, "r2", budgets, "vk:vk-budget"),
+	assert.Equal(t, modelcatalog.PriceUnpriced, plugin.resolver.usagelessAnswerVerdict(schemas.OpenAI, "responses-free", schemas.ChatCompletionRequest, nil),
 		"priced in chat, so a $0 chat answer is unpriced")
+	budgets := []string{"budget-unpriced"}
+	assert.False(t, plugin.resolver.noteUnpricedAnswer(schemas.OpenAI, "responses-free", schemas.PassthroughRequest, schemas.ResponsesRequest, modelcatalog.PriceFree, nil, "r1", budgets, "vk:vk-budget"),
+		"a free answer records nothing")
+	assert.True(t, plugin.resolver.noteUnpricedAnswer(schemas.OpenAI, "responses-free", schemas.PassthroughRequest, schemas.ChatCompletionRequest, modelcatalog.PriceUnpriced, nil, "r2", budgets, "vk:vk-budget"))
 }
 
 // A live session's units are all live requests to governance: the voice is priced in the live
@@ -938,9 +1036,9 @@ func TestLiveUnitsArePricedInTheirAccountingMode(t *testing.T) {
 func TestUnpricedAnswerRefusesOnlyTheHolderThatReceivedIt(t *testing.T) {
 	plugin, _ := unpricedBudgetPlugin(t)
 	chat := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o"}}
-	require.True(t, plugin.resolver.noteUnpricedAnswer(schemas.OpenAI, "gpt-4o", "", schemas.ChatCompletionRequest, schemas.ChatCompletionRequest, 0, nil, "r", []string{"budget-unpriced"}, "vk:another-vk"))
+	require.True(t, plugin.resolver.noteUnpricedAnswer(schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, schemas.ChatCompletionRequest, modelcatalog.PriceUnpriced, nil, "r", []string{"budget-unpriced"}, "vk:another-vk"))
 	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", chat), "another key's $0 answer on the shared budget does not refuse this key")
-	require.True(t, plugin.resolver.noteUnpricedAnswer(schemas.OpenAI, "gpt-4o", "", schemas.ChatCompletionRequest, schemas.ChatCompletionRequest, 0, nil, "r", []string{"budget-unpriced"}, "vk:vk-budget"))
+	require.True(t, plugin.resolver.noteUnpricedAnswer(schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, schemas.ChatCompletionRequest, modelcatalog.PriceUnpriced, nil, "r", []string{"budget-unpriced"}, "vk:vk-budget"))
 	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", chat), "this key's own $0 answer refuses it")
 }
 
@@ -949,7 +1047,7 @@ func TestUnpricedAnswerRefusesOnlyTheHolderThatReceivedIt(t *testing.T) {
 func TestRefusedRowIsCheckedInEachInlineBatchMode(t *testing.T) {
 	plugin, _ := unpricedBudgetPlugin(t)
 	plugin.SetProviderJobAccountingEnabled(true) // a batch is otherwise refused as unsettled first (TXE-7963)
-	require.True(t, plugin.resolver.noteUnpricedAnswer(schemas.OpenAI, "dual-1", "", schemas.EmbeddingRequest, schemas.EmbeddingRequest, 0, nil, "r", []string{"budget-unpriced"}, "vk:vk-budget"))
+	require.True(t, plugin.resolver.noteUnpricedAnswer(schemas.OpenAI, "dual-1", schemas.EmbeddingRequest, schemas.EmbeddingRequest, modelcatalog.PriceUnpriced, nil, "r", []string{"budget-unpriced"}, "vk:vk-budget"))
 	batch := &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{
 		Provider: schemas.OpenAI, Endpoint: schemas.BatchEndpointEmbeddings,
 		Requests: []schemas.BatchRequestItem{{CustomID: "1", Body: map[string]any{"model": "dual-1"}}},
@@ -1015,4 +1113,101 @@ func TestServerSideFallbackAnswerIsJudgedAsTheServingModel(t *testing.T) {
 	chat = &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "free-chat"}}
 	answerOn("seconds-chat")
 	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", chat), "an unpriced fallback answer refuses a free requested model")
+}
+
+// TestUnpricedVerdictComesFromTheCostCalculation (TXE-8016) fails when governance decides an answer
+// was unpriced from its $0 total instead of from the cost calculation that charged it. A $0 total is
+// also what a free model, zero flex rates or a free fallback produce; only the calculation can tell
+// those from an answer that met no rate (modelcatalog.AnswerPriceStatus).
+//
+// Across the package's non-test files:
+//   - noteUnpricedAnswer takes no float64: it is handed a verdict, never a cost to judge.
+//   - every call passes as its verdict either usagelessAnswerVerdict(...) (an answer with no usage at
+//     all, judged by its row) or a variable every assignment of which is AnswerPriceStatus(...),
+//     modelcatalog.PricePriced or modelcatalog.PriceUnpriced, with at least one AnswerPriceStatus.
+//   - servedPriceStatus, which reads a whole row, is called only from usagelessAnswerVerdict.
+func TestUnpricedVerdictComesFromTheCostCalculation(t *testing.T) {
+	fset := token.NewFileSet()
+	entries, err := os.ReadDir(".")
+	require.NoError(t, err)
+	calls := 0
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, name, nil, 0)
+		require.NoError(t, err, name)
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			if fn.Name.Name == "noteUnpricedAnswer" {
+				for _, field := range fn.Type.Params.List {
+					if ident, ok := field.Type.(*ast.Ident); ok {
+						require.NotEqual(t, "float64", ident.Name, "noteUnpricedAnswer takes a cost to judge; hand it a verdict (AnswerPriceStatus)")
+					}
+				}
+			}
+			ast.Inspect(fn.Body, func(node ast.Node) bool {
+				call, ok := node.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				switch calledName(call) {
+				case "servedPriceStatus":
+					require.Equal(t, "usagelessAnswerVerdict", fn.Name.Name,
+						"%s calls servedPriceStatus (a whole row's status) at %s; judge an answer by AnswerPriceStatus", fn.Name.Name, fset.Position(call.Pos()))
+				case "noteUnpricedAnswer":
+					calls++
+					require.GreaterOrEqual(t, len(call.Args), 5, fset.Position(call.Pos()).String())
+					verdict := call.Args[4]
+					if inner, ok := verdict.(*ast.CallExpr); ok && calledName(inner) == "usagelessAnswerVerdict" {
+						return true
+					}
+					ident, ok := verdict.(*ast.Ident)
+					require.True(t, ok, "noteUnpricedAnswer at %s is handed a verdict that is neither AnswerPriceStatus nor usagelessAnswerVerdict", fset.Position(call.Pos()))
+					fromCalculation := false
+					ast.Inspect(fn.Body, func(node ast.Node) bool {
+						assign, ok := node.(*ast.AssignStmt)
+						if !ok {
+							return true
+						}
+						for i, lhs := range assign.Lhs {
+							if target, ok := lhs.(*ast.Ident); !ok || target.Name != ident.Name || i >= len(assign.Rhs) {
+								continue
+							}
+							switch rhs := assign.Rhs[i].(type) {
+							case *ast.CallExpr:
+								require.Equal(t, "AnswerPriceStatus", calledName(rhs), "the verdict at %s is assigned from %s", fset.Position(assign.Pos()), calledName(rhs))
+								fromCalculation = true
+							case *ast.SelectorExpr:
+								// PricePriced for an answer that cost something; PriceUnpriced, failing closed, when
+								// no catalog can read the answer. Never PriceFree from outside the calculation.
+								require.Contains(t, []string{"PricePriced", "PriceUnpriced"}, rhs.Sel.Name, "the verdict at %s is the constant %s", fset.Position(assign.Pos()), rhs.Sel.Name)
+							default:
+								t.Fatalf("the verdict at %s is assigned from neither AnswerPriceStatus nor PricePriced", fset.Position(assign.Pos()))
+							}
+						}
+						return true
+					})
+					require.True(t, fromCalculation, "the verdict noteUnpricedAnswer gets at %s is never read from AnswerPriceStatus", fset.Position(call.Pos()))
+				}
+				return true
+			})
+		}
+	}
+	require.Positive(t, calls, "noteUnpricedAnswer has no callers; the check reads nothing")
+}
+
+// calledName is the called function's or method's name.
+func calledName(call *ast.CallExpr) string {
+	switch fun := call.Fun.(type) {
+	case *ast.Ident:
+		return fun.Name
+	case *ast.SelectorExpr:
+		return fun.Sel.Name
+	}
+	return ""
 }

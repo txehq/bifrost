@@ -407,16 +407,17 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 		}
 	}
 	for _, mode := range checkedModes {
-		if _, status := r.priceIdentity(provider, model, mode, scopes); status == modelcatalog.PriceUnpriced {
+		if r.admissionPriceStatus(ctx, provider, model, mode, scopes) == modelcatalog.PriceUnpriced {
 			return &EvaluationResult{
 				Decision: DecisionModelUnpriced,
-				Reason: fmt.Sprintf("model %q on provider %q has no price for %s requests, so it cannot be charged to a dollar budget; add a pricing override for it",
+				Reason: fmt.Sprintf("model %q on provider %q has no price for %s requests on a key that may serve this request, so it cannot be charged to a dollar budget; add a pricing override for it",
 					model, provider, mode),
 			}
 		}
-		// A batch is settled at batch rates: a price its settlement cannot apply (an image row priced
-		// per image, a chat row priced per second) parks the job uncharged.
-		if requestType == schemas.BatchCreateRequest && r.batchPriceStatus(provider, model, mode, scopes) == modelcatalog.PriceUnpriced {
+		// A batch is settled at batch rates on a batch key: a price its settlement cannot apply (an
+		// image row priced per image, a chat row priced per second, a key that serves no batch) parks
+		// the job uncharged.
+		if requestType == schemas.BatchCreateRequest && r.batchPriceStatus(ctx, provider, model, mode, scopes) == modelcatalog.PriceUnpriced {
 			return &EvaluationResult{
 				Decision: DecisionModelUnpriced,
 				Reason: fmt.Sprintf("model %q on provider %q has no batch price for %s requests, so a batch on it cannot be charged to a dollar budget; add a token-rate pricing override for it",
@@ -464,33 +465,24 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 	return nil
 }
 
-// noteUnpricedAnswer is called for an answer charged to the dollar budgets budgetIDs. When the
-// answer priced at $0 and the price book does not say the model is free, it is logged as
-// unpriced, and every price book row the request could be priced as (under each configured key's
-// scope) is refused for holder on those budgets from now on (fail closed after the fact). Reports
-// whether it was unpriced.
+// noteUnpricedAnswer is called for an answer charged to the dollar budgets budgetIDs, with the
+// verdict on it: what the cost calculation that charged it found (modelcatalog.AnswerPriceStatus,
+// TXE-8016), never inferred from a $0 total. An unpriced answer is logged, and every price book
+// row the request could be priced as (under each configured key's scope) is refused for holder on
+// those budgets from now on (fail closed after the fact). A priced or free answer records nothing.
+// Reports whether it was unpriced.
 //
 // pricedAs is the request type accounting priced the answer as (a passthrough is priced in the
-// mode its path implies); requestType is the request's own, which the gate reads rows under.
-// servedModel is the model that served the answer when it is not model (a provider's server-side
-// fallback): its price decides whether $0 was free, and model's rows, which admission checks, are
-// the ones refused.
-func (r *BudgetResolver) noteUnpricedAnswer(provider schemas.ModelProvider, model, servedModel string, requestType, pricedAs schemas.RequestType, cost float64, scopes *modelcatalog.PricingLookupScopes, requestID string, budgetIDs []string, holder string) bool {
-	if r == nil || r.modelCatalog == nil || cost > 0 || len(budgetIDs) == 0 {
+// mode its path implies); requestType is the request's own, which the gate reads rows under. model
+// is the model the request named, whose rows admission checks, even when a provider's server-side
+// fallback served the answer.
+func (r *BudgetResolver) noteUnpricedAnswer(provider schemas.ModelProvider, model string, requestType, pricedAs schemas.RequestType, verdict modelcatalog.PriceStatus, scopes *modelcatalog.PricingLookupScopes, requestID string, budgetIDs []string, holder string) bool {
+	if r == nil || r.modelCatalog == nil || verdict != modelcatalog.PriceUnpriced || len(budgetIDs) == 0 {
 		return false
 	}
 	model = pricedModel(requestType, model)
 	if pricedAs == "" || normalizesToUnknown(pricedAs) {
 		pricedAs = requestType
-	}
-	// Whether $0 was the price is read under the scope and mode that priced the answer: the key
-	// that served it is selected by now, and another key's override says nothing about this answer.
-	served := model
-	if servedModel != "" {
-		served = servedModel
-	}
-	if r.servedPriceStatus(provider, served, pricedAs, scopes) == modelcatalog.PriceFree {
-		return false
 	}
 	_, rows := r.priceIdentities(provider, model, requestType, scopes)
 	// A container priced from its memory tier's row is admitted by that row or the base one.
@@ -547,11 +539,7 @@ func deliveredAnswer(result *schemas.BifrostResponse) bool {
 	// priced on it; one that only acknowledges queued work has not finished; one that counts a
 	// prompt's tokens (count_tokens, input_tokens, countTokens) generates nothing and is free.
 	if passthrough := result.PassthroughResponse; passthrough != nil {
-		path := passthrough.Path
-		if path == "" {
-			path = passthrough.ExtraFields.PassthroughPath
-		}
-		if passthroughCountsTokens(path) {
+		if passthroughCountsTokens(passthroughPath(result)) {
 			return false
 		}
 		if passthrough.StatusCode != 0 && (passthrough.StatusCode < 200 || passthrough.StatusCode >= 300) {
@@ -617,25 +605,67 @@ func pricingModesOf(requestType schemas.RequestType) []schemas.RequestType {
 
 // priceIdentityIn is priceIdentity for one pricing mode.
 func (r *BudgetResolver) priceIdentityIn(provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) (string, modelcatalog.PriceStatus) {
-	return r.bestOverKeyScopes(provider, model, scopes, func(candidate string, candidateScopes *modelcatalog.PricingLookupScopes) (string, modelcatalog.PriceStatus) {
+	return r.bestOverKeyScopes(provider, model, scopes, nil, func(candidate string, candidateScopes *modelcatalog.PricingLookupScopes) (string, modelcatalog.PriceStatus) {
 		return r.modelCatalog.PriceIdentity(provider, candidate, requestType, candidateScopes)
 	})
 }
 
+// admissionPriceStatus is the request's price status read only under keys that may serve it
+// (servingKeys): a model priced only through a key the caller cannot use, or a disabled one, is not
+// priced for it (TXE-8016).
+func (r *BudgetResolver) admissionPriceStatus(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) modelcatalog.PriceStatus {
+	_, status := r.bestOverKeyScopes(provider, model, scopes, r.servingKeys(ctx, provider, model, scopes, false), func(candidate string, candidateScopes *modelcatalog.PricingLookupScopes) (string, modelcatalog.PriceStatus) {
+		return r.modelCatalog.PriceIdentity(provider, candidate, requestType, candidateScopes)
+	})
+	return status
+}
+
 // batchPriceStatus is the best batch price status (modelcatalog.BatchPriceStatus) of a batch line
-// settled as requestType, under the scopes given and under each configured key's, as
-// priceIdentityIn reads a request's price.
-func (r *BudgetResolver) batchPriceStatus(provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) modelcatalog.PriceStatus {
-	_, status := r.bestOverKeyScopes(provider, model, scopes, func(candidate string, candidateScopes *modelcatalog.PricingLookupScopes) (string, modelcatalog.PriceStatus) {
+// settled as requestType, under the scopes given and under each key that may serve the batch: one
+// with use_for_batch_api, as core selects batch keys (TXE-8016).
+func (r *BudgetResolver) batchPriceStatus(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) modelcatalog.PriceStatus {
+	_, status := r.bestOverKeyScopes(provider, model, scopes, r.servingKeys(ctx, provider, model, scopes, true), func(candidate string, candidateScopes *modelcatalog.PricingLookupScopes) (string, modelcatalog.PriceStatus) {
 		return "", r.modelCatalog.BatchPriceStatus(provider, candidate, requestType, candidateScopes)
 	})
 	return status
 }
 
+// servingKeys reports which configured keys may serve a request, as core selects them: the key it
+// pinned, else the keys its access allows for the model; enabled ones only, and for a batch only
+// those with use_for_batch_api. When none of the provider's keys qualifies (the request will fail
+// key selection), every enabled key is read rather than none.
+func (r *BudgetResolver) servingKeys(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, scopes *modelcatalog.PricingLookupScopes, batch bool) func(schemas.Key) bool {
+	pinned := ""
+	if scopes != nil {
+		pinned = scopes.SelectedKeyID
+	}
+	var allowed []string
+	restricted := false
+	if ctx != nil && ctx.Grant() != nil {
+		if access := ctx.Grant().Access(); access != nil {
+			allowed, restricted = access.KeysForModel(string(provider), model)
+		}
+	}
+	enabled := func(key schemas.Key) bool { return key.Enabled == nil || *key.Enabled }
+	serves := func(key schemas.Key) bool {
+		if !enabled(key) || (pinned != "" && key.ID != pinned) || (restricted && !slices.Contains(allowed, key.ID)) {
+			return false
+		}
+		return !batch || (key.UseForBatchAPI != nil && *key.UseForBatchAPI)
+	}
+	if r.governanceInMemoryStore != nil {
+		if config, ok := configuredProvider(r.governanceInMemoryStore, provider); ok && !slices.ContainsFunc(config.Keys, serves) {
+			return enabled
+		}
+	}
+	return serves
+}
+
 // bestOverKeyScopes reads lookup under the scopes given, then, unless that prices the model,
-// under each configured key's scope for the model and the key's alias targets, and returns the
-// best it found: which key serves the request is chosen after admission.
-func (r *BudgetResolver) bestOverKeyScopes(provider schemas.ModelProvider, model string, scopes *modelcatalog.PricingLookupScopes, lookup func(candidate string, candidateScopes *modelcatalog.PricingLookupScopes) (string, modelcatalog.PriceStatus)) (string, modelcatalog.PriceStatus) {
+// under the scope of each configured key eligible accepts (every key when nil) for the model and
+// the key's alias targets, and returns the best it found: which key serves the request is chosen
+// after admission.
+func (r *BudgetResolver) bestOverKeyScopes(provider schemas.ModelProvider, model string, scopes *modelcatalog.PricingLookupScopes, eligible func(schemas.Key) bool, lookup func(candidate string, candidateScopes *modelcatalog.PricingLookupScopes) (string, modelcatalog.PriceStatus)) (string, modelcatalog.PriceStatus) {
 	bestRow, best := lookup(model, scopes)
 	if best == modelcatalog.PricePriced || model == "" || r.governanceInMemoryStore == nil {
 		return bestRow, best
@@ -645,6 +675,9 @@ func (r *BudgetResolver) bestOverKeyScopes(provider schemas.ModelProvider, model
 		return bestRow, best
 	}
 	for _, key := range config.Keys {
+		if eligible != nil && !eligible(key) {
+			continue
+		}
 		keyScopes := modelcatalog.PricingLookupScopes{}
 		if scopes != nil {
 			keyScopes = *scopes
@@ -740,6 +773,17 @@ func (r *BudgetResolver) priceIdentitiesIn(provider schemas.ModelProvider, model
 // servedPriceStatus is the status of the row the answer was priced under: the serving key's scope,
 // and the model resolved the way accounting resolves it (resolvePricing tries the key alias's model
 // name, then its model id, then the requested model, and prices from the first that has a row).
+// usagelessAnswerVerdict is the verdict on a $0 answer that reported no usage at all (a
+// passthrough body model with no usage the provider could read): free when the row the serving key
+// prices the model on prices nothing above zero, unpriced otherwise. With no usage there are no
+// rates to read, so only the row can say.
+func (r *BudgetResolver) usagelessAnswerVerdict(provider schemas.ModelProvider, model string, pricedAs schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) modelcatalog.PriceStatus {
+	if r.servedPriceStatus(provider, model, pricedAs, scopes) == modelcatalog.PriceFree {
+		return modelcatalog.PriceFree
+	}
+	return modelcatalog.PriceUnpriced
+}
+
 func (r *BudgetResolver) servedPriceStatus(provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) modelcatalog.PriceStatus {
 	for _, candidate := range r.servedCandidates(provider, model, scopes) {
 		if row, status := r.modelCatalog.PriceIdentity(provider, candidate, requestType, scopes); row != "" {
@@ -925,6 +969,17 @@ func batchEnvelopeModel(batch *schemas.BifrostBatchCreateRequest) string {
 		return ""
 	}
 	return *batch.Model
+}
+
+// passthroughPath is the provider path a passthrough answer was served on, "" for any other answer.
+func passthroughPath(result *schemas.BifrostResponse) string {
+	if result == nil || result.PassthroughResponse == nil {
+		return ""
+	}
+	if path := result.PassthroughResponse.Path; path != "" {
+		return path
+	}
+	return result.PassthroughResponse.ExtraFields.PassthroughPath
 }
 
 // passthroughCountsTokens reports whether a passthrough path counts a prompt's tokens without

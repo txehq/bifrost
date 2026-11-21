@@ -17,6 +17,130 @@ import (
 
 // PriceStatus tells a model a dollar budget cannot be charged for (no row, or a row that sets no
 // price) from a free one (prices set, all $0) and a priced one (TXE-7957).
+// The verdict on a delivered answer comes from the cost calculation that charges it (TXE-8016): an
+// answer met priced rates, zero rates (free), or no rate at all (unpriced).
+func TestAnswerPriceStatus(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o", "openai", "chat"):     {Model: "gpt-4o", Provider: "openai", Mode: "chat", InputCostPerToken: schemas.Ptr(2.5e-06), OutputCostPerToken: schemas.Ptr(1e-05)},
+		makeKey("free-model", "openai", "chat"): {Model: "free-model", Provider: "openai", Mode: "chat", InputCostPerToken: schemas.Ptr(0.0), OutputCostPerToken: schemas.Ptr(0.0)},
+		makeKey("flex-free", "openai", "chat"): {Model: "flex-free", Provider: "openai", Mode: "chat",
+			InputCostPerToken: schemas.Ptr(2.5e-06), OutputCostPerToken: schemas.Ptr(1e-05), InputCostPerTokenFlex: schemas.Ptr(0.0), OutputCostPerTokenFlex: schemas.Ptr(0.0)},
+		makeKey("per-second", "openai", "chat"):               {Model: "per-second", Provider: "openai", Mode: "chat", InputCostPerSecond: schemas.Ptr(0.001)},
+		makeKey("free-input", "openai", "chat"):               {Model: "free-input", Provider: "openai", Mode: "chat", InputCostPerToken: schemas.Ptr(0.0), OutputCostPerToken: schemas.Ptr(1e-05)},
+		makeKey("container", "openai", "container_create"):    {Model: "container", Provider: "openai", Mode: "container_create", CodeInterpreterCostPerSession: schemas.Ptr(0.0)},
+		makeKey("container-4g", "openai", "container_create"): {Model: "container-4g", Provider: "openai", Mode: "container_create", CodeInterpreterCostPerSession: schemas.Ptr(0.12)},
+	})
+	answer := func(model string, tier *schemas.BifrostServiceTier, usage *schemas.BifrostLLMUsage) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+			Model: model, ServiceTier: tier, Usage: usage,
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ChatCompletionRequest, Provider: schemas.OpenAI, OriginalModelRequested: model,
+				RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenAI, Model: model},
+			},
+		}}
+	}
+	tokens := &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}
+	flex := schemas.BifrostServiceTierFlex
+	cases := []struct {
+		name string
+		got  *schemas.BifrostResponse
+		want PriceStatus
+	}{
+		{"a token-priced answer", answer("gpt-4o", nil, tokens), Priced},
+		{"an answer on a model priced at zero", answer("free-model", nil, tokens), Free},
+		{"a flex answer whose flex rates are zero", answer("flex-free", &flex, tokens), Free},
+		{"the same model's standard answer", answer("flex-free", nil, tokens), Priced},
+		{"a free model's answer with no usage", answer("free-model", nil, nil), Free},
+		{"tokens on a row priced only per second", answer("per-second", nil, tokens), Unpriced},
+		{"a token-priced model's answer with no usage", answer("gpt-4o", nil, nil), Unpriced},
+		{"a model with no row", answer("no-row", nil, tokens), Unpriced},
+		// A zero standard rate is not a tier rate: an answer that met only it, while the output its
+		// row prices went unreported, is unpriced.
+		{"prompt tokens only on a row whose input is free", answer("free-input", nil, &schemas.BifrostLLMUsage{PromptTokens: 10, TotalTokens: 10}), Unpriced},
+	}
+	for _, tc := range cases {
+		assert.Equal(t, tc.want, s.AnswerPriceStatus(tc.got, nil), tc.name)
+	}
+	assert.Equal(t, Unpriced, s.AnswerPriceStatus(nil, nil))
+	// A passthrough answer's free row is read in the mode accounting infers from its path.
+	passthrough := func(model string) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{PassthroughResponse: &schemas.BifrostPassthroughResponse{
+			StatusCode: 200, Path: "/v1/chat/completions",
+			PassthroughUsage: &schemas.BifrostPassthroughUsage{LLMUsage: tokens},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.PassthroughRequest, Provider: schemas.OpenAI, OriginalModelRequested: model,
+				RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenAI, Model: model},
+			},
+		}}
+	}
+	assert.Equal(t, Free, s.AnswerPriceStatus(passthrough("free-model"), nil), "a passthrough on a free model")
+	assert.Equal(t, Unpriced, s.AnswerPriceStatus(passthrough("per-second"), nil), "a passthrough on a row its usage does not meet")
+	// A container create is judged by its container row, as accounting prices it.
+	container := func(memory string) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{ContainerCreateResponse: &schemas.BifrostContainerCreateResponse{
+			MemoryLimit: memory,
+			ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.ContainerCreateRequest, Provider: schemas.OpenAI},
+		}}
+	}
+	assert.Equal(t, Free, s.AnswerPriceStatus(container(""), nil), "a container on a free base row")
+	assert.Equal(t, Priced, s.AnswerPriceStatus(container("4g"), nil), "a container on a priced tier row")
+	tiers := map[string]bool{}
+	pricing := reflect.TypeOf(configstoreTables.TableModelPricing{})
+	for _, i := range tierPriceFieldIndexes() {
+		name, _, _ := strings.Cut(pricing.Field(i).Tag.Get("json"), ",")
+		tiers[name] = true
+	}
+	for _, name := range []string{"input_cost_per_token_flex", "output_cost_per_token_priority", "input_cost_per_token_fast", "input_cost_per_token_flex_above_272k_tokens", "cache_read_input_token_cost_ultrafast"} {
+		assert.True(t, tiers[name], "%s is a tier rate", name)
+	}
+	for _, name := range []string{"input_cost_per_token", "output_cost_per_token", "output_cost_per_image_token"} {
+		assert.False(t, tiers[name], "%s is not a tier rate", name)
+	}
+	// The stand-in never reaches the price book: the free model still costs nothing.
+	assert.Zero(t, s.CalculateCostBreakdown(answer("free-model", nil, tokens), nil).TotalCost)
+}
+
+// BenchmarkAnswerPriceStatus is what TXE-8016 adds to the post-hook of a budgeted answer: one cost
+// breakdown for a priced answer (governance computes its own cost first and calls this only for a $0
+// one), and for a $0 answer a second breakdown with tier rates stood in for, plus a row lookup when
+// that also costs nothing.
+func BenchmarkAnswerPriceStatus(b *testing.B) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o", "openai", "chat"): {Model: "gpt-4o", Provider: "openai", Mode: "chat", InputCostPerToken: schemas.Ptr(2.5e-06), OutputCostPerToken: schemas.Ptr(1e-05)},
+		makeKey("flex-free", "openai", "chat"): {Model: "flex-free", Provider: "openai", Mode: "chat",
+			InputCostPerToken: schemas.Ptr(2.5e-06), OutputCostPerToken: schemas.Ptr(1e-05), InputCostPerTokenFlex: schemas.Ptr(0.0), OutputCostPerTokenFlex: schemas.Ptr(0.0)},
+		makeKey("per-second", "openai", "chat"): {Model: "per-second", Provider: "openai", Mode: "chat", InputCostPerSecond: schemas.Ptr(0.001)},
+	})
+	flex := schemas.BifrostServiceTierFlex
+	answer := func(model string, tier *schemas.BifrostServiceTier) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+			Model: model, ServiceTier: tier, Usage: &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ChatCompletionRequest, Provider: schemas.OpenAI, OriginalModelRequested: model,
+				RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenAI, Model: model},
+			},
+		}}
+	}
+	for _, bc := range []struct {
+		name   string
+		answer *schemas.BifrostResponse
+		want   PriceStatus
+	}{
+		{"priced", answer("gpt-4o", nil), Priced},
+		{"free_flex", answer("flex-free", &flex), Free},
+		{"unpriced", answer("per-second", nil), Unpriced},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if got := s.AnswerPriceStatus(bc.answer, nil); got != bc.want {
+					b.Fatalf("got %v, want %v", got, bc.want)
+				}
+			}
+		})
+	}
+}
+
 // A batch line is priced only by the rates batch settlement applies (CalculateBatchCostDetailsForUsage):
 // a row priced per image or per second has a synchronous price and no batch one.
 func TestBatchPriceStatus(t *testing.T) {

@@ -3671,6 +3671,15 @@ func markNoOutputImages(imageUsage *schemas.ImageUsage) {
 // agree: an override negotiated for the model that actually ran is the one that
 // applies.
 func (s *Store) resolvePricing(routingInfo schemas.RoutingInfo, requestType schemas.RequestType, scopes LookupScopes) *configstoreTables.TableModelPricing {
+	row := s.resolvePricingRow(routingInfo, requestType, scopes)
+	if row != nil && scopes.zeroRatesAs > 0 {
+		zeroRatesAs(row, scopes.zeroRatesAs)
+	}
+	return row
+}
+
+// resolvePricingRow is resolvePricing before any zeroRatesAs stand-in; see resolvePricing.
+func (s *Store) resolvePricingRow(routingInfo schemas.RoutingInfo, requestType schemas.RequestType, scopes LookupScopes) *configstoreTables.TableModelPricing {
 	provider := string(routingInfo.Provider)
 	var aliasModelID, aliasModelName string
 	if rka := routingInfo.ResolvedKeyAlias; rka != nil {

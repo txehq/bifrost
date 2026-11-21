@@ -138,6 +138,7 @@
             "upstream-cached-tokens",
             "upstream-slow",
             "upstream-slow-priced",
+            "upstream-flex-free",
             "upstream-fixed-length-short",
             "upstream-fixed-length-ok",
             "gpt-5-pro",

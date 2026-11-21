@@ -1,0 +1,98 @@
+{
+  "name": "659. A budgeted key's answer that costs $0 because the rates it met are zero is free, not unpriced (answer-verdict) [SERIAL]",
+  "description": "TXE-8016 billing regression. Local fixture regression: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream and its price book. A dollar budget refuses a model for a caller once an answer on it is unpriced (TXE-7957). Whether an answer is unpriced is now read from the cost calculation that charged it (datasheet AnswerPriceStatus), not inferred from a $0 total: an answer whose usage met rates set to zero is free. upstream-flex-free answers on the flex tier of a row whose flex rates are zero and standard rates positive; its $0 answer is free, so the budgeted key is served again. Before, the row read as priced and the $0 answer refused the model. [SERIAL]: the rows read the verdict the usage worker records.",
+  "item": [
+    {
+      "name": "659.1 [EXPECT-200] a flex answer at zero flex rates costs $0 and is free: the budgeted key is served again (answer-verdict)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"name\": \"{{avRun}}\", \"budgets\": [{\"max_limit\": 100, \"reset_duration\": \"1h\"}], \"provider_configs\": [{\"provider\": \"openai\", \"allowed_models\": [\"*\"], \"key_ids\": [\"*\"], \"weight\": 1}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/virtual-keys",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.collectionVariables.set('avRun', 'harness-answer-verdict-' + Date.now() + '-' + Math.floor(Math.random() * 1e9));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "// The key is new and funded by a $100 dollar budget. upstream-flex-free answers on the flex tier, which",
+              "// the price book prices at zero (its standard rates are positive), so each answer costs $0 because the",
+              "// rates it met are zero: free, not unpriced.",
+              "var BASE = pm.variables.get('baseUrl');",
+              "pm.test('answer-verdict setup: a key with a $100 dollar budget was created', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+              "});",
+              "var created = pm.response.json().virtual_key || {};",
+              "var vk = (created.value && typeof created.value === 'object') ? created.value.value : created.value;",
+              "var chat = \"{\\\"model\\\": \\\"openai/upstream-flex-free\\\", \\\"messages\\\": [{\\\"role\\\": \\\"user\\\", \\\"content\\\": \\\"a question answered on the flex tier\\\"}]}\";",
+              "function send(done) {",
+              "  pm.sendRequest({ url: BASE + '/v1/chat/completions', method: 'POST', header: { 'Content-Type': 'application/json', 'x-bf-vk': vk }, body: { mode: 'raw', raw: chat } }, function (err, res) {",
+              "    done(err, res);",
+              "  });",
+              "}",
+              "function cleanup() {",
+              "  if (created.id) { pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + created.id, method: 'DELETE' }, function () {}); }",
+              "}",
+              "send(function (err, first) {",
+              "  pm.test('answer-verdict: a flex answer at zero flex rates is served under the dollar budget', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(first.code, first.text()).to.equal(200);",
+              "    pm.expect(first.json().service_tier, first.text()).to.equal('flex');",
+              "  });",
+              "  // The verdict on the first answer is recorded after it returns; give the usage worker a moment.",
+              "  setTimeout(function () {",
+              "    send(function (err2, second) {",
+              "      pm.test('answer-verdict: the $0 flex answer was free, so the model is still served (not refused 403 model_unpriced)', function () {",
+              "        pm.expect(err2, String(err2)).to.equal(null);",
+              "        pm.expect(second.code, second.text()).to.equal(200);",
+              "      });",
+              "      cleanup();",
+              "    });",
+              "  }, 500);",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
