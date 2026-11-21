@@ -60,6 +60,19 @@ func TestAnswerPriceStatus(t *testing.T) {
 		assert.Equal(t, tc.want, s.AnswerPriceStatus(tc.got, nil), tc.name)
 	}
 	assert.Equal(t, Unpriced, s.AnswerPriceStatus(nil, nil))
+	// A passthrough answer's free row is read in the mode accounting infers from its path.
+	passthrough := func(model string) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{PassthroughResponse: &schemas.BifrostPassthroughResponse{
+			StatusCode: 200, Path: "/v1/chat/completions",
+			PassthroughUsage: &schemas.BifrostPassthroughUsage{LLMUsage: tokens},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.PassthroughRequest, Provider: schemas.OpenAI, OriginalModelRequested: model,
+				RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenAI, Model: model},
+			},
+		}}
+	}
+	assert.Equal(t, Free, s.AnswerPriceStatus(passthrough("free-model"), nil), "a passthrough on a free model")
+	assert.Equal(t, Unpriced, s.AnswerPriceStatus(passthrough("per-second"), nil), "a passthrough on a row its usage does not meet")
 	tiers := map[string]bool{}
 	pricing := reflect.TypeOf(configstoreTables.TableModelPricing{})
 	for _, i := range tierPriceFieldIndexes() {

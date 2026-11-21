@@ -201,6 +201,15 @@ func (s *Store) AnswerPriceStatus(result *schemas.BifrostResponse, scopes *Looku
 		if requestType == "" {
 			requestType = extra.RequestType
 		}
+		// A passthrough is priced in the mode accounting infers from its path and usage
+		// (calculateBaseCost); its free row is read in that mode.
+		if passthrough := result.PassthroughResponse; passthrough != nil && normalizeRequestType(requestType) == "unknown" {
+			path := passthrough.Path
+			if path == "" {
+				path = extra.PassthroughPath
+			}
+			requestType = inferPassthroughRequestType(routing.Provider, path, passthrough.PassthroughUsage)
+		}
 		var lookupScopes LookupScopes
 		if scopes != nil {
 			lookupScopes = *scopes
