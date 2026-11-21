@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"unicode/utf16"
 )
 
 // TestAmbiguousBodyMember (TXE-7994): a forwarded body that gives one member twice is read
@@ -23,6 +24,7 @@ func TestAmbiguousBodyMember(t *testing.T) {
 		{"lenient JSON a vendor might accept", `{"model":"a",}`, "a JSON body that does not parse strictly"},
 		{"byte order mark", "\xef\xbb\xbf{\"model\":\"a\",\"model\":\"b\"}", "model"},
 		{"model in two casings", `{"model":"a","Model":"b"}`, "Model"},
+		{"stream in two casings", `{"stream":false,"Stream":true}`, "Stream"},
 		{"nested model in two casings", `[{"MODEL":"a","model":"b"}]`, "[0].model"},
 		{"object naming its model once", `{"model":"a","messages":[{"role":"user","content":"x"}]}`, ""},
 		{"same key in sibling objects", `{"messages":[{"role":"user"},{"role":"assistant"}]}`, ""},
@@ -67,17 +69,22 @@ func TestAmbiguousBodyMember(t *testing.T) {
 		t.Fatalf("a body nested within the bound = %q, refused", member)
 	}
 
-	// A declared JSON body is read strictly whatever it opens with; a non-JSON type is not read.
+	// The declared type decides how a body is read, never what it opens with (TXE-8012): a
+	// declared JSON body is read strictly; a text/plain or octet-stream upload is content, even
+	// when it opens with "{" or a boundary line. Only an undeclared body is read by its first bytes.
 	for _, tc := range []struct {
 		body, contentType, member string
 	}{
 		{`not json`, "application/json; charset=utf-8", "a JSON body that does not parse strictly"},
 		{`{"model":"a","model":"b"}`, "application/vnd.api+json", "model"},
 		{`not json`, "text/plain", ""},
-		{`{"model":"a","model":"b"}`, "text/plain", "model"},
-		{"{hello", "text/plain", "a JSON body that does not parse strictly"},
-		{`{"model":"a","model":"b",}`, "text/plain", "a JSON body that does not parse strictly"},
-		{"{\"model\":\"a\"}\n{\"model\":\"b\"}\n", "application/octet-stream", "a JSON body that does not parse strictly"},
+		{`{"model":"a","model":"b"}`, "text/plain", ""},
+		{"{hello", "text/plain", ""},
+		{"{hello", "text/plain; charset=utf-8", ""},
+		{"[1, 2", "application/octet-stream", ""},
+		{`{"model":"a","model":"b",}`, "text/plain", ""},
+		{"{\"model\":\"a\"}\n{\"model\":\"b\"}\n", "application/octet-stream", ""},
+		{`{"model":"a","model":"b"}`, "application/problem+json", "model"},
 		{"{\"model\":\"a\"}\r\n\n{\"model\":\"b\"}\n", "application/jsonl", ""},
 		{"{\"model\":\"a\"}\n{\"model\":\"b\",\"model\":\"c\"}\n", "application/x-ndjson", "line 2: model"},
 		{"{\"model\":\"a\"}\n[1,\n", "application/jsonl; charset=utf-8", "line 2: a JSON body that does not parse strictly"},
@@ -86,7 +93,8 @@ func TestAmbiguousBodyMember(t *testing.T) {
 		{`{"model":"a"}`, "multipart/form-data; boundary=a; boundary=b", "a Content-Type that does not parse"},
 		{`{"model":"a"}`, "not a type", "a Content-Type that does not parse"},
 		{``, "not a type", ""},
-		{"--b\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\na\r\n--b\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nb\r\n--b--\r\n", "text/plain", "multipart field model"},
+		{"--b\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\na\r\n--b\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nb\r\n--b--\r\n", "text/plain", ""},
+		{"--b\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\na\r\n--b\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nb\r\n--b--\r\n", "", "multipart field model"},
 		{"-- a line of text that is not multipart", "text/plain", ""},
 		{"-- a line of text that is not multipart", "", "multipart body that does not parse"},
 	} {
@@ -268,5 +276,244 @@ func BenchmarkAmbiguousBodyMember(b *testing.B) {
 				}
 			}
 		})
+	}
+}
+
+// TestClassifyForwardedBody: the declared type alone decides the format (TXE-8012); an
+// undeclared body is read by its first bytes.
+func TestClassifyForwardedBody(t *testing.T) {
+	for _, tc := range []struct {
+		contentType, body string
+		want              ForwardedBodyFormat
+	}{
+		{"application/json", "not json", ForwardedBodyJSON},
+		{"application/json; charset=utf-8", "{}", ForwardedBodyJSON},
+		{"application/vnd.api+json", "{}", ForwardedBodyJSON},
+		{"text/plain", `{"model":"a"}`, ForwardedBodyOpaque},
+		{"application/octet-stream", "[1]", ForwardedBodyOpaque},
+		{"audio/wav", "{", ForwardedBodyOpaque},
+		{"application/x-ndjson", "{}\n{}", ForwardedBodyJSONLines},
+		{"multipart/form-data; boundary=x", "--x", ForwardedBodyMultipart},
+		{"multipart/form-data", "--x", ForwardedBodyUnreadable},
+		{"not a type", "{}", ForwardedBodyUnreadable},
+		{"", " \ufeff{\"model\":\"a\"}", ForwardedBodyJSON},
+		{"", "[1]", ForwardedBodyJSON},
+		{"", "--x\r\n", ForwardedBodyMultipart},
+		{"", "hello", ForwardedBodyOpaque},
+		{"application/json", "", ForwardedBodyOpaque},
+	} {
+		if got := ClassifyForwardedBody(tc.contentType, []byte(tc.body)).Format; got != tc.want {
+			t.Errorf("ClassifyForwardedBody(%q, %q) = %d; want %d", tc.contentType, tc.body, got, tc.want)
+		}
+	}
+}
+
+// TestAmbiguousMultipartJSONPart: a multipart part is read as JSON only when it declares a JSON
+// type (TXE-8012); a part with no type, or another type, is content whatever it looks like.
+func TestAmbiguousMultipartJSONPart(t *testing.T) {
+	part := func(header, content string) []byte {
+		return []byte("--b\r\nContent-Disposition: form-data; name=\"metadata\"\r\n" + header + "\r\n" + content + "\r\n--b--\r\n")
+	}
+	const contentType = "multipart/form-data; boundary=b"
+	for _, tc := range []struct {
+		name, header, content, member string
+	}{
+		{"JSON part repeating model", "Content-Type: application/json\r\n", `{"model":"a","model":"b"}`, "multipart field metadata: model"},
+		{"JSON part that does not parse", "Content-Type: application/json; charset=utf-8\r\n", `{"model":"a",}`, "multipart field metadata: a JSON body that does not parse strictly"},
+		{"JSON part naming each member once", "Content-Type: application/json\r\n", `{"model":"a"}`, ""},
+		{"untyped part that looks like JSON", "", `{"model":"a","model":"b"}`, ""},
+		{"text part that looks like JSON", "Content-Type: text/plain\r\n", `{hello`, ""},
+		{"two Content-Type headers", "Content-Type: text/plain\r\nContent-Type: application/json\r\n", `{}`, "multipart field metadata: a part with two Content-Type headers"},
+		{"part type that does not parse", "Content-Type: not a type\r\n", `{}`, "multipart field metadata: a Content-Type that does not parse"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			member, ambiguous := AmbiguousBodyMember(part(tc.header, tc.content), contentType)
+			if ambiguous != (tc.member != "") || member != tc.member {
+				t.Fatalf("AmbiguousBodyMember = %q, %t; want %q", member, ambiguous, tc.member)
+			}
+		})
+	}
+}
+
+// TestMislabeledJSONBody: a body every reader calls content (or declared JSON Lines) that a vendor
+// could parse as JSON is refused unless it is strict JSON naming nothing gated (TXE-8012, option
+// E): what a lenient parser accepts is open-ended, so non-strict JSON is refused outright.
+func TestMislabeledJSONBody(t *testing.T) {
+	const naming, object, lenient = "is JSON naming model", "is JSON naming a provider object", "is JSON that does not parse strictly"
+	for _, tc := range []struct {
+		contentType, body, mediaType, problem string
+	}{
+		{"text/plain", `{"model":"gpt-4o"}`, "text/plain", naming},
+		// A stream flag a lenient vendor reads while the router does not sends a stream down the
+		// non-stream path, whose usage parser finds no usage (TXE-8012).
+		{"text/plain", `{"stream":true}`, "text/plain", "is JSON naming stream"},
+		{"application/octet-stream", ` [{"task":1},{"Model":"x"}]`, "application/octet-stream", naming},
+		{"text/plain; charset=utf-8", "\ufeff{\"MODEL\":\"x\"}", "text/plain", naming},
+		// Non-strict JSON under a non-JSON type: refused whatever it names.
+		{"text/plain", `{hello`, "text/plain", lenient},
+		{"text/plain", `{"model":"a",}`, "text/plain", lenient},
+		{"text/plain", `{"parameters":{"durationSeconds":4,"durationSeconds":8},}`, "text/plain", lenient},
+		{"text/plain", `{model: 'X'}`, "text/plain", lenient},
+		{"application/octet-stream", "{\"model\":\"a\"}\n{\"model\":\"b\"}\n", "application/octet-stream", lenient},
+		// Strict JSON repeating any member: every reader of it, a pricing field's included.
+		{"text/plain", `{"parameters":{"durationSeconds":4,"durationSeconds":8}}`, "text/plain", "is JSON that gives parameters.durationSeconds more than once"},
+		// Strict JSON naming nothing gated, once each, is content.
+		{"text/plain", `{"metadata":{"model":"a"}}`, "", ""},
+		{"text/plain", `["model"]`, "", ""},
+		{"text/plain", `{"note":"hello"}`, "", ""},
+		// Not content: JSON, or undeclared and opening like JSON, is the guard's.
+		{"application/json", `{"model":"a"}`, "", ""},
+		{"", `{"model":"a"}`, "", ""},
+		// Declared JSON Lines is no request document: a line naming a model or an object at its
+		// root is refused (core exempts file upload routes, where batch files live).
+		{"application/x-ndjson", `{"model":"a"}`, "application/x-ndjson", naming},
+		{"application/jsonl", "{\"custom_id\":\"1\",\"body\":{\"model\":\"a\"}}\n", "", ""},
+		{"application/x-ndjson", "{\"custom_id\":\"1\",\"file_id\":\"file-x\"}\n", "application/x-ndjson", object},
+		// Every encoding is read, whatever the charset claims.
+		{"text/plain; charset=utf-16le", `{"model":"X"}`, "text/plain", naming},
+		// Unicode space and comments before the opener.
+		{"text/plain", "\u00a0\u2028/* x */ // y\n{\"model\":\"X\"}", "text/plain", naming},
+		{"text/plain", strings.Repeat("\u3000", 342) + `{"model":"X"}`, "text/plain", naming},
+		{"text/plain", strings.Repeat(" ", 1023) + "/* c */" + `{"model":"X"}`, "text/plain", naming},
+		{"text/plain", strings.Repeat("[", maxForwardedBodyDepth+1) + `{"a":1}`, "text/plain", "is a JSON body nested more than 512 levels"},
+		// Media is read as JSON text only as valid UTF-8: JSON declared audio is still checked,
+		// while audio bytes (a RIFF header, or raw PCM whose first byte is neither "{" nor "[")
+		// are not. Raw PCM opening with "{" or "[" is checked whatever follows, as main checked
+		// every body: a primitive-led array hides a model from a narrower rule.
+		{"audio/wav", "RIFF\x00\x00\x00\x00WAVEfmt {\"model\"", "", ""},
+		{"audio/l16", "{\x00\"\x00m\x00", "audio/l16", "is JSON that does not parse strictly"},
+		{"audio/l16", "{\x00\xff\x7f\x10\x80", "audio/l16", "is JSON that does not parse strictly"},
+		{"audio/l16", "[0,{\"model\":\"X\"},\"\xff\"]", "audio/l16", naming},
+		{"audio/l16", "\x10\x80{\"model\":\"X\",\"a\":\"\xff\"}", "", ""},
+		{"audio/l16", "{\"model\":\"X\",\"a\":\"\xff\"}", "audio/l16", naming},
+		{"audio/pcm", "[{\"model\":\"X\"},\"\xfe\",]", "audio/pcm", lenient},
+		// Media with a header type is read like any body: an invalid byte, a comment or an
+		// unquoted key does not make JSON-shaped media content.
+		{"audio/wav", "/* c */ {model: 'X', a: '\xff'}", "audio/wav", lenient},
+		{"audio/mpeg", "\ufeff[1, {\"a\":\"\xff\"},]", "audio/mpeg", lenient},
+		{"audio/wav", "\xff\xfb\x90\x64{\"model\"", "", ""},
+		// An invalid byte does not make JSON-shaped media content: a lenient parser reads past it.
+		{"audio/wav", "{\"model\":\"X\",\"a\":\"\xff\"}", "audio/wav", naming},
+		{"audio/wav", "[{\"model\":\"X\"},\"\xfe\"]", "audio/wav", naming},
+		{"audio/wav", `{"model":"X","messages":[]}`, "audio/wav", naming},
+		{"image/png", `{"model":"X",}`, "image/png", lenient},
+		{"audio/wav", "\xff\xfe{\x00\"\x00m\x00o\x00d\x00e\x00l\x00\"\x00:\x001\x00}\x00", "", ""},
+		// Provider objects: governance's object gate reads only JSON.
+		{"text/plain", `{"file_id":"file-foreign"}`, "text/plain", object},
+		{"text/plain", `{"File_ID":"file-foreign"}`, "text/plain", object},
+		{"application/octet-stream", `{"input":[{"fileUri":"gs://bucket/o"}]}`, "application/octet-stream", object},
+		{"text/plain", `{"tools":[{"type":"code_interpreter"}]}`, "text/plain", object},
+		{"text/plain", `{"note":"see s3://bucket/key"}`, "text/plain", object},
+		{"text/plain", `{"mod\u0065l":"X"}`, "text/plain", naming},
+		// Prose is content.
+		{"text/plain", `hello {"model":"x"}`, "", ""},
+	} {
+		mediaType, problem, mislabeled := MislabeledJSONBody([]byte(tc.body), tc.contentType)
+		if mislabeled != (tc.problem != "") || mediaType != tc.mediaType || problem != tc.problem {
+			t.Errorf("MislabeledJSONBody(%q, %q) = %q, %q, %t; want %q, %q", tc.body, tc.contentType, mediaType, problem, mislabeled, tc.mediaType, tc.problem)
+		}
+	}
+}
+
+// TestMislabeledJSONBodyInAnotherEncoding: a UTF-16 or UTF-32 JSON body opens with no "{" byte,
+// but a vendor that detects the encoding (RFC 4627, Python's json.loads on bytes) parses it, so
+// it is read after transcoding: by its byte order mark, its declared charset, or the NUL pattern
+// of its first bytes, declared as another type or undeclared (TXE-8012).
+func TestMislabeledJSONBodyInAnotherEncoding(t *testing.T) {
+	encode := func(text string, width int, bigEndian, bom bool) []byte {
+		var out []byte
+		runes := []rune(text)
+		if bom {
+			runes = append([]rune{0xfeff}, runes...)
+		}
+		for _, r := range runes {
+			units := []uint32{uint32(r)}
+			if width == 2 {
+				units = units[:0]
+				for _, u := range utf16.Encode([]rune{r}) {
+					units = append(units, uint32(u))
+				}
+			}
+			for _, u := range units {
+				for i := 0; i < width; i++ {
+					shift := 8 * i
+					if bigEndian {
+						shift = 8 * (width - 1 - i)
+					}
+					out = append(out, byte(u>>shift))
+				}
+			}
+		}
+		return out
+	}
+	const naming = `{"model":"o1"}`
+	for _, tc := range []struct {
+		name, contentType string
+		body              []byte
+		problem           string
+	}{
+		{"UTF-16LE with a byte order mark", "text/plain", encode(naming, 2, false, true), "is JSON naming model"},
+		{"UTF-16BE with a byte order mark", "application/octet-stream", encode(naming, 2, true, true), "is JSON naming model"},
+		// UTF-16LE with no mark opens with the byte "{", so undeclared it is read as JSON and
+		// refused for not parsing strictly; big-endian opens with NUL and is content until read here.
+		{"UTF-16BE by its NUL pattern, undeclared", "", encode(naming, 2, true, false), "is JSON naming model"},
+		{"UTF-16BE by its declared charset", "text/plain; charset=utf-16be", encode(naming, 2, true, false), "is JSON naming model"},
+		{"UTF-32BE with a byte order mark", "text/plain", encode(naming, 4, true, true), "is JSON naming model"},
+		// Opens with the byte "{" read as UTF-8, where it is not strict: refused by that reading.
+		{"UTF-32LE by its NUL pattern", "text/plain", encode(naming, 4, false, false), "is JSON that does not parse strictly"},
+		{"UTF-16 JSON naming no gated key", "text/plain", encode(`{"a":1}`, 2, false, true), ""},
+		{"UTF-16 text", "text/plain", encode("hello", 2, false, true), ""},
+		{"UTF-16 non-strict JSON", "text/plain", encode(`{"a":1,}`, 2, false, true), "is JSON that does not parse strictly"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, problem, mislabeled := MislabeledJSONBody(tc.body, tc.contentType)
+			if mislabeled != (tc.problem != "") || problem != tc.problem {
+				t.Fatalf("MislabeledJSONBody = %q, %t; want %q", problem, mislabeled, tc.problem)
+			}
+		})
+	}
+}
+
+// TestIsFileUploadPath: the routes that store a body as a file and run no model (TXE-8012).
+func TestIsFileUploadPath(t *testing.T) {
+	for _, tc := range []struct {
+		method, path string
+		want         bool
+	}{
+		{"POST", "/v1/files", true},
+		{"POST", "/v1/files/", true},
+		{"POST", "/upload/v1beta/files", true},
+		{"POST", "/v1/uploads/upload_abc/parts", true},
+		{"GET", "/v1/files", false},
+		{"POST", "/v1/files/file-1/content", false},
+		{"POST", "/v1/chat/completions", false},
+		{"POST", "/v1/uploads", false},
+		{"POST", "/v1/uploads/upload_abc/complete", false},
+		// Routes that attach an existing file by id are not uploads.
+		{"POST", "/v1/vector_stores/vs_1/files", false},
+		{"POST", "/v1/containers/cntr_1/files", false},
+		{"POST", "/openai/files", true},
+		{"POST", "/upload/v1/files", true},
+		{"POST", "/upload/v1beta/files/extra", false},
+	} {
+		if got := IsFileUploadPath(tc.method, tc.path); got != tc.want {
+			t.Errorf("IsFileUploadPath(%s %s) = %t; want %t", tc.method, tc.path, got, tc.want)
+		}
+	}
+}
+
+// TestForwardedBodyChecksAllocateNothingWhenThereIsNothingToRead: most requests forward no body,
+// and most passthrough bodies name no provider object, so neither check may allocate then
+// (TXE-8012; AGENTS.md: a feature not in use costs a nil or empty check).
+func TestForwardedBodyChecksAllocateNothingWhenThereIsNothingToRead(t *testing.T) {
+	if allocs := testing.AllocsPerRun(100, func() { MislabeledJSONBody(nil, "") }); allocs != 0 {
+		t.Errorf("MislabeledJSONBody(nil) allocates %v times", allocs)
+	}
+	chat := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"` + strings.Repeat("Hello World ", 100000) + `"}]}`)
+	if allocs := testing.AllocsPerRun(10, func() { MayNameProviderObject(chat) }); allocs != 0 {
+		t.Errorf("MayNameProviderObject on a body naming nothing allocates %v times", allocs)
+	}
+	if !MayNameProviderObject([]byte(`see GS://bucket/o`)) || !MayNameProviderObject([]byte(`x.AmazonAWS.com`)) {
+		t.Error("storage URIs are matched without case")
 	}
 }

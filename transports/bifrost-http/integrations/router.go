@@ -53,7 +53,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"mime"
 	"mime/multipart"
 	"strconv"
 	"strings"
@@ -630,10 +629,28 @@ type modelCatalogProvider interface {
 	GetModelCatalog() *modelcatalog.ModelCatalog
 }
 
-// SetLargePayloadHook sets the hook for large payload detection and streaming.
-// This is used by enterprise to inject large payload optimization without
-// embedding the logic in the OSS router.
+// ErrLargePayloadHookUnguarded is the panic SetLargePayloadHook raises for a non-nil hook.
+const ErrLargePayloadHookUnguarded = "large-payload hook refused: a large-payload request streams its body to the provider " +
+	"unread, past core's forwarded-body guard (schemas.AmbiguousBodyMember, TXE-7994), so a body that repeats " +
+	"a member would reach the vendor while the gates read routing metadata; this fork does not run that guard " +
+	"over a streamed body (TXE-8012)"
+
+// SetLargePayloadHook would install the hook for large payload detection and streaming
+// (upstream's enterprise build injects one). In this fork it refuses a non-nil hook, loudly and
+// at startup, where hooks are installed: a streamed body is never held in memory, so core's
+// forwarded-body guard cannot read it, and a hook installed without that coverage would let a
+// body that repeats a member reach the vendor unchecked (TXE-8012). Supporting large-payload
+// mode means running the guard over the stream first; then this refusal goes.
 func (g *GenericRouter) SetLargePayloadHook(hook LargePayloadHook) {
+	if hook != nil {
+		panic(ErrLargePayloadHookUnguarded)
+	}
+	g.largePayloadHook = nil
+}
+
+// setLargePayloadHookForTest installs a hook without the refusal, for tests of the router's
+// large-payload branch, which stays as upstream wrote it.
+func (g *GenericRouter) setLargePayloadHookForTest(hook LargePayloadHook) {
 	g.largePayloadHook = hook
 }
 
@@ -3598,22 +3615,31 @@ func extractModelFromPath(path string) string {
 // last duplicate wins, whole decode dropped on an unrelated field) is exactly what
 // would let one model be checked while another runs. Bodies with no model key are
 // fine; many passthrough endpoints have none.
+//
+// How the body is read is schemas.ClassifyForwardedBody's call, the same one core's guard and
+// governance make (TXE-8012): contentType must be the Content-Type forwarded upstream. A body
+// declared as another type (a text/plain or octet-stream upload, a JSON Lines file) is content:
+// no model or stream flag is read from it, so a key restricted to some models refuses it as
+// naming none.
 func parsePassthroughBody(contentType string, body []byte) (model string, isStream bool, err error) {
 	if len(body) == 0 {
 		return
 	}
-	mediaType, params, mimeErr := mime.ParseMediaType(contentType)
-	if mimeErr == nil && strings.HasPrefix(mediaType, "multipart/") {
-		if boundary := params["boundary"]; boundary != "" {
-			model, isStream = parseMultipartPassthroughBody(body, boundary)
-			return
-		}
+	class := schemas.ClassifyForwardedBody(contentType, body)
+	switch class.Format {
+	case schemas.ForwardedBodyMultipart:
+		model, isStream = parseMultipartPassthroughBody(body, class.Boundary)
+		return
+	case schemas.ForwardedBodyJSON:
+	default:
+		// Content, or a type core's guard refuses: nothing here to govern or stream on.
+		return
 	}
 	if !gjson.ValidBytes(body) {
-		if mimeErr == nil && isJSONMediaType(mediaType) {
+		if class.Declared {
 			return "", false, errors.New("passthrough request body is not valid JSON")
 		}
-		// Not JSON and not declared as JSON: nothing here to govern or stream on.
+		// Undeclared and not valid JSON: core's guard refuses it.
 		return
 	}
 	root := gjson.ParseBytes(body)
@@ -3658,7 +3684,7 @@ func parsePassthroughBody(contentType string, body []byte) (model string, isStre
 	if err != nil {
 		return "", false, err
 	}
-	isStream = root.Get("stream").Type == gjson.True
+	isStream = root.Get(schemas.BodyStreamKey).Type == gjson.True
 	return
 }
 
@@ -3668,9 +3694,9 @@ func passthroughObjectModel(object gjson.Result) (string, error) {
 	var modelKeys int
 	var modelValue gjson.Result
 	object.ForEach(func(key, value gjson.Result) bool {
-		if strings.EqualFold(key.Str, "model") {
+		if strings.EqualFold(key.Str, schemas.BodyModelKey) {
 			modelKeys++
-			if key.Str == "model" {
+			if key.Str == schemas.BodyModelKey {
 				modelValue = value
 			}
 		}
@@ -3690,10 +3716,6 @@ func passthroughObjectModel(object gjson.Result) (string, error) {
 }
 
 // isJSONMediaType reports whether a parsed media type declares a JSON body.
-func isJSONMediaType(mediaType string) bool {
-	return mediaType == "application/json" || strings.HasSuffix(mediaType, "+json")
-}
-
 // parseMultipartPassthroughBody scans multipart parts and extracts model and stream.
 //   - Form fields (Content-Disposition name="model"/"stream"): read as plain text.
 func parseMultipartPassthroughBody(body []byte, boundary string) (model string, isStream bool) {
@@ -3705,11 +3727,11 @@ func parseMultipartPassthroughBody(body []byte, boundary string) (model string, 
 		}
 		// Plain form field — check by name.
 		switch part.FormName() {
-		case "model":
+		case schemas.BodyModelKey:
 			val, _ := io.ReadAll(part)
 			part.Close()
 			model = strings.TrimSpace(string(val))
-		case "stream":
+		case schemas.BodyStreamKey:
 			val, _ := io.ReadAll(part)
 			part.Close()
 			s := strings.TrimSpace(strings.ToLower(string(val)))
@@ -3813,9 +3835,9 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 	// }
 
 	body := ctx.Request.Body()
-	// Parse body once to get both model and stream flag.
-	contentType := string(ctx.Request.Header.ContentType())
-	bodyModel, bodyStream, err := parsePassthroughBody(contentType, body)
+	// Parse body once to get both model and stream flag, by the Content-Type forwarded upstream:
+	// the one core's guard and governance classify the body by (TXE-8012).
+	bodyModel, bodyStream, err := parsePassthroughBody(safeHeaders["content-type"], body)
 	if err != nil {
 		g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(err, err.Error(), fasthttp.StatusBadRequest))
 		return

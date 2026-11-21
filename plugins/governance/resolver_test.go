@@ -918,6 +918,64 @@ func TestRepeatedBodyModelCannotRunAModelTheKeyIsNotAllowed(t *testing.T) {
 	}
 }
 
+// TestBodyDeclaredAsAnotherTypeNamesNoModel: core's guard reads a forwarded body by its declared
+// type (TXE-8012), and so does governance, so a body declared text/plain or octet-stream is
+// content with no model in it. JSON naming a model under such a type is refused 400 by the guard
+// (a vendor parsing it would run a model no gate saw, past a model's own limits), so the body
+// that once ran a model the key forbids ({"model":"gpt-4o","model":"o1"} as text/plain) is still
+// refused. Strict JSON naming no model reaches governance as content, and a key restricted to
+// some models refuses it as naming none.
+func TestBodyDeclaredAsAnotherTypeNamesNoModel(t *testing.T) {
+	vk := buildVirtualKeyWithProviders("vk-typed", "sk-bf-typed", "Typed VK", []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"gpt-4o"}),
+	})
+	plugin := newAccessTestPlugin(t, vk, nil)
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: emptyAccount{}, Logger: NewMockLogger(), LLMPlugins: []schemas.LLMPlugin{plugin},
+	})
+	require.NoError(t, err)
+	t.Cleanup(client.Shutdown)
+
+	passthrough := func(contentType, body string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.PassthroughStreamRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+			Provider: schemas.OpenAI, Method: "POST", Path: "/v1/chat/completions", Body: []byte(body),
+			SafeHeaders: map[string]string{"content-type": contentType},
+		}}
+	}
+	for _, tc := range []struct {
+		name, contentType, body string
+		mislabeled              bool     // refused 400 by core's guard
+		want                    Decision // otherwise governance's decision
+	}{
+		{"repeated model as text/plain", "text/plain", `{"model":"gpt-4o","model":"o1"}`, true, ""},
+		{"allowed model as octet-stream", "application/octet-stream", `{"model":"gpt-4o"}`, true, ""},
+		{"text naming no model", "text/plain", `{"note":"hello"}`, false, DecisionModelBlocked},
+		{"allowed model as JSON", "application/json", `{"model":"gpt-4o"}`, false, DecisionAllow},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, preErr := client.RunStreamPreHooks(presentCtx("sk-bf-typed"), passthrough(tc.contentType, tc.body))
+			switch {
+			case tc.mislabeled:
+				require.NotNil(t, preErr, "JSON naming a model declared %s was admitted", tc.contentType)
+				require.NotNil(t, preErr.StatusCode)
+				assert.Equal(t, 400, *preErr.StatusCode)
+				assert.Equal(t, schemas.ErrorTypeCallerInvalidRequest, preErr.ExtraFields.ErrorType)
+				require.NotNil(t, preErr.Error)
+				assert.Contains(t, preErr.Error.Message, "model")
+				assert.Contains(t, preErr.Error.Message, "but is declared "+tc.contentType)
+			case tc.want == DecisionAllow:
+				assert.Nil(t, preErr)
+			default:
+				require.NotNil(t, preErr, "a body declared %s was admitted under a model restriction", tc.contentType)
+				require.NotNil(t, preErr.Type)
+				assert.Equal(t, string(tc.want), *preErr.Type)
+				require.NotNil(t, preErr.Error)
+				assert.Contains(t, preErr.Error.Message, "names none that can be checked")
+			}
+		})
+	}
+}
+
 // TestBudgetResolver_EvaluateVirtualKey_ActiveNoExpiry verifies that a VK
 // with no expiry is allowed.
 // A mixed Runware task array leaves the request model empty, so the request is charged against
@@ -1376,4 +1434,69 @@ func BenchmarkPreLLMHookPassthroughBodyModels(b *testing.B) {
 			}
 		})
 	}
+}
+
+// TestBodyNamesEveryModelReadsOnlyAClassifiedJSONBody: the unpriced-budget gate reads a body's
+// models only when the shared classifier reads it as JSON, as passthroughBodyModels does
+// (TXE-8012). A text upload that happens to name a model (forwarded on a file route) names none,
+// so it is gated as the envelope rather than as a model the vendor never reads.
+func TestBodyNamesEveryModelReadsOnlyAClassifiedJSONBody(t *testing.T) {
+	request := func(contentType string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+			Provider: schemas.OpenAI, Method: "POST", Path: "/v1/files", Body: []byte(`{"model":"gpt-4o"}`),
+			SafeHeaders: map[string]string{"content-type": contentType},
+		}}
+	}
+	assert.True(t, passthroughBodyNamesEveryModel(request("application/json")))
+	assert.True(t, passthroughBodyNamesEveryModel(request("")), "an undeclared body opening with { is classified JSON")
+	assert.False(t, passthroughBodyNamesEveryModel(request("text/plain")))
+	assert.False(t, passthroughBodyNamesEveryModel(request("application/octet-stream")))
+}
+
+// TestSuppressesUsageReadsOnlyAClassifiedJSONBody: a passthrough stream asks for usage only in a
+// body the shared classifier reads as JSON (TXE-8012). The same text declared as another type asks
+// the vendor for nothing, so the stream is read as suppressing usage, failing closed.
+func TestSuppressesUsageReadsOnlyAClassifiedJSONBody(t *testing.T) {
+	stream := func(contentType string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.PassthroughStreamRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+			Provider: schemas.OpenAI, Method: "POST", Path: "/v1/files",
+			Body:        []byte(`{"stream":true,"stream_options":{"include_usage":true}}`),
+			SafeHeaders: map[string]string{"content-type": contentType},
+		}}
+	}
+	assert.False(t, suppressesUsage(nil, stream("application/json")))
+	assert.False(t, suppressesUsage(nil, stream("")), "an undeclared body opening with { is classified JSON")
+	assert.True(t, suppressesUsage(nil, stream("text/plain")))
+	assert.True(t, suppressesUsage(nil, stream("application/octet-stream")))
+
+	// A non-stream request whose body, declared as another type, a lenient vendor may still read
+	// as asking to stream or turning usage off, is read failing closed.
+	unary := func(body string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+			Provider: schemas.OpenAI, Method: "POST", Path: "/v1/chat/completions", Body: []byte(body),
+			SafeHeaders: map[string]string{"content-type": "text/plain"},
+		}}
+	}
+	assert.True(t, suppressesUsage(nil, unary(`{"stream":true,"stream_options":{"include_usage":true}}`)))
+	assert.True(t, suppressesUsage(nil, unary(`{"stream_options":{"include_usage":false}}`)))
+	assert.False(t, suppressesUsage(nil, unary(`{"note":"hello"}`)))
+	assert.False(t, suppressesUsage(nil, unary(`hello`)))
+}
+
+// TestPassthroughContainerMemoryLimitReadsEveryJSONReading: the tier a container create names picks
+// the pricing row it is probed on, so it is read from a body declared as another type too: an
+// upstream ignoring the declared type runs that tier (TXE-8012).
+func TestPassthroughContainerMemoryLimitReadsEveryJSONReading(t *testing.T) {
+	create := func(contentType, body string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+			Provider: schemas.OpenAI, Method: "POST", Path: "/v1/containers", Body: []byte(body),
+			SafeHeaders: map[string]string{"content-type": contentType},
+		}}
+	}
+	const tiered = `{"name":"sandbox","memory_limit":"4g"}`
+	assert.Equal(t, "4g", passthroughContainerMemoryLimit(create("application/json", tiered)))
+	assert.Equal(t, "4g", passthroughContainerMemoryLimit(create("", tiered)))
+	assert.Equal(t, "4g", passthroughContainerMemoryLimit(create("text/plain", tiered)))
+	assert.Equal(t, "", passthroughContainerMemoryLimit(create("text/plain", "memory_limit=4g")))
+	assert.Equal(t, "", passthroughContainerMemoryLimit(nil))
 }

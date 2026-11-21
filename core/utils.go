@@ -17,6 +17,7 @@ import (
 	"github.com/capsohq/bifrost/core/mcp"
 	"github.com/capsohq/bifrost/core/network"
 	"github.com/capsohq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 )
 
 // Aliases; canonical definitions live in schemas so EffectiveHTTPStatus can match them.
@@ -1201,20 +1202,54 @@ func setAssistantRoleOnce(resp *schemas.BifrostChatResponse, roleSent bool) bool
 	return true
 }
 
+// forwardsAFile reports a passthrough request to a file upload route (schemas.IsFileUploadPath):
+// the vendor stores its body as a file and runs no model, so a JSON Lines batch file naming a model
+// on every line is content there, under whatever type its SDK guessed.
+func forwardsAFile(req *schemas.BifrostRequest) bool {
+	return req.PassthroughRequest != nil && schemas.IsFileUploadPath(strings.ToUpper(req.PassthroughRequest.Method), req.PassthroughRequest.Path)
+}
+
 // refuseAmbiguousForwardedBody refuses a request whose forwarded body (a passthrough body, or a
 // raw request body sent as written) repeats a member: gjson keeps the first of two equal keys,
 // encoding/json, sonic and most vendors the last, so a gate would judge one model, storage URI or
-// price dimension while the vendor ran another (TXE-7994). See schemas.AmbiguousBodyMember.
+// price dimension while the vendor ran another (TXE-7994). See schemas.AmbiguousBodyMember. It also
+// refuses a body declared as a non-JSON type that is JSON naming a gated key: no gate reads such a
+// body as JSON, so a vendor parsing it would run a model no gate saw (TXE-8012,
+// schemas.MislabeledJSONBody).
 func refuseAmbiguousForwardedBody(req *schemas.BifrostRequest) *schemas.LLMPluginShortCircuit {
 	if req == nil {
 		return nil
 	}
-	member, ambiguous := schemas.AmbiguousBodyMember(req.ForwardedBody(), req.ForwardedBodyContentType())
-	if !ambiguous {
+	body := req.ForwardedBody()
+	if len(body) == 0 {
+		// Most requests forward no body: the guard costs a nil check.
 		return nil
 	}
-	bifrostErr := newBifrostErrorFromMsg(schemas.ErrorTypeCallerInvalidRequest,
-		fmt.Sprintf("request body gives %s more than once; Bifrost and the provider could read different values, so give each member once", member))
+	contentType := req.ForwardedBodyContentType()
+	if contentType == "" && forwardsAFile(req) && !gjson.ValidBytes(body) {
+		// A file with no declared type that is not one JSON document (a JSON Lines batch file) is
+		// a file: no reader reads a member from it. A strict JSON document there is still checked,
+		// since the router and governance read an undeclared one.
+		return nil
+	}
+	var message string
+	if member, ambiguous := schemas.AmbiguousBodyMember(body, contentType); ambiguous {
+		message = fmt.Sprintf("request body gives %s more than once; Bifrost and the provider could read different values, so give each member once", member)
+	} else if forwardsAFile(req) {
+		// An upload route stores the body as a file: content there is never read as JSON.
+		return nil
+	} else if mediaType, problem, mislabeled := schemas.MislabeledJSONBody(body, contentType); mislabeled {
+		// Bifrost reads a body by its declared type (TXE-8012), so a JSON body naming a model under
+		// another type would run a model no gate saw.
+		declared := "declared " + mediaType
+		if mediaType == "" {
+			declared = "sent with no Content-Type"
+		}
+		message = fmt.Sprintf("request body %s but is %s; Bifrost reads a body by its declared type, so send it as UTF-8 application/json that is strict and gives each member once", problem, declared)
+	} else {
+		return nil
+	}
+	bifrostErr := newBifrostErrorFromMsg(schemas.ErrorTypeCallerInvalidRequest, message)
 	bifrostErr.StatusCode = schemas.Ptr(400)
 	bifrostErr.AllowFallbacks = schemas.Ptr(false)
 	return &schemas.LLMPluginShortCircuit{Error: bifrostErr}

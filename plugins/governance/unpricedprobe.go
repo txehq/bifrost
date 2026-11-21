@@ -423,10 +423,17 @@ func suppressesUsage(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) b
 		return (req.TextCompletionRequest.Params != nil && off(req.TextCompletionRequest.Params.StreamOptions)) || offInBody(req.TextCompletionRequest.RawRequestBody)
 	case req.PassthroughRequest != nil:
 		body := req.PassthroughRequest.Body
+		// A body the shared classifier does not read as JSON (TXE-8012) never asks for usage, but a
+		// vendor ignoring its declared type may still read it as JSON: it is read as suppressing usage
+		// when it is a stream, or parses as JSON asking to stream or turning include_usage off.
+		if schemas.ClassifyForwardedBody(req.ForwardedBodyContentType(), body).Format != schemas.ForwardedBodyJSON {
+			return req.RequestType == schemas.PassthroughStreamRequest ||
+				(gjson.ValidBytes(body) && (gjson.GetBytes(body, schemas.BodyStreamKey).Type == gjson.True || offInBody(body)))
+		}
 		// A forwarded stream reports usage only when it asks for it explicitly (OpenAI-shaped vendors
 		// send none otherwise): one that does not, or whose body cannot be read, is read as
 		// suppressing it.
-		if req.RequestType == schemas.PassthroughStreamRequest || gjson.GetBytes(body, "stream").Type == gjson.True {
+		if req.RequestType == schemas.PassthroughStreamRequest || gjson.GetBytes(body, schemas.BodyStreamKey).Type == gjson.True {
 			return streamWithoutUsage(body)
 		}
 		return offInBody(body)

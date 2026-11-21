@@ -315,7 +315,7 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 		passthroughContainerCreate(configuredBaseProvider(r.governanceInMemoryStore, provider), evaluationRequest.request) {
 		containerRequest := &EvaluationRequest{RequestType: schemas.ContainerCreateRequest, Provider: provider, request: &schemas.BifrostRequest{
 			RequestType: schemas.ContainerCreateRequest, ContainerCreateRequest: &schemas.BifrostContainerCreateRequest{
-				Provider: provider, MemoryLimit: gjson.GetBytes(evaluationRequest.request.PassthroughRequest.Body, "memory_limit").String(),
+				Provider: provider, MemoryLimit: passthroughContainerMemoryLimit(evaluationRequest.request),
 			},
 		}}
 		return r.refuseUnpricedUnderBudget(ctx, containerRequest, budgets)
@@ -811,6 +811,11 @@ func passthroughBodyNamesEveryModel(req *schemas.BifrostRequest) bool {
 	if req.PassthroughRequest == nil || len(req.PassthroughRequest.Body) == 0 || !gjson.ValidBytes(req.PassthroughRequest.Body) {
 		return false
 	}
+	// Only a body the shared classifier reads as JSON names its models, as passthroughBodyModels
+	// reads them (TXE-8012): one declared as another type names none, and is gated as the envelope.
+	if schemas.ClassifyForwardedBody(req.ForwardedBodyContentType(), req.PassthroughRequest.Body).Format != schemas.ForwardedBodyJSON {
+		return false
+	}
 	// A model key given twice is read as the first by gjson and as the last by most providers
 	// (encoding/json among them, which also matches "Model" or "MODEL"), so the body would be gated
 	// on one model and run on another: it is not read as naming its model.
@@ -820,12 +825,12 @@ func passthroughBodyNamesEveryModel(req *schemas.BifrostRequest) bool {
 		}
 		count := 0
 		object.ForEach(func(key, _ gjson.Result) bool {
-			if strings.EqualFold(key.Str, "model") {
+			if strings.EqualFold(key.Str, schemas.BodyModelKey) {
 				count++
 			}
 			return count < 2
 		})
-		value := object.Get("model")
+		value := object.Get(schemas.BodyModelKey)
 		return count == 1 && value.Type == gjson.String && strings.TrimSpace(value.Str) != ""
 	}
 	root := gjson.ParseBytes(req.PassthroughRequest.Body)
@@ -843,6 +848,22 @@ func passthroughBodyNamesEveryModel(req *schemas.BifrostRequest) bool {
 		return tasks > 0 && all
 	}
 	return false
+}
+
+// passthroughContainerMemoryLimit returns the memory tier a passthrough container create names, which
+// selects the pricing row it is probed and priced on. It is read from a body the shared classifier
+// reads as JSON (TXE-8012) and, failing closed, from any other body that parses as JSON: an
+// upstream ignoring the declared type runs the tier the body names, so the default tier is never
+// substituted for it.
+func passthroughContainerMemoryLimit(req *schemas.BifrostRequest) string {
+	if req == nil || req.PassthroughRequest == nil {
+		return ""
+	}
+	body := req.PassthroughRequest.Body
+	if schemas.ClassifyForwardedBody(req.ForwardedBodyContentType(), body).Format != schemas.ForwardedBodyJSON && !gjson.ValidBytes(body) {
+		return ""
+	}
+	return gjson.GetBytes(body, "memory_limit").String()
 }
 
 // inlineBatchModes indexes, once per request, the request types settlement prices an inline batch's
