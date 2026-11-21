@@ -3278,3 +3278,235 @@ func TestChatPromptCacheKeyExemptionIsNarrow(t *testing.T) {
 	require.Equal(t, "24h", *out.PromptCacheRetention)
 	require.Equal(t, "1h", *out.PromptCacheOptions.TTL)
 }
+
+// reasoningTargets is every provider branch of applyChatProviderCompatibility, every standard
+// provider, and a custom provider on a standard and on a compat base.
+func reasoningTargets() []struct {
+	name     string
+	provider schemas.ModelProvider
+	base     schemas.ModelProvider
+} {
+	type target = struct {
+		name     string
+		provider schemas.ModelProvider
+		base     schemas.ModelProvider
+	}
+	var targets []target
+	seen := map[schemas.ModelProvider]bool{}
+	for _, p := range append(slices.Clone(schemas.StandardProviders),
+		schemas.OpenAI, schemas.Azure, schemas.Wafer, schemas.Groq, schemas.Cerebras, schemas.XAI, schemas.DeepSeek,
+		schemas.GLM, schemas.Gemini, schemas.Mistral, schemas.MiniMax, schemas.BytePlus, schemas.OpencodeGo,
+		schemas.OpencodeZen, schemas.Ollama, schemas.Vertex, schemas.Qwen, schemas.Moonshot, schemas.Fireworks) {
+		if !seen[p] {
+			seen[p] = true
+			targets = append(targets, target{name: string(p), provider: p})
+		}
+	}
+	return append(targets,
+		target{name: "custom on openai", provider: "cp_plain", base: schemas.OpenAI},
+		target{name: "custom on groq", provider: "cp_groq", base: schemas.Groq},
+	)
+}
+
+func reasoningRequest(provider schemas.ModelProvider, model string, reasoning *schemas.ChatReasoning, extra map[string]interface{}) *schemas.BifrostChatRequest {
+	return &schemas.BifrostChatRequest{
+		Provider: provider,
+		Model:    model,
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}}},
+		Params:   &schemas.ChatParameters{Reasoning: reasoning, ExtraParams: extra},
+	}
+}
+
+func reasoningContext(base schemas.ModelProvider) *schemas.BifrostContext {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	if base != "" {
+		ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, base)
+		ctx.SetValue(schemas.BifrostContextKeyIsCustomProvider, false)
+	}
+	return ctx
+}
+
+// TestChatConverterNeverChangesAReasoningLevelSilently: for every provider branch, every effort and
+// a reasoning budget, the request is refused with 400 naming the field, or the body
+// ToOpenAIChatRequest builds carries the setting as sent or in a conversion chatReasoningConversion
+// documents (contract C4; fork, TXE-7954). The refusal judges a probe of the provider's rules; this
+// judges the body the converter really builds, so a rewrite added anywhere in the converter, or a
+// probe that no longer matches it, fails here.
+func TestChatConverterNeverChangesAReasoningLevelSilently(t *testing.T) {
+	efforts := []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+	models := []string{"txe-7954-uncatalogued-model", "gpt-6-luna", "gpt-6.2-astra", "grok-4", "minimax-m3.1", "mistral-large-latest"}
+	type ask struct {
+		name      string
+		reasoning func() *schemas.ChatReasoning
+		extra     map[string]interface{}
+	}
+	var asks []ask
+	for _, effort := range efforts {
+		asks = append(asks, ask{"effort=" + effort, func() *schemas.ChatReasoning { return &schemas.ChatReasoning{Effort: schemas.Ptr(effort)} }, nil})
+		// A thinking type the caller sets as an extra param, which some branches read.
+		for _, thinking := range []string{"enabled", "disabled"} {
+			asks = append(asks, ask{"effort=" + effort + "/thinking=" + thinking,
+				func() *schemas.ChatReasoning { return &schemas.ChatReasoning{Effort: schemas.Ptr(effort)} },
+				map[string]interface{}{"thinking": map[string]interface{}{"type": thinking}}})
+		}
+	}
+	asks = append(asks, ask{"max_tokens=2048", func() *schemas.ChatReasoning { return &schemas.ChatReasoning{MaxTokens: schemas.Ptr(2048)} }, nil})
+
+	outcomes := map[string]int{}
+	for _, tg := range reasoningTargets() {
+		for _, model := range models {
+			for _, a := range asks {
+				t.Run(tg.name+"/"+model+"/"+a.name, func(t *testing.T) {
+					ctx := reasoningContext(tg.base)
+					req := reasoningRequest(tg.provider, model, a.reasoning(), a.extra)
+					if refusal := ChatRequestRefusal(ctx, req); refusal != nil {
+						require.Equal(t, 400, *refusal.StatusCode)
+						require.Equal(t, schemas.ErrorTypeCallerUnsupportedParameter, refusal.ExtraFields.ErrorType)
+						require.Contains(t, []string{"reasoning.effort", "reasoning.max_tokens"}, refusal.Error.Param)
+						outcomes["refused"]++
+						return
+					}
+					out := ToOpenAIChatRequest(ctx, req)
+					require.NotNil(t, out)
+					capModel := schemas.ResolveCanonicalModel(ctx, model)
+					field, sent := chatReasoningConversion(tg.provider, schemas.ResolveModelCaps(tg.provider, capModel), req.Params.Reasoning, a.extra, out)
+					require.Empty(t, field, "not refused, but the body sends %s %s", field, sent)
+					outcomes["sent"]++
+				})
+			}
+		}
+	}
+	t.Logf("outcomes: %v", outcomes)
+	require.NotZero(t, outcomes["refused"])
+	require.NotZero(t, outcomes["sent"])
+}
+
+// TestChatReasoningDecisions pins each decided case (TXE-7954, coordinator 2026-11-20), so a change
+// of decision is a change here.
+func TestChatReasoningDecisions(t *testing.T) {
+	effort := func(e string) *schemas.ChatReasoning { return &schemas.ChatReasoning{Effort: schemas.Ptr(e)} }
+	cases := []struct {
+		name      string
+		provider  schemas.ModelProvider
+		base      schemas.ModelProvider
+		model     string
+		reasoning *schemas.ChatReasoning
+		extra     map[string]interface{}
+		refused   string // the field, or "" when sent
+		check     func(t *testing.T, out *OpenAIChatRequest)
+	}{
+		{
+			// 94% of Tokun's chat reasoning traffic, 2026-11-06 to 11-20: minimal on gpt-6-luna,
+			// whose ladder has no minimal, through an openai-based custom provider.
+			name: "minimal snaps to the nearest level", provider: "tkp_98", base: schemas.OpenAI, model: "gpt-6-luna", reasoning: effort("minimal"),
+			check: func(t *testing.T, out *OpenAIChatRequest) { require.Equal(t, "low", *out.Reasoning.Effort) },
+		},
+		{
+			name: "an effort on the ladder is sent as is", provider: schemas.OpenAI, model: "gpt-6-luna", reasoning: effort("medium"),
+			check: func(t *testing.T, out *OpenAIChatRequest) { require.Equal(t, "medium", *out.Reasoning.Effort) },
+		},
+		{
+			name: "a budget becomes an effort", provider: schemas.Groq, model: "openai/gpt-oss-120b", reasoning: &schemas.ChatReasoning{MaxTokens: schemas.Ptr(2048)},
+			check: func(t *testing.T, out *OpenAIChatRequest) {
+				require.NotNil(t, out.Reasoning.Effort)
+				require.Nil(t, out.Reasoning.MaxTokens)
+			},
+		},
+		{name: "none is not raised on a model that always reasons", provider: schemas.OpenAI, model: "gpt-6.2-astra", reasoning: effort("none"), refused: "reasoning.effort"},
+		{name: "Mistral does not force low to high", provider: schemas.Mistral, model: "magistral-medium-latest", reasoning: effort("low"), refused: "reasoning.effort"},
+		{name: "Mistral does not force medium to high", provider: schemas.Mistral, model: "magistral-medium-latest", reasoning: effort("medium"), refused: "reasoning.effort"},
+		{
+			name: "Mistral high is sent", provider: schemas.Mistral, model: "magistral-medium-latest", reasoning: effort("high"),
+			check: func(t *testing.T, out *OpenAIChatRequest) { require.Equal(t, "high", *out.Reasoning.Effort) },
+		},
+		{name: "Vertex does not drop none", provider: schemas.Vertex, model: "openai/gpt-oss-120b-maas", reasoning: effort("none"), refused: "reasoning.effort"},
+		{name: "xAI does not drop an effort", provider: schemas.XAI, model: "grok-4", reasoning: effort("high"), refused: "reasoning.effort"},
+		{name: "MiniMax M3.1 does not drop none", provider: schemas.MiniMax, model: "MiniMax-M3.1", reasoning: effort("none"), refused: "reasoning.effort"},
+		{
+			name: "MiniMax none becomes thinking disabled", provider: schemas.MiniMax, model: "MiniMax-M2.5", reasoning: effort("none"),
+			check: func(t *testing.T, out *OpenAIChatRequest) {
+				require.Nil(t, out.Reasoning)
+				require.Equal(t, map[string]interface{}{"type": "disabled"}, out.ExtraParams["thinking"])
+			},
+		},
+		{
+			name: "BytePlus none becomes thinking disabled", provider: schemas.BytePlus, model: "doubao-seed-1-6", reasoning: effort("none"),
+			check: func(t *testing.T, out *OpenAIChatRequest) {
+				require.Nil(t, out.Reasoning)
+				require.Equal(t, map[string]interface{}{"type": "disabled"}, out.ExtraParams["thinking"])
+			},
+		},
+		{
+			name: "BytePlus does not drop none under thinking the caller enabled", provider: schemas.BytePlus, model: "doubao-seed-1-6", reasoning: effort("none"),
+			extra: map[string]interface{}{"thinking": map[string]interface{}{"type": "enabled"}}, refused: "reasoning.effort",
+		},
+		{
+			name: "BytePlus thinking the caller disabled governs", provider: schemas.BytePlus, model: "doubao-seed-1-6", reasoning: effort("low"),
+			extra: map[string]interface{}{"thinking": map[string]interface{}{"type": "disabled"}},
+			check: func(t *testing.T, out *OpenAIChatRequest) { require.Nil(t, out.Reasoning) },
+		},
+		{
+			// DeepSeek documents reasoning_effort next to thinking.type; main dropped the effort.
+			name: "DeepSeek high is thinking enabled with the effort sent", provider: schemas.DeepSeek, model: "deepseek-v4", reasoning: effort("high"),
+			check: func(t *testing.T, out *OpenAIChatRequest) {
+				require.Equal(t, "enabled", out.Thinking.Type)
+				body, err := schemas.Marshal(out)
+				require.NoError(t, err)
+				require.Contains(t, string(body), `"reasoning_effort":"high"`)
+			},
+		},
+		{
+			name: "DeepSeek none is thinking disabled", provider: schemas.DeepSeek, model: "deepseek-v4", reasoning: effort("none"),
+			check: func(t *testing.T, out *OpenAIChatRequest) { require.Equal(t, "disabled", out.Thinking.Type) },
+		},
+		{name: "DeepSeek has no thinking budget", provider: schemas.DeepSeek, model: "deepseek-v4", reasoning: &schemas.ChatReasoning{MaxTokens: schemas.Ptr(2048)}, refused: "reasoning.max_tokens"},
+		{name: "GLM has no thinking budget", provider: schemas.GLM, model: "glm-5", reasoning: &schemas.ChatReasoning{MaxTokens: schemas.Ptr(2048)}, refused: "reasoning.max_tokens"},
+		// Model Studio documents enable_thinking but not thinking_budget (coordinator, 2026-11-20).
+		{name: "Qwen has no documented thinking budget", provider: schemas.Qwen, model: "qwen3-max", reasoning: &schemas.ChatReasoning{MaxTokens: schemas.Ptr(2048)}, refused: "reasoning.max_tokens"},
+		{
+			name: "Qwen high is thinking enabled", provider: schemas.Qwen, model: "qwen3-max", reasoning: effort("high"),
+			check: func(t *testing.T, out *OpenAIChatRequest) { require.True(t, *out.EnableThinking) },
+		},
+		{
+			name: "a custom provider on a non-standard base is sent as is", provider: "cp_other", base: "some_unlisted_base", model: "m", reasoning: effort("minimal"),
+			check: func(t *testing.T, out *OpenAIChatRequest) { require.Equal(t, "minimal", *out.Reasoning.Effort) },
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if c.base != "" {
+				ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, c.base)
+				ctx.SetValue(schemas.BifrostContextKeyIsCustomProvider, !slices.Contains(schemas.StandardProviders, c.base))
+			}
+			req := reasoningRequest(c.provider, c.model, c.reasoning, c.extra)
+			refusal := ChatRequestRefusal(ctx, req)
+			if c.refused != "" {
+				require.NotNil(t, refusal, "sent")
+				require.Equal(t, c.refused, refusal.Error.Param)
+				require.Equal(t, schemas.ErrorTypeCallerUnsupportedParameter, refusal.ExtraFields.ErrorType)
+				return
+			}
+			require.Nil(t, refusal)
+			c.check(t, ToOpenAIChatRequest(ctx, req))
+		})
+	}
+}
+
+// BenchmarkChatReasoningRefusal: the cost ChatRequestRefusal adds (fork, TXE-7954). A request with
+// no reasoning setting pays one nil check; one with an effort pays the probe.
+func BenchmarkChatReasoningRefusal(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	for name, reasoning := range map[string]*schemas.ChatReasoning{
+		"no reasoning": nil,
+		"effort":       {Effort: schemas.Ptr("minimal")},
+	} {
+		req := reasoningRequest(schemas.OpenAI, "gpt-6-luna", reasoning, nil)
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = chatReasoningRefusal(ctx, req)
+			}
+		})
+	}
+}

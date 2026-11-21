@@ -160,6 +160,25 @@ Responses API supports both `effort` + `max_tokens` (like Chat Completions) and 
 
 ## Provider-Specific Conversions
 
+### Reasoning on OpenAI-compatible chat
+
+Reasoning effort sets how many reasoning tokens a request is billed for. On a provider that uses the OpenAI chat shape, Bifrost sends `reasoning.effort` and `reasoning.max_tokens` as asked, converts them in one of the ways below, or refuses the request with 400 `caller_unsupported_parameter`, naming the field in `error.param`, before anything is sent. It never changes the level silently.
+
+| Conversion | When | Sent |
+|------------|------|------|
+| Nearest level | The model's record does not list the effort | The nearest level it lists, ties going up: `minimal` on `gpt-6-luna` is sent as `low` |
+| Budget to effort | `reasoning.max_tokens` alone, to a provider that takes an effort | The effort the budget amounts to |
+| Thinking switch | GLM and Qwen, whose control is a thinking switch, and `none` on DeepSeek, MiniMax and BytePlus | `none`, `off` or `disabled` as thinking disabled, any other effort as thinking enabled. DeepSeek also takes the effort, so it is sent with thinking enabled |
+
+Refused, because each would bill a different level from the one asked for:
+
+- `none` on a model that always reasons, which would be raised to its lowest level
+- any Mistral effort but `none` and `high`, which Mistral would force to `high`
+- `none` on Vertex Model Garden models, which would be dropped
+- an effort on an xAI model that rejects it, which would be dropped
+- `none` on `MiniMax-M3.1-Flash-Preview`, and `none` on BytePlus when `thinking` is not disabled, which would be dropped
+- `reasoning.max_tokens` on DeepSeek, GLM and Qwen, none of which documents a thinking budget
+
 ### OpenAI
 
 OpenAI uses effort-based reasoning only. Bifrost applies priority logic:

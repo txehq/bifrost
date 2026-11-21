@@ -130,7 +130,7 @@ xAI's `grok-3-mini` model supports extended reasoning via the standard `reasonin
 **Model-Specific Feature**: The `reasoning_effort` parameter is only supported by `grok-3-mini`. Other Grok-3 and Grok-4 models will return an error if this parameter is specified.
 </Warning>
 
-Bifrost converts from the internal `Reasoning` structure to xAI's `reasoning_effort` string format.
+Bifrost converts from the internal `Reasoning` structure to xAI's `reasoning_effort` string format. On a model that rejects `reasoning_effort`, Bifrost refuses a request that sets one with 400 `caller_unsupported_parameter` on `reasoning.effort`, before anything is sent, instead of dropping it.
 
 ### Vision Support
 

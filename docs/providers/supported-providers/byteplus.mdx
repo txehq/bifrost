@@ -130,6 +130,7 @@ Reasoning models such as Seed and DeepSeek V4 think unless told not to. Ark retu
 | `xhigh`, `max` | `high`, the top of Ark's range |
 | `none` | `thinking: {"type": "disabled"}` and no `reasoning_effort` |
 | any effort with `extra_params.thinking.type: "disabled"` | `thinking` only, because Ark rejects `reasoning_effort` when thinking is off |
+| `none` with any other `extra_params.thinking.type` | refused with 400 `caller_unsupported_parameter` on `reasoning.effort`: Ark rejects `none`, and dropping it would leave thinking on |
 
 ### Extra parameters
 

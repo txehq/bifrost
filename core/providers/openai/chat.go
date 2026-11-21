@@ -494,8 +494,9 @@ func chatServiceTierUndeliverableError(ctx *schemas.BifrostContext, bifrostReq *
 // ChatRequestRefusal is the one check every path that sends a ToOpenAIChatRequest body runs
 // first, inside its request converter, so a refused request makes no upstream call: a
 // service tier the model cannot take (ChatServiceTierError) or the provider does not send
-// (chatServiceTierUndeliverableError), then a prompt-cache field the provider's branch would not
-// deliver (ChatPromptCacheFieldError). A refusal added later goes here, not at the call
+// (chatServiceTierUndeliverableError), a reasoning setting the provider's branch would change
+// into another level (chatReasoningRefusal), then a prompt-cache field the provider's branch
+// would not deliver (ChatPromptCacheFieldError). A refusal added later goes here, not at the call
 // sites.
 func ChatRequestRefusal(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostChatRequest) *schemas.BifrostError {
 	if tierErr := ChatServiceTierError(ctx, bifrostReq); tierErr != nil {
@@ -504,7 +505,151 @@ func ChatRequestRefusal(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifrost
 	if tierErr := chatServiceTierUndeliverableError(ctx, bifrostReq); tierErr != nil {
 		return tierErr
 	}
+	if reasoningErr := chatReasoningRefusal(ctx, bifrostReq); reasoningErr != nil {
+		return reasoningErr
+	}
 	return ChatPromptCacheFieldError(ctx, bifrostReq)
+}
+
+// chatReasoningRefusal refuses a reasoning setting the provider's branch would change into a
+// different level, with 400 caller_unsupported_parameter and no upstream call (contract C4;
+// fork, TXE-7954). Reasoning effort sets how many reasoning tokens are billed, so it is
+// delivered as sent, converted only as chatReasoningConversion documents, or refused.
+//
+// It runs the provider's own rules (applyChatProviderCompatibility) on a body holding only the
+// fields they read for reasoning, and judges what they did, so a rule added to a provider branch
+// is judged without a second copy of it here. A request with no reasoning setting costs one nil
+// check. TestChatConverterNeverDropsAPriceFieldSilently runs every provider and effort.
+func chatReasoningRefusal(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostChatRequest) *schemas.BifrostError {
+	if bifrostReq == nil || bifrostReq.Params == nil || bifrostReq.Params.Reasoning == nil ||
+		(bifrostReq.Params.Reasoning.Effort == nil && bifrostReq.Params.Reasoning.MaxTokens == nil) {
+		return nil
+	}
+	asked := *bifrostReq.Params.Reasoning
+	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
+	caps := schemas.ResolveModelCaps(bifrostReq.Provider, capModel)
+	probeReasoning := asked
+	// The fields the provider branches read for reasoning, set as ToOpenAIChatRequest sets them.
+	probe := &OpenAIChatRequest{Model: bifrostReq.Model, Provider: bifrostReq.Provider, ExtraParams: bifrostReq.Params.ExtraParams}
+	probe.ChatParameters = schemas.ChatParameters{
+		Reasoning:           &probeReasoning,
+		MaxCompletionTokens: bifrostReq.Params.MaxCompletionTokens,
+	}
+	applyChatProviderCompatibility(ctx, bifrostReq, probe, caps, capModel)
+	field, sent := chatReasoningConversion(bifrostReq.Provider, caps, &asked, bifrostReq.Params.ExtraParams, probe)
+	if field == "" {
+		return nil
+	}
+	value := "max_tokens"
+	if asked.Effort != nil {
+		value = "\"" + *asked.Effort + "\""
+	}
+	return schemas.NewUnsupportedParameterError(field,
+		field+" "+value+" is not supported on provider "+string(bifrostReq.Provider)+" for model "+bifrostReq.Model+
+			": it would be sent "+sent+", which bills reasoning at a different level")
+}
+
+// chatReasoningConversion judges what a provider branch did to the reasoning a caller asked for.
+// It returns "" when the setting is delivered, or converted in one of the documented ways
+// below; otherwise it returns the field to refuse and a description of what would be sent.
+//
+// Documented conversions (the C4 exemption list for reasoning):
+//   - snap: an effort the model does not list is sent as its nearest listed level, ties going up
+//     (schemas.ModelCaps.NormalizeReasoningEffort), including a datasheet rename. Measured
+//     dependency: 94% of Tokun's chat reasoning traffic (minimal on gpt-6-luna, sent as low).
+//   - budget: reasoning.max_tokens alone, on a provider that takes an effort, is sent as the
+//     effort the budget amounts to (utils.GetReasoningEffortFromBudgetTokens); with an effort,
+//     the effort governs.
+//   - thinking switch: on a vendor whose reasoning control is a thinking switch (GLM's
+//     thinking.type, docs.z.ai/guides/capabilities/thinking; Qwen's enable_thinking,
+//     alibabacloud.com/help/en/model-studio/deep-thinking; and none on DeepSeek, MiniMax and
+//     BytePlus), an effort of none, off or disabled is sent as thinking disabled and any other
+//     effort as thinking enabled. DeepSeek also takes the effort itself
+//     (api-docs.deepseek.com/guides/thinking_mode), so it is sent with thinking enabled. A
+//     thinking type the caller set to disabled governs. A reasoning budget has no documented
+//     equivalent on these vendors (Qwen's thinking_budget is not in Model Studio's docs), so
+//     it is refused.
+//
+// Everything else changes the level against what was asked and is refused: none raised to a
+// reasoning level, an effort forced to another listed level (Mistral to high), or an effort
+// dropped so the model's default applies (Vertex none, xAI, MiniMax M3.1 none).
+func chatReasoningConversion(provider schemas.ModelProvider, caps schemas.ModelCaps, asked *schemas.ChatReasoning, callerExtra map[string]interface{}, out *OpenAIChatRequest) (field, sent string) {
+	effortField, budgetField := "reasoning.effort", "reasoning.max_tokens"
+	refused := effortField
+	if asked.Effort == nil {
+		refused = budgetField
+	}
+	got := out.ChatParameters.Reasoning
+	if got == nil || (got.Effort == nil && got.MaxTokens == nil) {
+		on, known := chatThinkingSwitch(out)
+		if !known {
+			return refused, "without it, at the model's default"
+		}
+		if !on {
+			if asked.Effort != nil && reasoningEffortIsOff(*asked.Effort) && asked.MaxTokens == nil {
+				return "", ""
+			}
+			if callerThinking, ok := schemas.ExtraParamObject(callerExtra["thinking"]); ok && callerThinking["type"] == "disabled" {
+				return "", ""
+			}
+			return refused, "with thinking disabled"
+		}
+		if asked.Effort != nil && reasoningEffortIsOff(*asked.Effort) {
+			return effortField, "with thinking enabled"
+		}
+		if asked.MaxTokens != nil {
+			return budgetField, "as an undocumented thinking setting"
+		}
+		return "", ""
+	}
+	if asked.Effort == nil {
+		if got.MaxTokens != nil && *got.MaxTokens == *asked.MaxTokens {
+			return "", ""
+		}
+		if got.Effort != nil && got.MaxTokens == nil {
+			return "", ""
+		}
+		return budgetField, "changed"
+	}
+	if got.Effort == nil {
+		return effortField, "without it, at the model's default"
+	}
+	if *got.Effort == *asked.Effort {
+		return "", ""
+	}
+	if reasoningEffortIsOff(*asked.Effort) {
+		return effortField, "as \"" + *got.Effort + "\""
+	}
+	if *got.Effort == normalizeReasoningEffort(provider, caps, *asked.Effort) {
+		return "", ""
+	}
+	return effortField, "as \"" + *got.Effort + "\""
+}
+
+// reasoningEffortIsOff reports the effort values a thinking-switch vendor reads as thinking disabled.
+func reasoningEffortIsOff(effort string) bool {
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case schemas.ReasoningEffortNone, "off", "disabled":
+		return true
+	}
+	return false
+}
+
+// chatThinkingSwitch reads the thinking switch a provider branch put on the body: DeepSeek and
+// GLM's thinking.type, Qwen's enable_thinking, or a thinking extra param (MiniMax, BytePlus).
+func chatThinkingSwitch(out *OpenAIChatRequest) (on, known bool) {
+	switch {
+	case out.Thinking != nil:
+		return out.Thinking.Type != "disabled", true
+	case out.EnableThinking != nil:
+		return *out.EnableThinking, true
+	}
+	if thinking, ok := schemas.ExtraParamObject(out.ExtraParams["thinking"]); ok {
+		if kind, _ := thinking["type"].(string); kind != "" {
+			return kind != "disabled", true
+		}
+	}
+	return false, false
 }
 
 // Filter OpenAI Specific Parameters
@@ -618,6 +763,13 @@ func (req *OpenAIChatRequest) applyDeepseekCompatibility() {
 		req.MaxCompletionTokens = nil
 	}
 
+	// DeepSeek takes reasoning_effort next to thinking.type and documents sending both
+	// (api-docs.deepseek.com/guides/thinking_mode), so an effort with thinking on goes out as
+	// sent rather than collapsing to the default level (contract C4; fork, TXE-7954).
+	if thinkingType == "enabled" && reasoning.Effort != nil {
+		req.ChatParameters.Reasoning = &schemas.ChatReasoning{Effort: reasoning.Effort}
+		return
+	}
 	req.ChatParameters.Reasoning = nil
 }
 

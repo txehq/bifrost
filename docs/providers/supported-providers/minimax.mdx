@@ -151,7 +151,7 @@ Bifrost sends `reasoning_split: true` on every chat request, so MiniMax returns 
 | `minimal` | `low` |
 | `low`, `medium`, `high`, `xhigh`, `max` | unchanged |
 | `none` | `thinking: {"type": "disabled"}` and no `reasoning_effort` |
-| `none` on `MiniMax-M3.1-Flash-Preview` | nothing; the model always thinks and rejects both `none` and `disabled` |
+| `none` on `MiniMax-M3.1-Flash-Preview` | refused with 400 `caller_unsupported_parameter` on `reasoning.effort`: the model always thinks and rejects both `none` and `disabled`, so dropping the effort would bill reasoning the request did not ask for |
 
 The M2.x models ignore `thinking.type: disabled`, so they keep thinking either way.
 
