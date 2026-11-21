@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
+	"mime"
+	"mime/multipart"
 	"net/url"
 	"reflect"
 	"strings"
@@ -109,7 +112,7 @@ func isDeferredDelivery(req *schemas.BifrostRequest, baseProvider schemas.ModelP
 		if req.PassthroughRequest == nil || len(req.PassthroughRequest.Body) == 0 {
 			return false
 		}
-		return passthroughDefersDelivery(req.PassthroughRequest.Path, req.PassthroughRequest.Body, capable)
+		return passthroughDefersDelivery(req.PassthroughRequest.Path, req.PassthroughRequest.Body, capable, req.ForwardedBodyContentType())
 	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest:
 		if req.ResponsesRequest != nil && req.ResponsesRequest.Params != nil &&
 			req.ResponsesRequest.Params.Background != nil && *req.ResponsesRequest.Params.Background {
@@ -125,7 +128,7 @@ func isDeferredDelivery(req *schemas.BifrostRequest, baseProvider schemas.ModelP
 	if queuedAnswerRequestTypes[req.RequestType] == queuedAnswerBackgroundRefused {
 		route = "/responses"
 	}
-	if len(raw) > 0 && passthroughDefersDelivery(route, raw, capable) {
+	if len(raw) > 0 && passthroughDefersDelivery(route, raw, capable, "") {
 		return true
 	}
 	if extraNamesDelivery(extra) {
@@ -218,7 +221,7 @@ var deferredDeliveryProviders = map[schemas.ModelProvider]bool{
 // JSON (compressed, UTF-16, malformed) counts. Elsewhere a top-level background can mean something
 // else, such as an image background ("transparent"), and a non-JSON body (a multipart upload) is not
 // a create that could be deferred.
-func passthroughDefersDelivery(path string, body []byte, capableProvider bool) bool {
+func passthroughDefersDelivery(path string, body []byte, capableProvider bool, contentType string) bool {
 	// The upstream decodes the path, so an escaped one (/v1/respons%65s) is read decoded too.
 	if decoded, err := url.PathUnescape(path); err == nil {
 		path = decoded
@@ -236,6 +239,20 @@ func passthroughDefersDelivery(path string, body []byte, capableProvider bool) b
 		return false
 	}
 	if !gjson.ValidBytes(body) {
+		// A form body (multipart/form-data or urlencoded) carries its fields as form fields: an
+		// ElevenLabs speech-to-text upload sends webhook=true that way. They are read with the same
+		// rule; a body that is neither JSON nor a readable form fails closed where deferral is known.
+		if fields, isForm, ok := formFields(body, contentType); isForm {
+			if !ok {
+				return capable
+			}
+			for _, field := range fields {
+				if unitDefersDelivery(field, capable) {
+					return true
+				}
+			}
+			return false
+		}
 		return capable
 	}
 	root := gjson.ParseBytes(body)
@@ -254,6 +271,74 @@ func passthroughDefersDelivery(path string, body []byte, capableProvider bool) b
 		return deferred
 	}
 	return false
+}
+
+// maxFormFieldBytes bounds the text of one form field read for deferred delivery; a longer field
+// (a prompt) is truncated, which cannot hide a delivery key: keys are field names.
+const maxFormFieldBytes = 4096
+
+// formFields reads the text fields of a form body as single-field JSON objects, one per occurrence,
+// so a field given twice is judged at each. isForm reports a multipart/form-data body (declared, read
+// by its boundary; or undeclared and opening with a boundary line) or a declared
+// application/x-www-form-urlencoded one; ok is false when such a body does not parse. A file part
+// is skipped: its name is the upload, not a setting. "true" and "false" are read as booleans, as the
+// vendor's form decoder reads them.
+func formFields(body []byte, contentType string) (fields []gjson.Result, isForm, ok bool) {
+	mediaType, params, _ := mime.ParseMediaType(contentType)
+	boundary := params["boundary"]
+	if mediaType == "" && bytes.HasPrefix(body, []byte("--")) {
+		if line, _, found := bytes.Cut(body[2:], []byte("\n")); found {
+			mediaType, boundary = "multipart/form-data", strings.TrimRight(string(line), "\r")
+		}
+	}
+	field := func(name, value string) {
+		var v interface{} = value
+		switch {
+		case strings.EqualFold(value, "true"):
+			v = true
+		case strings.EqualFold(value, "false"):
+			v = false
+		}
+		if encoded, err := json.Marshal(map[string]interface{}{name: v}); err == nil {
+			fields = append(fields, gjson.ParseBytes(encoded))
+		}
+	}
+	switch mediaType {
+	case "multipart/form-data":
+		if boundary == "" {
+			return nil, true, false
+		}
+		reader := multipart.NewReader(bytes.NewReader(body), boundary)
+		for {
+			part, err := reader.NextPart()
+			if err == io.EOF {
+				return fields, true, true
+			}
+			if err != nil {
+				return nil, true, false
+			}
+			if part.FileName() != "" {
+				continue
+			}
+			text, err := io.ReadAll(io.LimitReader(part, maxFormFieldBytes))
+			if err != nil {
+				return nil, true, false
+			}
+			field(part.FormName(), string(text))
+		}
+	case "application/x-www-form-urlencoded":
+		values, err := url.ParseQuery(string(body))
+		if err != nil {
+			return nil, true, false
+		}
+		for name, all := range values {
+			for _, value := range all {
+				field(name, value)
+			}
+		}
+		return fields, true, true
+	}
+	return nil, false, false
 }
 
 // deferredDeliveryKeys are the request keys, compared case-insensitively, that send a result to a

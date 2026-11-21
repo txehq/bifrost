@@ -1,10 +1,12 @@
 package governance
 
 import (
+	"bytes"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"io/fs"
+	"mime/multipart"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -311,22 +313,53 @@ func TestPassthroughDefersDelivery(t *testing.T) {
 		``:                                            false,
 		`   `:                                         false,
 	} {
-		assert.Equal(t, want, passthroughDefersDelivery("/v1/responses", []byte(body), false), "%q", body)
+		assert.Equal(t, want, passthroughDefersDelivery("/v1/responses", []byte(body), false, ""), "%q", body)
 	}
 	for _, path := range []string{"/v1/responses", "/openai/v1/responses", "/openai/RESPONSES", "/v1/responses/", "/v1/respons%65s"} {
-		assert.True(t, passthroughDefersDelivery(path, []byte(`{"background":true}`), false), path)
+		assert.True(t, passthroughDefersDelivery(path, []byte(`{"background":true}`), false, ""), path)
 	}
 	for _, path := range []string{"/v1beta/interactions", "/v1/projects/p/locations/l/interactions"} {
-		assert.True(t, passthroughDefersDelivery(path, []byte(`{"model":"m","background":true}`), false), "%s runs background interactions", path)
-		assert.True(t, passthroughDefersDelivery(path, []byte(`{"background":1}`), false), "%s fails closed on a coercible value", path)
-		assert.True(t, passthroughDefersDelivery(path, []byte("\x1f\x8bgzip"), false), "%s fails closed on an unreadable body", path)
+		assert.True(t, passthroughDefersDelivery(path, []byte(`{"model":"m","background":true}`), false, ""), "%s runs background interactions", path)
+		assert.True(t, passthroughDefersDelivery(path, []byte(`{"background":1}`), false, ""), "%s fails closed on a coercible value", path)
+		assert.True(t, passthroughDefersDelivery(path, []byte("\x1f\x8bgzip"), false, ""), "%s fails closed on an unreadable body", path)
 	}
 	for _, path := range []string{"/v1/files", "/v1/fine_tuning/jobs", "/v1/images/generations", "/v1/some/new/api"} {
-		assert.True(t, passthroughDefersDelivery(path, []byte(`{"background":true}`), false), "%s: an explicit background true is refused on any path", path)
-		assert.True(t, passthroughDefersDelivery(path, []byte(`{"Background":"TRUE"}`), false), "%s: in any letter case", path)
-		assert.False(t, passthroughDefersDelivery(path, []byte(`{"model":"gpt-image-1","background":"transparent"}`), false), "%s: an image background is not a background run", path)
-		assert.False(t, passthroughDefersDelivery(path, []byte("--multipart-boundary"), false), "%s with a non-JSON body is not a background create", path)
+		assert.True(t, passthroughDefersDelivery(path, []byte(`{"background":true}`), false, ""), "%s: an explicit background true is refused on any path", path)
+		assert.True(t, passthroughDefersDelivery(path, []byte(`{"Background":"TRUE"}`), false, ""), "%s: in any letter case", path)
+		assert.False(t, passthroughDefersDelivery(path, []byte(`{"model":"gpt-image-1","background":"transparent"}`), false, ""), "%s: an image background is not a background run", path)
+		assert.False(t, passthroughDefersDelivery(path, []byte("--multipart-boundary"), false, ""), "%s with a non-JSON body is not a background create", path)
 	}
+}
+
+// A form body carries its settings as form fields: an ElevenLabs speech-to-text upload asks for a
+// webhook with webhook=true. Each text field is read with the same rule; file parts are not.
+func TestFormPassthroughDefersDelivery(t *testing.T) {
+	form := func(fields ...string) ([]byte, string) {
+		var b bytes.Buffer
+		w := multipart.NewWriter(&b)
+		for i := 0; i+1 < len(fields); i += 2 {
+			require.NoError(t, w.WriteField(fields[i], fields[i+1]))
+		}
+		fw, err := w.CreateFormFile("webhook_url", "clip.mp3") // a file part named like a key is the upload
+		require.NoError(t, err)
+		_, _ = fw.Write([]byte("ID3 audio"))
+		require.NoError(t, w.Close())
+		return b.Bytes(), w.FormDataContentType()
+	}
+	path := "/v1/speech-to-text"
+	body, ct := form("model_id", "scribe_v1", "webhook", "true")
+	assert.True(t, passthroughDefersDelivery(path, body, false, ct), "a multipart webhook=true field")
+	assert.True(t, passthroughDefersDelivery(path, body, false, ""), "an undeclared multipart body is read by its opening boundary")
+	body, ct = form("model_id", "scribe_v1", "Webhook", "TRUE", "webhook", "false")
+	assert.True(t, passthroughDefersDelivery(path, body, false, ct), "each occurrence of a repeated field is judged")
+	body, ct = form("model_id", "scribe_v1", "callback_url", "https://hooks.example.invalid/c")
+	assert.True(t, passthroughDefersDelivery(path, body, false, ct), "a multipart callback URL")
+	body, ct = form("model_id", "scribe_v1", "webhook", "false", "diarize", "true")
+	assert.False(t, passthroughDefersDelivery(path, body, false, ct), "webhook=false and a file part named like a key are synchronous")
+	assert.True(t, passthroughDefersDelivery(path, []byte("webhook=true&model_id=scribe_v1"), false, "application/x-www-form-urlencoded"), "an urlencoded webhook")
+	assert.False(t, passthroughDefersDelivery(path, []byte("model_id=scribe_v1"), false, "application/x-www-form-urlencoded"))
+	assert.True(t, passthroughDefersDelivery(path, []byte("--b\r\nbroken"), true, "multipart/form-data; boundary=b"), "an unreadable form fails closed where deferral is known")
+	assert.False(t, passthroughDefersDelivery(path, []byte("ID3 audio"), false, "audio/mpeg"), "a raw audio body is no form")
 }
 
 // A Runware passthrough task asks for deferred delivery with deliveryMethod (async) or webhookURL;
@@ -352,7 +385,7 @@ func TestRunwarePassthroughDefersDelivery(t *testing.T) {
 		`[{"TaskType":"VideoInference","model":"m"}]`:                                       true,
 		`[{"taskType":"videoInference","model":"m","deliveryMethod":"sync"}]`:               false,
 	} {
-		assert.Equal(t, want, passthroughDefersDelivery("/", []byte(body), true), "%q", body)
+		assert.Equal(t, want, passthroughDefersDelivery("/", []byte(body), true, ""), "%q", body)
 	}
 	runware := &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
 		Path: "/", Body: []byte("\x1f\x8bgzip"),
