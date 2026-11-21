@@ -1,6 +1,6 @@
 {
   "name": "406. Gemini embedding batches run through asyncBatchEmbedContent (gemini embedding-batch)",
-  "description": "Wire-level pins for Gemini embedding batches (TXE-6637; contract clauses C3, C8; Gemini batch B4). A batch of /v1/embeddings lines used to be refused on Gemini as a url a generateContent batch cannot run. Rows 406.1 to 406.4 run against a live gateway; rows 406.5 to 406.8 run against the provider error fixture and its isolated gateway (tests/e2e/api/README.md, --env-var providerErrorFixture=1) and are skipped otherwise, and the two rows that need the real vendor (406.1, 406.4) are skipped on the fixture. Live rows: (406.1) inline /v1/embeddings lines create one models/{model}:asyncBatchEmbedContent job: the echoed request body carries one EmbedContentRequest per line, each with the content, outputDimensionality and taskType the sync route sends, and the line's custom_id and url in its metadata; the batch is cancelled at once. (406.2) a chat line in an embedding batch and (406.3) an embeddings line with no input are refused naming the line; nothing is sent upstream. (406.4) retrieve, cancel and results of a Gemini batch call upstream with the key the caller names in x-bf-api-key and with no other key, and report it in x-bifrost-routing-info-key: a run-scoped provider on the Gemini base has a dead key and a live key, both enabled for batches, and the body says which answered (Gemini's own 400 \"API key not valid\" or the live key's answer for a batch id that does not exist). Fixture rows: (406.5) the fixture's recorded calls are reset. (406.6) the same create reaches the fixture as exactly one asyncBatchEmbedContent call whose recorded body is what the gateway reports it sent, two requests for two lines. (406.7) the results of the fixture's finished batch, seven vendor responses for four lines (a job created before TXE-7033, when a line with several inputs was sent as one request per input), are OpenAI-shape embeddings lines paged in lines: limit=2 returns the one-input line and the three-input line put back together (data[0..2], usage 15) with a next_cursor, the next page the two failed lines with the vendor's error codes, and retrieve reports completed. (406.8) a run-scoped provider pointed at the fixture has a dead and a live key: retrieve and results with each named key reach the fixture bearing that key and no other, read back from the fixture's record of the x-goog-api-key of every batch read. (406.9) TXE-7033 (contract C8): a line whose input holds two items is refused with a 400 caller_unsupported_parameter naming requests[1].body.input and the line's custom_id; one input per line is the caller's to send, because a line sent as several requests that partly failed came back failed with no usage while the vendor billed the inputs that succeeded. It runs on the live gateway and on the fixture (the refusal comes before any upstream call). (406.10, TXE-7030) Google's SDK batches.create_embeddings through /genai models/{model}:asyncBatchEmbedContent reaches the fixture as one asyncBatchEmbedContent call carrying the SDK's EmbedContentRequests, and (406.11) batches.get through /genai returns the finished job's seven vendor responses at metadata.output.inlinedResponses.inlinedResponses, where python-genai reads them and names them inlined_embed_content_responses. (406.12) a /genai batch create that names one file as fileName and another as file_name (both spellings Gemini accepts) is refused with 400 before anything reaches the fixture, so the file whose ownership is checked is the file Gemini runs. Run with FEATURE=\"embedding-batch\". Through /genai the route returns Gemini's own job object unchanged (TXE-7953): rows 406.10 and 406.11 check the vendor's state, model, displayName and @type.",
+  "description": "Wire-level pins for Gemini embedding batches (TXE-6637; contract clauses C3, C8; Gemini batch B4). A batch of /v1/embeddings lines used to be refused on Gemini as a url a generateContent batch cannot run. Rows 406.1 to 406.4 run against a live gateway; rows 406.5 to 406.8 run against the provider error fixture and its isolated gateway (tests/e2e/api/README.md, --env-var providerErrorFixture=1) and are skipped otherwise, and the two rows that need the real vendor (406.1, 406.4) are skipped on the fixture. Live rows: (406.1) inline /v1/embeddings lines create one models/{model}:asyncBatchEmbedContent job: the echoed request body carries one EmbedContentRequest per line, each with the content, outputDimensionality and taskType the sync route sends, and the line's custom_id and url in its metadata; the batch is cancelled at once. (406.2) a chat line in an embedding batch and (406.3) an embeddings line with no input are refused naming the line; nothing is sent upstream. (406.4) retrieve, cancel and results of a Gemini batch call upstream with the key the caller names in x-bf-api-key and with no other key, and report it in x-bifrost-routing-info-key: a run-scoped provider on the Gemini base has a dead key and a live key, both enabled for batches, and the body says which answered (Gemini's own 400 \"API key not valid\" or the live key's answer for a batch id that does not exist). Fixture rows: (406.5) the fixture's recorded calls are reset. (406.6) the same create reaches the fixture as exactly one asyncBatchEmbedContent call whose recorded body is what the gateway reports it sent, two requests for two lines. (406.7) the results of the fixture's finished batch, seven vendor responses for four lines (a job created before TXE-7033, when a line with several inputs was sent as one request per input), are OpenAI-shape embeddings lines paged in lines: limit=2 returns the one-input line and the three-input line put back together (data[0..2], usage 15) with a next_cursor, the next page the two failed lines with the vendor's error codes, and retrieve reports completed. (406.8) a run-scoped provider pointed at the fixture has a dead and a live key: retrieve and results with each named key reach the fixture bearing that key and no other, read back from the fixture's record of the x-goog-api-key of every batch read. (406.9) TXE-7033 (contract C8): a line whose input holds two items is refused with a 400 caller_unsupported_parameter naming requests[1].body.input and the line's custom_id; one input per line is the caller's to send, because a line sent as several requests that partly failed came back failed with no usage while the vendor billed the inputs that succeeded. It runs on the live gateway and on the fixture (the refusal comes before any upstream call). (406.10, TXE-7030) Google's SDK batches.create_embeddings through /genai models/{model}:asyncBatchEmbedContent reaches the fixture as one asyncBatchEmbedContent call carrying the SDK's EmbedContentRequests, and (406.11) batches.get through /genai returns the finished job's seven vendor responses at metadata.output.inlinedResponses.inlinedResponses, where python-genai reads them and names them inlined_embed_content_responses. (406.12) a /genai batch create that names one file as fileName and another as file_name (both spellings Gemini accepts) is refused with 400 before anything reaches the fixture, so the file whose ownership is checked is the file Gemini runs. Run with FEATURE=\"embedding-batch\". Through /genai the route returns Gemini's own job object unchanged (TXE-7953): rows 406.10, 406.11 and 406.13 (list, under Bifrost's page token) check the vendor's state, model, displayName and @type.",
   "item": [
     {
       "name": "406.1 gemini/gemini-embedding-001 embedding-batch: inline /v1/embeddings lines create one asyncBatchEmbedContent job, one request per line",
@@ -948,6 +948,69 @@
             "v1beta",
             "models",
             "pp-embedding:asyncBatchEmbedContent"
+          ]
+        }
+      }
+    },
+    {
+      "name": "406.13 gemini embedding-batch fixture: Google SDK batches.list through /genai returns each listed job as the vendor sent it, under Bifrost's page token (TXE-7953)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// The fixture lists one pending EmbedContentBatch with the vendor's page token vendor-page-2 (pageSize=406 marks this row).",
+              "var text = pm.response.text();",
+              "var j = {}; try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+              "var ops = j.operations || [];",
+              "var md = (ops[0] || {}).metadata || {};",
+              "pm.test('the listed job is the vendor\\'s, unchanged', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + text).to.eql(200);",
+              "  pm.expect(ops.length, text).to.eql(1);",
+              "  pm.expect(ops[0].name, text).to.eql('batches/emb-fixture-listed');",
+              "  pm.expect(md.state, text).to.eql('BATCH_STATE_PENDING');",
+              "  pm.expect(md.model, text).to.eql('models/pp-embedding');",
+              "  pm.expect(md.displayName, text).to.eql('fixture-listed-batch');",
+              "  pm.expect(md['@type'], text).to.eql('type.googleapis.com/google.ai.generativelanguage.v1beta.EmbedContentBatch');",
+              "});",
+              "pm.test('the page token is Bifrost\\'s, which pages across keys, not the vendor\\'s', function () {",
+              "  pm.expect(j.nextPageToken, text).to.be.a('string').and.not.empty;",
+              "  pm.expect(j.nextPageToken, text).to.not.eql('vendor-page-2');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/batches?pageSize=406",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "batches"
+          ],
+          "query": [
+            {
+              "key": "pageSize",
+              "value": "406"
+            }
           ]
         }
       }
