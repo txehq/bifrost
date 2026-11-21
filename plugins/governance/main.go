@@ -1624,7 +1624,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 			// Use the requested model for usage tracking
 			p.postHookWorker(result, err, provider, requestedModel, requestType, requestID, billingNonce, isFinalChunk, attemptNumber, fallbackIndex, sessionContinuation, pricingScopes, accountedBudgets, accountedRateLimits, routingMetadata, bodyModel, read, holder)
 		}()
-	} else if bodyModel, _ := ctx.Value(passthroughBodyModelContextKey).(string); bodyModel != "" && (!bifrost.IsStreamRequestType(requestType) || isFinalChunk) && (passthroughGenerated(result) || passthroughEscapedQueue(result, p.logger, requestID)) {
+	} else if bodyModel, _ := ctx.Value(passthroughBodyModelContextKey).(string); bodyModel != "" && (!bifrost.IsStreamRequestType(requestType) || isFinalChunk) && (passthroughGenerated(result) || passthroughEscapedQueue(result, nil, requestID)) {
 		// A passthrough whose body named the model it runs, answered with no usage the provider
 		// could read (Runware without includeCost), is not charged and counts no request. It is
 		// still an answer under the budgets it was admitted against, priced at $0 (TXE-7957).
@@ -1634,6 +1634,10 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 				budgets = grant.LimitsFrom(budgets, untrackedHolderKinds...)
 			}
 			if len(budgets) > 0 {
+				if !passthroughGenerated(result) {
+					// Logged here, under the budget, rather than by the check above (TXE-8013).
+					passthroughEscapedQueue(result, p.logger, requestID)
+				}
 				pricedAs := modelcatalog.PassthroughPricingRequestType(provider, result.GetExtraFields().PassthroughPath, nil)
 				p.resolver.noteUnpricedAnswer(provider, bodyModel, "", requestType, pricedAs, 0, pricingScopes, requestID, limitIDs(budgets), unpricedHolder(ctx))
 			}
