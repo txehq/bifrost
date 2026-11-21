@@ -1180,7 +1180,7 @@ const geminiEmbedBatchCreate = (path, body) => {
 // A finished Gemini batch past the retrieve limit (folder 513, TXE-8031): with client.max_response_body_size_mb at 1 MB a
 // retrieve is read under a quarter of it (256 KiB), and this job carries about 512 KiB of inline results, as a large inline
 // batch does. GET /pp/gemini/batches/rbl-oversize-job answers it; a list with pageSize=513 (folder 513's marker) answers the
-// same job, which a list, not being a retrieve, reads under the whole limit.
+// same job, which a list is held to the same limit for (TXE-8032).
 const RBL_OVERSIZE_JOB = "rbl-oversize-job";
 const geminiOversizeBatchJob = () => {
 	const text = "lorem ipsum ".repeat(80);

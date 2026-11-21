@@ -1955,7 +1955,7 @@ func TestContextTransport_RetrieveIsReadUnderAQuarterOfTheResponseLimit(t *testi
 			require.NotNil(t, bifrostErr)
 			assert.True(t, bifrostErr.IsBifrostError)
 			assert.Equal(t, schemas.ErrorTypeBifrostInternal, bifrostErr.ExtraFields.ErrorType)
-			assert.Contains(t, bifrostErr.Error.Message, "limit 1 MiB, for a retrieve, client.max_response_body_size_mb / 4")
+			assert.Contains(t, bifrostErr.Error.Message, "limit 1 MiB, for a retrieve or list, client.max_response_body_size_mb / 4")
 			var tooLarge *network.ResponseBodyTooLargeError
 			require.True(t, errors.As(bifrostErr.Error.Error, &tooLarge), "%v", bifrostErr.Error.Error)
 			assert.True(t, tooLarge.Retrieve)

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -3126,13 +3127,16 @@ func (provider *GeminiProvider) batchListByKey(ctx *schemas.BifrostContext, key 
 		return nil, latency, providerUtils.SetErrorLatency(parseGeminiError(resp), latency)
 	}
 
-	body, err := providerUtils.CheckAndDecodeBody(resp)
+	// Taken, not copied: each listed job is kept as a slice of body (TXE-8032).
+	body, err := providerUtils.TakeDecodedBody(resp)
 	if err != nil {
 		return nil, latency, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
 	}
 
-	var geminiResp GeminiBatchListResponse
-	if err := sonic.Unmarshal(body, &geminiResp); err != nil {
+	// Each job's state only: encoding/json skips the inline results a finished job carries, which
+	// decoding into Go values cost about twenty times the body (TXE-8032, as TXE-8031 for retrieve).
+	var geminiResp geminiBatchListStatus
+	if err := json.Unmarshal(body, &geminiResp); err != nil {
 		return nil, latency, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
 	}
 
@@ -3150,14 +3154,16 @@ func (provider *GeminiProvider) batchListByKey(ctx *schemas.BifrostContext, key 
 			nativeJob = nativeJobs[i]
 		}
 		var state, createTime string
+		var metadata *GeminiBatchMetadata
 		if batch.Metadata != nil {
-			state, createTime = batch.Metadata.State, batch.Metadata.CreateTime
+			metadata = &batch.Metadata.GeminiBatchMetadata
+			state, createTime = metadata.State, metadata.CreateTime
 		}
 		data = append(data, schemas.BifrostBatchRetrieveResponse{
 			// Full name (batches/<id>), matching create/retrieve so the id is stable.
 			ID:            batch.Name,
 			Object:        "batch",
-			DisplayName:   geminiDisplayName(batch.Metadata),
+			DisplayName:   geminiDisplayName(metadata),
 			Status:        ToBifrostBatchStatus(state),
 			CreatedAt:     parseGeminiTimestamp(createTime),
 			OperationName: &batch.Name,

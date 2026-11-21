@@ -6090,13 +6090,13 @@ func markWriteOnce(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) {
 	}
 }
 
-// markRetrieve stamps ctx for the HTTP transport: a retrieve (schemas.RequestType.IsRetrieve) is
-// read under network.MaxRetrieveResponseBodyBytes, since converting it holds several copies of
-// its body (TXE-8031). As with markWriteOnce, a mark left by an earlier request on a shared
+// markRetrieve stamps ctx for the HTTP transport: a retrieve or a list
+// (schemas.RequestType.ReadUnderRetrieveLimit) is read under network.MaxRetrieveResponseBodyBytes,
+// since converting it holds several copies of its body (TXE-8031, TXE-8032). As with markWriteOnce, a mark left by an earlier request on a shared
 // context is cleared, and a request that is not a retrieve on a context that never carried the
 // mark pays one context read.
 func markRetrieve(ctx *schemas.BifrostContext, requestType schemas.RequestType) {
-	if requestType.IsRetrieve() {
+	if requestType.ReadUnderRetrieveLimit() {
 		ctx.SetValue(schemas.BifrostContextKeyRetrieveRequest, true)
 		return
 	}
