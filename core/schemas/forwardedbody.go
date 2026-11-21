@@ -762,15 +762,16 @@ var utf8ByteOrderMark = []byte{0xef, 0xbb, 0xbf}
 // object and from the objects of a root array (governance's passthrough models, a typed decoder
 // of the request), so only those objects are compared without case: elsewhere, such as a tool's
 // input_schema.properties, keys are user-defined and case-sensitive.
-var GatedBodyKeys = []string{BodyModelKey}
+var GatedBodyKeys = []string{BodyModelKey, BodyStreamKey}
 
 // BodyModelKey is the member the gates (governance's model access and limits) and the router read
 // a forwarded body's model from. Readers use this constant, never a literal:
 // TestBodyReadersGateOnlyOnTheSharedKeyList fails otherwise.
 const BodyModelKey = "model"
 
-// BodyStreamKey is the member the passthrough router reads a stream flag from. It is not gated: a
-// misread changes how the answer is framed, not what the caller may run.
+// BodyStreamKey is the member the passthrough router and governance read a stream flag from. It is
+// gated: a misread sends a stream down the non-stream path, whose usage parser finds no usage in
+// SSE, so the answer escapes token limits and pricing.
 const BodyStreamKey = "stream"
 
 // gatedBodyKey returns the gated key name folds to, or "".

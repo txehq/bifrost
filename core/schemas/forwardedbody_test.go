@@ -24,6 +24,7 @@ func TestAmbiguousBodyMember(t *testing.T) {
 		{"lenient JSON a vendor might accept", `{"model":"a",}`, "a JSON body that does not parse strictly"},
 		{"byte order mark", "\xef\xbb\xbf{\"model\":\"a\",\"model\":\"b\"}", "model"},
 		{"model in two casings", `{"model":"a","Model":"b"}`, "Model"},
+		{"stream in two casings", `{"stream":false,"Stream":true}`, "Stream"},
 		{"nested model in two casings", `[{"MODEL":"a","model":"b"}]`, "[0].model"},
 		{"object naming its model once", `{"model":"a","messages":[{"role":"user","content":"x"}]}`, ""},
 		{"same key in sibling objects", `{"messages":[{"role":"user"},{"role":"assistant"}]}`, ""},
@@ -343,6 +344,9 @@ func TestMislabeledJSONBody(t *testing.T) {
 		contentType, body, mediaType, problem string
 	}{
 		{"text/plain", `{"model":"gpt-4o"}`, "text/plain", naming},
+		// A stream flag a lenient vendor reads while the router does not sends a stream down the
+		// non-stream path, whose usage parser finds no usage (TXE-8012).
+		{"text/plain", `{"stream":true}`, "text/plain", "is JSON naming stream"},
 		{"application/octet-stream", ` [{"task":1},{"Model":"x"}]`, "application/octet-stream", naming},
 		{"text/plain; charset=utf-8", "\ufeff{\"MODEL\":\"x\"}", "text/plain", naming},
 		// Non-strict JSON under a non-JSON type: refused whatever it names.

@@ -1439,7 +1439,7 @@ func TestEveryForwardedBodyReaderUsesTheSharedClassifier(t *testing.T) {
 // refusal cover the keys in schemas.GatedBodyKeys, so a reader that gates on another key would be
 // read one way by it and another by the vendor (TXE-8012). It fails when a forwarded-body reader
 // compares a body key to a string literal instead of a schemas.Body*Key constant, or uses a
-// constant that is neither in GatedBodyKeys nor the named non-gate BodyStreamKey.
+// constant that is not in GatedBodyKeys.
 func TestBodyReadersGateOnlyOnTheSharedKeyList(t *testing.T) {
 	readers := map[string]bool{
 		"../plugins/governance/main.go:passthroughBodyModels":                             true,
@@ -1448,11 +1448,13 @@ func TestBodyReadersGateOnlyOnTheSharedKeyList(t *testing.T) {
 		"../transports/bifrost-http/integrations/router.go:passthroughObjectModel":        true,
 		"../transports/bifrost-http/integrations/router.go:parseMultipartPassthroughBody": true,
 	}
-	allowed := map[string]bool{"BodyStreamKey": true}
+	allowed := map[string]bool{}
 	for _, key := range schemas.GatedBodyKeys {
 		switch key {
 		case schemas.BodyModelKey:
 			allowed["BodyModelKey"] = true
+		case schemas.BodyStreamKey:
+			allowed["BodyStreamKey"] = true
 		default:
 			t.Fatalf("GatedBodyKeys holds %q with no Body*Key constant; add one", key)
 		}
@@ -1529,7 +1531,7 @@ func TestBodyReadersGateOnlyOnTheSharedKeyList(t *testing.T) {
 	for site := range readers {
 		assert.True(t, found[site], "reader %s not found; update the list", site)
 	}
-	assert.Empty(t, literals, "a forwarded-body reader compares a key to a string literal; use schemas.BodyModelKey (gated, in GatedBodyKeys) or schemas.BodyStreamKey")
+	assert.Empty(t, literals, "a forwarded-body reader compares a key to a string literal; use a schemas.Body*Key constant in GatedBodyKeys")
 	assert.Empty(t, unlisted, "a forwarded-body reader gates on a key not in schemas.GatedBodyKeys; add it there so the guard covers it")
 }
 

@@ -400,6 +400,60 @@
           "raw": "{this is a text file that opens with a brace"
         }
       }
+    },
+    {
+      "name": "653.8 openai passthrough chat with strict JSON asking to stream declared text/plain is refused [EXPECT-400] (repeated body member refused)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var text = pm.response.text();",
+              "pm.test('a stream flag under a non-JSON type is refused 400: the router would not stream it, a lenient upstream would (TXE-8012)', function () {",
+              "  pm.expect(pm.response.code, text.slice(0, 300)).to.equal(400);",
+              "  pm.expect(text).to.include('is JSON naming stream but is declared text/plain');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "text/plain"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/openai_passthrough/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai_passthrough",
+            "v1",
+            "chat",
+            "completions"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}"
+        }
+      }
     }
   ]
 }
