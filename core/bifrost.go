@@ -6090,6 +6090,21 @@ func markWriteOnce(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) {
 	}
 }
 
+// markRetrieve stamps ctx for the HTTP transport: a retrieve (schemas.RequestType.IsRetrieve) is
+// read under network.MaxRetrieveResponseBodyBytes, since converting it holds several copies of
+// its body (TXE-8031). As with markWriteOnce, a mark left by an earlier request on a shared
+// context is cleared, and a request that is not a retrieve on a context that never carried the
+// mark pays one context read.
+func markRetrieve(ctx *schemas.BifrostContext, requestType schemas.RequestType) {
+	if requestType.IsRetrieve() {
+		ctx.SetValue(schemas.BifrostContextKeyRetrieveRequest, true)
+		return
+	}
+	if marked, _ := ctx.Value(schemas.BifrostContextKeyRetrieveRequest).(bool); marked {
+		ctx.SetValue(schemas.BifrostContextKeyRetrieveRequest, false)
+	}
+}
+
 // upstreamWriteUnknown reports whether the attempt that ended with bifrostErr sent a request
 // that must reach the vendor at most once and whose outcome is unknown
 // (providerUtils.SendSingleAttempt, providerUtils.MarkUpstreamWriteUnknown). The vendor may
@@ -8550,6 +8565,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		// Read once per request, so the retry loop needs no handle on the Bifrost instance.
 		markEncryptedReasoningRetry(req.Context, bifrost.disableEncryptedReasoningRetry.Load())
 		markWriteOnce(req.Context, &req.BifrostRequest)
+		markRetrieve(req.Context, req.BifrostRequest.RequestType)
 		// Lets downstream converters resolve a custom provider key back to the built-in provider it wraps.
 		req.Context.SetValue(schemas.BifrostContextKeyBaseProviderType, baseProvider)
 		// Re-stamped per attempt so a fallback cannot inherit the previous provider's opt-in.

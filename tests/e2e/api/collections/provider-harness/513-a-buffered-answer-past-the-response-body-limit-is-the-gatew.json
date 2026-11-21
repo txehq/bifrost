@@ -1,6 +1,6 @@
 {
   "name": "513. A buffered answer past client.max_response_body_size_mb is the gateway's refusal: bifrost_internal, no retry, no fallback (response-body-limit) [SERIAL]",
-  "description": "Local fixture regression for TXE-7148, no live provider calls. Run with the provider error fixture and the gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json (openai base_url -> the fixture) and providerErrorFixture=1; every case is skipped otherwise. [SERIAL]: it lowers client.max_response_body_size_mb to 1 MB, which every other row's answers are read under, so the harness runs it alone and it restores the stored value at the end. The fixture answers upstream-oversize with a 2 MiB chat completion and upstream-oversize-gzip-500 with a 500 whose gzip body decompresses to 2 MiB. Each must come back as is_bifrost_error with error_type bifrost_internal and a message naming the limit, be requested from the fixture once, and never reach its configured fallback; an answer under the limit is still served.",
+  "description": "Local fixture regression for TXE-7148, no live provider calls. Run with the provider error fixture and the gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json (openai base_url -> the fixture) and providerErrorFixture=1; every case is skipped otherwise. [SERIAL]: it lowers client.max_response_body_size_mb to 1 MB, which every other row's answers are read under, so the harness runs it alone and it restores the stored value at the end. The fixture answers upstream-oversize with a 2 MiB chat completion and upstream-oversize-gzip-500 with a 500 whose gzip body decompresses to 2 MiB. Each must come back as is_bifrost_error with error_type bifrost_internal and a message naming the limit, be requested from the fixture once, and never reach its configured fallback; an answer under the limit is still served. A Gemini batch retrieve is read under a quarter of the limit (TXE-8031): the fixture's finished inline job of about 560 KB must come back as bifrost_internal naming the retrieve limit and be requested once, while a batch list holding the same job, which is not a retrieve, is served.",
   "item": [
     {
       "name": "513.1 fixture hit counters reset",
@@ -368,7 +368,166 @@
       }
     },
     {
-      "name": "513.8 [EXPECT-200] restore client.max_response_body_size_mb (response-body-limit)",
+      "name": "513.8 [EXPECT-500] gemini batch retrieve past a quarter of the limit fails as bifrost_internal naming the retrieve limit (response-body-limit, TXE-8031)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// A retrieve is read under a quarter of client.max_response_body_size_mb (TXE-8031): converting it holds several copies",
+              "// of its body. With the limit at 1 MB the retrieve limit is 256 KiB, and the fixture's finished inline job is about 560 KB.",
+              "var text = pm.response.text();",
+              "var j = {}; try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+              "pm.test('the job is refused as the gateway\\'s own error', function () {",
+              "  pm.expect(pm.response.code, text).to.be.at.least(500);",
+              "  pm.expect(j.is_bifrost_error, text).to.equal(true);",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, text).to.equal('bifrost_internal');",
+              "});",
+              "pm.test('the message names the retrieve limit and the setting', function () {",
+              "  pm.expect((j.error || {}).message, text).to.include('limit 262144 bytes, for a retrieve, client.max_response_body_size_mb / 4');",
+              "});",
+              "pm.test('the job is not passed on, whole or cut short', function () {",
+              "  pm.expect(text.length, 'response is ' + text.length + ' bytes').to.be.below(65536);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches/rbl-oversize-job?provider=gemini",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches",
+            "rbl-oversize-job"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "gemini"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "513.9 [EXPECT-200] the same job in a batch list, which is not a retrieve, is read under the whole limit and served (response-body-limit, TXE-8031)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var text = pm.response.text();",
+              "pm.test('the list of the same job is served', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + text.slice(0, 2000)).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect((j.data || []).length, text.slice(0, 2000)).to.eql(1);",
+              "  pm.expect(j.data[0].id, text.slice(0, 2000)).to.eql('batches/rbl-oversize-job');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches?provider=gemini&limit=513",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "gemini"
+            },
+            {
+              "key": "limit",
+              "value": "513"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "513.10 [EXPECT-200] the refused job was requested once and the list once (response-body-limit, TXE-8031)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var hits = pm.response.json().data[0].hits;",
+              "pm.test('the over-limit retrieve was requested once: no retry, no second key', function () {",
+              "  pm.expect(hits['gemini.batches rbl-oversize-job'], JSON.stringify(hits)).to.equal(1);",
+              "});",
+              "pm.test('the list was requested once', function () {",
+              "  pm.expect(hits['gemini.batches list 513'], JSON.stringify(hits)).to.equal(1);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{providerErrorFixtureUrl}}/__hits",
+          "host": [
+            "{{providerErrorFixtureUrl}}"
+          ],
+          "path": [
+            "__hits"
+          ]
+        }
+      }
+    },
+    {
+      "name": "513.11 [EXPECT-200] restore client.max_response_body_size_mb (response-body-limit)",
       "event": [
         {
           "listen": "prerequest",
@@ -421,7 +580,7 @@
       }
     },
     {
-      "name": "513.9 [EXPECT-200] the original limit is stored again (response-body-limit)",
+      "name": "513.12 [EXPECT-200] the original limit is stored again (response-body-limit)",
       "event": [
         {
           "listen": "prerequest",

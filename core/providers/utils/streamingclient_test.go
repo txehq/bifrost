@@ -24,6 +24,7 @@ import (
 
 	"github.com/capsohq/bifrost/core/network"
 	"github.com/capsohq/bifrost/core/schemas"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 )
@@ -2047,4 +2048,23 @@ func TestSetupStreamingPassthroughNeedsAnEligibleAttempt(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The large-response path reads a body it must convert under the same retrieve limit.
+func TestFinalizeResponseWithLargeDetection_ConvertedRetrieveUsesTheRetrieveLimit(t *testing.T) {
+	network.SetMaxResponseBodySizeMB(4)
+	t.Cleanup(func() { network.SetMaxResponseBodySizeMB(0) })
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyLargeResponseThreshold, int64(8<<20))
+	ctx.SetValue(schemas.BifrostContextKeyRetrieveRequest, true)
+
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(resp)
+	resp.SetBodyStream(strings.NewReader(strings.Repeat("x", 1<<20+1)), -1)
+
+	_, isLarge, bifrostErr := FinalizeResponseWithLargeDetection(ctx, resp, nil)
+	require.False(t, isLarge)
+	require.NotNil(t, bifrostErr)
+	assert.Contains(t, bifrostErr.Error.Message, "limit 1 MiB, for a retrieve")
 }

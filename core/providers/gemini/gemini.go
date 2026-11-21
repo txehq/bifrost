@@ -3300,13 +3300,14 @@ func (provider *GeminiProvider) batchRetrieveByKey(ctx *schemas.BifrostContext, 
 		return nil, providerUtils.SetErrorLatency(parseGeminiError(resp), latency)
 	}
 
-	body, err := providerUtils.CheckAndDecodeBody(resp)
+	// Taken, not copied: the job's output is kept as NativeOutput, a slice of body (TXE-8031).
+	body, err := providerUtils.TakeDecodedBody(resp)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
 	}
 
-	var geminiResp GeminiBatchJobResponse
-	_, rawResponse, bifrostErr2 := providerUtils.HandleProviderResponse(body, &geminiResp, nil, false, providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	var geminiResp geminiBatchJobStatus
+	rawResponse, bifrostErr2 := providerUtils.HandleSkippingProviderResponse(body, &geminiResp, providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if bifrostErr2 != nil {
 		return nil, bifrostErr2
 	}
@@ -3314,6 +3315,7 @@ func (provider *GeminiProvider) batchRetrieveByKey(ctx *schemas.BifrostContext, 
 	if geminiResp.Metadata == nil {
 		return nil, providerUtils.NewBifrostOperationError("gemini batch response missing metadata", nil)
 	}
+	metadata := &geminiResp.Metadata.GeminiBatchMetadata
 	// Counts stay zero when the job has no stats yet.
 	batchStats := geminiResp.Metadata.BatchStats
 	if batchStats == nil {
@@ -3331,7 +3333,7 @@ func (provider *GeminiProvider) batchRetrieveByKey(ctx *schemas.BifrostContext, 
 	result := &schemas.BifrostBatchRetrieveResponse{
 		ID:            geminiResp.Metadata.Name,
 		Object:        "batch",
-		DisplayName:   geminiDisplayName(geminiResp.Metadata),
+		DisplayName:   geminiDisplayName(metadata),
 		Status:        ToBifrostBatchStatus(geminiResp.Metadata.State),
 		CreatedAt:     parseGeminiTimestamp(geminiResp.Metadata.CreateTime),
 		OperationName: &geminiResp.Metadata.Name,
@@ -3367,7 +3369,7 @@ func (provider *GeminiProvider) batchRetrieveByKey(ctx *schemas.BifrostContext, 
 	// Surface the output file id for file-based batches so callers can download the
 	// results via files.content. Inline batches carry no file; their responses are
 	// exposed through BatchResults instead.
-	if outputFile, _ := geminiBatchOutput(&geminiResp); outputFile != "" {
+	if outputFile := geminiResp.outputFile(); outputFile != "" {
 		result.OutputFileID = &outputFile
 	}
 
@@ -3389,17 +3391,20 @@ func (provider *GeminiProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys 
 	}
 
 	// Try each key until we find the batch
-	var lastError *schemas.BifrostError
+	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		resp, err := provider.batchRetrieveByKey(ctx, key, request)
 		if err == nil {
 			return resp, nil
 		}
-		lastError = err
+		lastErr = err
 	}
 
 	// All keys failed, return the last error
-	return nil, lastError
+	return nil, lastErr
 }
 
 // batchCancelByKey cancels a batch job for Gemini for a single key.
@@ -3468,18 +3473,21 @@ func (provider *GeminiProvider) BatchCancel(ctx *schemas.BifrostContext, keys []
 	}
 
 	// Try each key until cancellation succeeds
-	var lastError *schemas.BifrostError
+	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		resp, err := provider.batchCancelByKey(ctx, key, request)
 		if err == nil {
 			return resp, nil
 		}
-		lastError = err
+		lastErr = err
 		provider.logger.Debug("BatchCancel failed for key %s: %v", key.Name, err.Error)
 	}
 
 	// All keys failed, return the last error
-	return nil, lastError
+	return nil, lastErr
 }
 
 // batchDeleteByKey deletes a batch job for Gemini for a single key.
@@ -3539,17 +3547,20 @@ func (provider *GeminiProvider) BatchDelete(ctx *schemas.BifrostContext, keys []
 		return nil, providerUtils.NewBifrostOperationError("no keys provided for batch delete", nil)
 	}
 
-	var lastError *schemas.BifrostError
+	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		resp, err := provider.batchDeleteByKey(ctx, key, request)
 		if err == nil {
 			return resp, nil
 		}
-		lastError = err
+		lastErr = err
 		provider.logger.Debug("BatchDelete failed for key %s: %v", key.Name, err.Error)
 	}
 
-	return nil, lastError
+	return nil, lastErr
 }
 
 // processGeminiStreamChunk processes a single chunk from Gemini streaming response
@@ -3900,18 +3911,21 @@ func (provider *GeminiProvider) BatchResults(ctx *schemas.BifrostContext, keys [
 	}
 
 	// Try each key until we get results
-	var lastError *schemas.BifrostError
+	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		resp, err := provider.batchResultsByKey(ctx, key, request)
 		if err == nil {
 			return resp, nil
 		}
-		lastError = err
+		lastErr = err
 		provider.logger.Debug("BatchResults failed for key %s: %v", key.Name, err.Error.Message)
 	}
 
 	// All keys failed, return the last error
-	return nil, lastError
+	return nil, lastErr
 }
 
 // FileUpload uploads a file to Gemini.
@@ -4321,18 +4335,21 @@ func (provider *GeminiProvider) FileRetrieve(ctx *schemas.BifrostContext, keys [
 	}
 
 	// Try each key until we find the file
-	var lastError *schemas.BifrostError
+	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		resp, err := provider.fileRetrieveByKey(ctx, key, request)
 		if err == nil {
 			return resp, nil
 		}
-		lastError = err
+		lastErr = err
 		provider.logger.Debug("FileRetrieve failed for key %s: %v", key.Name, err.Error)
 	}
 
 	// All keys failed, return the last error
-	return nil, lastError
+	return nil, lastErr
 }
 
 // fileDeleteByKey deletes a file from Gemini for a single key.
@@ -4391,18 +4408,21 @@ func (provider *GeminiProvider) FileDelete(ctx *schemas.BifrostContext, keys []s
 	}
 
 	// Try each key until deletion succeeds
-	var lastError *schemas.BifrostError
+	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		if providerUtils.StopKeyWalk(lastErr) {
+			break
+		}
 		resp, err := provider.fileDeleteByKey(ctx, key, request)
 		if err == nil {
 			return resp, nil
 		}
-		lastError = err
+		lastErr = err
 		provider.logger.Debug("FileDelete failed for key %s: %v", key.Name, err.Error)
 	}
 
 	// All keys failed, return the last error
-	return nil, lastError
+	return nil, lastErr
 }
 
 // FileContent downloads file content from Gemini.

@@ -3924,6 +3924,19 @@ func HandleProviderResponseCtx[T any](ctx context.Context, responseBody []byte, 
 // HTML detection only runs if JSON parsing fails to avoid expensive regex operations
 // on responses that are almost certainly valid JSON.
 func HandleProviderResponse[T any](responseBody []byte, response *T, requestBody []byte, sendBackRawRequest bool, sendBackRawResponse bool) (rawRequest interface{}, rawResponse interface{}, bifrostErr *schemas.BifrostError) {
+	return handleProviderResponse(responseBody, response, requestBody, sendBackRawRequest, sendBackRawResponse, sonic.Unmarshal)
+}
+
+// HandleSkippingProviderResponse is HandleProviderResponse for a body that can be large and that
+// response reads only a small part of (a Gemini batch job with its inline results). It decodes
+// with encoding/json, which skips the unread part without allocating: sonic allocated about nine
+// times the body to skip a Gemini job's inline results (TXE-8031).
+func HandleSkippingProviderResponse[T any](responseBody []byte, response *T, sendBackRawResponse bool) (rawResponse interface{}, bifrostErr *schemas.BifrostError) {
+	_, rawResponse, bifrostErr = handleProviderResponse(responseBody, response, nil, false, sendBackRawResponse, json.Unmarshal)
+	return rawResponse, bifrostErr
+}
+
+func handleProviderResponse[T any](responseBody []byte, response *T, requestBody []byte, sendBackRawRequest bool, sendBackRawResponse bool, unmarshal func([]byte, any) error) (rawRequest interface{}, rawResponse interface{}, bifrostErr *schemas.BifrostError) {
 	// Check for empty response
 	if len(bytes.TrimSpace(responseBody)) == 0 {
 		return nil, nil, &schemas.BifrostError{
@@ -3950,7 +3963,7 @@ func HandleProviderResponse[T any](responseBody []byte, response *T, requestBody
 	}
 
 	// Unmarshal the structured response
-	structuredErr := sonic.Unmarshal(responseBody, response)
+	structuredErr := unmarshal(responseBody, response)
 	if structuredErr != nil {
 		// JSON parsing failed - check if it's an HTML response (expensive operation)
 		if IsHTMLResponse(nil, responseBody) {
@@ -4066,6 +4079,25 @@ func CheckOperationAllowed(defaultProvider schemas.ModelProvider, config *schema
 // decompressed in full. The body is never cut short.
 func CheckAndDecodeBody(resp *fasthttp.Response) ([]byte, error) {
 	return checkAndDecodeBodyLimit(resp, network.MaxResponseBodyBytes())
+}
+
+// TakeDecodedBody is CheckAndDecodeBody for a caller that keeps the body (fork, TXE-8031: a
+// Gemini batch retrieve keeps the job's output to return it). An uncompressed buffered body is
+// handed over instead of copied, and resp is left with an empty body; a compressed or streamed
+// one is decoded by CheckAndDecodeBody. The copy would hold the whole body a second time, which
+// at the retrieve limit is a quarter of client.max_response_body_size_mb.
+func TakeDecodedBody(resp *fasthttp.Response) ([]byte, error) {
+	coding := strings.TrimSpace(string(resp.Header.ContentEncoding()))
+	if resp.BodyStream() != nil || (coding != "" && !strings.EqualFold(coding, "identity")) {
+		return CheckAndDecodeBody(resp)
+	}
+	if limit := network.MaxResponseBodyBytes(); int64(len(resp.Body())) > limit {
+		return nil, &network.ResponseBodyTooLargeError{Limit: limit}
+	}
+	if len(resp.Body()) == 0 {
+		return nil, nil
+	}
+	return resp.SwapBody(nil), nil
 }
 
 // checkAndDecodeBodyLimit is CheckAndDecodeBody under a caller's limit, for a download held to a
@@ -4378,12 +4410,16 @@ func NewResponseBodyTooLargeError(err error) *schemas.BifrostError {
 	if errors.As(err, &tooLarge) && tooLarge.Limit > 0 {
 		limit = tooLarge.Limit
 	}
+	setting := "client.max_response_body_size_mb"
+	if tooLarge != nil && tooLarge.Limit > 0 {
+		setting = tooLarge.Setting()
+	}
 	return &schemas.BifrostError{
 		IsBifrostError: true,
 		// A fallback would send another request that may be billed and answered just as large.
 		AllowFallbacks: schemas.Ptr(false),
 		Error: &schemas.ErrorField{
-			Message: fmt.Sprintf("%s: %s, client.max_response_body_size_mb", schemas.ErrProviderResponseTooLarge, formatByteLimit(limit)),
+			Message: fmt.Sprintf("%s: %s, %s", schemas.ErrProviderResponseTooLarge, formatByteLimit(limit), setting),
 			Error:   err,
 		},
 		ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeBifrostInternal},

@@ -1177,11 +1177,32 @@ const geminiEmbedBatchCreate = (path, body) => {
 	const sent = body?.batch?.inputConfig?.requests?.requests?.length || 0;
 	return { status: 200, body: JSON.stringify(geminiEmbedBatchJob("emb-fixture-created", "BATCH_STATE_PENDING", { displayName: body?.batch?.displayName, batchStats: { requestCount: String(sent), pendingRequestCount: String(sent) } })) };
 };
+// A finished Gemini batch past the retrieve limit (folder 513, TXE-8031): with client.max_response_body_size_mb at 1 MB a
+// retrieve is read under a quarter of it (256 KiB), and this job carries about 512 KiB of inline results, as a large inline
+// batch does. GET /pp/gemini/batches/rbl-oversize-job answers it; a list with pageSize=513 (folder 513's marker) answers the
+// same job, which a list, not being a retrieve, reads under the whole limit.
+const RBL_OVERSIZE_JOB = "rbl-oversize-job";
+const geminiOversizeBatchJob = () => {
+	const text = "lorem ipsum ".repeat(80);
+	const responses = [];
+	for (let i = 0; i < 512; i++) {
+		responses.push({ response: { candidates: [{ content: { parts: [{ text }], role: "model" }, finishReason: "STOP" }], usageMetadata: { promptTokenCount: 3, candidatesTokenCount: 200, totalTokenCount: 203 } }, metadata: { key: `k${i}` } });
+	}
+	return {
+		name: `batches/${RBL_OVERSIZE_JOB}`,
+		done: true,
+		metadata: { "@type": "type.googleapis.com/google.ai.generativelanguage.v1main.GenerateContentBatch", name: `batches/${RBL_OVERSIZE_JOB}`, model: "models/gemini-2.5-flash", displayName: "rbl-oversize", state: "BATCH_STATE_SUCCEEDED", createTime: "2026-11-21T00:00:00Z", endTime: "2026-11-21T00:10:00Z", updateTime: "2026-11-21T00:10:00Z", batchStats: { requestCount: "512", successfulRequestCount: "512" }, output: { inlinedResponses: { inlinedResponses: responses } } },
+	};
+};
 const geminiEmbedBatchGet = (id, key) => {
 	if (key !== "test-key") {
 		return { status: 400, body: JSON.stringify({ error: { code: 400, message: "API key not valid. Please pass a valid API key.", status: "INVALID_ARGUMENT" } }) };
 	}
 	if (id === "emb-fixture-done") return { status: 200, body: JSON.stringify(geminiEmbedBatchDone) };
+	if (id === RBL_OVERSIZE_JOB) {
+		countHit(`gemini.batches ${RBL_OVERSIZE_JOB}`);
+		return { status: 200, body: JSON.stringify(geminiOversizeBatchJob()) };
+	}
 	return { status: 404, body: JSON.stringify({ error: { code: 404, message: `Batch batches/${id} was not found.`, status: "NOT_FOUND" } }) };
 };
 
@@ -2989,6 +3010,11 @@ const handleRequest = (req, res) => {
 	if (req.method === "GET" && storageBatch) {
 		const answer = storageBatchRetrieve(decodeURIComponent(storageBatch[1]));
 		return send(answer.status, {}, answer.body);
+	}
+	// Folder 513's batch list (TXE-8031): the oversize job, listed.
+	if (req.method === "GET" && path === "/pp/gemini/batches" && new URL(req.url, "http://localhost").searchParams.get("pageSize") === "513") {
+		countHit("gemini.batches list 513");
+		return send(200, {}, JSON.stringify({ operations: [geminiOversizeBatchJob()] }));
 	}
 	// A Gemini batch job read (retrieve and results); the key that asked is recorded with the call.
 	if (req.method === "GET" && /^\/pp\/gemini\/batches\/[^/:]+$/.test(path)) {

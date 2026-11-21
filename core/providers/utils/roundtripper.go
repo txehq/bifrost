@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http/httputil"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -136,6 +137,13 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 
 	customSkipBody := resp.SkipBody
 
+	// A retrieve is read under its own limit, a share of the response limit (TXE-8031), and asks
+	// for the body uncompressed, so what is read is what is held once decoded.
+	retrieve := isRetrieve(ctx)
+	if retrieve {
+		req.Header.Set(fasthttp.HeaderAcceptEncoding, "identity")
+	}
+
 	// DoTimeout / DoDeadline leave the remaining time on the request; fasthttp's
 	// HostClient.Do recomputes it before every attempt.
 	reqTimeout := req.GetTimeOut()
@@ -255,9 +263,17 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 		// Every buffered body is read under a limit (fork, TXE-7148): the client's own tighter
 		// cap when it set one, otherwise client.max_response_body_size_mb. A fasthttp client
 		// left at MaxResponseBodySize 0 would otherwise buffer whatever the upstream sends.
-		err = readBufferedBody(resp, br, network.EffectiveMaxResponseBodySize(hc.MaxResponseBodySize))
+		bodyLimit := network.EffectiveMaxResponseBodySize(hc.MaxResponseBodySize)
+		if retrieve {
+			bodyLimit = min(bodyLimit, int(network.MaxRetrieveResponseBodyBytes()))
+		}
+		err = readBufferedBody(resp, br, bodyLimit)
 		hc.ReleaseReader(br)
+		if err == nil && retrieve {
+			err = decodeRetrieveBody(resp, int64(bodyLimit))
+		}
 		if err != nil {
+			markRetrieveLimit(err, retrieve)
 			hc.CloseConn(cc)
 			return false, watcher.classify(err)
 		}
@@ -499,6 +515,47 @@ func readResponseHeaders(resp *fasthttp.Response, br *bufio.Reader) error {
 			return err
 		}
 	}
+}
+
+// isRetrieve reports whether ctx carries a retrieve (schemas.RequestType.IsRetrieve), which core
+// stamps on every attempt (markRetrieve).
+func isRetrieve(ctx context.Context) bool {
+	retrieve, _ := ctx.Value(schemas.BifrostContextKeyRetrieveRequest).(bool)
+	return retrieve
+}
+
+// RetrieveAwareBodyLimit is the limit a buffered body read for ctx applies: the retrieve limit for
+// a retrieve, else the response limit.
+func RetrieveAwareBodyLimit(ctx context.Context) int64 {
+	if isRetrieve(ctx) {
+		return network.MaxRetrieveResponseBodyBytes()
+	}
+	return network.MaxResponseBodyBytes()
+}
+
+// markRetrieveLimit marks an over-limit error as the retrieve limit's, so the caller's error names
+// that setting.
+func markRetrieveLimit(err error, retrieve bool) {
+	var tooLarge *network.ResponseBodyTooLargeError
+	if retrieve && errors.As(err, &tooLarge) {
+		tooLarge.Retrieve = true
+	}
+}
+
+// decodeRetrieveBody decodes a retrieve body the vendor compressed although it was asked not to,
+// under the retrieve's limit, so the provider's CheckAndDecodeBody (held to the whole response
+// limit) is handed a body already decoded. An uncompressed body is left as it is.
+func decodeRetrieveBody(resp *fasthttp.Response, limit int64) error {
+	if coding := strings.TrimSpace(string(resp.Header.ContentEncoding())); coding == "" || strings.EqualFold(coding, "identity") {
+		return nil
+	}
+	decoded, err := checkAndDecodeBodyLimit(resp, limit)
+	if err != nil {
+		return err
+	}
+	resp.SetBody(decoded)
+	resp.Header.Del(fasthttp.HeaderContentEncoding)
+	return nil
 }
 
 // readBufferedBody mirrors the body half of Response.ReadLimitBody (fasthttp
