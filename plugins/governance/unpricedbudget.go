@@ -741,6 +741,18 @@ func (r *BudgetResolver) priceIdentitiesIn(provider schemas.ModelProvider, model
 // and the model resolved the way accounting resolves it (resolvePricing tries the key alias's model
 // name, then its model id, then the requested model, and prices from the first that has a row).
 func (r *BudgetResolver) servedPriceStatus(provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) modelcatalog.PriceStatus {
+	for _, candidate := range r.servedCandidates(provider, model, scopes) {
+		if row, status := r.modelCatalog.PriceIdentity(provider, candidate, requestType, scopes); row != "" {
+			return status
+		}
+	}
+	return modelcatalog.PriceUnpriced
+}
+
+// servedCandidates is the order accounting resolves a served model's price in: under the serving
+// key's alias, its model name, then its model id, then the label itself; the label alone when no
+// key is selected or the key has no alias for it.
+func (r *BudgetResolver) servedCandidates(provider schemas.ModelProvider, model string, scopes *modelcatalog.PricingLookupScopes) []string {
 	candidates := []string{model}
 	if scopes != nil && scopes.SelectedKeyID != "" && r.governanceInMemoryStore != nil {
 		if config, ok := configuredProvider(r.governanceInMemoryStore, provider); ok {
@@ -762,12 +774,7 @@ func (r *BudgetResolver) servedPriceStatus(provider schemas.ModelProvider, model
 			}
 		}
 	}
-	for _, candidate := range candidates {
-		if row, status := r.modelCatalog.PriceIdentity(provider, candidate, requestType, scopes); row != "" {
-			return status
-		}
-	}
-	return modelcatalog.PriceUnpriced
+	return candidates
 }
 
 // passthroughGenerated reports whether a passthrough answer is a provider's success: a body that

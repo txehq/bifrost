@@ -120,6 +120,18 @@ func TestPriceStatus(t *testing.T) {
 	none, status := s.PriceIdentity(schemas.OpenAI, "still-no-row", schemas.ChatCompletionRequest, nil)
 	assert.Equal(t, Unpriced, status)
 	assert.Empty(t, none)
+
+	// A catalog row a key's override patches is that key's own identity (TXE-7977): one key's priced
+	// answer cannot vouch for another key that prices the row differently.
+	keyA, keyB := "key-a", "key-b"
+	require.NoError(t, s.SetOverrides([]configstoreTables.TablePricingOverride{{
+		ID: "gpt-4o-on-key-b", ScopeKind: string(ScopeKindProviderKey), ProviderKeyID: &keyB, MatchType: string(MatchTypeExact),
+		Pattern: "gpt-4o", RequestTypes: []schemas.RequestType{schemas.ChatCompletionRequest}, PricingPatchJSON: `{"input_cost_per_token":0}`,
+	}}))
+	onA, _ := s.PriceIdentity(schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, &LookupScopes{SelectedKeyID: keyA})
+	onB, _ := s.PriceIdentity(schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, &LookupScopes{SelectedKeyID: keyB})
+	assert.Equal(t, "openai|chat|gpt-4o", onA, "a key with no override has the row's identity")
+	assert.Equal(t, "openai|chat|gpt-4o|override|gpt-4o-on-key-b", onB, "the key whose override patches the row has its own")
 }
 
 // Every TableModelPricing *float64 column that is not a price must be named here. A price column

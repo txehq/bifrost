@@ -8,6 +8,7 @@ import (
 
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/grant"
+	"github.com/capsohq/bifrost/framework/modelcatalog"
 	"github.com/capsohq/bifrost/plugins/governance/internal/testtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -312,6 +313,23 @@ func TestConfirmingOneRowLeavesTheOthersProbed(t *testing.T) {
 	assert.True(t, busy, "the other key's row is still probed")
 	_, busy = probes.acquire(scopes, []string{"not-held"})
 	assert.False(t, busy)
+}
+
+// An answer served under a key alias is confirmed on the row the alias resolves to, the row
+// admission held, not on the label's own row.
+func TestProbeConfirmsTheServingKeysAliasTarget(t *testing.T) {
+	plugin, _ := unpricedBudgetPlugin(t)
+	scopes := []string{"s"}
+	target, _ := plugin.resolver.priceIdentity(schemas.OpenAI, "free-chat", schemas.ChatCompletionRequest, nil)
+	require.NotEmpty(t, target)
+	probe, busy := plugin.resolver.probes.acquire(scopes, []string{target})
+	require.False(t, busy)
+	probe.provider, probe.model, probe.mode = schemas.OpenAI, "alias-label", schemas.ChatCompletionRequest
+	plugin.resolver.confirmProbe(probe, &modelcatalog.PricingLookupScopes{SelectedKeyID: "openai-key-1"})
+	probe.release()
+	again, busy := plugin.resolver.probes.acquire(scopes, []string{target})
+	assert.False(t, busy)
+	assert.Nil(t, again, "the alias target's row is confirmed")
 }
 
 // A stream holds its row until its final chunk.

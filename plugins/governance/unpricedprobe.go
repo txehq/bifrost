@@ -173,14 +173,18 @@ func (probe *unpricedProbe) confirm(row string) {
 }
 
 // confirmProbe confirms the row the answer was priced on: read as the gate read it, under the
-// scopes of the key that served the answer. A row another key prices, which may still answer $0,
-// stays unconfirmed.
+// scopes and alias of the key that served the answer (servedCandidates), with the override that key
+// applies in its identity. A row another key prices, which may still answer $0, stays unconfirmed.
 func (r *BudgetResolver) confirmProbe(probe *unpricedProbe, servedScopes *modelcatalog.PricingLookupScopes) {
 	if r == nil || probe == nil || r.modelCatalog == nil {
 		return
 	}
-	row, _ := r.modelCatalog.PriceIdentity(probe.provider, probe.model, probe.mode, servedScopes)
-	probe.confirm(row)
+	for _, candidate := range r.servedCandidates(probe.provider, probe.model, servedScopes) {
+		if row, _ := r.modelCatalog.PriceIdentity(probe.provider, candidate, probe.mode, servedScopes); row != "" {
+			probe.confirm(row)
+			return
+		}
+	}
 }
 
 // probesUnpriced reports whether a request type is probed: an answer the after-the-fact refusal

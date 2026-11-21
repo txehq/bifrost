@@ -118,17 +118,24 @@ func (s *Store) rowIdentity(row *configstoreTables.TableModelPricing, model stri
 	if row == nil {
 		return ""
 	}
-	if row.Model != "" {
-		return row.Provider + "|" + row.Mode + "|" + row.Model
-	}
 	mode := normalizeRequestType(requestType)
 	s.overridesMu.RLock()
 	custom := s.customPricing
 	s.overridesMu.RUnlock()
+	var entry *customPricingEntry
 	if custom != nil {
-		if entry := custom.resolveEntry(model, mode, scopes); entry != nil {
-			return "override|" + entry.id + "|" + mode
+		entry = custom.resolveEntry(model, mode, scopes)
+	}
+	if row.Model != "" {
+		// A row an override patched is priced by the override under these scopes: two keys whose
+		// overrides price one catalog row differently are two identities (TXE-7977).
+		if entry != nil {
+			return row.Provider + "|" + row.Mode + "|" + row.Model + "|override|" + entry.id
 		}
+		return row.Provider + "|" + row.Mode + "|" + row.Model
+	}
+	if entry != nil {
+		return "override|" + entry.id + "|" + mode
 	}
 	return "override||" + mode + "|" + model
 }
