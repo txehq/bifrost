@@ -1468,4 +1468,17 @@ func TestSuppressesUsageReadsOnlyAClassifiedJSONBody(t *testing.T) {
 	assert.False(t, suppressesUsage(nil, stream("")), "an undeclared body opening with { is classified JSON")
 	assert.True(t, suppressesUsage(nil, stream("text/plain")))
 	assert.True(t, suppressesUsage(nil, stream("application/octet-stream")))
+
+	// A non-stream request whose body, declared as another type, a lenient vendor may still read
+	// as asking to stream or turning usage off, is read failing closed.
+	unary := func(body string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+			Provider: schemas.OpenAI, Method: "POST", Path: "/v1/chat/completions", Body: []byte(body),
+			SafeHeaders: map[string]string{"content-type": "text/plain"},
+		}}
+	}
+	assert.True(t, suppressesUsage(nil, unary(`{"stream":true,"stream_options":{"include_usage":true}}`)))
+	assert.True(t, suppressesUsage(nil, unary(`{"stream_options":{"include_usage":false}}`)))
+	assert.False(t, suppressesUsage(nil, unary(`{"note":"hello"}`)))
+	assert.False(t, suppressesUsage(nil, unary(`hello`)))
 }
