@@ -1482,3 +1482,21 @@ func TestSuppressesUsageReadsOnlyAClassifiedJSONBody(t *testing.T) {
 	assert.False(t, suppressesUsage(nil, unary(`{"note":"hello"}`)))
 	assert.False(t, suppressesUsage(nil, unary(`hello`)))
 }
+
+// TestPassthroughContainerMemoryLimitReadsEveryJSONReading: the tier a container create names picks
+// the pricing row it is probed on, so it is read from a body declared as another type too: an
+// upstream ignoring the declared type runs that tier (TXE-8012).
+func TestPassthroughContainerMemoryLimitReadsEveryJSONReading(t *testing.T) {
+	create := func(contentType, body string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+			Provider: schemas.OpenAI, Method: "POST", Path: "/v1/containers", Body: []byte(body),
+			SafeHeaders: map[string]string{"content-type": contentType},
+		}}
+	}
+	const tiered = `{"name":"sandbox","memory_limit":"4g"}`
+	assert.Equal(t, "4g", passthroughContainerMemoryLimit(create("application/json", tiered)))
+	assert.Equal(t, "4g", passthroughContainerMemoryLimit(create("", tiered)))
+	assert.Equal(t, "4g", passthroughContainerMemoryLimit(create("text/plain", tiered)))
+	assert.Equal(t, "", passthroughContainerMemoryLimit(create("text/plain", "memory_limit=4g")))
+	assert.Equal(t, "", passthroughContainerMemoryLimit(nil))
+}

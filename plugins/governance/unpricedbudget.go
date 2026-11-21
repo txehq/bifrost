@@ -313,15 +313,9 @@ func (r *BudgetResolver) refuseUnpricedUnderBudget(ctx *schemas.BifrostContext, 
 	// as the container it creates (passthrough_usage.go), so it is gated as a container create.
 	if (requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest) && evaluationRequest.Model == "" &&
 		passthroughContainerCreate(configuredBaseProvider(r.governanceInMemoryStore, provider), evaluationRequest.request) {
-		// The memory limit is read only from a body the shared classifier reads as JSON, the reading
-		// core's guard checked (TXE-8012).
-		memoryLimit := ""
-		if body := evaluationRequest.request.PassthroughRequest.Body; schemas.ClassifyForwardedBody(evaluationRequest.request.ForwardedBodyContentType(), body).Format == schemas.ForwardedBodyJSON {
-			memoryLimit = gjson.GetBytes(body, "memory_limit").String()
-		}
 		containerRequest := &EvaluationRequest{RequestType: schemas.ContainerCreateRequest, Provider: provider, request: &schemas.BifrostRequest{
 			RequestType: schemas.ContainerCreateRequest, ContainerCreateRequest: &schemas.BifrostContainerCreateRequest{
-				Provider: provider, MemoryLimit: memoryLimit,
+				Provider: provider, MemoryLimit: passthroughContainerMemoryLimit(evaluationRequest.request),
 			},
 		}}
 		return r.refuseUnpricedUnderBudget(ctx, containerRequest, budgets)
@@ -854,6 +848,22 @@ func passthroughBodyNamesEveryModel(req *schemas.BifrostRequest) bool {
 		return tasks > 0 && all
 	}
 	return false
+}
+
+// passthroughContainerMemoryLimit returns the memory tier a passthrough container create names, which
+// selects the pricing row it is probed and priced on. It is read from a body the shared classifier
+// reads as JSON (TXE-8012) and, failing closed, from any other body that parses as JSON: an
+// upstream ignoring the declared type runs the tier the body names, so the default tier is never
+// substituted for it.
+func passthroughContainerMemoryLimit(req *schemas.BifrostRequest) string {
+	if req == nil || req.PassthroughRequest == nil {
+		return ""
+	}
+	body := req.PassthroughRequest.Body
+	if schemas.ClassifyForwardedBody(req.ForwardedBodyContentType(), body).Format != schemas.ForwardedBodyJSON && !gjson.ValidBytes(body) {
+		return ""
+	}
+	return gjson.GetBytes(body, "memory_limit").String()
 }
 
 // inlineBatchModes indexes, once per request, the request types settlement prices an inline batch's

@@ -377,11 +377,14 @@ func TestMislabeledJSONBody(t *testing.T) {
 		{"text/plain", strings.Repeat(" ", 1023) + "/* c */" + `{"model":"X"}`, "text/plain", naming},
 		{"text/plain", strings.Repeat("[", maxForwardedBodyDepth+1) + `{"a":1}`, "text/plain", "is a JSON body nested more than 512 levels"},
 		// Media is read as JSON text only as valid UTF-8: JSON declared audio is still checked,
-		// while audio bytes (a RIFF header, raw PCM that opens with "{" then a sample past 0x7f, or
-		// UTF-16-shaped samples) are not.
+		// while audio bytes (a RIFF header, or raw PCM whose first byte is neither "{" nor "[")
+		// are not. Raw PCM opening with "{" or "[" is checked whatever follows, as main checked
+		// every body: a primitive-led array hides a model from a narrower rule.
 		{"audio/wav", "RIFF\x00\x00\x00\x00WAVEfmt {\"model\"", "", ""},
 		{"audio/l16", "{\x00\"\x00m\x00", "audio/l16", "is JSON that does not parse strictly"},
-		{"audio/l16", "{\x00\xff\x7f\x10\x80", "", ""},
+		{"audio/l16", "{\x00\xff\x7f\x10\x80", "audio/l16", "is JSON that does not parse strictly"},
+		{"audio/l16", "[0,{\"model\":\"X\"},\"\xff\"]", "audio/l16", naming},
+		{"audio/l16", "\x10\x80{\"model\":\"X\",\"a\":\"\xff\"}", "", ""},
 		{"audio/l16", "{\"model\":\"X\",\"a\":\"\xff\"}", "audio/l16", naming},
 		{"audio/pcm", "[{\"model\":\"X\"},\"\xfe\",]", "audio/pcm", lenient},
 		// Media with a header type is read like any body: an invalid byte, a comment or an

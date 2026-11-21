@@ -311,11 +311,13 @@ func MislabeledJSONBody(body []byte, contentType string) (mediaType, problem str
 		// Media is read as UTF-8 only (raw PCM read as UTF-16 must not make audio JSON), with the
 		// same opening rule as any body: whatever its byte validity, since a lenient parser
 		// replaces an invalid byte and reads on. Media with a header (RIFF, ID3, OggS, fLaC, PNG,
-		// JPEG, MP4...) never opens like JSON. Headerless raw audio (rawAudioMediaTypes) opens
-		// with "{" or "[" by chance in about 1 of 128 streams, so it is skipped when its first
-		// 1 KB is not UTF-8 text and its bytes do not open with a JSON object or array structure
-		// ({" {} [{ [" [[ [] after whitespace): chance then falls to about 1 in 6,500.
-		if prefix := body[:min(len(body), 1024)]; rawAudioMediaTypes[mediaType] && !utf8.Valid(trimCutRune(prefix)) && !opensWithJSONStructure(prefix) {
+		// JPEG, MP4...) never opens like JSON. Headerless raw audio (rawAudioMediaTypes) is
+		// skipped when its first 1 KB is not UTF-8 text and its first byte after ASCII whitespace
+		// is neither "{" nor "[": a narrower opening rule (only some bytes after the bracket) lets
+		// a primitive-led array such as [0,{"model":"X"},"\xff"] through. Raw audio opens with
+		// "{" or "[" by chance in about 1 of 128 streams, and such a stream is refused unless it
+		// is strict JSON naming nothing gated: the rule main applied to every body.
+		if prefix := body[:min(len(body), 1024)]; rawAudioMediaTypes[mediaType] && !utf8.Valid(trimCutRune(prefix)) && !opensWithJSONBracket(prefix) {
 			return "", "", false
 		}
 		decodings = jsonTextDecodings[:1]
@@ -355,16 +357,10 @@ func isMediaType(mediaType string) bool {
 	return strings.HasPrefix(mediaType, "audio/") || strings.HasPrefix(mediaType, "image/") || strings.HasPrefix(mediaType, "video/")
 }
 
-// opensWithJSONStructure reports bytes that open, after ASCII whitespace, with "{" or "[" followed
-// (after whitespace) by a quote, a bracket or a brace: the opening of a JSON object or array
-// holding objects, strings or arrays.
-func opensWithJSONStructure(b []byte) bool {
+// opensWithJSONBracket reports bytes whose first byte after ASCII whitespace is "{" or "[".
+func opensWithJSONBracket(b []byte) bool {
 	b = bytes.TrimLeft(b, " \t\r\n")
-	if len(b) == 0 || (b[0] != '{' && b[0] != '[') {
-		return false
-	}
-	b = bytes.TrimLeft(b[1:], " \t\r\n")
-	return len(b) > 0 && bytes.IndexByte([]byte(`"{}[]`), b[0]) >= 0
+	return len(b) > 0 && (b[0] == '{' || b[0] == '[')
 }
 
 // rawAudioMediaTypes are headerless audio formats: samples from the first byte, which can be any
