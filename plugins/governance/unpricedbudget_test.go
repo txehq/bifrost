@@ -215,6 +215,8 @@ func preLLM(t testing.TB, plugin *GovernancePlugin, vk string, req *schemas.Bifr
 // batch whose items are all priced, and an operation that is never charged are unaffected.
 func TestUnpricedModelUnderADollarBudgetIsRefusedBeforeTheCall(t *testing.T) {
 	plugin, _ := unpricedBudgetPlugin(t)
+	// Batch creates are charged at settlement, so they are admitted only where it runs (TXE-7963).
+	plugin.SetProviderJobAccountingEnabled(true)
 
 	for i := 0; i < 3; i++ {
 		requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", chatOn("house-llm")), "chat on a model with no row")
@@ -468,6 +470,8 @@ func TestQueuedOrCachedAnswerDoesNotRefuseTheModel(t *testing.T) {
 // the model.
 func TestUnbilledSettledJobDoesNotRefuseTheModel(t *testing.T) {
 	plugin, _ := unpricedBudgetPlugin(t)
+	// A job is charged at settlement only where job accounting settles it (TXE-7963).
+	plugin.SetProviderJobAccountingEnabled(true)
 	video := &schemas.BifrostRequest{
 		RequestType:            schemas.VideoGenerationRequest,
 		VideoGenerationRequest: &schemas.BifrostVideoGenerationRequest{Provider: schemas.OpenAI, Model: "clip-1"},
@@ -488,24 +492,38 @@ func TestUnbilledSettledJobDoesNotRefuseTheModel(t *testing.T) {
 // and a model priced only by a key-scoped override under a budget (a lookup per configured key).
 func BenchmarkUnpricedBudgetGate(b *testing.B) {
 	plugin, _ := unpricedBudgetPlugin(b)
+	passthrough := func(path, body string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+			Provider: schemas.OpenAI, Model: "gpt-4o", Method: "POST", Path: path, Body: []byte(body),
+		}}
+	}
+	foreground := func(withForwarded bool) *schemas.BifrostRequest {
+		req := &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "gpt-4o"}
+		if withForwarded {
+			req.Params = &schemas.ResponsesParameters{ExtraParams: map[string]interface{}{"service_tier": "flex"}}
+			req.RawRequestBody = []byte(`{"model":"gpt-4o","input":"hi","service_tier":"flex"}`)
+		}
+		return &schemas.BifrostRequest{RequestType: schemas.ResponsesRequest, ResponsesRequest: req}
+	}
 	for _, bc := range []struct {
-		name, vk, model string
+		name, vk string
+		req      *schemas.BifrostRequest
 	}{
-		{"no_budget", "sk-bf-open", "gpt-4o"},
-		{"budget_priced", "sk-bf-budget", "gpt-4o"},
-		{"budget_key_scoped_override", "sk-bf-budget", "key-priced"},
-		{"no_budget_passthrough_task_array", "sk-bf-open", ""},
+		{"no_budget", "sk-bf-open", chatOn("gpt-4o")},
+		{"budget_priced", "sk-bf-budget", chatOn("gpt-4o")},
+		{"budget_key_scoped_override", "sk-bf-budget", chatOn("key-priced")},
+		{"no_budget_passthrough_task_array", "sk-bf-open", &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+			Provider: schemas.OpenAI, Method: "POST", Path: "/v1/tasks", Body: []byte(`[{"model":"gpt-4o"},{"model":"free-chat"},{"model":"gpt-4o"}]`),
+		}}},
+		// TXE-7963: the background check on what each budgeted request may forward.
+		{"budget_responses_foreground", "sk-bf-budget", foreground(false)},
+		{"budget_responses_extra_params_and_raw_body", "sk-bf-budget", foreground(true)},
+		{"budget_passthrough_responses_body", "sk-bf-budget", passthrough("/v1/responses", `{"model":"gpt-4o","input":"hi","store":false,"metadata":{"a":"b"}}`)},
 	} {
 		b.Run(bc.name, func(b *testing.B) {
-			req := chatOn(bc.model)
-			if bc.model == "" {
-				req = &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
-					Provider: schemas.OpenAI, Method: "POST", Path: "/v1/tasks", Body: []byte(`[{"model":"gpt-4o"},{"model":"free-chat"},{"model":"gpt-4o"}]`),
-				}}
-			}
 			b.ReportAllocs()
 			for b.Loop() {
-				if shortCircuit := preLLM(b, plugin, bc.vk, req); shortCircuit != nil {
+				if shortCircuit := preLLM(b, plugin, bc.vk, bc.req); shortCircuit != nil {
 					b.Fatalf("refused: %v", shortCircuit.Error)
 				}
 			}
@@ -918,6 +936,7 @@ func TestUnpricedAnswerRefusesOnlyTheHolderThatReceivedIt(t *testing.T) {
 // embeddings batch on it is refused, while chat on it is still served.
 func TestRefusedRowIsCheckedInEachInlineBatchMode(t *testing.T) {
 	plugin, _ := unpricedBudgetPlugin(t)
+	plugin.SetProviderJobAccountingEnabled(true) // a batch is otherwise refused as unsettled first (TXE-7963)
 	require.True(t, plugin.resolver.noteUnpricedAnswer(schemas.OpenAI, "dual-1", "", schemas.EmbeddingRequest, schemas.EmbeddingRequest, 0, nil, "r", []string{"budget-unpriced"}, "vk-budget"))
 	batch := &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{
 		Provider: schemas.OpenAI, Endpoint: schemas.BatchEndpointEmbeddings,

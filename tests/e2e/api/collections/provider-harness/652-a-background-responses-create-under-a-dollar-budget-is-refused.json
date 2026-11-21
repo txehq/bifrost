@@ -1,0 +1,444 @@
+{
+  "name": "652. A background Responses create under a dollar budget is refused before the call (background-budget) [SERIAL]",
+  "description": "TXE-7963 security and billing regression. Local fixture regression: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream and its price book. A Responses create sent with background: true answers queued with no usage, and the retrieve that delivers the finished answer is never priced, so a dollar budget was charged $0 for it on any model. Under a dollar budget it is now refused 403 (error_type policy_model_blocked, type background_unsettled) before the upstream call; the same request in the foreground, and a background request from a key with no budget, are served. The fixture gateway runs with client.disable_provider_job_accounting, the production setting, so nothing settles a video or batch job: under the dollar budget a video create (652.4, gemini/fixture-veo-short) and an inline batch create (652.5, openai/gpt-6-luna), both on priced models, are refused 403 (type job_unsettled) and reach no upstream route, by every fixture hit counter. Red before TXE-7963: 652.1 was served 200, and 652.4 and 652.5 were admitted. [SERIAL]: the rows read the fixture's hit counters.",
+  "item": [
+    {
+      "name": "652.1 [EXPECT-403] a background Responses create on a priced model, under a dollar budget, is refused before the call (background-budget)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "// Two run-scoped keys over the fixture's openai and gemini: one funded by a $100 dollar budget, one with none.",
+              "// gpt-6-luna and fixture-veo-short are priced in the fixture's price book, so only the",
+              "// background create and the jobs nothing settles are refused, never the model.",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var run = 'harness-background-budget-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+              "pm.collectionVariables.set('bgbBudgetVk', 'missing');",
+              "pm.collectionVariables.set('bgbOpenVk', 'missing');",
+              "function key(name, extra, done) {",
+              "  var body = Object.assign({ name: name, provider_configs: [{ provider: 'openai', allowed_models: ['*'], key_ids: ['*'], weight: 1 }, { provider: 'gemini', allowed_models: ['*'], key_ids: ['*'], weight: 1 }] }, extra);",
+              "  pm.sendRequest({ url: BASE + '/api/governance/virtual-keys', method: 'POST', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify(body) } }, function (err, res) {",
+              "    pm.test('background-budget setup: created ' + name.slice(-6), function () {",
+              "      pm.expect(err, String(err)).to.equal(null);",
+              "      pm.expect(res.code, res.text()).to.eql(200);",
+              "    });",
+              "    done(res.json().virtual_key);",
+              "  });",
+              "}",
+              "function value(vk) { return (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value; }",
+              "function hitsThen(done) {",
+              "  pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__hits', method: 'GET' }, function (err, res) {",
+              "    var hits = (!err && res.code === 200) ? (res.json().data[0].hits || {}) : {};",
+              "    done(err, hits);",
+              "  });",
+              "}",
+              "key(run + '-budget', { budgets: [{ max_limit: 100, reset_duration: '1h' }] }, function (funded) {",
+              "  pm.collectionVariables.set('bgbBudgetVk', value(funded));",
+              "  pm.collectionVariables.set('bgbBudgetId', funded.id);",
+              "  key(run + '-open', {}, function (open) {",
+              "    pm.collectionVariables.set('bgbOpenVk', value(open));",
+              "    pm.collectionVariables.set('bgbOpenId', open.id);",
+              "    hitsThen(function (err, hits) { pm.collectionVariables.set('bgbHitsBefore', String(hits['gpt-6-luna'] || 0)); });",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "function hitsThen(done) {",
+              "  pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__hits', method: 'GET' }, function (err, res) {",
+              "    var hits = (!err && res.code === 200) ? (res.json().data[0].hits || {}) : {};",
+              "    done(err, hits);",
+              "  });",
+              "}",
+              "pm.test('background-budget: a background Responses create under a dollar budget is refused 403 policy_model_blocked (background_unsettled)', function () {",
+              "  var text = pm.response.text();",
+              "  pm.expect(pm.response.code, text).to.equal(403);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, text).to.equal('policy_model_blocked');",
+              "  pm.expect(j.type, text).to.equal('background_unsettled');",
+              "});",
+              "hitsThen(function (err, hits) {",
+              "  pm.test('background-budget: the refusal did not reach the upstream', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(hits['gpt-6-luna'] || 0, JSON.stringify(hits)).to.equal(Number(pm.collectionVariables.get('bgbHitsBefore')));",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-vk",
+            "value": "{{bgbBudgetVk}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"openai/gpt-6-luna\",\"input\":\"a background question\",\"background\":true}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "652.2 [EXPECT-200] the same create in the foreground is served under the dollar budget (background-budget)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "function hitsThen(done) {",
+              "  pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__hits', method: 'GET' }, function (err, res) {",
+              "    var hits = (!err && res.code === 200) ? (res.json().data[0].hits || {}) : {};",
+              "    done(err, hits);",
+              "  });",
+              "}",
+              "pm.test('background-budget: the foreground create under the budget is served', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+              "});",
+              "hitsThen(function (err, hits) {",
+              "  pm.test('background-budget: the foreground create under the budget reached the upstream', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(hits['gpt-6-luna'] || 0, JSON.stringify(hits)).to.equal(Number(pm.collectionVariables.get('bgbHitsBefore')) + 1);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-vk",
+            "value": "{{bgbBudgetVk}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"openai/gpt-6-luna\",\"input\":\"a foreground question\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "652.3 [EXPECT-200] a background create from a key with no dollar budget is served (background-budget)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "function hitsThen(done) {",
+              "  pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__hits', method: 'GET' }, function (err, res) {",
+              "    var hits = (!err && res.code === 200) ? (res.json().data[0].hits || {}) : {};",
+              "    done(err, hits);",
+              "  });",
+              "}",
+              "pm.test('background-budget: a background create with no budget is served', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+              "});",
+              "hitsThen(function (err, hits) {",
+              "  pm.test('background-budget: a background create with no budget reached the upstream', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(hits['gpt-6-luna'] || 0, JSON.stringify(hits)).to.equal(Number(pm.collectionVariables.get('bgbHitsBefore')) + 2);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-vk",
+            "value": "{{bgbOpenVk}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"openai/gpt-6-luna\",\"input\":\"a background question\",\"background\":true}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        }
+      }
+    },
+    {
+      "name": "652.4 [EXPECT-403] a video create under a dollar budget, with provider job accounting off, is refused before the call (background-budget)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "function hitsThen(done) {",
+              "  pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__hits', method: 'GET' }, function (err, res) {",
+              "    var hits = (!err && res.code === 200) ? (res.json().data[0].hits || {}) : {};",
+              "    done(err, hits);",
+              "  });",
+              "}",
+              "function total(hits) { return Object.keys(hits).reduce(function (n, k) { return n + hits[k]; }, 0); }",
+              "hitsThen(function (err, hits) { pm.collectionVariables.set('bgbTotalBefore', String(total(hits))); });"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "function hitsThen(done) {",
+              "  pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__hits', method: 'GET' }, function (err, res) {",
+              "    var hits = (!err && res.code === 200) ? (res.json().data[0].hits || {}) : {};",
+              "    done(err, hits);",
+              "  });",
+              "}",
+              "function total(hits) { return Object.keys(hits).reduce(function (n, k) { return n + hits[k]; }, 0); }",
+              "pm.test('background-budget: a video create under a dollar budget with job accounting off is refused 403 policy_model_blocked (job_unsettled)', function () {",
+              "  var text = pm.response.text();",
+              "  pm.expect(pm.response.code, text).to.equal(403);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, text).to.equal('policy_model_blocked');",
+              "  pm.expect(j.type, text).to.equal('job_unsettled');",
+              "});",
+              "hitsThen(function (err, hits) {",
+              "  pm.test('background-budget: a video create reached no upstream route', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(total(hits), JSON.stringify(hits)).to.equal(Number(pm.collectionVariables.get('bgbTotalBefore')));",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-vk",
+            "value": "{{bgbBudgetVk}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"gemini/fixture-veo-short\",\"prompt\":\"a paper boat drifting down a rain gutter\"}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      }
+    },
+    {
+      "name": "652.5 [EXPECT-403] an inline batch create under a dollar budget, with provider job accounting off, is refused before the call (background-budget)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "function hitsThen(done) {",
+              "  pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__hits', method: 'GET' }, function (err, res) {",
+              "    var hits = (!err && res.code === 200) ? (res.json().data[0].hits || {}) : {};",
+              "    done(err, hits);",
+              "  });",
+              "}",
+              "function total(hits) { return Object.keys(hits).reduce(function (n, k) { return n + hits[k]; }, 0); }",
+              "hitsThen(function (err, hits) { pm.collectionVariables.set('bgbTotalBefore', String(total(hits))); });"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "function hitsThen(done) {",
+              "  pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__hits', method: 'GET' }, function (err, res) {",
+              "    var hits = (!err && res.code === 200) ? (res.json().data[0].hits || {}) : {};",
+              "    done(err, hits);",
+              "  });",
+              "}",
+              "function total(hits) { return Object.keys(hits).reduce(function (n, k) { return n + hits[k]; }, 0); }",
+              "pm.test('background-budget: an inline batch create under a dollar budget with job accounting off is refused 403 policy_model_blocked (job_unsettled)', function () {",
+              "  var text = pm.response.text();",
+              "  pm.expect(pm.response.code, text).to.equal(403);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, text).to.equal('policy_model_blocked');",
+              "  pm.expect(j.type, text).to.equal('job_unsettled');",
+              "});",
+              "hitsThen(function (err, hits) {",
+              "  pm.test('background-budget: an inline batch create reached no upstream route', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(total(hits), JSON.stringify(hits)).to.equal(Number(pm.collectionVariables.get('bgbTotalBefore')));",
+              "  });",
+              "});",
+              "var BASE = pm.variables.get('baseUrl');",
+              "['bgbBudgetId', 'bgbOpenId'].forEach(function (name) {",
+              "  var id = pm.collectionVariables.get(name);",
+              "  if (id) { pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id, method: 'DELETE' }, function () {}); }",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-vk",
+            "value": "{{bgbBudgetVk}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"openai/gpt-6-luna\",\"endpoint\":\"/v1/chat/completions\",\"completion_window\":\"24h\",\"requests\":[{\"custom_id\":\"fixture-1\",\"method\":\"POST\",\"url\":\"/v1/chat/completions\",\"body\":{\"model\":\"gpt-6-luna\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":8}}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches"
+          ]
+        }
+      }
+    }
+  ]
+}

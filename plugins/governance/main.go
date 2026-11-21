@@ -1001,7 +1001,7 @@ func (p *GovernancePlugin) decide(ctx *schemas.BifrostContext, result *Evaluatio
 	case DecisionAccessBlocked:
 		return result, refusal(result, 403, schemas.ErrorTypePolicyAccessDenied)
 
-	case DecisionModelBlocked, DecisionModelUnpriced:
+	case DecisionModelBlocked, DecisionModelUnpriced, DecisionBackgroundUnsettled, DecisionJobUnsettled:
 		return result, refusal(result, 403, schemas.ErrorTypePolicyModelBlocked)
 
 	case DecisionProviderBlocked:
