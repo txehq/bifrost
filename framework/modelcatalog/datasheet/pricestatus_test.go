@@ -132,6 +132,20 @@ func TestPriceStatus(t *testing.T) {
 	onB, _ := s.PriceIdentity(schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, &LookupScopes{SelectedKeyID: keyB})
 	assert.Equal(t, "openai|chat|gpt-4o", onA, "a key with no override has the row's identity")
 	assert.Equal(t, "openai|chat|gpt-4o|override|gpt-4o-on-key-b", onB, "the key whose override patches the row has its own")
+
+	// A key alias names a catalog model (ModelName) and a wire id (ModelID); accounting reads the row
+	// by the catalog name and keys the override by the wire id, and so does the routing identity.
+	require.NoError(t, s.SetOverrides([]configstoreTables.TablePricingOverride{{
+		ID: "wire-1-override", ScopeKind: string(ScopeKindGlobal), MatchType: string(MatchTypeExact),
+		Pattern: "wire-1", RequestTypes: []schemas.RequestType{schemas.ChatCompletionRequest}, PricingPatchJSON: `{"input_cost_per_token":0}`,
+	}}))
+	canonical := "gpt-4o"
+	routed := s.PriceIdentityForRouting(schemas.RoutingInfo{Provider: schemas.OpenAI, Model: "label",
+		ResolvedKeyAlias: &schemas.ResolvedKeyAlias{ModelID: "wire-1", ModelName: &canonical}}, schemas.ChatCompletionRequest, nil)
+	assert.Equal(t, "openai|chat|gpt-4o|override|wire-1-override", routed)
+	plain, _ := s.PriceIdentity(schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, nil)
+	assert.Equal(t, "openai|chat|gpt-4o", plain, "the catalog name alone keys no override")
+	assert.Empty(t, s.PriceIdentityForRouting(schemas.RoutingInfo{Provider: schemas.OpenAI, Model: "nothing-prices-this"}, schemas.ChatCompletionRequest, nil))
 }
 
 // Every TableModelPricing *float64 column that is not a price must be named here. A price column

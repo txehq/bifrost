@@ -41,8 +41,9 @@ const (
 	// confirmed. A scope that fills stops probing new rows: the after-the-fact refusal still
 	// applies to them, and only the concurrency window reopens.
 	maxConfirmedRowsPerScope = 4096
-	// unpricedProbeStaleAfter frees an in-flight probe whose request never reached its post-hook,
-	// so a lost release cannot hold a row for good.
+	// unpricedProbeStaleAfter frees an in-flight probe whose request never reached its post-hook and
+	// whose context cannot say whether it still runs, so a lost release cannot hold a row for good.
+	// A hold whose request is still running is never replaced.
 	unpricedProbeStaleAfter = 10 * time.Minute
 )
 
@@ -64,6 +65,9 @@ type unpricedProbes struct {
 type inflightHold struct {
 	owner *unpricedProbe
 	since time.Time
+	// alive reports whether the holding request is still running (its context has not ended); nil
+	// when its context cannot tell, and only then does the hold expire after unpricedProbeStaleAfter.
+	alive func() bool
 }
 
 type confirmedRows struct {
@@ -96,11 +100,12 @@ type unpricedProbe struct {
 // acquire holds every (scope, row) not yet confirmed for the request. It reports busy when another
 // request already holds one of them; a request whose rows are all confirmed holds nothing.
 func (p *unpricedProbes) acquire(scopes, rows []string) (probe *unpricedProbe, busy bool) {
-	return p.acquireRows(scopes, rows, false)
+	return p.acquireRows(nil, scopes, rows, false)
 }
 
-// acquireRows is acquire; always holds the rows whether or not they are confirmed.
-func (p *unpricedProbes) acquireRows(scopes, rows []string, always bool) (probe *unpricedProbe, busy bool) {
+// acquireRows is acquire for the request whose context is owner (nil when there is none); always
+// holds the rows whether or not they are confirmed.
+func (p *unpricedProbes) acquireRows(owner context.Context, scopes, rows []string, always bool) (probe *unpricedProbe, busy bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := p.now()
@@ -117,7 +122,7 @@ func (p *unpricedProbes) acquireRows(scopes, rows []string, always bool) (probe 
 				}
 			}
 			key := scope + "\x00" + row
-			if hold, held := p.inflight[key]; held && now.Sub(hold.since) < unpricedProbeStaleAfter {
+			if hold, held := p.inflight[key]; held && (now.Sub(hold.since) < unpricedProbeStaleAfter || (hold.alive != nil && hold.alive())) {
 				return nil, true
 			}
 			keys = append(keys, key)
@@ -127,8 +132,12 @@ func (p *unpricedProbes) acquireRows(scopes, rows []string, always bool) (probe 
 		return nil, false
 	}
 	probe = &unpricedProbe{probes: p, keys: keys, scopes: scopes, rows: rows}
+	var alive func() bool
+	if owner != nil && owner.Done() != nil {
+		alive = func() bool { return owner.Err() == nil }
+	}
 	for _, key := range keys {
-		p.inflight[key] = inflightHold{owner: probe, since: now}
+		p.inflight[key] = inflightHold{owner: probe, since: now, alive: alive}
 	}
 	return probe, false
 }
@@ -179,6 +188,27 @@ func (probe *unpricedProbe) confirm(row string) {
 	}
 }
 
+// servedRow is the identity of the row accounting prices model on under scopes: through the
+// selected key's alias for it, when the key has one (its catalog name and wire model id, the override
+// keyed by the wire id), as accounting resolves it (PriceIdentityForRouting).
+func (r *BudgetResolver) servedRow(provider schemas.ModelProvider, model string, mode schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) string {
+	routing := schemas.RoutingInfo{Provider: provider, Model: model}
+	if scopes != nil && scopes.SelectedKeyID != "" && r.governanceInMemoryStore != nil {
+		if config, ok := configuredProvider(r.governanceInMemoryStore, provider); ok {
+			for _, key := range config.Keys {
+				if key.ID != scopes.SelectedKeyID {
+					continue
+				}
+				if alias := key.Aliases.ResolveConfig(model); alias != nil {
+					routing.ResolvedKeyAlias = &schemas.ResolvedKeyAlias{ModelID: alias.ModelID, ModelName: alias.ModelName}
+				}
+				break
+			}
+		}
+	}
+	return r.modelCatalog.PriceIdentityForRouting(routing, mode, scopes)
+}
+
 // confirmProbe confirms the row the answer was priced on: read as the gate read it, under the
 // scopes and alias of the key that served the answer (servedCandidates), with the override that key
 // applies in its identity. A row another key prices, which may still answer $0, stays unconfirmed.
@@ -194,12 +224,7 @@ func (r *BudgetResolver) confirmProbe(probe *unpricedProbe, pricedAs schemas.Req
 	if mode == "" || normalizesToUnknown(mode) {
 		mode = probe.mode
 	}
-	for _, candidate := range r.servedCandidates(probe.provider, probe.model, servedScopes) {
-		if row, _ := r.modelCatalog.PriceIdentity(probe.provider, candidate, mode, servedScopes); row != "" {
-			probe.confirm(row)
-			return
-		}
-	}
+	probe.confirm(r.servedRow(probe.provider, probe.model, mode, servedScopes))
 }
 
 // probesUnpriced reports whether a request type is probed: an answer the after-the-fact refusal
@@ -257,7 +282,7 @@ func (r *BudgetResolver) probeUnconfirmed(ctx *schemas.BifrostContext, requestTy
 		held.release()
 		ctx.ClearValue(unpricedProbeContextKey)
 	}
-	probe, busy := r.probes.acquireRows(holderScopes, rows, suppressesUsage(req))
+	probe, busy := r.probes.acquireRows(ctx, holderScopes, rows, suppressesUsage(ctx, req))
 	if busy {
 		return &EvaluationResult{
 			Decision: DecisionModelPricingUnconfirmed,
@@ -282,12 +307,7 @@ func (r *BudgetResolver) probeUnconfirmed(ctx *schemas.BifrostContext, requestTy
 // held, since no answer could confirm it.
 func (r *BudgetResolver) probeRows(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, mode schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) []string {
 	read := func(keyScopes *modelcatalog.PricingLookupScopes) string {
-		for _, candidate := range r.servedCandidates(provider, model, keyScopes) {
-			if row, _ := r.modelCatalog.PriceIdentity(provider, candidate, mode, keyScopes); row != "" {
-				return row
-			}
-		}
-		return ""
+		return r.servedRow(provider, model, mode, keyScopes)
 	}
 	if scopes != nil && scopes.SelectedKeyID != "" {
 		if row := read(scopes); row != "" {
@@ -315,6 +335,10 @@ func (r *BudgetResolver) probeRows(ctx *schemas.BifrostContext, provider schemas
 	}
 	var rows []string
 	for _, key := range config.Keys {
+		// A disabled key serves nothing (core skips it in key selection), so its row is never held.
+		if key.Enabled != nil && !*key.Enabled {
+			continue
+		}
 		if restricted && !slices.Contains(allowed, key.ID) {
 			continue
 		}
@@ -347,10 +371,31 @@ func (r *BudgetResolver) everyCandidateRow(provider schemas.ModelProvider, model
 
 // suppressesUsage reports whether a request turns off the usage its answer would be priced by:
 // stream_options.include_usage false on a chat or text completion, in its raw body, or in a
-// passthrough body.
-func suppressesUsage(req *schemas.BifrostRequest) bool {
+// passthrough body; or a stream forwarded as written (a passthrough stream, a raw-body stream) that
+// does not ask for usage explicitly.
+func suppressesUsage(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) bool {
 	if req == nil {
 		return false
+	}
+	// A stream forwarded with its raw body (bifrost-use-raw-request-body) reaches the vendor without
+	// the converter that asks for usage, so, like a passthrough stream, it must ask for it itself.
+	rawUsed := false
+	if ctx != nil {
+		rawUsed, _ = ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool)
+	}
+	streamWithoutUsage := func(body []byte) bool {
+		if len(body) == 0 || !gjson.ValidBytes(body) {
+			return true
+		}
+		return gjson.GetBytes(body, "stream_options.include_usage").Type != gjson.True
+	}
+	if rawUsed {
+		switch {
+		case req.ChatRequest != nil && req.RequestType == schemas.ChatCompletionStreamRequest:
+			return streamWithoutUsage(req.ChatRequest.RawRequestBody)
+		case req.TextCompletionRequest != nil && req.RequestType == schemas.TextCompletionStreamRequest:
+			return streamWithoutUsage(req.TextCompletionRequest.RawRequestBody)
+		}
 	}
 	off := func(options *schemas.ChatStreamOptions) bool {
 		return options != nil && options.IncludeUsage != nil && !*options.IncludeUsage
@@ -376,10 +421,7 @@ func suppressesUsage(req *schemas.BifrostRequest) bool {
 		// send none otherwise): one that does not, or whose body cannot be read, is read as
 		// suppressing it.
 		if req.RequestType == schemas.PassthroughStreamRequest || gjson.GetBytes(body, "stream").Type == gjson.True {
-			if len(body) == 0 || !gjson.ValidBytes(body) {
-				return true
-			}
-			return gjson.GetBytes(body, "stream_options.include_usage").Type != gjson.True
+			return streamWithoutUsage(body)
 		}
 		return offInBody(body)
 	}

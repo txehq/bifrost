@@ -112,6 +112,12 @@ func (mc *ModelCatalog) PriceStatus(provider schemas.ModelProvider, model string
 	return mc.datasheet.PriceStatus(provider, model, requestType, (*datasheet.LookupScopes)(scopes))
 }
 
+// PriceIdentityForRouting is the identity of the row accounting prices routing on; see
+// datasheet.Store.PriceIdentityForRouting.
+func (mc *ModelCatalog) PriceIdentityForRouting(routing schemas.RoutingInfo, requestType schemas.RequestType, scopes *PricingLookupScopes) string {
+	return mc.datasheet.PriceIdentityForRouting(routing, requestType, (*datasheet.LookupScopes)(scopes))
+}
+
 // BatchPriceStatus is PriceStatus for a batch line settled as requestType; see
 // datasheet.Store.BatchPriceStatus.
 func (mc *ModelCatalog) BatchPriceStatus(provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *PricingLookupScopes) PriceStatus {

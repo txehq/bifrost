@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/capsohq/bifrost/core/schemas"
+	"github.com/capsohq/bifrost/framework/configstore"
 	"github.com/capsohq/bifrost/framework/grant"
 	"github.com/capsohq/bifrost/framework/modelcatalog"
 	"github.com/capsohq/bifrost/plugins/governance/internal/testtime"
@@ -366,24 +367,24 @@ func TestRequestSuppressingUsageIsProbedOnAConfirmedRow(t *testing.T) {
 		}
 		return req
 	}
-	assert.True(t, suppressesUsage(chat(&off)))
-	assert.False(t, suppressesUsage(chat(&on)))
-	assert.False(t, suppressesUsage(chat(nil)))
-	assert.True(t, suppressesUsage(&schemas.BifrostRequest{PassthroughRequest: &schemas.BifrostPassthroughRequest{Body: []byte(`{"model":"m","stream_options":{"include_usage":false}}`)}}))
-	assert.False(t, suppressesUsage(&schemas.BifrostRequest{PassthroughRequest: &schemas.BifrostPassthroughRequest{Body: []byte(`{"model":"m","stream_options":{"include_usage":true}}`)}}))
-	assert.True(t, suppressesUsage(&schemas.BifrostRequest{ChatRequest: &schemas.BifrostChatRequest{RawRequestBody: []byte(`{"stream_options":{"include_usage":false}}`)}}))
+	assert.True(t, suppressesUsage(nil, chat(&off)))
+	assert.False(t, suppressesUsage(nil, chat(&on)))
+	assert.False(t, suppressesUsage(nil, chat(nil)))
+	assert.True(t, suppressesUsage(nil, &schemas.BifrostRequest{PassthroughRequest: &schemas.BifrostPassthroughRequest{Body: []byte(`{"model":"m","stream_options":{"include_usage":false}}`)}}))
+	assert.False(t, suppressesUsage(nil, &schemas.BifrostRequest{PassthroughRequest: &schemas.BifrostPassthroughRequest{Body: []byte(`{"model":"m","stream_options":{"include_usage":true}}`)}}))
+	assert.True(t, suppressesUsage(nil, &schemas.BifrostRequest{ChatRequest: &schemas.BifrostChatRequest{RawRequestBody: []byte(`{"stream_options":{"include_usage":false}}`)}}))
 	for _, value := range []string{`0`, `"false"`, `null`} {
-		assert.True(t, suppressesUsage(&schemas.BifrostRequest{PassthroughRequest: &schemas.BifrostPassthroughRequest{Body: []byte(`{"stream_options":{"include_usage":` + value + `}}`)}}), value)
+		assert.True(t, suppressesUsage(nil, &schemas.BifrostRequest{PassthroughRequest: &schemas.BifrostPassthroughRequest{Body: []byte(`{"stream_options":{"include_usage":` + value + `}}`)}}), value)
 	}
-	assert.False(t, suppressesUsage(&schemas.BifrostRequest{PassthroughRequest: &schemas.BifrostPassthroughRequest{Body: []byte(`{"stream_options":{}}`)}}))
+	assert.False(t, suppressesUsage(nil, &schemas.BifrostRequest{PassthroughRequest: &schemas.BifrostPassthroughRequest{Body: []byte(`{"stream_options":{}}`)}}))
 	stream := func(body string) *schemas.BifrostRequest {
 		return &schemas.BifrostRequest{RequestType: schemas.PassthroughStreamRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{Body: []byte(body)}}
 	}
-	assert.True(t, suppressesUsage(stream(`{"model":"m","stream":true}`)), "a forwarded stream that does not ask for usage")
-	assert.True(t, suppressesUsage(stream(`not json`)), "a forwarded stream whose body cannot be read")
-	assert.False(t, suppressesUsage(stream(`{"model":"m","stream":true,"stream_options":{"include_usage":true}}`)))
-	assert.True(t, suppressesUsage(&schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{Body: []byte(`{"model":"m","stream":true}`)}}), "a body asking to stream")
-	assert.False(t, suppressesUsage(&schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{Body: []byte(`{"model":"m"}`)}}), "a unary passthrough")
+	assert.True(t, suppressesUsage(nil, stream(`{"model":"m","stream":true}`)), "a forwarded stream that does not ask for usage")
+	assert.True(t, suppressesUsage(nil, stream(`not json`)), "a forwarded stream whose body cannot be read")
+	assert.False(t, suppressesUsage(nil, stream(`{"model":"m","stream":true,"stream_options":{"include_usage":true}}`)))
+	assert.True(t, suppressesUsage(nil, &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{Body: []byte(`{"model":"m","stream":true}`)}}), "a body asking to stream")
+	assert.False(t, suppressesUsage(nil, &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{Body: []byte(`{"model":"m"}`)}}), "a unary passthrough")
 
 	probes := newUnpricedProbes()
 	scopes := []string{"s"}
@@ -393,10 +394,10 @@ func TestRequestSuppressingUsageIsProbedOnAConfirmedRow(t *testing.T) {
 	confirmed, busy := probes.acquire(scopes, []string{"row"})
 	require.False(t, busy)
 	require.Nil(t, confirmed, "the row is confirmed")
-	held, busy := probes.acquireRows(scopes, []string{"row"}, true)
+	held, busy := probes.acquireRows(nil, scopes, []string{"row"}, true)
 	require.False(t, busy)
 	require.NotNil(t, held, "a usage-suppressing request holds the confirmed row")
-	_, busy = probes.acquireRows(scopes, []string{"row"}, true)
+	_, busy = probes.acquireRows(nil, scopes, []string{"row"}, true)
 	assert.True(t, busy, "a concurrent usage-suppressing request is held off")
 	_, busy = probes.acquire(scopes, []string{"row"})
 	assert.False(t, busy, "a request reporting usage is not")
@@ -410,6 +411,53 @@ func TestProbeRowsAreTheServingKeysRows(t *testing.T) {
 	assert.Equal(t, []string{"openai|chat|free-on-key|override|free-on-key-override"}, rows)
 	pinned := plugin.resolver.probeRows(nil, schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, &modelcatalog.PricingLookupScopes{SelectedKeyID: "openai-key-1"})
 	assert.Equal(t, []string{"openai|chat|gpt-4o"}, pinned)
+}
+
+// A stream forwarded with its raw body reaches the vendor without the converter that asks for usage:
+// it must ask for it itself. The converted path keeps its default.
+func TestRawBodyStreamMustAskForUsage(t *testing.T) {
+	raw := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	raw.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+	stream := func(body string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.ChatCompletionStreamRequest, ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI, Model: "gpt-4o", RawRequestBody: []byte(body),
+		}}
+	}
+	assert.True(t, suppressesUsage(raw, stream(`{"model":"gpt-4o","stream":true}`)), "a raw stream that does not ask for usage")
+	assert.False(t, suppressesUsage(raw, stream(`{"model":"gpt-4o","stream":true,"stream_options":{"include_usage":true}}`)))
+	assert.False(t, suppressesUsage(nil, stream(`{"model":"gpt-4o","stream":true}`)), "the converted path asks for usage itself")
+	text := &schemas.BifrostRequest{RequestType: schemas.TextCompletionStreamRequest, TextCompletionRequest: &schemas.BifrostTextCompletionRequest{RawRequestBody: []byte(`{"stream":true}`)}}
+	assert.True(t, suppressesUsage(raw, text))
+}
+
+// A disabled key serves nothing, so its row is never held: only the rows enabled keys price.
+func TestProbeRowsSkipDisabledKeys(t *testing.T) {
+	plugin, _ := unpricedBudgetPlugin(t)
+	disabled := false
+	plugin.resolver.governanceInMemoryStore = &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.OpenAI: {Keys: []schemas.Key{{ID: "openai-key-1", Enabled: &disabled}, {ID: "enabled-key"}}},
+	}}
+	assert.Equal(t, []string{"openai|chat|free-on-key"}, plugin.resolver.probeRows(nil, schemas.OpenAI, "free-on-key", schemas.ChatCompletionRequest, nil),
+		"the disabled key's override row is not held")
+}
+
+// A hold whose request is still running is never replaced, however long it runs; once its context
+// ends, a later request may take it.
+func TestLiveHoldIsNotReplacedAfterTheStaleThreshold(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	probes := newUnpricedProbes()
+	probes.now = func() time.Time { return now }
+	owner, cancel := context.WithCancel(context.Background())
+	held, busy := probes.acquireRows(owner, []string{"s"}, []string{"row"}, true)
+	require.False(t, busy)
+	require.NotNil(t, held)
+	now = now.Add(2 * unpricedProbeStaleAfter)
+	_, busy = probes.acquireRows(nil, []string{"s"}, []string{"row"}, true)
+	assert.True(t, busy, "a long stream still running keeps its hold")
+	cancel()
+	replacement, busy := probes.acquireRows(nil, []string{"s"}, []string{"row"}, true)
+	assert.False(t, busy, "its context ended, and the hold is past the threshold")
+	replacement.release()
 }
 
 // A stream holds its row until its final chunk.
