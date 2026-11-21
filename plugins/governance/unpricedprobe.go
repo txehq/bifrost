@@ -175,12 +175,20 @@ func (probe *unpricedProbe) confirm(row string) {
 // confirmProbe confirms the row the answer was priced on: read as the gate read it, under the
 // scopes and alias of the key that served the answer (servedCandidates), with the override that key
 // applies in its identity. A row another key prices, which may still answer $0, stays unconfirmed.
-func (r *BudgetResolver) confirmProbe(probe *unpricedProbe, servedScopes *modelcatalog.PricingLookupScopes) {
+//
+// pricedAs is the mode accounting priced the answer in. The row is read in that mode and confirmed
+// only if the request held it: an answer priced on another row (a passthrough path priced as
+// embeddings while the gate held the model's chat row) vouches for nothing the gate held.
+func (r *BudgetResolver) confirmProbe(probe *unpricedProbe, pricedAs schemas.RequestType, servedScopes *modelcatalog.PricingLookupScopes) {
 	if r == nil || probe == nil || r.modelCatalog == nil {
 		return
 	}
+	mode := pricedAs
+	if mode == "" || normalizesToUnknown(mode) {
+		mode = probe.mode
+	}
 	for _, candidate := range r.servedCandidates(probe.provider, probe.model, servedScopes) {
-		if row, _ := r.modelCatalog.PriceIdentity(probe.provider, candidate, probe.mode, servedScopes); row != "" {
+		if row, _ := r.modelCatalog.PriceIdentity(probe.provider, candidate, mode, servedScopes); row != "" {
 			probe.confirm(row)
 			return
 		}

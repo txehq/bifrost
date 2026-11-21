@@ -2201,7 +2201,7 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifro
 			// row's model served it: one a provider's server-side fallback served was priced as
 			// another model.
 			if answerCost > 0 && fallback == "" {
-				p.resolver.confirmProbe(probe, pricingScopes)
+				p.resolver.confirmProbe(probe, pricedAs, pricingScopes)
 			}
 			p.resolver.noteUnpricedAnswer(provider, priced, fallback, requestType, pricedAs, answerCost, pricingScopes, requestID, limitIDs(budgets), holder)
 		}

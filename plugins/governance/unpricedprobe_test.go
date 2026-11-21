@@ -325,11 +325,34 @@ func TestProbeConfirmsTheServingKeysAliasTarget(t *testing.T) {
 	probe, busy := plugin.resolver.probes.acquire(scopes, []string{target})
 	require.False(t, busy)
 	probe.provider, probe.model, probe.mode = schemas.OpenAI, "alias-label", schemas.ChatCompletionRequest
-	plugin.resolver.confirmProbe(probe, &modelcatalog.PricingLookupScopes{SelectedKeyID: "openai-key-1"})
+	plugin.resolver.confirmProbe(probe, schemas.ChatCompletionRequest, &modelcatalog.PricingLookupScopes{SelectedKeyID: "openai-key-1"})
 	probe.release()
 	again, busy := plugin.resolver.probes.acquire(scopes, []string{target})
 	assert.False(t, busy)
 	assert.Nil(t, again, "the alias target's row is confirmed")
+}
+
+// An answer priced in another mode than the row the request held (a passthrough the gate held on
+// the model's chat row, priced as embeddings by its path) confirms nothing.
+func TestProbeConfirmsOnlyTheRowTheAnswerWasPricedOn(t *testing.T) {
+	plugin, _ := unpricedBudgetPlugin(t)
+	scopes := []string{"s"}
+	chatRow, _ := plugin.resolver.priceIdentity(schemas.OpenAI, "dual-1", schemas.ChatCompletionRequest, nil)
+	require.NotEmpty(t, chatRow)
+	probe, busy := plugin.resolver.probes.acquire(scopes, []string{chatRow})
+	require.False(t, busy)
+	probe.provider, probe.model, probe.mode = schemas.OpenAI, "dual-1", schemas.PassthroughRequest
+	plugin.resolver.confirmProbe(probe, schemas.EmbeddingRequest, nil)
+	probe.release()
+	again, busy := plugin.resolver.probes.acquire(scopes, []string{chatRow})
+	assert.False(t, busy)
+	assert.NotNil(t, again, "the chat row is still unconfirmed")
+	again.release()
+
+	again.provider, again.model, again.mode = schemas.OpenAI, "dual-1", schemas.PassthroughRequest
+	plugin.resolver.confirmProbe(again, schemas.ChatCompletionRequest, nil)
+	confirmed, _ := plugin.resolver.probes.acquire(scopes, []string{chatRow})
+	assert.Nil(t, confirmed, "an answer priced on the chat row confirms it")
 }
 
 // A stream holds its row until its final chunk.
