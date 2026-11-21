@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -418,6 +419,45 @@ func TestTypedRequestForwardedInputsDeferDelivery(t *testing.T) {
 		Provider: schemas.Kling, Model: "kling-v2", Params: &schemas.VideoGenerationParameters{ExtraParams: map[string]interface{}{"callback_url": "https://hooks.example.invalid/k"}},
 	}}
 	assert.False(t, isDeferredDelivery(video, schemas.Kling), "a video is charged when its job settles, whatever its delivery")
+}
+
+// Every request variant whose Params carry ExtraParams is read for deferred delivery: the extra
+// params are forwarded to the provider, so a webhook there defers delivery like one in the body.
+func TestForwardedExtraParamsCoverEveryRequestVariant(t *testing.T) {
+	listed := map[int]bool{}
+	for _, f := range extraParamsFields {
+		listed[f.request] = true
+	}
+	rt := reflect.TypeOf(schemas.BifrostRequest{})
+	variants := 0
+	for i := 0; i < rt.NumField(); i++ {
+		ft := rt.Field(i).Type
+		if ft.Kind() != reflect.Pointer || ft.Elem().Kind() != reflect.Struct {
+			continue
+		}
+		params, ok := ft.Elem().FieldByName("Params")
+		if !ok || params.Type.Kind() != reflect.Pointer || params.Type.Elem().Kind() != reflect.Struct {
+			continue
+		}
+		if _, ok := params.Type.Elem().FieldByName("ExtraParams"); !ok {
+			continue
+		}
+		variants++
+		assert.True(t, listed[i], "%s carries Params.ExtraParams but requestForwardedInputs does not read it", rt.Field(i).Name)
+	}
+	require.Greater(t, variants, 10, "the scan found too few request variants with extra params; it no longer matches the schema")
+
+	chat := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{
+		Params:         &schemas.ChatParameters{ExtraParams: map[string]interface{}{"callback_url": "https://hooks.example.invalid/c"}},
+		RawRequestBody: []byte(`{"model":"m"}`),
+	}}
+	extra, raw := requestForwardedInputs(chat)
+	assert.Equal(t, "https://hooks.example.invalid/c", extra["callback_url"])
+	assert.Equal(t, `{"model":"m"}`, string(raw))
+	chat.ChatRequest.Params = nil
+	extra, raw = requestForwardedInputs(chat)
+	assert.Nil(t, extra)
+	assert.Equal(t, `{"model":"m"}`, string(raw))
 }
 
 // deliveryFieldExemptions are provider request fields whose names look like deferred delivery but

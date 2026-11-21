@@ -138,32 +138,60 @@ func isDeferredDelivery(req *schemas.BifrostRequest, baseProvider schemas.ModelP
 }
 
 // requestForwardedInputs returns what a typed request forwards to the provider beyond its typed
-// fields: Params.ExtraParams and RawRequestBody of whichever request it carries. It is read by
-// reflection so a request type added later is covered without editing this function.
+// fields: the extra params of whichever request it carries, and the raw body it forwards as sent
+// (schemas.BifrostRequest.ForwardedBody, which its own test keeps complete). Extra params are
+// found through extraParamsFields, built once from the request types, so a request type added
+// later is covered without editing this function and a request pays no field-name lookup.
 func requestForwardedInputs(req *schemas.BifrostRequest) (map[string]interface{}, []byte) {
+	raw := req.ForwardedBody()
 	v := reflect.ValueOf(req).Elem()
-	for i := 0; i < v.NumField(); i++ {
-		field := v.Field(i)
-		if field.Kind() != reflect.Pointer || field.IsNil() || field.Elem().Kind() != reflect.Struct {
+	for _, f := range extraParamsFields {
+		inner := v.Field(f.request)
+		if inner.IsNil() {
 			continue
 		}
-		inner := field.Elem()
-		var extra map[string]interface{}
-		var raw []byte
-		if params := inner.FieldByName("Params"); params.IsValid() && params.Kind() == reflect.Pointer && !params.IsNil() && params.Elem().Kind() == reflect.Struct {
-			if e := params.Elem().FieldByName("ExtraParams"); e.IsValid() && e.Kind() == reflect.Map && !e.IsNil() {
-				extra, _ = e.Interface().(map[string]interface{})
-			}
+		params, err := inner.Elem().FieldByIndexErr(f.params)
+		if err != nil || params.IsNil() {
+			return nil, raw
 		}
-		if r := inner.FieldByName("RawRequestBody"); r.IsValid() && r.Kind() == reflect.Slice && r.Type().Elem().Kind() == reflect.Uint8 {
-			raw = r.Bytes()
+		value, err := params.Elem().FieldByIndexErr(f.extra)
+		if err != nil {
+			return nil, raw
 		}
-		if extra != nil || len(raw) > 0 {
-			return extra, raw
-		}
+		extra, _ := value.Interface().(map[string]interface{})
+		return extra, raw
 	}
-	return nil, nil
+	return nil, raw
 }
+
+// extraParamsField locates Params.ExtraParams on one request variant of schemas.BifrostRequest.
+type extraParamsField struct {
+	request       int
+	params, extra []int
+}
+
+// extraParamsFields lists, for every request variant whose Params carry ExtraParams, the field
+// indexes that reach them.
+var extraParamsFields = func() []extraParamsField {
+	var fields []extraParamsField
+	t := reflect.TypeOf(schemas.BifrostRequest{})
+	for i := 0; i < t.NumField(); i++ {
+		ft := t.Field(i).Type
+		if ft.Kind() != reflect.Pointer || ft.Elem().Kind() != reflect.Struct {
+			continue
+		}
+		params, ok := ft.Elem().FieldByName("Params")
+		if !ok || params.Type.Kind() != reflect.Pointer || params.Type.Elem().Kind() != reflect.Struct {
+			continue
+		}
+		extra, ok := params.Type.Elem().FieldByName("ExtraParams")
+		if !ok || extra.Type != reflect.TypeOf(map[string]interface{}{}) {
+			continue
+		}
+		fields = append(fields, extraParamsField{request: i, params: params.Index, extra: extra.Index})
+	}
+	return fields
+}()
 
 // backgroundCapablePaths name the passthrough APIs that run a create in the background when
 // asked: OpenAI-style Responses, and the Gemini/Vertex Interactions API (gemini.IsInteractionsPassthroughPath).
