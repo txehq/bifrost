@@ -358,7 +358,14 @@ func TestFormPassthroughDefersDelivery(t *testing.T) {
 	assert.False(t, passthroughDefersDelivery(path, body, false, ct), "webhook=false and a file part named like a key are synchronous")
 	assert.True(t, passthroughDefersDelivery(path, []byte("webhook=true&model_id=scribe_v1"), false, "application/x-www-form-urlencoded"), "an urlencoded webhook")
 	assert.False(t, passthroughDefersDelivery(path, []byte("model_id=scribe_v1"), false, "application/x-www-form-urlencoded"))
-	assert.True(t, passthroughDefersDelivery(path, []byte("--b\r\nbroken"), true, "multipart/form-data; boundary=b"), "an unreadable form fails closed where deferral is known")
+	assert.True(t, passthroughDefersDelivery(path, []byte("--b\r\nbroken"), false, "multipart/form-data; boundary=b"), "an unreadable multipart form fails closed")
+	assert.True(t, passthroughDefersDelivery(path, []byte("webhook=%zz&model_id=m"), false, "application/x-www-form-urlencoded"), "an urlencoded form that does not parse fails closed")
+	body, ct = form("model_id", "scribe_v1", "webhook_url", strings.Repeat(" ", 8192)+"https://hooks.example.invalid/p")
+	assert.True(t, passthroughDefersDelivery(path, body, false, ct), "a delivery value padded past any read limit is still judged in full")
+	body, ct = form("model_id", "scribe_v1", "callback_url", strings.Repeat("x", maxFormFieldBytes+1))
+	assert.True(t, passthroughDefersDelivery(path, body, false, ct), "a delivery value longer than the limit fails closed")
+	body, ct = form("model_id", "scribe_v1", "prompt", strings.Repeat("p", maxFormFieldBytes+1))
+	assert.False(t, passthroughDefersDelivery(path, body, false, ct), "a long field that names no delivery is not read")
 	assert.False(t, passthroughDefersDelivery(path, []byte("ID3 audio"), false, "audio/mpeg"), "a raw audio body is no form")
 }
 

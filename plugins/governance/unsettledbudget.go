@@ -244,7 +244,9 @@ func passthroughDefersDelivery(path string, body []byte, capableProvider bool, c
 		// rule; a body that is neither JSON nor a readable form fails closed where deferral is known.
 		if fields, isForm, ok := formFields(body, contentType); isForm {
 			if !ok {
-				return capable
+				// A form the caller declared (or opened with a boundary) that does not parse cannot
+				// be judged, and a vendor's lenient decoder may still read a webhook from it.
+				return true
 			}
 			for _, field := range fields {
 				if unitDefersDelivery(field, capable) {
@@ -273,12 +275,19 @@ func passthroughDefersDelivery(path string, body []byte, capableProvider bool, c
 	return false
 }
 
-// maxFormFieldBytes bounds the text of one form field read for deferred delivery; a longer field
-// (a prompt) is truncated, which cannot hide a delivery key: keys are field names.
-const maxFormFieldBytes = 4096
+// maxFormFieldBytes bounds the value of one delivery field read from a form. A longer value is not
+// truncated, which could hide a non-empty value behind padding: the form is judged deferred.
+const maxFormFieldBytes = 1 << 20
 
-// formFields reads the text fields of a form body as single-field JSON objects, one per occurrence,
-// so a field given twice is judged at each. isForm reports a multipart/form-data body (declared, read
+// deliveryFieldName reports whether unitDefersDelivery reads a field of this name. Only those
+// fields' values are read from a form.
+func deliveryFieldName(name string) bool {
+	return strings.EqualFold(name, "taskType") || strings.EqualFold(name, "deliveryMethod") ||
+		strings.EqualFold(name, "background") || deferredDeliveryKey(name)
+}
+
+// formFields reads the delivery fields (deliveryFieldName) of a form body as single-field JSON
+// objects, one per occurrence, so a field given twice is judged at each. isForm reports a multipart/form-data body (declared, read
 // by its boundary; or undeclared and opening with a boundary line) or a declared
 // application/x-www-form-urlencoded one; ok is false when such a body does not parse. A file part
 // is skipped: its name is the upload, not a setting. "true" and "false" are read as booleans, as the
@@ -317,11 +326,11 @@ func formFields(body []byte, contentType string) (fields []gjson.Result, isForm,
 			if err != nil {
 				return nil, true, false
 			}
-			if part.FileName() != "" {
+			if part.FileName() != "" || !deliveryFieldName(part.FormName()) {
 				continue
 			}
-			text, err := io.ReadAll(io.LimitReader(part, maxFormFieldBytes))
-			if err != nil {
+			text, err := io.ReadAll(io.LimitReader(part, maxFormFieldBytes+1))
+			if err != nil || len(text) > maxFormFieldBytes {
 				return nil, true, false
 			}
 			field(part.FormName(), string(text))
@@ -332,6 +341,9 @@ func formFields(body []byte, contentType string) (fields []gjson.Result, isForm,
 			return nil, true, false
 		}
 		for name, all := range values {
+			if !deliveryFieldName(name) {
+				continue
+			}
 			for _, value := range all {
 				field(name, value)
 			}
@@ -361,8 +373,7 @@ func deferredDeliveryKey(key string) bool {
 // common case: service_tier, a vendor flag) pays a key scan and no allocation.
 func extraNamesDelivery(extra map[string]interface{}) bool {
 	for key := range extra {
-		if strings.EqualFold(key, "taskType") || strings.EqualFold(key, "deliveryMethod") ||
-			strings.EqualFold(key, "background") || deferredDeliveryKey(key) {
+		if deliveryFieldName(key) {
 			return true
 		}
 	}
