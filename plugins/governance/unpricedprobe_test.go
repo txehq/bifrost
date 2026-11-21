@@ -441,8 +441,8 @@ func TestProbeRowsSkipDisabledKeys(t *testing.T) {
 		"the disabled key's override row is not held")
 }
 
-// A hold whose request is still running is never replaced, however long it runs; once its context
-// ends, a later request may take it.
+// A hold whose request is still running is not replaced before unpricedProbeMaxHold; once its context
+// ends, or the cap passes, a later request may take it.
 func TestLiveHoldIsNotReplacedAfterTheStaleThreshold(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	probes := newUnpricedProbes()
@@ -454,6 +454,15 @@ func TestLiveHoldIsNotReplacedAfterTheStaleThreshold(t *testing.T) {
 	now = now.Add(2 * unpricedProbeStaleAfter)
 	_, busy = probes.acquireRows(nil, []string{"s"}, []string{"row"}, true)
 	assert.True(t, busy, "a long stream still running keeps its hold")
+	defer cancel()
+	now = now.Add(unpricedProbeMaxHold)
+	capped, busy := probes.acquireRows(nil, []string{"s"}, []string{"row"}, true)
+	assert.False(t, busy, "no hold outlives unpricedProbeMaxHold, even one whose context never ends")
+	capped.release()
+	now = now.Add(-unpricedProbeMaxHold)
+	held, busy = probes.acquireRows(owner, []string{"s"}, []string{"row"}, true)
+	require.False(t, busy)
+	now = now.Add(2 * unpricedProbeStaleAfter)
 	cancel()
 	replacement, busy := probes.acquireRows(nil, []string{"s"}, []string{"row"}, true)
 	assert.False(t, busy, "its context ended, and the hold is past the threshold")

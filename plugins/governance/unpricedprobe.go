@@ -43,8 +43,11 @@ const (
 	maxConfirmedRowsPerScope = 4096
 	// unpricedProbeStaleAfter frees an in-flight probe whose request never reached its post-hook and
 	// whose context cannot say whether it still runs, so a lost release cannot hold a row for good.
-	// A hold whose request is still running is never replaced.
+	// A hold whose request is still running is not replaced before unpricedProbeMaxHold.
 	unpricedProbeStaleAfter = 10 * time.Minute
+	// unpricedProbeMaxHold bounds even a hold whose request still looks alive: a context that is
+	// never cancelled (a Go SDK caller's) looks alive for good, and no answer runs this long.
+	unpricedProbeMaxHold = time.Hour
 )
 
 const unpricedProbeContextKey schemas.BifrostContextKey = "bf-governance-unpriced-probe"
@@ -122,8 +125,11 @@ func (p *unpricedProbes) acquireRows(owner context.Context, scopes, rows []strin
 				}
 			}
 			key := scope + "\x00" + row
-			if hold, held := p.inflight[key]; held && (now.Sub(hold.since) < unpricedProbeStaleAfter || (hold.alive != nil && hold.alive())) {
-				return nil, true
+			if hold, held := p.inflight[key]; held {
+				age := now.Sub(hold.since)
+				if age < unpricedProbeStaleAfter || (age < unpricedProbeMaxHold && hold.alive != nil && hold.alive()) {
+					return nil, true
+				}
 			}
 			keys = append(keys, key)
 		}
