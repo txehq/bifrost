@@ -238,10 +238,12 @@ func passthroughDefersDelivery(path string, body []byte, capableProvider bool, c
 	if len(bytes.TrimSpace(body)) == 0 {
 		return false
 	}
-	if !gjson.ValidBytes(body) {
-		// A form body (multipart/form-data or urlencoded) carries its fields as form fields: an
-		// ElevenLabs speech-to-text upload sends webhook=true that way. They are read with the same
-		// rule; a body that is neither JSON nor a readable form fails closed where deferral is known.
+	// The declared type picks the parser, as the vendor's decoder does: a body declared as a form
+	// is read as one even when it also parses as JSON. A form body (multipart/form-data or
+	// urlencoded) carries its settings as form fields: an ElevenLabs speech-to-text upload sends
+	// webhook=true that way. They are read with the same rule.
+	declaredForm := declaresForm(contentType)
+	if declaredForm || !gjson.ValidBytes(body) {
 		if fields, isForm, ok := formFields(body, contentType); isForm {
 			if !ok {
 				// A form the caller declared (or opened with a boundary) that does not parse cannot
@@ -255,6 +257,7 @@ func passthroughDefersDelivery(path string, body []byte, capableProvider bool, c
 			}
 			return false
 		}
+		// Neither JSON nor a form: fail closed where deferral is known.
 		return capable
 	}
 	root := gjson.ParseBytes(body)
@@ -284,6 +287,12 @@ const maxFormFieldBytes = 1 << 20
 func deliveryFieldName(name string) bool {
 	return strings.EqualFold(name, "taskType") || strings.EqualFold(name, "deliveryMethod") ||
 		strings.EqualFold(name, "background") || deferredDeliveryKey(name)
+}
+
+// declaresForm reports whether a Content-Type declares a form body.
+func declaresForm(contentType string) bool {
+	mediaType, _, _ := mime.ParseMediaType(contentType)
+	return mediaType == "multipart/form-data" || mediaType == "application/x-www-form-urlencoded"
 }
 
 // formFields reads the delivery fields (deliveryFieldName) of a form body as single-field JSON

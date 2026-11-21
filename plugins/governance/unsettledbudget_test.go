@@ -367,6 +367,9 @@ func TestFormPassthroughDefersDelivery(t *testing.T) {
 	body, ct = form("model_id", "scribe_v1", "prompt", strings.Repeat("p", maxFormFieldBytes+1))
 	assert.False(t, passthroughDefersDelivery(path, body, false, ct), "a long field that names no delivery is not read")
 	assert.False(t, passthroughDefersDelivery(path, []byte("ID3 audio"), false, "audio/mpeg"), "a raw audio body is no form")
+	assert.True(t, passthroughDefersDelivery(path, []byte(`{"x":1}&webhook=true`), false, "application/x-www-form-urlencoded"), "a declared form is read as a form, whatever it opens with")
+	assert.True(t, passthroughDefersDelivery(path, []byte(`["a"]`), false, "multipart/form-data; boundary=b"), "valid JSON declared multipart does not parse as a form and fails closed")
+	assert.False(t, passthroughDefersDelivery(path, []byte(`{"model":"m"}`), false, "application/x-www-form-urlencoded"), "a declared form naming no delivery field is served")
 }
 
 // A Runware passthrough task asks for deferred delivery with deliveryMethod (async) or webhookURL;
