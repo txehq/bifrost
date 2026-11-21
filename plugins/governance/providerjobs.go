@@ -1,7 +1,6 @@
 package governance
 
 import (
-	"bytes"
 	"fmt"
 	"path"
 	"slices"
@@ -741,7 +740,9 @@ func passthroughObjectRefs(r *schemas.BifrostPassthroughRequest) []providerObjec
 			add(configstoreTables.ProviderObjectKindCachedContent, "cachedContents/"+id)
 		}
 	}
-	if len(r.Body) == 0 || !mayNameProviderObjects(r.Body) {
+	// Only a body classified JSON is read for objects: the classification core's guard checked it
+	// by (TXE-8012). Content that may name one is refused by the guard before this runs.
+	if len(r.Body) == 0 || schemas.ClassifyForwardedBody(r.ContentType(), r.Body).Format != schemas.ForwardedBodyJSON || !mayNameProviderObjects(r.Body) {
 		return refs
 	}
 	var body any
@@ -751,63 +752,11 @@ func passthroughObjectRefs(r *schemas.BifrostPassthroughRequest) []providerObjec
 	return append(refs, jsonObjectRefs(r.Provider, body)...)
 }
 
-// providerObjectBodyMarkers are the keys a JSON body names a provider object under; a body that
-// contains none of them names nothing and is not parsed.
-var providerObjectBodyMarkers = [][]byte{
-	[]byte(`"file_id`), []byte(`"fileUri"`), []byte(`"file_uri"`),
-	[]byte(`"cached_content"`), []byte(`"cachedContent"`), []byte(`code_interpreter`),
-	[]byte(`"input_file_id"`), []byte(`"training_file"`), []byte(`"validation_file"`), []byte(`"fileName"`),
-}
-
-var unicodeEscape = []byte(`\u`)
-
 // mayNameProviderObjects reports whether a raw body could name a provider object, so passthrough
-// bodies that cannot are forwarded without a JSON parse. A \u escape can spell any marker
-// character (file\u005fid decodes to file_id), so a body carrying one is always parsed; the other
-// escapes (\n, \") cannot produce a marker's letters and leave the shortcut in place.
+// bodies that cannot are forwarded without a JSON parse. The markers are schemas' (one list, shared
+// with core's guard, TXE-8012): marker keys, a \u escape that can spell one, a storage URI.
 func mayNameProviderObjects(body []byte) bool {
-	if bytes.Contains(body, unicodeEscape) || mayNameRecordedFile(body) {
-		return true
-	}
-	for _, marker := range providerObjectBodyMarkers {
-		if bytes.Contains(body, marker) {
-			return true
-		}
-	}
-	return false
-}
-
-// mayNameRecordedFile reports whether a raw body could hold a URL in a form uploads are recorded
-// under (see recordedFileID): "gs:" or "s3:", an S3 ARN, or one of the hosts a stored object is
-// addressed under, in any case. The slashes are not required, since JSON may write them escaped
-// ("gs:\/\/"). It over-matches (prose that ends a word in "gs:"), which only costs the parse.
-func mayNameRecordedFile(body []byte) bool {
-	startsWith := func(at int, marker string) bool {
-		return len(body)-at >= len(marker) && strings.EqualFold(string(body[at:at+len(marker)]), marker)
-	}
-	for i := 0; i+2 < len(body); i++ {
-		switch body[i] | 0x20 {
-		case 'g':
-			if body[i+1]|0x20 == 's' && body[i+2] == ':' {
-				return true
-			}
-			if startsWith(i, googleAPIsDomain) {
-				return true
-			}
-		case 's':
-			if body[i+1] == '3' && body[i+2] == ':' {
-				return true
-			}
-			if startsWith(i, gcsBrowserHost) {
-				return true
-			}
-		case 'a':
-			if startsWith(i, awsDomain) || startsWith(i, s3ARNPrefix+"aws") {
-				return true
-			}
-		}
-	}
-	return false
+	return schemas.MayNameProviderObject(body)
 }
 
 // jsonObjectRefs returns the provider objects a JSON request body names anywhere in it: file_id

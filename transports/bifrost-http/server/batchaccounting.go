@@ -108,6 +108,16 @@ func modelPtr(model string) *string {
 	return &model
 }
 
+// providerJobAccountingSetter is implemented by a governance plugin that refuses a request priced
+// at settlement under a dollar budget when no job is settled (governance.GovernancePlugin).
+type providerJobAccountingSetter interface {
+	SetProviderJobAccountingEnabled(enabled bool)
+}
+
+// The built-in governance plugin must keep receiving the switch: renaming its setter would leave
+// every settled job refused under a dollar budget, silently.
+var _ providerJobAccountingSetter = (*governance.GovernancePlugin)(nil)
+
 // WireBatchAccountingSweeper starts the batch and video accounting sweepers against the live
 // logging and governance plugins, or, when client.disable_provider_job_accounting is set
 // (fork, TXE-6519), stops them and tells the logging plugin to record no provider job. It runs
@@ -118,6 +128,16 @@ func (s *BifrostHTTPServer) WireBatchAccountingSweeper() {
 		return
 	}
 	loggerPlugin, err := lib.FindPluginAs[*logging.LoggerPlugin](s.Config, logging.PluginName)
+	// Governance admits a request priced at settlement under a dollar budget only when a job is
+	// settled, and so charged, here (TXE-7963). The logging plugin runs the sweepers that settle
+	// them, so without it nothing settles: governance is told so, failing closed, before this
+	// returns. RemovePlugin re-runs this when the logging plugin goes.
+	accounting := s.Config.ShouldRunProviderJobAccounting() && err == nil && loggerPlugin != nil
+	if governancePlugin, govErr := lib.FindPluginAs[governance.BaseGovernancePlugin](s.Config, s.getGovernancePluginName()); govErr == nil && governancePlugin != nil {
+		if setter, ok := governancePlugin.(providerJobAccountingSetter); ok {
+			setter.SetProviderJobAccountingEnabled(accounting)
+		}
+	}
 	if err != nil || loggerPlugin == nil {
 		logger.Warn("batch accounting sweeper not wired: logging plugin not found (err=%v)", err)
 		return
@@ -125,7 +145,6 @@ func (s *BifrostHTTPServer) WireBatchAccountingSweeper() {
 	// Applied before anything starts and before the client check below, so a disabled
 	// deployment stops a running sweeper and writes no job row whether or not the client
 	// exists yet. Disabled, the plugin also refuses the two starts further down.
-	accounting := s.Config.ShouldRunProviderJobAccounting()
 	loggerPlugin.SetProviderJobAccountingEnabled(accounting)
 	if !accounting {
 		logger.Info("provider job accounting is off (client.disable_provider_job_accounting): no batch or video accounting sweeper, no provider job rows")

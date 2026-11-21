@@ -1153,6 +1153,18 @@ func (br *BifrostRequest) RequestedPromptCacheTTLOnWire(extraParamsMerged bool) 
 	return ttl
 }
 
+// RequestTTLPricedCacheWrites lists the providers whose vendor prices a prompt-cache write by the
+// TTL the request asked for (prompt_cache_options.ttl) and reports the write as one figure, with
+// no tier (fork, TXE-7069). For these, a write the response reports without a tier is costed at
+// the tier the request asked for. A provider whose usage reports the tier (Anthropic's
+// ephemeral_1h_input_tokens, OpenAI's ttl_30m/ttl_12h tokens) is never listed: its reported split
+// is what the vendor billed. TestRequestTTLPricedCacheWritesCostTheRequestedTier (framework/modelcatalog/datasheet) runs every
+// entry. The request path reads prompt_cache_options.ttl from the body it sends only on an attempt
+// whose base provider is listed (core/providers/utils, TXE-7996).
+var RequestTTLPricedCacheWrites = map[ModelProvider]string{
+	Moonshot: "Kimi bills a cache write by the request's prompt_cache_options.ttl and reports one cache_write_tokens figure without the TTL (the datasheet's moonshot/kimi-k3 row: $3/M base write, $6/M above 1 hour); TXE-6527 delivers the TTL to the vendor as sent",
+}
+
 // PricingContextKeys are the context values datasheet.LookupScopesFromContext reads. A context
 // built apart from the request's (the tracer's stream accumulator) copies exactly these, so a
 // streamed total is priced like the request's own breakdown. TestLookupScopesFromContextReads

@@ -784,8 +784,9 @@ func (provider *DeepSeekProvider) PassthroughStream(ctx *schemas.BifrostContext,
 // body's own model.
 func passthroughRequestedModel(ctx *schemas.BifrostContext, req *schemas.BifrostPassthroughRequest) string {
 	model := req.Model
-	if model == "" {
-		model = providerUtils.GetJSONField(req.Body, "model").Str
+	// A body is read for its model only when it is JSON by its declared type (TXE-8012).
+	if model == "" && schemas.ClassifyForwardedBody(req.ContentType(), req.Body).Format == schemas.ForwardedBodyJSON {
+		model = providerUtils.GetJSONField(req.Body, schemas.BodyModelKey).Str
 	}
 	if alias := schemas.GetResolvedAlias(ctx); alias != nil && alias.Config != nil && alias.Config.ModelID != "" && alias.Key == model {
 		return alias.Config.ModelID

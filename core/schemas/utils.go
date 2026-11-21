@@ -2777,6 +2777,29 @@ func IsTitanModel(model string) bool {
 	return strings.Contains(model, "titan")
 }
 
+// IsMAIImageModel reports whether model names a Microsoft MAI-Image model (MAI-Image-2.5,
+// MAI-Image-2.6-Flash, ...), in any letter case: Azure AI Foundry's catalog writes them in
+// upper case and deployment names are often lower case (fork, TXE-6543).
+// MAIImagePricedModels are the MAI-Image models the azure provider serves on Azure AI Foundry's MAI
+// images API (fork, TXE-6543). MAI's answer carries no token usage, so a model is served only when
+// its datasheet row prices it per image (output_cost_per_image): a model priced only per image
+// token would resolve unpriced and charge a dollar budget nothing. The names are matched exactly,
+// as the price lookup matches them, against the request's canonical model (the alias's model_name,
+// else its model_id, else the request's model). TestMAIImagePricedModelsMatchTheDatasheet fails
+// when a listed model loses its per-image price or an azure MAI-Image row gains one unlisted.
+var MAIImagePricedModels = []string{"MAI-Image-2.5", "MAI-Image-2.5-Flash", "MAI-Image-2.5-Pro"}
+
+// It runs on every Azure image request, so it compares in place rather than lower-casing a copy.
+func IsMAIImageModel(model string) bool {
+	const family = "mai-image"
+	for i := 0; i+len(family) <= len(model); i++ {
+		if strings.EqualFold(model[i:i+len(family)], family) {
+			return true
+		}
+	}
+	return false
+}
+
 // IsTitanMultimodalEmbeddingModel checks if the model is Titan's multimodal embedding model.
 func IsTitanMultimodalEmbeddingModel(model string) bool {
 	return strings.Contains(strings.ToLower(model), "titan-embed-image")

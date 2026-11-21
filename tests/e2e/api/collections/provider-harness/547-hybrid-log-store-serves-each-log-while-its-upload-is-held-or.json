@@ -1,6 +1,6 @@
 {
   "name": "547. Hybrid log store serves each log while its upload is held or fails (hybrid-logstore) [SERIAL]",
-  "description": "TXE-7326. The hybrid log store keeps a summary row in the database and offloads each log's payload to object storage, and its bugs live in the order of those uploads (TXE-7318, TXE-7325). This folder proves the harness can reach that: the hybrid-logstore group of tests/e2e/api/runners/fixture-folders.mjs runs the provider-error gateway with logs_store.object_storage pointing at the S3-compatible store that provider-error-fixture.mjs serves on its main port (tests/e2e/api/runners/lib/s3-object-fixture.mjs). Rows hold or fail a chosen PUT through that store's control API (/__s3/control) and read the log back through GET /api/logs/{id}. Pins: a landed upload is stored under the log's key and the log is served from it with its output; while the upload is held the log is served from its row (the last user message, no output) and from the object once the upload lands; a failed upload stores nothing and the row is served. Red without the group's object storage (no PUT reaches the store, so every state wait times out); green on this change.",
+  "description": "TXE-7326. The hybrid log store keeps a summary row in the database and offloads each log's payload to object storage, and its bugs live in the order of those uploads (TXE-7318, TXE-7325). This folder proves the harness can reach that: the hybrid-logstore group of tests/e2e/api/runners/fixture-folders.mjs runs the provider-error gateway with logs_store.object_storage pointing at the S3-compatible store that provider-error-fixture.mjs serves on its main port (tests/e2e/api/runners/lib/s3-object-fixture.mjs). Rows hold or fail a chosen PUT through that store's control API (/__s3/control) and read the log back through GET /api/logs/{id}. Pins: a landed upload is stored under the log's key and the log is served from it with its output; while the upload is held the log is served from its row (the last user message, no output) and from the object once the upload lands; a failed upload stores nothing and the row is served. Red without the group's object storage (no PUT reaches the store, so every state wait times out); green on this change. 547.4 (TXE-7328): with writer.pending_log_ttl at 500ms, an upstream-slow call outlives its pending entry, so its input is uploaded with the evicted partial row and its output reaches the log only through the merge upload; that upload fails once and is retried, and the log is served with both. Red on origin/main (no pending_log_ttl, so no eviction and a single PUT: the settled=3 wait times out; and a failed merge upload was dropped, losing the output); green with the retry.",
   "item": [
     {
       "name": "547.1 a landed upload is stored under the log's key and the log is served from it - hybrid-logstore",
@@ -350,6 +350,123 @@
               "    pm.test('hybrid-logstore: the log is served from its row', function () {",
               "      pm.expect(row && row.status, text).to.equal('success');",
               "      pm.expect(input(row), text).to.contain('failed question');",
+              "    });",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "547.4 a late output whose merge upload fails once is retried and served - hybrid-logstore",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-request-id",
+            "value": "{{hlsRun}}-late"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"openai/upstream-slow\",\"messages\":[{\"role\":\"user\",\"content\":\"late question {{hlsRun}}\"}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('hybridLogstoreFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "function control(method, op, body, done) {",
+              "  var req = { url: FX + '/__s3/control/' + op, method: method };",
+              "  if (body) { req.header = { 'Content-Type': 'application/json' }; req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+              "  pm.sendRequest(req, function (err, res) { done(err, res); });",
+              "}",
+              "function state(query, done) {",
+              "  pm.sendRequest({ url: FX + '/__s3/control/state?' + query, method: 'GET' }, function (err, res) { done(err ? { error: String(err) } : res.json()); });",
+              "}",
+              "function readLog(id, want, tries, done) {",
+              "  pm.sendRequest({ url: BASE + '/api/logs/' + encodeURIComponent(id), method: 'GET' }, function (err, res) {",
+              "    var row = (!err && res.code === 200) ? res.json() : null;",
+              "    if ((!row || !want(row)) && tries > 0) { setTimeout(function () { readLog(id, want, tries - 1, done); }, 250); return; }",
+              "    done(row, err ? String(err) : res.text());",
+              "  });",
+              "}",
+              "function output(row) { return JSON.stringify((row && row.output_message) || ''); }",
+              "function input(row) { return JSON.stringify((row && row.input_history) || ''); }",
+              "var id = pm.collectionVariables.get('hlsRun') + '-late';",
+              "// upstream-slow answers after 2 s; the group's writer.pending_log_ttl (500ms) evicts the pending entry first,",
+              "// so its input is uploaded with the partial row (PUT 1) and the late output reaches the log only through",
+              "// BatchUpdate's merge upload (PUT 2), which this rule fails once.",
+              "control('POST', 'rules', { rules: [{ match: id, nth: 2, action: 'fail' }] }, function (err, res) {",
+              "  pm.test('hybrid-logstore: the merge failure is armed', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code, res.text()).to.equal(200); });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var BASE = pm.variables.get('baseUrl');",
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "function control(method, op, body, done) {",
+              "  var req = { url: FX + '/__s3/control/' + op, method: method };",
+              "  if (body) { req.header = { 'Content-Type': 'application/json' }; req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+              "  pm.sendRequest(req, function (err, res) { done(err, res); });",
+              "}",
+              "function state(query, done) {",
+              "  pm.sendRequest({ url: FX + '/__s3/control/state?' + query, method: 'GET' }, function (err, res) { done(err ? { error: String(err) } : res.json()); });",
+              "}",
+              "function readLog(id, want, tries, done) {",
+              "  pm.sendRequest({ url: BASE + '/api/logs/' + encodeURIComponent(id), method: 'GET' }, function (err, res) {",
+              "    var row = (!err && res.code === 200) ? res.json() : null;",
+              "    if ((!row || !want(row)) && tries > 0) { setTimeout(function () { readLog(id, want, tries - 1, done); }, 250); return; }",
+              "    done(row, err ? String(err) : res.text());",
+              "  });",
+              "}",
+              "function output(row) { return JSON.stringify((row && row.output_message) || ''); }",
+              "function input(row) { return JSON.stringify((row && row.input_history) || ''); }",
+              "var id = pm.collectionVariables.get('hlsRun') + '-late';",
+              "pm.test('hybrid-logstore: the slow call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "state('match=' + encodeURIComponent(id) + '&settled=3&timeoutMs=15000', function (s) {",
+              "  pm.test('hybrid-logstore: the evicted input was stored, the merge upload failed once and its retry was stored', function () {",
+              "    pm.expect(s.timedOut, JSON.stringify(s)).to.not.equal(true);",
+              "    pm.expect((s.puts || []).map(function (p) { return p.outcome; }), JSON.stringify(s)).to.eql(['stored', 'failed', 'stored']);",
+              "    pm.expect((s.objects || []).length, JSON.stringify(s)).to.equal(1);",
+              "  });",
+              "  readLog(id, function (row) { return output(row).indexOf('hello') !== -1; }, 60, function (row, text) {",
+              "    pm.test('hybrid-logstore: the log is served with its input and the late output', function () {",
+              "      pm.expect(output(row), text).to.contain('hello');",
+              "      pm.expect(input(row), text).to.contain('late question');",
               "    });",
               "  });",
               "});"

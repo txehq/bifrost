@@ -919,7 +919,12 @@ func TestResponseLimitImageRefusalChargesTheEstimateToTheBudget(t *testing.T) {
 		Budgets:     []configstoreTables.TableBudget{*budget},
 	}, nil, nil)
 	require.NoError(t, err)
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, catalog, nil, nil)
+	// The openai key serves the label house-image as gpt-image-1. Governance reads the alias to
+	// price the label before the call (TXE-7957): a label no key aliases is refused under a budget.
+	providers := &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.OpenAI: {Keys: []schemas.Key{{ID: "openai-key", Aliases: schemas.KeyAliases{"house-image": {ModelID: "gpt-image-1"}}}}},
+	}}
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, catalog, nil, providers)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 

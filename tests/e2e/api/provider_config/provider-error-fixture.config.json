@@ -137,6 +137,8 @@
             "upstream-usage-extended",
             "upstream-cached-tokens",
             "upstream-slow",
+            "upstream-slow-priced",
+            "upstream-flex-free",
             "upstream-fixed-length-short",
             "upstream-fixed-length-ok",
             "gpt-5-pro",
@@ -236,6 +238,18 @@
           "weight": 1,
           "azure_key_config": {
             "endpoint": "http://127.0.0.1:8791/sora-b"
+          }
+        },
+        {
+          "name": "azure-mai",
+          "value": "azure-mai-secret",
+          "models": [
+            "MAI-Image-2.5",
+            "MAI-Image-2.6"
+          ],
+          "weight": 1,
+          "azure_key_config": {
+            "endpoint": "http://127.0.0.1:8791/mai-a"
           }
         }
       ],
@@ -1463,6 +1477,57 @@
         }
       ],
       "network_config": {
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
+    "mistral": {
+      "keys": [
+        {
+          "name": "local-error-fixture",
+          "value": "test-key",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/ownkey",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
+    "glm": {
+      "keys": [
+        {
+          "name": "local-error-fixture",
+          "value": "test-key",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/ownkey",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
+    "qwen": {
+      "keys": [
+        {
+          "name": "local-error-fixture",
+          "value": "test-key",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/ownkey",
         "max_retries": 0,
         "default_request_timeout_in_seconds": 10
       }

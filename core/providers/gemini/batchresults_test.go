@@ -1758,3 +1758,64 @@ func TestGeminiBatchCreateRefusesMoreLinesThanTheLimit(t *testing.T) {
 		assert.Equal(t, limit, int(gjson.Get(vendor.batchBody, "batch.inputConfig.requests.requests.#").Int()), "every line converted and sent")
 	})
 }
+
+// BenchmarkGeminiBatchNativeOutput measures what a Gemini batch retrieve now does on top of its
+// decode (TXE-7030): find metadata.output (or a done operation's response) and copy it so it
+// outlives the pooled body. A job without output costs the two lookups only.
+func BenchmarkGeminiBatchNativeOutput(b *testing.B) {
+	pending := []byte(`{"name":"batches/b1","metadata":{"name":"batches/b1","state":"BATCH_STATE_RUNNING","batchStats":{"requestCount":"2"}}}`)
+	done := []byte(`{"name":"batches/b1","done":true,"metadata":{"name":"batches/b1","state":"BATCH_STATE_SUCCEEDED","batchStats":{"requestCount":"2"},` +
+		`"output":{"inlinedResponses":{"inlinedResponses":[{"response":{"embedding":{"values":[0.11,0.12]}}},{"response":{"embedding":{"values":[0.21,0.22]}}}]}}}}`)
+	for _, tc := range []struct {
+		name string
+		body []byte
+	}{{"running, no output", pending}, {"succeeded, two inline embeddings", done}} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = geminiBatchNativeOutput(tc.body)
+			}
+		})
+	}
+}
+
+// TestGeminiBatchInputFileNameReadsEveryAlias (TXE-7030, Codex security finding on #407): the
+// input file of a native batch create is read from the body as Gemini reads it. ProtoJSON
+// accepts inputConfig/input_config and fileName/file_name, and a parser may keep the last of a
+// repeated key, so a body naming two different files is refused rather than checked against
+// one and run against the other.
+func TestGeminiBatchInputFileNameReadsEveryAlias(t *testing.T) {
+	cases := []struct {
+		name    string
+		raw     string
+		parsed  GeminiBatchInputConfig
+		want    string
+		wantErr bool
+	}{
+		{"camelCase", `{"batch":{"inputConfig":{"fileName":"files/a"}}}`, GeminiBatchInputConfig{}, "files/a", false},
+		{"SDK embedding spelling", `{"batch":{"inputConfig":{"file_name":"files/a"}}}`, GeminiBatchInputConfig{}, "files/a", false},
+		{"proto name for the config", `{"batch":{"input_config":{"file_name":"files/a"}}}`, GeminiBatchInputConfig{}, "files/a", false},
+		{"both spellings, same file", `{"batch":{"inputConfig":{"fileName":"files/a","file_name":"files/a"}}}`, GeminiBatchInputConfig{}, "files/a", false},
+		{"inline requests, no file", `{"batch":{"inputConfig":{"requests":{"requests":[]}}}}`, GeminiBatchInputConfig{}, "", false},
+		{"decoy fileName, other file_name", `{"batch":{"inputConfig":{"fileName":"files/mine","file_name":"files/theirs"}}}`, GeminiBatchInputConfig{}, "", true},
+		{"decoy inputConfig, other input_config", `{"batch":{"inputConfig":{"fileName":"files/mine"},"input_config":{"fileName":"files/theirs"}}}`, GeminiBatchInputConfig{}, "", true},
+		{"repeated fileName", `{"batch":{"inputConfig":{"fileName":"files/mine","fileName":"files/theirs"}}}`, GeminiBatchInputConfig{}, "", true},
+		{"repeated batch", `{"batch":{"inputConfig":{"fileName":"files/mine"}},"batch":{"inputConfig":{"fileName":"files/theirs"}}}`, GeminiBatchInputConfig{}, "", true},
+		{"no raw body: parsed config", "", GeminiBatchInputConfig{FileNameSnake: "files/a"}, "files/a", false},
+		{"no raw body: parsed spellings disagree", "", GeminiBatchInputConfig{FileName: "files/mine", FileNameSnake: "files/theirs"}, "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := GeminiBatchInputFileName([]byte(tc.raw), tc.parsed)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("GeminiBatchInputFileName = %q, want an error", got)
+				}
+				return
+			}
+			if err != nil || got != tc.want {
+				t.Fatalf("GeminiBatchInputFileName = %q, %v; want %q", got, err, tc.want)
+			}
+		})
+	}
+}

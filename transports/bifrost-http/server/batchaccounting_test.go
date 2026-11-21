@@ -20,6 +20,7 @@ import (
 	"github.com/capsohq/bifrost/framework/jobaccounting"
 	"github.com/capsohq/bifrost/framework/logstore"
 	"github.com/capsohq/bifrost/framework/modelcatalog"
+	"github.com/capsohq/bifrost/plugins/governance"
 	"github.com/capsohq/bifrost/plugins/logging"
 	"github.com/capsohq/bifrost/transports/v2/bifrost-http/handlers"
 	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
@@ -161,12 +162,28 @@ func TestWireBatchAccountingSweeperAppliesProviderJobAccountingSwitch(t *testing
 	}{{"default keeps accounting on", false}, {"switched off", true}} {
 		t.Run(tc.name, func(t *testing.T) {
 			plugin := &logging.LoggerPlugin{}
+			governancePlugin, err := governance.Init(t.Context(), &governance.Config{}, bifrost.NewNoOpLogger(), nil, &configstore.GovernanceConfig{}, nil, nil, nil)
+			if err != nil {
+				t.Fatalf("governance.Init() error = %v", err)
+			}
+			t.Cleanup(func() { _ = governancePlugin.Cleanup() })
 			config := &lib.Config{ClientConfig: &configstore.ClientConfig{DisableProviderJobAccounting: tc.disabled}}
-			config.BasePlugins.Store(&[]schemas.BasePlugin{plugin})
+			config.BasePlugins.Store(&[]schemas.BasePlugin{plugin, governancePlugin})
 			s := &BifrostHTTPServer{Config: config}
 			s.WireBatchAccountingSweeper()
 			if got := plugin.ProviderJobAccountingEnabled(); got != !tc.disabled {
 				t.Fatalf("ProviderJobAccountingEnabled() = %v with disable_provider_job_accounting=%v", got, tc.disabled)
+			}
+			// Governance admits a settled job under a dollar budget only when it is settled (TXE-7963).
+			if got := governancePlugin.ProviderJobAccountingEnabled(); got != !tc.disabled {
+				t.Fatalf("governance ProviderJobAccountingEnabled() = %v with disable_provider_job_accounting=%v", got, tc.disabled)
+			}
+			// With the logging plugin gone nothing settles a job, so governance is told accounting
+			// is off, whatever the switch says (RemovePlugin rewires when logging is removed).
+			config.BasePlugins.Store(&[]schemas.BasePlugin{governancePlugin})
+			s.WireBatchAccountingSweeper()
+			if governancePlugin.ProviderJobAccountingEnabled() {
+				t.Fatalf("governance kept provider job accounting on after the logging plugin was removed (disable_provider_job_accounting=%v)", tc.disabled)
 			}
 		})
 	}

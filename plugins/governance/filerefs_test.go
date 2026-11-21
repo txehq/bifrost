@@ -825,3 +825,15 @@ func BenchmarkRequestFileIDs(b *testing.B) {
 		_, _ = requestFileIDs(req)
 	}
 }
+
+// TestRecordedFileHostsAreSharedObjectMarkers: governance parses a body for objects only when
+// schemas.MayNameProviderObject says it may name one, and core's guard refuses content that may
+// (TXE-8012). Both read the one list in schemas, so a storage host governance records files under
+// must be in it; this fails when one is added here and not there.
+func TestRecordedFileHostsAreSharedObjectMarkers(t *testing.T) {
+	for _, form := range []string{"gs://b/o", "S3://b/o", gcsHost, gcsBrowserHost, "x." + googleAPIsDomain, "b.s3." + awsDomain, s3ARNPrefix + "aws:s3:::b/o"} {
+		if !schemas.MayNameProviderObject([]byte(form)) {
+			t.Errorf("%q names a recorded file but schemas.MayNameProviderObject does not see it", form)
+		}
+	}
+}

@@ -479,58 +479,130 @@ func (s *Store) CalculateBatchCostDetailsForUsage(usage *schemas.BifrostLLMUsage
 		return BatchCostDetails{}
 	}
 
-	price := computeBatchTextCost
-	switch normalizeStreamRequestType(requestType) {
-	case schemas.ImageGenerationRequest, schemas.ImageEditRequest:
-		// An image line (fork, TXE-7354) is priced on its tokens only when the row prices image
-		// tokens, in a batch or synchronously. A row priced per image or per pixel has no batch
-		// rate to apply, so the line stays unpriced and the job waits for repricing, as before.
-		if pricing.OutputCostPerImageTokenBatches == nil && pricing.OutputCostPerImageToken == nil {
-			return BatchCostDetails{}
-		}
-		price = computeBatchImageCost
-		fallthrough
-	case schemas.BatchResultsRequest, schemas.ChatCompletionRequest, schemas.TextCompletionRequest, schemas.ResponsesRequest, schemas.EmbeddingRequest:
-		inputRate := resolveBatchRate(pricing.InputCostPerToken, pricing.InputCostPerTokenBatches)
-		outputRate := resolveBatchRate(pricing.OutputCostPerToken, pricing.OutputCostPerTokenBatches)
-		if usage.PromptTokens > 0 && inputRate == nil {
-			return BatchCostDetails{}
-		}
-		if usage.CompletionTokens > 0 && outputRate == nil {
-			return BatchCostDetails{}
-		}
-		// Speed or InferenceGeo are carried on BifrostLLMUsage for exactly this —
-		// the bare-usage batch path never sees a full response to read a served
-		// tier off, mirroring CalculateCostForUsage.
-		tier := tierFromResponse(nil, usage.Speed, usage.InferenceGeo)
-		breakdown := price(pricing, usage, tier)
-		// Time-of-day pricing, as in computeCostFromInput: the off-peak multiplier
-		// scales the usage charge (and the effective rates reported with it), never
-		// the flat per-request fee added below.
-		if m, ok := offPeakMultiplier(pricing, lookupScopes.BilledAt); ok {
-			scaleUsageCost(breakdown, m)
-			inputRate = scaledRate(inputRate, m)
-			outputRate = scaledRate(outputRate, m)
-		}
-		cost := 0.0
-		if breakdown != nil {
-			cost = breakdown.TotalCost
-		}
-		// Flat per-request surcharge, mirroring computeCostFromInput: each row in
-		// a batch is its own distinct request, so a per-request fee applies once
-		// per row exactly as it would have applied once per synchronous call.
-		if pricing.CostPerRequest != nil {
-			cost += *pricing.CostPerRequest
-		}
-		return BatchCostDetails{
-			Cost:                      cost,
-			Priced:                    true,
-			InputCostPerTokenBatches:  inputRate,
-			OutputCostPerTokenBatches: outputRate,
-		}
-	default:
+	rates, settles := batchLineRates(pricing, requestType)
+	if !settles {
 		return BatchCostDetails{}
 	}
+	price := computeBatchTextCost
+	if rates.image != nil {
+		price = computeBatchImageCost
+	}
+	inputRate, outputRate := rates.input, rates.output
+	if usage.PromptTokens > 0 && inputRate == nil {
+		return BatchCostDetails{}
+	}
+	if usage.CompletionTokens > 0 && outputRate == nil {
+		return BatchCostDetails{}
+	}
+	// Speed or InferenceGeo are carried on BifrostLLMUsage for exactly this —
+	// the bare-usage batch path never sees a full response to read a served
+	// tier off, mirroring CalculateCostForUsage.
+	tier := tierFromResponse(nil, usage.Speed, usage.InferenceGeo)
+	breakdown := price(pricing, usage, tier)
+	// Time-of-day pricing, as in computeCostFromInput: the off-peak multiplier
+	// scales the usage charge (and the effective rates reported with it), never
+	// the flat per-request fee added below.
+	if m, ok := offPeakMultiplier(pricing, lookupScopes.BilledAt); ok {
+		scaleUsageCost(breakdown, m)
+		inputRate = scaledRate(inputRate, m)
+		outputRate = scaledRate(outputRate, m)
+	}
+	cost := 0.0
+	if breakdown != nil {
+		cost = breakdown.TotalCost
+	}
+	// Flat per-request surcharge, mirroring computeCostFromInput: each row in
+	// a batch is its own distinct request, so a per-request fee applies once
+	// per row exactly as it would have applied once per synchronous call.
+	if pricing.CostPerRequest != nil {
+		cost += *pricing.CostPerRequest
+	}
+	return BatchCostDetails{
+		Cost:                      cost,
+		Priced:                    true,
+		InputCostPerTokenBatches:  inputRate,
+		OutputCostPerTokenBatches: outputRate,
+	}
+}
+
+// batchLineRateSet is the rates a batch line is settled at: token rates (the batch rate, else the
+// standard one at the default batch ratio) and, for an image line, the image-token rate.
+type batchLineRateSet struct {
+	input, output, image *float64
+}
+
+// batchLineRates resolves the rates a batch line settled as requestType is priced at, and whether
+// the mode settles in a batch at all. An image line (fork, TXE-7354) settles only when the row
+// prices image tokens, in a batch or synchronously: a row priced per image or per pixel has no
+// batch rate to apply, so the line stays unpriced and the job waits for repricing. Settlement
+// (CalculateBatchCostDetailsForUsage) and admission (BatchPriceStatus) both read this, so they
+// cannot disagree on what a batch can be charged.
+func batchLineRates(pricing *configstoreTables.TableModelPricing, requestType schemas.RequestType) (batchLineRateSet, bool) {
+	rates := batchLineRateSet{
+		input:  resolveBatchRate(pricing.InputCostPerToken, pricing.InputCostPerTokenBatches),
+		output: resolveBatchRate(pricing.OutputCostPerToken, pricing.OutputCostPerTokenBatches),
+	}
+	switch normalizeStreamRequestType(requestType) {
+	case schemas.ImageGenerationRequest, schemas.ImageEditRequest:
+		rates.image = pricing.OutputCostPerImageTokenBatches
+		if rates.image == nil {
+			rates.image = pricing.OutputCostPerImageToken
+		}
+		return rates, rates.image != nil
+	case schemas.BatchResultsRequest, schemas.ChatCompletionRequest, schemas.TextCompletionRequest, schemas.ResponsesRequest, schemas.EmbeddingRequest:
+		return rates, true
+	default:
+		return batchLineRateSet{}, false
+	}
+}
+
+// BatchPriceStatus is PriceStatus for a batch line settled as requestType: whether the row
+// CalculateBatchCostDetailsForUsage resolves carries the rates it applies (fork, TXE-7957). An image
+// line needs an image-token rate and the input token rate; a text line the input token rate, and
+// the output one unless it is an embedding; any other mode has no batch price. A batch admitted on
+// a price its settlement cannot use is parked uncharged, so admission reads the same rules.
+func (s *Store) BatchPriceStatus(provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *LookupScopes) PriceStatus {
+	if model == "" {
+		return Unpriced
+	}
+	var lookupScopes LookupScopes
+	if scopes != nil {
+		lookupScopes = *scopes
+	}
+	if lookupScopes.Provider == "" {
+		lookupScopes.Provider = string(provider)
+	}
+	requestType = normalizeStreamRequestType(requestType)
+	pricing := s.resolvePricing(schemas.RoutingInfo{Provider: provider, Model: model}, requestType, lookupScopes)
+	if pricing == nil {
+		return Unpriced
+	}
+	lineRates, settles := batchLineRates(pricing, requestType)
+	if !settles {
+		return Unpriced
+	}
+	// Settlement needs the input rate for prompt tokens and the output rate for completion tokens
+	// (an image line's too); an embedding line has no completion tokens.
+	rates := []*float64{lineRates.input}
+	if requestType != schemas.EmbeddingRequest {
+		rates = append(rates, lineRates.output)
+	}
+	if lineRates.image != nil {
+		rates = append(rates, lineRates.image)
+	}
+	free := pricing.CostPerRequest == nil || *pricing.CostPerRequest == 0
+	for _, rate := range rates {
+		if rate == nil {
+			return Unpriced
+		}
+		if *rate != 0 {
+			free = false
+		}
+	}
+	if free {
+		return Free
+	}
+	return Priced
 }
 
 // scaledRate returns rate multiplied by m, or nil for a nil rate.
@@ -794,7 +866,9 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 		}
 		return total
 	}
-	input.usage = usageWithRequestedCacheWriteTier(input.usage, routingInfo.Provider, scopes.RequestedPromptCacheTTL)
+	if scopes.RequestedPromptCacheTTL != "" {
+		input.usage = usageWithRequestedCacheWriteTier(input.usage, s.requestTTLPricingProvider(routingInfo.Provider), scopes.RequestedPromptCacheTTL)
+	}
 	// When a pricing model override is set (e.g. container creates always look
 	// up "container"), it replaces the lookup hierarchy entirely. Build a
 	// synthetic RoutingInfo that reuses Provider but pins the model fields to
@@ -3404,14 +3478,24 @@ func tieredCacheCreationInputAbove12hrTokenRate(pricing *configstoreTables.Table
 	return tieredCacheCreationInputAbove1hrTokenRate(pricing, totalTokens, tier)
 }
 
-// RequestTTLPricedCacheWrites lists the providers whose vendor prices a prompt-cache write by the
-// TTL the request asked for (prompt_cache_options.ttl) and reports the write as one figure, with
-// no tier (fork, TXE-7069). For these, a write the response reports without a tier is costed at
-// the tier the request asked for. A provider whose usage reports the tier (Anthropic's
-// ephemeral_1h_input_tokens, OpenAI's ttl_30m/ttl_12h tokens) is never listed: its reported split
-// is what the vendor billed. TestRequestTTLPricedCacheWritesCostTheRequestedTier runs every entry.
-var RequestTTLPricedCacheWrites = map[schemas.ModelProvider]string{
-	schemas.Moonshot: "Kimi bills a cache write by the request's prompt_cache_options.ttl and reports one cache_write_tokens figure without the TTL (the datasheet's moonshot/kimi-k3 row: $3/M base write, $6/M above 1 hour); TXE-6527 delivers the TTL to the vendor as sent",
+// RequestTTLPricedCacheWrites is schemas.RequestTTLPricedCacheWrites: the providers whose vendor
+// prices a cache write by the requested TTL. The list lives in core so the request path reads the
+// TTL from the body only for them (fork, TXE-7996); pricing and the request path share one list.
+// TestRequestTTLPricedCacheWritesCostTheRequestedTier runs every entry.
+var RequestTTLPricedCacheWrites = schemas.RequestTTLPricedCacheWrites
+
+// requestTTLPricingProvider returns the provider whose RequestTTLPricedCacheWrites entry applies to
+// a request on provider: provider itself, or, for a custom provider configured on a listed base
+// (base_provider_type: moonshot), that base, since the vendor behind it bills the same way (fork,
+// TXE-7996). TestCustomProviderOnARequestTTLPricedBaseCostsTheRequestedTier runs every entry.
+func (s *Store) requestTTLPricingProvider(provider schemas.ModelProvider) schemas.ModelProvider {
+	if _, ok := RequestTTLPricedCacheWrites[provider]; ok {
+		return provider
+	}
+	if base, ok := s.CustomProviderBase(provider); ok {
+		return base
+	}
+	return provider
 }
 
 // usageWithRequestedCacheWriteTier returns the usage to price. For a provider in
@@ -3587,6 +3671,15 @@ func markNoOutputImages(imageUsage *schemas.ImageUsage) {
 // agree: an override negotiated for the model that actually ran is the one that
 // applies.
 func (s *Store) resolvePricing(routingInfo schemas.RoutingInfo, requestType schemas.RequestType, scopes LookupScopes) *configstoreTables.TableModelPricing {
+	row := s.resolvePricingRow(routingInfo, requestType, scopes)
+	if row != nil && scopes.zeroRatesAs > 0 {
+		zeroRatesAs(row, scopes.zeroRatesAs)
+	}
+	return row
+}
+
+// resolvePricingRow is resolvePricing before any zeroRatesAs stand-in; see resolvePricing.
+func (s *Store) resolvePricingRow(routingInfo schemas.RoutingInfo, requestType schemas.RequestType, scopes LookupScopes) *configstoreTables.TableModelPricing {
 	provider := string(routingInfo.Provider)
 	var aliasModelID, aliasModelName string
 	if rka := routingInfo.ResolvedKeyAlias; rka != nil {

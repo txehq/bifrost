@@ -288,6 +288,19 @@ behaviours["upstream-oversize-gzip-500"] = () => ({
 });
 // upstream-slow answers as upstream-ok does, after SLOW_MS.
 behaviours["upstream-slow"] = () => ({ ...behaviours["upstream-ok"](), delayMs: SLOW_MS });
+// upstream-slow-priced answers as upstream-slow does under a model the price book prices per token (folder 658,
+// TXE-7977): its first answer is in flight long enough for a concurrent request to arrive, and it prices above $0.
+behaviours["upstream-slow-priced"] = () => ({ ...behaviours["upstream-ok"](), delayMs: SLOW_MS });
+// upstream-flex-free answers as upstream-ok does on the flex service tier, under a model the price book
+// prices per token at standard rates and at zero on flex (TXE-8016): its answer costs $0 because the rates
+// it met are zero, so it is free, not unpriced, and a dollar budget keeps serving it.
+behaviours["upstream-flex-free"] = () => {
+	const r = behaviours["upstream-ok"]();
+	const body = JSON.parse(r.body);
+	body.model = "upstream-flex-free";
+	body.service_tier = "flex";
+	return { ...r, body: JSON.stringify(body) };
+};
 // upstream-ok with every usage field a vendor reports beyond tokens, TXE-6522 (contract C10 BF21): web search calls,
 // a reported cost and xAI's cost_in_usd_ticks. Streamed, they arrive once, on the trailing usage frame, and must reach
 // the gateway's final frame as they reach its non-streamed response.
@@ -554,6 +567,14 @@ const fixturePricing = {
 		provider: "databricks", mode: "chat",
 		input_cost_per_token: 4.00001e-06, output_cost_per_token: 1.999998e-05, cache_read_input_token_cost: 3.9998e-07, cache_creation_input_token_cost: 5.00003e-06,
 	},
+	// Folder 654 (TXE-7996): a Kimi row with its two cache-write rates, $3/M under an hour and $6/M above. own_moonshot (a
+	// custom provider on the moonshot base) has no row under its own name, so its 2,000-token write from /pp/ownkey is
+	// priced from this row at the tier the request asked for.
+	"moonshot/fixture-kimi-ttl-priced": {
+		provider: "moonshot", mode: "chat",
+		input_cost_per_token: 0.000001, output_cost_per_token: 0.000002,
+		cache_creation_input_token_cost: 0.000003, cache_creation_input_token_cost_above_1hr: 0.000006,
+	},
 	"databricks/databricks-gemini-4-argon": {
 		provider: "databricks", mode: "chat",
 		input_cost_per_token: 2.49998e-06, output_cost_per_token: 1.249997e-05, cache_read_input_token_cost: 1.2502e-07, cache_creation_input_token_cost: 2.49998e-06,
@@ -587,6 +608,10 @@ const fixturePricing = {
 	"turns-tiered": { provider: "openai_turns", ...turnRates },
 	"turns-fail": { provider: "openai_turns", ...turnRates },
 	"gpt-6-luna": { provider: "openai", mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002, input_cost_per_token_decisions: 0.000003, output_cost_per_token_decisions: 0.000004, supports_decisions: true },
+	// Folder 658 (TXE-7977): a slow chat model priced per token, so its first answer confirms the row for a budgeted key.
+	"upstream-slow-priced": { provider: "openai", mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002 },
+	// Folder 659 (TXE-8016): standard rates priced, flex rates zero, so a flex answer is free.
+	"upstream-flex-free": { provider: "openai", mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002, input_cost_per_token_flex: 0, output_cost_per_token_flex: 0 },
 	// Folder 565 (TXE-7353): the live datasheet's gpt-6-luna decision rates above 272k and its decision cache rates,
 	// gemini-3.1-pro-preview's flex rates above 200k, and gemini-2.5-flash's priority audio rate.
 	"gpt-6-luna-long": {
@@ -645,7 +670,10 @@ const fixturePricing = {
 		cache_read_input_token_cost: 3e-8, input_cost_per_token_cache_hit: 2.8e-8,
 	},
 	"legacy-per-request-only": { provider: "openai", mode: "chat", input_cost_per_token: 1e-6, output_cost_per_token: 1e-6, input_cost_per_request: 0.005 },
-	"typesafe/jev-1.13": { provider: "openrouter", mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002 },
+	// Keyed as the upstream datasheet keys it: the sync drops the key's first path segment, so the bare
+	// "typesafe/jev-1.13" this row had loaded as model jev-1.13 and never priced the openrouter model
+	// (TXE-7957: a dollar budget refuses a model the price book cannot price).
+	"openrouter/typesafe/jev-1.13": { provider: "openrouter", mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002 },
 	"decision-emulated": { provider: "openai", mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002, cache_read_input_token_cost: 0.0000001 },
 	"pp-custom-legacy": { provider: "openai", mode: "responses", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002 },
 	// TXE-6526: a token-priced Gemini image model, for the row that reads back the cost of a response whose usage
@@ -1697,7 +1725,15 @@ const wireAnswer = (path, body, bytes) => {
 	// A custom provider is served with its own keys (folder 487, TXE-7097): one custom provider on each of the deepseek,
 	// glm, moonshot and qwen bases points at /pp/ownkey, where each base posts chat to its own path. The call is kept in
 	// /__wire with the bearer that arrived, which is what the row reads.
+	// Folder 654 (TXE-7996): Kimi's Responses API reports a cache write as one figure, with no TTL tier.
+	if (path.startsWith("/pp/ownkey/") && path.endsWith("/responses") && body.model === "fixture-kimi-ttl-priced") {
+		return { status: 200, body: JSON.stringify({ id: "resp_ownkey_ttl", object: "response", created_at: 1, status: "completed", model: body.model, output: [{ type: "message", id: "msg_ownkey_ttl", role: "assistant", status: "completed", content: [{ type: "output_text", text: "hello", annotations: [] }] }], usage: { input_tokens: 3000, input_tokens_details: { cached_tokens: 0, cache_write_tokens: 2000 }, output_tokens: 200, total_tokens: 3200 } }) };
+	}
 	if (path.startsWith("/pp/ownkey/") && path.endsWith("/chat/completions")) {
+		// Folder 654 (TXE-7996): Kimi reports a cache write as one figure, with no TTL tier.
+		if (body.model === "fixture-kimi-ttl-priced") {
+			return { status: 200, body: JSON.stringify({ id: "chatcmpl_ownkey_ttl", object: "chat.completion", created: 1, model: body.model, choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "hello" } }], usage: { prompt_tokens: 3000, completion_tokens: 200, total_tokens: 3200, prompt_tokens_details: { cached_write_tokens: 2000 } } }) };
+		}
 		return { status: 200, body: JSON.stringify({ id: "chatcmpl_ownkey", object: "chat.completion", created: 1, model: body.model, choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "hello" } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }) };
 	}
 	// MiniMax answers its failures inside a 200 as base_resp, with no result (TXE-6588, contract C6). The model
@@ -3104,6 +3140,26 @@ const handleRequest = (req, res) => {
 		const id = new URL(req.url, "http://localhost").searchParams.get("id") || "";
 		countHit(`bfl get_result ${id}`);
 		return send(200, {}, JSON.stringify(bflResult(id)));
+	}
+	// Microsoft MAI-Image on Azure AI Foundry (folder 650, TXE-6543): the azure-mai key's endpoint is
+	// /mai-a, so its generations route is /mai-a/mai/v1/images/generations. Every call is counted under
+	// "mai <METHOD> <api-key>" and its body kept for /__sent?model=mai-image. The answer is the
+	// documented shape, one PNG as data[0].b64_json. A prompt containing "blocked" gets a 400 with
+	// Foundry's error envelope, so a case can check the vendor status survives.
+	if (path === "/mai-a/mai/v1/images/generations") {
+		const chunks = [];
+		req.on("data", (c) => chunks.push(c));
+		req.on("end", () => {
+			countHit(`mai ${req.method} ${req.headers["api-key"] || ""}`);
+			if (req.method !== "POST") return send(405, {}, errorBody("method not allowed", "invalid_request_error", "method_not_allowed"));
+			const raw = Buffer.concat(chunks).toString("utf8");
+			sentBodies["mai-image"] = raw;
+			if (raw.includes("blocked")) {
+				return send(400, {}, JSON.stringify({ error: { code: "content_filter", message: "The prompt was blocked by the content filter.", type: "invalid_request_error" } }));
+			}
+			return send(200, {}, JSON.stringify({ created: 1762700000, data: [{ b64_json: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==" }] }));
+		});
+		return undefined;
 	}
 	// Sora 2 on two Azure resources (folder 419, TXE-6532): each key's endpoint is its own path
 	// prefix, so a counter names the resource a request reached and the key it carried. Every

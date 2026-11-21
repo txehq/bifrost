@@ -183,12 +183,15 @@ func TestBytePlusChatReasoningEffortAndThinking(t *testing.T) {
 		thinking     string // caller's thinking.type, "" for none
 		wantEffort   string // "" means reasoning_effort must be absent
 		wantThinking string // "" means thinking must be absent
+		refused      bool   // 400 on reasoning.effort and no call to Ark (TXE-7954)
 	}{
 		{name: "none disables thinking", effort: "none", wantThinking: "disabled"},
 		{name: "effort dropped when caller disabled thinking", effort: "high", thinking: "disabled", wantThinking: "disabled"},
 		{name: "effort kept with thinking enabled", effort: "low", thinking: "enabled", wantEffort: "low", wantThinking: "enabled"},
-		{name: "none dropped when caller enabled thinking", effort: "none", thinking: "enabled", wantThinking: "enabled"},
-		{name: "none dropped when caller set auto thinking", effort: "none", thinking: "auto", wantThinking: "auto"},
+		// Ark rejects effort "none"; dropping it would leave the caller's thinking on, billed at a
+		// reasoning level they did not ask for, so it is refused (contract C4, TXE-7954).
+		{name: "none refused when caller enabled thinking", effort: "none", thinking: "enabled", refused: true},
+		{name: "none refused when caller set auto thinking", effort: "none", thinking: "auto", refused: true},
 		{name: "minimal is kept", effort: "minimal", wantEffort: "minimal"},
 		{name: "xhigh clamps to high", effort: "xhigh", wantEffort: "high"},
 		{name: "max clamps to high", effort: "max", wantEffort: "high"},
@@ -204,7 +207,18 @@ func TestBytePlusChatReasoningEffortAndThinking(t *testing.T) {
 				params.ExtraParams = map[string]interface{}{"thinking": map[string]interface{}{"type": tt.thinking}}
 			}
 
-			if _, bifrostErr := provider.ChatCompletion(testContext(t), testKey(), userChatRequest(params)); bifrostErr != nil {
+			_, bifrostErr := provider.ChatCompletion(testContext(t), testKey(), userChatRequest(params))
+			if tt.refused {
+				if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest ||
+					bifrostErr.Error.Param != "reasoning.effort" || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter {
+					t.Fatalf("want 400 caller_unsupported_parameter on reasoning.effort, got %+v", bifrostErr)
+				}
+				if sent := captured(); len(sent) != 0 {
+					t.Fatalf("a refused request reached Ark: %s", sent[0].body)
+				}
+				return
+			}
+			if bifrostErr != nil {
 				t.Fatalf("ChatCompletion error: %+v", bifrostErr.Error)
 			}
 			body := captured()[0].body

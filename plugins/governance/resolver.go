@@ -4,6 +4,7 @@ package governance
 import (
 	"fmt"
 	"strings"
+	"sync/atomic"
 
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/schemas"
@@ -48,6 +49,17 @@ type EvaluationRequest struct {
 	// ModelUnseen marks a passthrough request that names no model anywhere governance can read:
 	// not on the request and not in its body.
 	ModelUnseen bool `json:"model_unseen,omitempty"`
+	// request is the request being evaluated, when a hook has it. The dollar-budget gate reads a
+	// passthrough body or an inline batch from it only when a budget applies, so a request with
+	// no budget pays nothing for it (TXE-7957, unpricedbudget.go).
+	request *schemas.BifrostRequest
+	// batchModes indexes an inline batch's pricing modes by model once for every pass PreLLMHook
+	// makes over the batch's models (copies of this request share it); nil for any other request.
+	batchModes *inlineBatchModes
+	// Background marks a Responses create sent with background: true, for a caller that has no
+	// request to hand. With request set, the gate reads it from the request itself, only when a
+	// budget applies (TXE-7963).
+	Background bool `json:"background,omitempty"`
 }
 
 // EvaluationResult is a governance verdict: whether the request may proceed, and why not when it
@@ -67,6 +79,15 @@ type BudgetResolver struct {
 	logger                  schemas.Logger
 	modelCatalog            *modelcatalog.ModelCatalog
 	governanceInMemoryStore InMemoryStore
+	// unpriced holds the triples whose admitted answers priced at $0 under a dollar budget
+	// (TXE-7957, unpricedbudget.go).
+	unpriced *unpricedAnswers
+	// providerJobAccounting says whether framework/jobaccounting settles provider jobs on this
+	// deployment, so a job priced at settlement is charged to its budgets (TXE-7963). Off until
+	// the transport says otherwise: a job nothing settles must not be admitted under a budget.
+	providerJobAccounting atomic.Bool
+	// probes holds the rows a budgeted request runs on until an answer on them is priced (TXE-7977).
+	probes *unpricedProbes
 }
 
 // NewBudgetResolver creates a new budget-based governance resolver
@@ -76,6 +97,8 @@ func NewBudgetResolver(store GovernanceStore, modelCatalog *modelcatalog.ModelCa
 		logger:                  logger,
 		modelCatalog:            modelCatalog,
 		governanceInMemoryStore: governanceInMemoryStore,
+		unpriced:                newUnpricedAnswers(),
+		probes:                  newUnpricedProbes(),
 	}
 }
 
@@ -228,6 +251,12 @@ func (r *BudgetResolver) evaluateLimits(ctx *schemas.BifrostContext, evaluationR
 			Decision: decision,
 			Reason:   fmt.Sprintf("Budget exceeded: %s", reasonFromErr(err, decision)),
 		}
+	}
+
+	// A budget is charged what the price book says an answer cost, so a request it cannot price
+	// would spend nothing against any of them (TXE-7957).
+	if refusal := r.refuseUnpricedUnderBudget(ctx, evaluationRequest, budgets); refusal != nil {
+		return refusal
 	}
 
 	return &EvaluationResult{

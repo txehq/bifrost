@@ -321,6 +321,7 @@ type BifrostBatchRetrieveResponse struct {
 	OperationName *string `json:"operation_name,omitempty"`
 	Done          *bool   `json:"done,omitempty"`
 	Progress      *int    `json:"progress,omitempty"` // Percentage progress
+	NativeOutput  []byte  `json:"-"`                  // Vendor's own job output; see gemini.ToGeminiBatchRetrieveBody
 
 	// Azure-specific Blob Storage URLs (returned when using blob storage input/output)
 	InputBlob  *string `json:"input_blob,omitempty"`

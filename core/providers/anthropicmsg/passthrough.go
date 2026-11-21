@@ -77,7 +77,11 @@ func applyResolvedAliasModel(ctx *schemas.BifrostContext, req *schemas.BifrostPa
 	if alias := schemas.GetResolvedAlias(ctx); alias == nil || alias.Config == nil || alias.Config.ModelID == "" || alias.Config.ModelID == alias.Key {
 		return req.Body, nil
 	}
-	model := providerUtils.GetJSONField(req.Body, "model")
+	// A body is read for its model only when it is JSON by its declared type (TXE-8012).
+	if schemas.ClassifyForwardedBody(req.ContentType(), req.Body).Format != schemas.ForwardedBodyJSON {
+		return req.Body, nil
+	}
+	model := providerUtils.GetJSONField(req.Body, schemas.BodyModelKey)
 	if model.Type != gjson.String {
 		return req.Body, nil
 	}
@@ -85,7 +89,7 @@ func applyResolvedAliasModel(ctx *schemas.BifrostContext, req *schemas.BifrostPa
 	if target == model.Str {
 		return req.Body, nil
 	}
-	return providerUtils.SetJSONField(req.Body, "model", target)
+	return providerUtils.SetJSONField(req.Body, schemas.BodyModelKey, target)
 }
 
 // resolvedAliasModel is the model id of the key alias core resolved for this attempt

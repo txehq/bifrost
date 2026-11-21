@@ -29,6 +29,13 @@ const PluginName = "governance"
 
 const (
 	governanceRejectedContextKey schemas.BifrostContextKey = "bf-governance-rejected"
+	// passthroughBodyModelContextKey holds the one model a passthrough body names when the request
+	// names none of its own (string), so the post-hook can judge its answer by it. A body naming
+	// several is refused under a dollar budget, and nothing is recorded for it.
+	passthroughBodyModelContextKey schemas.BifrostContextKey = "bf-governance-passthrough-body-model"
+	// passthroughReadContextKey marks a passthrough read (GET or HEAD, bool): it runs no model, so
+	// its answer is not judged as one (TXE-7957).
+	passthroughReadContextKey schemas.BifrostContextKey = "bf-governance-passthrough-read"
 
 	VirtualKeyPrefix = "sk-bf-"
 )
@@ -994,7 +1001,7 @@ func (p *GovernancePlugin) decide(ctx *schemas.BifrostContext, result *Evaluatio
 	case DecisionAccessBlocked:
 		return result, refusal(result, 403, schemas.ErrorTypePolicyAccessDenied)
 
-	case DecisionModelBlocked:
+	case DecisionModelBlocked, DecisionModelUnpriced, DecisionBackgroundUnsettled, DecisionJobUnsettled:
 		return result, refusal(result, 403, schemas.ErrorTypePolicyModelBlocked)
 
 	case DecisionProviderBlocked:
@@ -1002,6 +1009,11 @@ func (p *GovernancePlugin) decide(ctx *schemas.BifrostContext, result *Evaluatio
 
 	case DecisionRateLimited, DecisionTokenLimited, DecisionRequestLimited:
 		return result, refusal(result, 429, schemas.ErrorTypePolicyRateLimited)
+
+	case DecisionModelPricingUnconfirmed:
+		refused := refusal(result, 429, schemas.ErrorTypePolicyRateLimited)
+		refused.ExtraFields.RetryAfter = unpricedProbeRetryAfterMs
+		return result, refused
 
 	case DecisionBudgetExceeded:
 		return result, refusal(result, 402, schemas.ErrorTypePolicyBudgetExceeded)
@@ -1215,6 +1227,13 @@ func (p *GovernancePlugin) preLLMHook(ctx *schemas.BifrostContext, req *schemas.
 		Provider:         provider,
 		Model:            model,
 		OpaqueBatchInput: isOpaqueBatchInput(req),
+		request:          req,
+	}
+	if passthroughRead(req) {
+		ctx.SetValue(passthroughReadContextKey, true)
+	}
+	if req.RequestType == schemas.BatchCreateRequest && req.BatchCreateRequest != nil && len(req.BatchCreateRequest.Requests) > 0 {
+		evaluationRequest.batchModes = &inlineBatchModes{}
 	}
 	// A passthrough body is forwarded as the provider reads it, and a task array (Runware) names a
 	// model per task that the request itself may not carry. Every model the body names is
@@ -1333,14 +1352,20 @@ func refuseUnchargedBodyModelLimits(ctx *schemas.BifrostContext, bodyModelLimits
 // JSON object body, or of each task in a JSON array body (Runware). The router has already
 // refused malformed model keys, so a model that is not a string is simply not one here.
 func passthroughBodyModels(req *schemas.BifrostRequest) []string {
-	if req.PassthroughRequest == nil || len(req.PassthroughRequest.Body) == 0 || !gjson.ValidBytes(req.PassthroughRequest.Body) {
+	if req.PassthroughRequest == nil || len(req.PassthroughRequest.Body) == 0 {
+		return nil
+	}
+	// Only a body classified as JSON is read for models: the classification core's guard checked
+	// it by (TXE-8012). A body declared as another type names no model here.
+	if schemas.ClassifyForwardedBody(req.ForwardedBodyContentType(), req.PassthroughRequest.Body).Format != schemas.ForwardedBodyJSON ||
+		!gjson.ValidBytes(req.PassthroughRequest.Body) {
 		return nil
 	}
 	root := gjson.ParseBytes(req.PassthroughRequest.Body)
 	seen := make(map[string]struct{})
 	var models []string
 	add := func(object gjson.Result) bool {
-		if value := object.Get("model"); value.Type == gjson.String {
+		if value := object.Get(schemas.BodyModelKey); value.Type == gjson.String {
 			if m := strings.TrimSpace(value.Str); m != "" {
 				if _, ok := seen[m]; !ok {
 					seen[m] = struct{}{}
@@ -1429,18 +1454,28 @@ func BatchCreateModels(req *schemas.BifrostRequest, model string) []string {
 	}
 	add(model)
 	for _, item := range req.BatchCreateRequest.Requests {
-		// Body is the OpenAI shape, Params the Anthropic one; an item carries one.
-		for _, body := range []map[string]any{item.Body, item.Params} {
-			if m, ok := body["model"].(string); ok {
-				add(m)
-				break
-			}
+		for _, m := range batchItemModels(item) {
+			add(m)
 		}
 	}
 	if len(models) == 0 {
 		// No item named a model: fall back to the model-less evaluation so the
 		// provider-level and virtual-key checks still run.
 		return []string{model}
+	}
+	return models
+}
+
+// batchItemModels returns every model an inline batch request names: Body is the OpenAI shape,
+// Params the Anthropic one. An item naming one in each is read for both, whichever the provider
+// runs, and a blank one names nothing. Every reader of an item's model uses this, so admission,
+// pricing and the model gate never read an item two ways.
+func batchItemModels(item schemas.BatchRequestItem) []string {
+	var models []string
+	for _, body := range []map[string]any{item.Body, item.Params} {
+		if m, ok := body["model"].(string); ok && strings.TrimSpace(m) != "" && !slices.Contains(models, m) {
+			models = append(models, m)
+		}
 	}
 	return models
 }
@@ -1459,7 +1494,9 @@ func settlesIncurredUsage(ctx *schemas.BifrostContext, err *schemas.BifrostError
 		return false
 	}
 	decision := Decision(*err.Type)
-	return isBudgetViolation(decision) || isRateLimitViolation(decision)
+	// A model refused as unpriced under a budget (TXE-7957) is a refusal of spending, too: what the
+	// session already incurred is charged.
+	return isBudgetViolation(decision) || isRateLimitViolation(decision) || decision == DecisionModelUnpriced
 }
 
 // PostLLMHook processes the response and updates usage tracking (business logic execution)
@@ -1473,6 +1510,12 @@ func settlesIncurredUsage(ctx *schemas.BifrostContext, err *schemas.BifrostError
 //   - *schemas.BifrostError: The processed error
 //   - error: Any error that occurred during processing
 func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	// A budgeted request's hold on unconfirmed rows ends with its last post-hook call, whichever
+	// path returns below; the usage worker takes it over to confirm the rows when the answer priced.
+	probeType, _, _, _ := bifrost.GetResponseFields(result, err)
+	probe := takeUnpricedProbe(ctx, err, bifrost.IsStreamRequestType(probeType), bifrost.IsFinalChunk(ctx))
+	defer func() { probe.release() }()
+
 	if _, ok := ctx.Value(governanceRejectedContextKey).(bool); ok && !settlesIncurredUsage(ctx, err) {
 		return result, err, nil
 	}
@@ -1581,6 +1624,16 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		routingMetadata, _ := schemas.InitialAttemptRoutingMetadataFromContext(ctx)
 		// A live session's continuation bills its usage but was already counted as a request at admission.
 		sessionContinuation := isLiveSessionContinuation(ctx)
+		bodyModel, _ := ctx.Value(passthroughBodyModelContextKey).(string)
+		read, _ := ctx.Value(passthroughReadContextKey).(bool)
+		// Only an answer charged to a dollar budget is judged as unpriced, so only then is the
+		// principal it is remembered for built.
+		holder := ""
+		if len(accountedBudgets) > 0 {
+			holder = unpricedHolder(ctx)
+		}
+		workerProbe := probe
+		probe = nil
 
 		p.wg.Add(1)
 		go func() {
@@ -1593,8 +1646,28 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 				}
 			}()
 			// Use the requested model for usage tracking
-			p.postHookWorker(result, err, provider, requestedModel, requestType, requestID, billingNonce, isFinalChunk, attemptNumber, fallbackIndex, sessionContinuation, pricingScopes, accountedBudgets, accountedRateLimits, routingMetadata)
+			p.postHookWorker(result, err, provider, requestedModel, requestType, requestID, billingNonce, isFinalChunk, attemptNumber, fallbackIndex, sessionContinuation, pricingScopes, accountedBudgets, accountedRateLimits, routingMetadata, bodyModel, read, holder, workerProbe)
 		}()
+	} else if bodyModel, _ := ctx.Value(passthroughBodyModelContextKey).(string); bodyModel != "" && (!bifrost.IsStreamRequestType(requestType) || isFinalChunk) &&
+		!passthroughCountsTokens(passthroughPath(result)) && (passthroughGenerated(result) || passthroughEscapedQueue(result, nil, requestID)) {
+		// A passthrough whose body named the model it runs, answered with no usage the provider
+		// could read (Runware without includeCost), is not charged and counts no request. It is
+		// still an answer under the budgets it was admitted against, priced at $0 (TXE-7957).
+		if limits := ctx.Grant().Limits(); limits != nil {
+			budgets := limits.Budgets()
+			if skipHolderUsage {
+				budgets = grant.LimitsFrom(budgets, untrackedHolderKinds...)
+			}
+			if len(budgets) > 0 {
+				if !passthroughGenerated(result) {
+					// Logged here, under the budget, rather than by the check above (TXE-8013).
+					passthroughEscapedQueue(result, p.logger, requestID)
+				}
+				pricedAs := modelcatalog.PassthroughPricingRequestType(provider, result.GetExtraFields().PassthroughPath, nil)
+				p.resolver.noteUnpricedAnswer(provider, bodyModel, requestType, pricedAs, p.resolver.usagelessAnswerVerdict(provider, bodyModel, pricedAs, pricingScopes),
+					pricingScopes, requestID, limitIDs(budgets), unpricedHolder(ctx))
+			}
+		}
 	}
 
 	return result, err, nil
@@ -2030,7 +2103,10 @@ func responseTokensUsed(result *schemas.BifrostResponse) int {
 //   - isFinalChunk: Whether the request is the final chunk
 //   - skipRequestCount: Whether this is a session continuation that must not count as a request
 //   - pricingScopes: Prebuilt pricing lookup scopes using governance VK ID (nil if not applicable)
-func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, provider schemas.ModelProvider, model string, requestType schemas.RequestType, requestID string, billingNonce string, isFinalChunk bool, attemptNumber int, fallbackIndex int, skipRequestCount bool, pricingScopes *modelcatalog.PricingLookupScopes, budgets, rateLimits []schemas.Limit, routingMetadata *schemas.BifrostRoutingMetadata) {
+func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, provider schemas.ModelProvider, model string, requestType schemas.RequestType, requestID string, billingNonce string, isFinalChunk bool, attemptNumber int, fallbackIndex int, skipRequestCount bool, pricingScopes *modelcatalog.PricingLookupScopes, budgets, rateLimits []schemas.Limit, routingMetadata *schemas.BifrostRoutingMetadata, bodyModel string, passthroughRead bool, holder string, probe *unpricedProbe) {
+	// The request's hold on unconfirmed rows (TXE-7977) ends here; an answer that priced above $0
+	// confirms them first.
+	defer probe.release()
 	// Determine if request was successful
 	success := (result != nil)
 	billedReason := "success"
@@ -2090,6 +2166,63 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifro
 			}
 		}
 
+		// An answer charged to a dollar budget that priced at $0 spent nothing against it: logged,
+		// and the model refused under a budget from now on (TXE-7957, unpricedbudget.go).
+		// A passthrough naming no model of its own is judged by the models its body names.
+		if len(budgets) > 0 && budgetPricingOf(requestType) == budgetPricingAnswer && !passthroughRead && (deliveredAnswer(result) || passthroughEscapedQueue(result, p.logger, requestID)) {
+			priced := model
+			if priced == "" {
+				priced = bodyModel
+			}
+			// A provider's server-side fallback served the answer on another model, and accounting
+			// priced it as that model (resolvePricing). A $0 answer free on that model is not unpriced;
+			// any other is refused on the requested model's rows, which the next request reaches it by.
+			fallback := ""
+			if extra := result.GetExtraFields(); extra != nil && extra.RoutingInfo.ServerSideFallbackModel != nil {
+				fallback = *extra.RoutingInfo.ServerSideFallbackModel
+			}
+			// A container is priced from the memory tier it was created with, as accounting reads it.
+			if container := result.ContainerCreateResponse; container != nil && container.MemoryLimit != "" {
+				priced = "container-" + container.MemoryLimit
+			}
+			// The answer's own cost, without the calls Bifrost prices beside it (routing classifiers,
+			// guardrail judges, MCP tools, the semantic cache's embedding lookup): none of them may
+			// hide a $0 answer.
+			answerCost := cost
+			if answerCost > 0 && result != nil && p.modelCatalog != nil {
+				answerCost = 0
+				if breakdown := p.modelCatalog.CalculateCostBreakdown(result, pricingScopes); breakdown != nil {
+					answerCost = breakdown.TotalCost
+					if sidecars := breakdown.AdditionalCostDetails; sidecars != nil {
+						answerCost -= sidecars.GuardrailCost + sidecars.RoutingCost + sidecars.MCPCost + sidecars.SemanticCacheCost
+					}
+				}
+			}
+			pricedAs := requestType
+			if extra := result.GetExtraFields(); extra != nil && extra.PricingRequestType != "" {
+				pricedAs = extra.PricingRequestType
+			}
+			if passthrough := result.PassthroughResponse; passthrough != nil {
+				pricedAs = modelcatalog.PassthroughPricingRequestType(provider, result.GetExtraFields().PassthroughPath, passthrough.PassthroughUsage)
+			}
+			// A price confirms only the row the serving key priced the answer on, and only when that
+			// row's model served it: one a provider's server-side fallback served was priced as
+			// another model.
+			if answerCost > 0 && fallback == "" {
+				p.resolver.confirmProbe(probe, pricedAs, pricingScopes)
+			}
+			// The verdict is the cost calculation's own: priced, free (the rates the answer met are
+			// zero: a free model, zero flex rates, a free fallback), or unpriced (it met no rate).
+			verdict := modelcatalog.PricePriced
+			if answerCost <= 0 {
+				verdict = modelcatalog.PriceUnpriced
+				if p.modelCatalog != nil {
+					verdict = p.modelCatalog.AnswerPriceStatus(result, pricingScopes)
+				}
+			}
+			p.resolver.noteUnpricedAnswer(provider, priced, requestType, pricedAs, verdict, pricingScopes, requestID, limitIDs(budgets), holder)
+		}
+
 		// Create usage update for tracker (business logic)
 		usageUpdate := &UsageUpdate{
 			Success:          success,
@@ -2122,6 +2255,9 @@ func (p *GovernancePlugin) GetGovernanceStore() GovernanceStore {
 func (p *GovernancePlugin) ReportUsage(ctx context.Context, usage jobaccounting.UsageReport) error {
 	var errs []error
 
+	// A settled job's cost is always a price (TXE-7957): job accounting reports a settlement only
+	// when it is priced and complete, and parks one it cannot price instead. A cost of $0 here is a
+	// job that owed nothing (a failed, cancelled or expired video), not an unpriced answer.
 	if usage.Cost > 0 {
 		for _, budgetID := range usage.BudgetIDs {
 			billingKey := fmt.Sprintf("%s:budget:%s", usage.RequestID, budgetID)

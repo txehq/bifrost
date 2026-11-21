@@ -97,8 +97,13 @@ func (h *IntegrationHandler) Close() {
 }
 
 // SetLargePayloadHook sets the large payload detection hook on all integration routers
-// that support it. This is used by enterprise to inject large payload optimization.
+// that support it. This is used by enterprise to inject large payload optimization. In this fork
+// a non-nil hook panics, whatever routers are registered: large-payload bodies stream past core's
+// forwarded-body guard (TXE-8012, see integrations.GenericRouter.SetLargePayloadHook).
 func (h *IntegrationHandler) SetLargePayloadHook(hook integrations.LargePayloadHook) {
+	if hook != nil {
+		panic(integrations.ErrLargePayloadHookUnguarded)
+	}
 	for _, extension := range h.extensions {
 		if setter, ok := extension.(interface {
 			SetLargePayloadHook(integrations.LargePayloadHook)

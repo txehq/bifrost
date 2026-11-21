@@ -33,6 +33,13 @@ OTHER_PROVIDER_CREDENTIALS below: the vendor credentials that are not called API
 Add a new provider's key as `<PROVIDER>_API_KEY` (AGENTS.md, "Adding a New Provider"
 step 6); a vendor credential of another shape goes in that list in the same change.
 
+It also fails when a job that names `environment: live-providers` does not start with the
+canary step (TXE-7574). The step reads the environment secret LIVE_PROVIDERS_CANARY and
+fails the job when it is empty. Only steps that harden the runner may come before it.
+A job in a called workflow gets the environment's secrets only if GitHub hands them to
+it. The canary shows they arrived on every run, before any provider key is used, and
+without the keys being present.
+
 The repository half, that the keys exist only as environment secrets and that the
 environment requires a reviewer, is a setting this check cannot read with a pull
 request's token: see AGENTS.md step 6.
@@ -59,6 +66,11 @@ OTHER_PROVIDER_CREDENTIALS = {
     "DATABRICKS_TOKEN",
     "GITHUB_COPILOT_PRIVATE_KEY",  # the Copilot provider's GitHub App key
     "VERTEX_CREDENTIALS",  # Vertex service-account JSON
+    # Not a vendor credential: the live-providers canary (TXE-7574). It follows the same
+    # rules, so it is read only in jobs that name the environment and is never passed to a
+    # called workflow. A passed copy could stand in for the environment secret, and the
+    # canary would then prove nothing about how environment secrets reach those jobs.
+    "LIVE_PROVIDERS_CANARY",
 }
 
 # Every use of the secrets context: `secrets.NAME` and `secrets['NAME']` name one secret;
@@ -172,6 +184,36 @@ def checkout_refs(job):
     return refs
 
 
+CANARY_SECRET = "LIVE_PROVIDERS_CANARY"
+CANARY_STEP_ID = "live-providers-canary"
+CANARY_ENV_VALUE = "${{ secrets.%s }}" % CANARY_SECRET
+
+
+def is_runner_hardening(step):
+    return isinstance(step, dict) and str(step.get("uses", "")).startswith("step-security/harden-runner@")
+
+
+def canary_problem(job):
+    """Describes what is wrong with a live-providers job's canary step, or returns None."""
+    steps = [s for s in job.get("steps") or []]
+    for i, step in enumerate(steps):
+        if isinstance(step, dict) and step.get("id") == CANARY_STEP_ID:
+            break
+    else:
+        return f"has no step with id `{CANARY_STEP_ID}`"
+    if not all(is_runner_hardening(s) for s in steps[:i]):
+        return f"runs a step other than the runner hardening before `{CANARY_STEP_ID}`"
+    if (step.get("env") or {}).get(CANARY_SECRET) != CANARY_ENV_VALUE:
+        return f"`{CANARY_STEP_ID}` does not set env {CANARY_SECRET}: {CANARY_ENV_VALUE}"
+    run = str(step.get("run", ""))
+    if f'-z "${CANARY_SECRET}"' not in run or "exit 1" not in run:
+        return f'`{CANARY_STEP_ID}` does not fail (`exit 1`) when "${CANARY_SECRET}" is empty (`-z`)'
+    for key in ("if", "continue-on-error", "uses"):
+        if key in step:
+            return f"`{CANARY_STEP_ID}` sets `{key}`, so it can pass without the secret"
+    return None
+
+
 def problems(path):
     with open(path) as fh:
         doc = yaml.safe_load(fh) or {}
@@ -201,6 +243,11 @@ def problems(path):
             continue
 
         if environment_name(job) == ENVIRONMENT:
+            problem = canary_problem(job)
+            if problem:
+                yield (f"{where}: names `environment: {ENVIRONMENT}` but {problem}; the "
+                       f"canary step fails the job when the environment's secrets did not "
+                       f"reach it (TXE-7574)")
             continue
 
         found = list(secret_reads(job, "job"))

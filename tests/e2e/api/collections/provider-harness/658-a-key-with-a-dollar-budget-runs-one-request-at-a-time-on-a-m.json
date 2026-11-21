@@ -1,0 +1,113 @@
+{
+  "name": "658. A key with a dollar budget runs one request at a time on a model until an answer on it is priced (unpriced-probe) [SERIAL]",
+  "description": "TXE-7977 billing regression. Local fixture regression: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream and its price book. A dollar budget refuses a model for a key once an answer on it priced at $0 (TXE-7957), but that is recorded only when the answer returns, so concurrent requests could each take a $0 answer meanwhile. Until one answer on a row has priced above $0 for a (budget, key), the key now runs one request at a time on it: a concurrent request is refused 429 (type model_pricing_unconfirmed, error_type policy_rate_limited, retry_after_ms 1000). upstream-slow-priced answers after 2s with token usage the price book prices, so the first answer is in flight when the second request arrives, and once it is priced concurrent requests are admitted. [SERIAL]: the rows hold a slow upstream answer.",
+  "item": [
+    {
+      "name": "658.1 [EXPECT-200] a budgeted key's concurrent requests on an unconfirmed row: one served, one refused 429, then both served once priced (unpriced-probe)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"name\": \"{{uppRun}}\", \"budgets\": [{\"max_limit\": 100, \"reset_duration\": \"1h\"}], \"provider_configs\": [{\"provider\": \"openai\", \"allowed_models\": [\"*\"], \"key_ids\": [\"*\"], \"weight\": 1}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/virtual-keys",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.collectionVariables.set('uppRun', 'harness-unpriced-probe-' + Date.now() + '-' + Math.floor(Math.random() * 1e9));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "// The key is new, so no answer on upstream-slow-priced has been priced for it on this gateway yet.",
+              "var BASE = pm.variables.get('baseUrl');",
+              "pm.test('unpriced-probe setup: a key with a $100 dollar budget was created', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+              "});",
+              "var created = pm.response.json().virtual_key || {};",
+              "var vk = (created.value && typeof created.value === 'object') ? created.value.value : created.value;",
+              "var chat = \"{\\\"model\\\": \\\"openai/upstream-slow-priced\\\", \\\"messages\\\": [{\\\"role\\\": \\\"user\\\", \\\"content\\\": \\\"a question on a row no answer has priced yet\\\"}]}\";",
+              "function send(done) {",
+              "  pm.sendRequest({ url: BASE + '/v1/chat/completions', method: 'POST', header: { 'Content-Type': 'application/json', 'x-bf-vk': vk }, body: { mode: 'raw', raw: chat } }, function (err, res) {",
+              "    done({ err: err, code: res ? res.code : 0, text: res ? res.text() : '', json: (res && res.code) ? (function () { try { return res.json(); } catch (e) { return {}; } })() : {} });",
+              "  });",
+              "}",
+              "function both(done) {",
+              "  var out = [];",
+              "  function collect(r) { out.push(r); if (out.length === 2) { done(out); } }",
+              "  send(collect);",
+              "  send(collect);",
+              "}",
+              "function cleanup() {",
+              "  if (created.id) { pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + created.id, method: 'DELETE' }, function () {}); }",
+              "}",
+              "both(function (first) {",
+              "  var served = first.filter(function (r) { return r.code === 200; });",
+              "  var held = first.filter(function (r) { return r.code === 429; });",
+              "  var all = JSON.stringify(first.map(function (r) { return [r.code, r.text]; }));",
+              "  pm.test('unpriced-probe: of two concurrent requests on an unconfirmed row, one is served and one is refused 429', function () {",
+              "    pm.expect(first[0].err, String(first[0].err)).to.equal(null);",
+              "    pm.expect(first[1].err, String(first[1].err)).to.equal(null);",
+              "    pm.expect(served.length, all).to.equal(1);",
+              "    pm.expect(held.length, all).to.equal(1);",
+              "  });",
+              "  if (held.length === 1) {",
+              "    var refusal = held[0].json;",
+              "    pm.test('unpriced-probe: the refusal is model_pricing_unconfirmed (policy_rate_limited) with a one-second retry hint', function () {",
+              "      pm.expect(refusal.type, held[0].text).to.equal('model_pricing_unconfirmed');",
+              "      pm.expect(refusal.extra_fields && refusal.extra_fields.error_type, held[0].text).to.equal('policy_rate_limited');",
+              "      pm.expect(refusal.extra_fields && refusal.extra_fields.retry_after_ms, held[0].text).to.equal(1000);",
+              "    });",
+              "  }",
+              "  // The served answer priced above $0, which confirms the row for the key: the hold lifts.",
+              "  setTimeout(function () {",
+              "    both(function (second) {",
+              "      pm.test('unpriced-probe: once an answer on the row is priced, concurrent requests are both served', function () {",
+              "        pm.expect(second.map(function (r) { return r.code; }), JSON.stringify(second.map(function (r) { return [r.code, r.text]; }))).to.eql([200, 200]);",
+              "      });",
+              "      cleanup();",
+              "    });",
+              "  }, 500);",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

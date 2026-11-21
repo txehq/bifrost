@@ -658,6 +658,11 @@ type LookupScopes struct {
 	// prices a cache write only for a provider in RequestTTLPricedCacheWrites whose response
 	// reports no tier; usage is never rewritten with it (contract C5; fork, TXE-7069).
 	RequestedPromptCacheTTL string
+
+	// zeroRatesAs, when positive, stands in for every price explicitly set to zero on a resolved row
+	// (AnswerPriceStatus). An answer that costs more with it applied was priced by zero rates and is
+	// free; one that still costs nothing hit no rate at all and is unpriced (fork, TXE-8016).
+	zeroRatesAs float64
 }
 
 // LookupScopesFromContext builds a LookupScopes from a BifrostContext. It reads only the keys in

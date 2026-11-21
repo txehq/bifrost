@@ -6036,3 +6036,96 @@ func TestRecalculateCosts_UnreadLargeResponseImagePricesTheRequestedImages(t *te
 	require.NoError(t, row.DeserializeFields())
 	require.Nil(t, row.ImageGenerationOutputParsed.Usage.OutputImages, "the restored count is not stored as the vendor's output_images")
 }
+
+// TXE-7238: with content logging off, the entry's params and input are dropped before the video
+// job row is written, so the row can keep its pricing dimensions only from what PreLLMHook captured
+// whatever the policy (TXE-7357). This drives the real PreLLMHook and PostLLMHook, not the recorder,
+// for every price-affecting video field (schemas.PriceAffectingUnifiedFields), with content logging
+// off two ways: in the plugin's config from the start, and by the virtual key's decision, which
+// governance stamps only after our PreLLMHook captured the input, so PostLLMHook drops it
+// (dropCapturedInput). Each field must reach the job row as it does with content logging on, the
+// log row must hold no params or input, and the job row keeps no extra param beyond the billing
+// selectors.
+func TestVideoJobKeepsEveryPriceAffectingFieldWithContentLoggingOff(t *testing.T) {
+	type policy int
+	const (
+		contentOn policy = iota
+		offInConfig
+		offByVirtualKeyAfterCapture
+	)
+	type recorded struct {
+		dims modelcatalog.VideoPricingDimensions
+		row  *logstore.Log
+	}
+	submit := func(t *testing.T, mode policy, body []byte, extra map[string]any) recorded {
+		t.Helper()
+		store := newTestStore(t)
+		bs := newFakeBatchStore()
+		plugin, err := Init(context.Background(), &Config{DisableContentLogging: schemas.Ptr(mode == offInConfig)}, testLogger{}, store, bs, nil, nil)
+		require.NoError(t, err)
+
+		params := &schemas.VideoGenerationParameters{}
+		input := &schemas.VideoGenerationInput{}
+		require.NoError(t, json.Unmarshal(body, params))
+		require.NoError(t, json.Unmarshal(body, input))
+		input.Prompt = "a private prompt"
+		params.ExtraParams = extra
+
+		const requestID = "req-video-policy"
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
+		req := &schemas.BifrostRequest{RequestType: schemas.VideoGenerationRequest, VideoGenerationRequest: &schemas.BifrostVideoGenerationRequest{
+			Provider: schemas.OpenAI, Model: "sora-2", Input: input, Params: params,
+		}}
+		_, _, err = plugin.PreLLMHook(ctx, req)
+		require.NoError(t, err)
+		if mode == offByVirtualKeyAfterCapture {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceDisableContentLogging, true)
+		}
+		resp := &schemas.BifrostResponse{VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
+			ID: "vid_policy", Status: schemas.VideoStatusQueued,
+			ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.VideoGenerationRequest, Provider: schemas.OpenAI, OriginalModelRequested: "sora-2"},
+		}}
+		_, _, err = plugin.PostLLMHook(ctx, resp, nil)
+		require.NoError(t, err)
+		require.NoError(t, plugin.Cleanup())
+
+		job, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindVideo, "openai", "vid_policy"))
+		require.NoError(t, err, "the create must write a video job row")
+		row, err := store.FindByID(context.Background(), requestID)
+		require.NoError(t, err)
+		if mode != contentOn {
+			require.Nil(t, row.ParamsParsed, "content logging off: the log row must hold no params")
+			require.Nil(t, row.VideoGenerationInputParsed, "content logging off: the log row must hold no input")
+		}
+		return recorded{dims: jobaccounting.VideoDimensionsFromJob(job), row: row}
+	}
+
+	fields := schemas.PriceAffectingUnifiedFields(schemas.VideoGenerationRequest)
+	require.NotEmpty(t, fields)
+	for name, mode := range map[string]policy{"off in config": offInConfig, "off by virtual key after capture": offByVirtualKeyAfterCapture} {
+		t.Run(name, func(t *testing.T) {
+			bare := videoDimensionsWithoutExtra(t, submit(t, mode, []byte(`{}`), nil).dims)
+			for _, field := range fields {
+				if _, exempt := videoCaptureExemptFields[field]; exempt {
+					continue
+				}
+				t.Run(field, func(t *testing.T) {
+					sample, ok := videoCaptureSamples[field]
+					require.True(t, ok, "%q is a price-affecting video field with no sample in videoCaptureSamples", field)
+					body := []byte(`{"` + field + `":` + sample + `}`)
+					got := videoDimensionsWithoutExtra(t, submit(t, mode, body, nil).dims)
+					require.NotEqual(t, bare, got, "%q is not on the job row with content logging off", field)
+					require.Equal(t, videoDimensionsWithoutExtra(t, submit(t, contentOn, body, nil).dims), got,
+						"%q is recorded differently with content logging off than with it on", field)
+				})
+			}
+
+			// The billing selectors in extra params are kept; anything else there is content and is not.
+			off := submit(t, mode, []byte(`{"seconds":"4"}`), map[string]any{
+				"mode": "pro", "resolution": "720p", "negative_prompt_extra": "secret words",
+			})
+			require.Equal(t, map[string]any{"mode": "pro", "resolution": "720p"}, off.dims.Extra)
+		})
+	}
+}

@@ -580,7 +580,8 @@ Supports text and multimodal embeddings (text, image, audio, video, and PDF via 
 - One `EmbedContentRequest` embeds one content, so an embeddings line takes exactly one input. A line whose `input` holds several items is refused with a 400 `caller_unsupported_parameter` naming `requests[i].body.input` and the line's `custom_id`, before anything is sent: sent as several requests, a line whose items partly failed would come back failed with no usage while Gemini billed the items that succeeded. Send one input per line. (The same line is refused on Vertex.) Results of a job created before this change, whose multi-input lines were sent as one request per item, still come back as one result line each.
 - Result lines are OpenAI-shape embeddings bodies (`object: "list"`, `data[].embedding`, `usage`), paged with `after` and `limit` like every other batch.
 - Creating a batch is not idempotent at Gemini (two identical creates are two jobs); a caller that lost a create response finds its job in the list by `display_name`.
-- Not reached: Vertex (its batch prediction jobs are a different API) and the `/genai` route, which does not carry `:asyncBatchEmbedContent`.
+- The native route takes Google's SDK as it is: `client.batches.create_embeddings(...)` against `/genai` sends `POST /genai/v1beta/models/{model}:asyncBatchEmbedContent` with Gemini `EmbedContentRequest`s (inline, or an uploaded file named in `inputConfig.file_name`), which reach Gemini unchanged as one `asyncBatchEmbedContent` job. `client.batches.get(...)` returns the job's results at `metadata.output`, where the SDK reads them as `dest.inlined_embed_content_responses`. The same holds for a `batchGenerateContent` batch's `dest.inlined_responses`.
+- Not reached: Vertex (its batch prediction jobs are a different API).
 
 ---
 

@@ -9,6 +9,9 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf16"
+	"unicode/utf8"
 	"unsafe"
 
 	"github.com/tidwall/gjson"
@@ -124,7 +127,13 @@ func (br *BifrostRequest) ForwardedBodyContentType() string {
 	if br.PassthroughRequest == nil {
 		return ""
 	}
-	for name, value := range br.PassthroughRequest.SafeHeaders {
+	return br.PassthroughRequest.ContentType()
+}
+
+// ContentType returns the Content-Type a passthrough request forwards upstream, "" when none: the
+// type ClassifyForwardedBody reads its body by.
+func (r *BifrostPassthroughRequest) ContentType() string {
+	for name, value := range r.SafeHeaders {
 		if strings.EqualFold(name, "content-type") {
 			return value
 		}
@@ -132,80 +141,520 @@ func (br *BifrostRequest) ForwardedBodyContentType() string {
 	return ""
 }
 
+// ForwardedBodyFormat is how a forwarded body is read: by the guard, the router and every gate
+// alike (TXE-8012). ClassifyForwardedBody is the one place it is decided.
+type ForwardedBodyFormat int
+
+const (
+	// ForwardedBodyOpaque is content: a declared non-JSON, non-multipart type (text/plain,
+	// application/octet-stream, audio), an empty body, or an undeclared body that opens like
+	// neither. It is forwarded unchanged and no reader reads a member from it.
+	ForwardedBodyOpaque ForwardedBodyFormat = iota
+	// ForwardedBodyJSON is one JSON document: declared application/json or a +json type, or
+	// undeclared and opening with "{" or "[".
+	ForwardedBodyJSON
+	// ForwardedBodyJSONLines is a declared JSON Lines file (jsonLinesMediaTypes), one JSON value
+	// per line, as a batch input file is uploaded.
+	ForwardedBodyJSONLines
+	// ForwardedBodyMultipart is declared multipart (read by its boundary), or undeclared and
+	// opening with a boundary line.
+	ForwardedBodyMultipart
+	// ForwardedBodyUnreadable is a body whose declared type does not parse, or multipart that
+	// names no boundary: a vendor may still read it, so the guard refuses it.
+	ForwardedBodyUnreadable
+)
+
+// ForwardedBodyClass is the result of ClassifyForwardedBody.
+type ForwardedBodyClass struct {
+	Format   ForwardedBodyFormat
+	Declared bool   // a Content-Type was given
+	Boundary string // ForwardedBodyMultipart
+	Reason   string // ForwardedBodyUnreadable: what the guard reports
+}
+
+// ClassifyForwardedBody decides how a forwarded body is read from its declared Content-Type,
+// never from what the body looks like under a declaration: a text/plain or octet-stream upload
+// that opens with "{" is content, not JSON (TXE-8012). Only an undeclared body (a raw request
+// body Bifrost decoded itself, or a passthrough caller that sent no type) is read by its first
+// bytes, since there is nothing else to read it by. Every reader of a forwarded body classifies
+// through here, so a body the guard does not check as JSON is a body no gate reads as JSON:
+// TestEveryForwardedBodyReaderUsesTheSharedClassifier fails when one does not.
+func ClassifyForwardedBody(contentType string, body []byte) ForwardedBodyClass {
+	trimmed := trimForwardedBody(body)
+	if len(trimmed) == 0 {
+		return ForwardedBodyClass{Format: ForwardedBodyOpaque, Declared: contentType != ""}
+	}
+	if contentType == "" {
+		switch {
+		case trimmed[0] == '{' || trimmed[0] == '[':
+			return ForwardedBodyClass{Format: ForwardedBodyJSON}
+		case bytes.HasPrefix(trimmed, []byte("--")):
+			line, _, _ := bytes.Cut(trimmed, []byte("\n"))
+			if line = bytes.TrimRight(line, "\r"); len(line) > 2 {
+				return ForwardedBodyClass{Format: ForwardedBodyMultipart, Boundary: string(line[2:])}
+			}
+		}
+		return ForwardedBodyClass{Format: ForwardedBodyOpaque}
+	}
+	mediaType, params, err := mime.ParseMediaType(contentType)
+	switch {
+	case err != nil:
+		// Go rejects a type a vendor may still read (two boundary parameters, say), so a body
+		// under one is not judged by a guess at what the vendor makes of it.
+		return ForwardedBodyClass{Format: ForwardedBodyUnreadable, Declared: true, Reason: "a Content-Type that does not parse"}
+	case strings.HasPrefix(mediaType, "multipart/"):
+		if params["boundary"] == "" {
+			return ForwardedBodyClass{Format: ForwardedBodyUnreadable, Declared: true, Reason: "multipart body with no boundary"}
+		}
+		return ForwardedBodyClass{Format: ForwardedBodyMultipart, Declared: true, Boundary: params["boundary"]}
+	case IsJSONMediaType(mediaType):
+		return ForwardedBodyClass{Format: ForwardedBodyJSON, Declared: true}
+	case jsonLinesMediaTypes[mediaType]:
+		return ForwardedBodyClass{Format: ForwardedBodyJSONLines, Declared: true}
+	}
+	return ForwardedBodyClass{Format: ForwardedBodyOpaque, Declared: true}
+}
+
+// IsJSONMediaType reports a parsed media type that declares one JSON document.
+func IsJSONMediaType(mediaType string) bool {
+	return mediaType == "application/json" || strings.HasSuffix(mediaType, "+json")
+}
+
+// trimForwardedBody drops leading whitespace and a UTF-8 byte order mark.
+func trimForwardedBody(body []byte) []byte {
+	trimmed := bytes.TrimPrefix(bytes.TrimLeft(body, " \t\r\n"), utf8ByteOrderMark)
+	return bytes.TrimLeft(trimmed, " \t\r\n")
+}
+
 // AmbiguousBodyMember reports the first member of a forwarded body that two parsers can read
 // differently, as a path ("model", "tasks[0].model", "multipart field size"), and true; or "" and
 // false for a body every parser reads the same way. contentType is the caller's declared
-// Content-Type, "" when none is known.
+// Content-Type, "" when none is known. How the body is read is ClassifyForwardedBody's call:
 //
-//   - JSON (declared, or a body opening with "{" or "[" after a UTF-8 byte order mark and
-//     whitespace): an object anywhere in the document that gives one key twice, compared as
-//     decoded, so "model" and "mod\u0065l" are the same key. In the root object and the objects
-//     of a root array, a gated key (gatedBodyKeys) is also compared without case, since
-//     encoding/json and sonic fill a struct field from any casing.
-//     A document nested deeper than maxForwardedBodyDepth is refused, and so is one that does not
-//     parse strictly: a lenient vendor parser might read members gjson does not see.
-//   - multipart/form-data (declared, read by the declared boundary; or, with no declared type, a
-//     body opening with a boundary line): a name given twice when any of its parts is a text
-//     field, unless the name ends in "[]", the form encoding of a list. A name only ever given as
-//     a file may repeat: a list of images is sent that way. A body that does not parse as
-//     multipart is refused.
+//   - JSON: an object anywhere in the document that gives one key twice, compared as decoded,
+//     so "model" and "mod\u0065l" are the same key. In the root object and the objects of a
+//     root array, a gated key (GatedBodyKeys) is also compared without case, since
+//     encoding/json and sonic fill a struct field from any casing. A document nested deeper
+//     than maxForwardedBodyDepth is refused, and so is one that does not parse strictly: a
+//     lenient vendor parser might read members gjson does not see.
+//   - JSON Lines: each non-blank line as a JSON document.
+//   - multipart: a name given twice when any of its parts is a text field, unless the name ends
+//     in "[]", the form encoding of a list. A name only ever given as a file may repeat: a list
+//     of images is sent that way. A part that declares a JSON type is checked as JSON. A body
+//     that does not parse as multipart is refused.
+//   - unreadable (a declared type that does not parse, multipart with no boundary): refused.
 //
-// Anything else (an empty body, plain text, binary audio) is not ambiguous: nothing reads it as
-// structured data.
+// An opaque body (empty, or declared as another type: text/plain, octet-stream, audio) is not
+// ambiguous: no reader reads a member from it.
 func AmbiguousBodyMember(body []byte, contentType string) (string, bool) {
-	trimmed := bytes.TrimPrefix(bytes.TrimLeft(body, " \t\r\n"), utf8ByteOrderMark)
-	trimmed = bytes.TrimLeft(trimmed, " \t\r\n")
-	if len(trimmed) == 0 {
-		return "", false
-	}
-	mediaType, params, mimeErr := mime.ParseMediaType(contentType)
-	if contentType != "" && mimeErr != nil {
-		// Go rejects a type a vendor may still read (two boundary parameters, say), so a body
-		// under one is not judged by a guess at what the vendor makes of it.
-		return "a Content-Type that does not parse", true
-	}
-	if mimeErr == nil && strings.HasPrefix(mediaType, "multipart/") {
-		boundary := params["boundary"]
-		if boundary == "" {
-			return "multipart body with no boundary", true
-		}
-		return ambiguousMultipartField(trimmed, boundary)
-	}
-	declaredJSON := mimeErr == nil && (mediaType == "application/json" || strings.HasSuffix(mediaType, "+json"))
-	switch {
-	case declaredJSON || trimmed[0] == '{' || trimmed[0] == '[':
-		// The depth is bounded before gjson validates: its validator recurses once per level.
-		if member, deep := jsonNestedTooDeep(trimmed); deep {
-			return member, true
-		}
-		if !gjson.ValidBytes(trimmed) {
-			// A declared JSON Lines file (a batch input upload) is read line by line. Any other
-			// body opening with "{" or "[" that is not strict JSON is refused whatever type it
-			// declares: a lenient vendor parser, or one sniffing past the declared type, could
-			// read members no gate saw.
-			if mimeErr == nil && jsonLinesMediaTypes[mediaType] {
-				return ambiguousJSONLinesMember(trimmed)
-			}
-			return "a JSON body that does not parse strictly", true
-		}
-		return ambiguousJSONMember(trimmed)
-	case bytes.HasPrefix(trimmed, []byte("--")):
-		// A body opening with a boundary line is read as multipart whatever type it declares: a
-		// vendor sniffing it, or a type rewritten on the way, must not find a repeat unchecked.
-		// Only an undeclared body is refused for not parsing; under another declared type, text
-		// opening with "--" is just text.
-		line, _, _ := bytes.Cut(trimmed, []byte("\n"))
-		line = bytes.TrimRight(line, "\r")
-		if len(line) <= 2 {
-			return "", false
-		}
-		member, ambiguous := ambiguousMultipartField(trimmed, string(line[2:]))
-		if ambiguous && member == multipartUnparsable && contentType != "" {
-			return "", false
-		}
-		return member, ambiguous
+	class := ClassifyForwardedBody(contentType, body)
+	trimmed := trimForwardedBody(body)
+	switch class.Format {
+	case ForwardedBodyUnreadable:
+		return class.Reason, true
+	case ForwardedBodyJSON:
+		return ambiguousJSONDocument(trimmed)
+	case ForwardedBodyJSONLines:
+		return ambiguousJSONLinesMember(trimmed)
+	case ForwardedBodyMultipart:
+		return ambiguousMultipartField(trimmed, class.Boundary)
 	}
 	return "", false
+}
+
+// MislabeledJSONBody reports a forwarded body that ClassifyForwardedBody calls content (declared
+// as a non-JSON type, or undeclared and not opening like JSON) but that a vendor could still parse
+// as JSON, or a declared JSON Lines body naming a gated member: the media type it declares ("" when
+// none), the problem as a phrase ("is JSON naming model"), and true. No reader reads such a body as
+// JSON, so no gate checked what it names, while a vendor parsing it would act on it: run a model
+// past its own limits, reach a provider object, or bill a repeated field one way and render it
+// another. Core refuses it with 400 and asks for UTF-8 application/json (TXE-8012). File upload
+// routes (FileUploadRoutes) are exempt in core: the vendor stores those bytes and runs no model.
+//
+// The body is read under every encoding a JSON parser might pick (UTF-8, UTF-16 and UTF-32 in
+// both byte orders, whatever its charset or byte order mark claims), unless it declares a media
+// type (audio, image, video). Under any encoding where it opens like JSON ("{" or "[" after Unicode
+// whitespace, byte order marks and // or /* */ comments), it is reported unless it is strict JSON
+// that repeats no member, names no gated key at its root and may name no provider object
+// (MayNameProviderObject, keys compared without case). What a lenient parser accepts is
+// open-ended, so a body that opens like JSON and is not strict is refused outright.
+//
+// A body declared JSON Lines is reported when a line names a gated key at its root or may name a
+// provider object: it is no request document, so no gate reads either from it.
+func MislabeledJSONBody(body []byte, contentType string) (mediaType, problem string, mislabeled bool) {
+	if len(body) == 0 {
+		// Most requests forward no body: nothing to read, nothing allocated.
+		return "", "", false
+	}
+	format := ClassifyForwardedBody(contentType, body).Format
+	mediaType, _, _ = mime.ParseMediaType(contentType)
+	if format == ForwardedBodyJSONLines {
+		// A JSON Lines file is no request document either, so no gate reads a model from it; a
+		// line naming one at its root is what a vendor parsing the body as JSON would run. Each
+		// line is already strict and repeats nothing (AmbiguousBodyMember).
+		for _, line := range bytes.Split(body, []byte("\n")) {
+			line = trimForwardedBody(bytes.TrimRight(line, " \t\r"))
+			if len(line) == 0 {
+				continue
+			}
+			if problem = jsonTextProblem(line); problem != "" {
+				return mediaType, problem, true
+			}
+		}
+		return "", "", false
+	}
+	if format != ForwardedBodyOpaque {
+		return "", "", false
+	}
+	decodings := jsonTextDecodings
+	if isMediaType(mediaType) {
+		// Media is read as UTF-8 only (raw PCM read as UTF-16 must not make audio JSON), with the
+		// same opening rule as any body: whatever its byte validity, since a lenient parser
+		// replaces an invalid byte and reads on. Media with a header (RIFF, ID3, OggS, fLaC, PNG,
+		// JPEG, MP4...) never opens like JSON. Headerless raw audio (rawAudioMediaTypes) is
+		// skipped when its first 1 KB is not UTF-8 text and its first byte after ASCII whitespace
+		// is neither "{" nor "[": a narrower opening rule (only some bytes after the bracket) lets
+		// a primitive-led array such as [0,{"model":"X"},"\xff"] through. Raw audio opens with
+		// "{" or "[" by chance in about 1 of 128 streams, and such a stream is refused unless it
+		// is strict JSON naming nothing gated: the rule main applied to every body.
+		if prefix := body[:min(len(body), 1024)]; rawAudioMediaTypes[mediaType] && !utf8.Valid(trimCutRune(prefix)) && !opensWithJSONBracket(prefix) {
+			return "", "", false
+		}
+		decodings = jsonTextDecodings[:1]
+	}
+	for _, decode := range decodings {
+		// Most content opens like JSON under no encoding: decide from a short prefix before
+		// decoding a large body. A prefix holding only space and comments reads on.
+		if opens, decided := opensLikeJSON(decode(body[:min(len(body), 256)])); decided && !opens {
+			continue
+		}
+		doc := decode(body)
+		start, opens := jsonTextStart(doc)
+		if !opens {
+			continue
+		}
+		text := doc[start:]
+		if member, deep := jsonNestedTooDeep(text); deep {
+			return mediaType, "is " + member, true
+		}
+		if !gjson.ValidBytes(text) {
+			return mediaType, "is JSON that does not parse strictly", true
+		}
+		if member, repeated := ambiguousJSONMember(text); repeated {
+			return mediaType, "is JSON that gives " + member + " more than once", true
+		}
+		if problem = jsonTextProblem(text); problem != "" {
+			return mediaType, problem, true
+		}
+	}
+	return "", "", false
+}
+
+// isMediaType reports a declared audio, image or video type: binary media. It is read as JSON
+// text only as UTF-8, and only when it is valid UTF-8 (MislabeledJSONBody): a body declared audio
+// that is JSON text is still checked, while raw PCM is not mistaken for it.
+func isMediaType(mediaType string) bool {
+	return strings.HasPrefix(mediaType, "audio/") || strings.HasPrefix(mediaType, "image/") || strings.HasPrefix(mediaType, "video/")
+}
+
+// opensWithJSONBracket reports bytes whose first byte after ASCII whitespace is "{" or "[".
+func opensWithJSONBracket(b []byte) bool {
+	b = bytes.TrimLeft(b, " \t\r\n")
+	return len(b) > 0 && (b[0] == '{' || b[0] == '[')
+}
+
+// rawAudioMediaTypes are headerless audio formats: samples from the first byte, which can be any
+// value. Read as JSON text only when their prefix is UTF-8 text (MislabeledJSONBody).
+var rawAudioMediaTypes = map[string]bool{
+	"audio/l8": true, "audio/l16": true, "audio/l20": true, "audio/l24": true,
+	"audio/pcm": true, "audio/raw": true, "audio/basic": true,
+	"audio/pcmu": true, "audio/pcma": true, "audio/mulaw": true, "audio/x-mulaw": true,
+	"audio/alaw": true, "audio/x-alaw": true, "audio/g711": true,
+}
+
+// trimCutRune drops an incomplete UTF-8 sequence a prefix cut at its end.
+func trimCutRune(prefix []byte) []byte {
+	for i := 1; i < utf8.UTFMax && i <= len(prefix); i++ {
+		if utf8.RuneStart(prefix[len(prefix)-i]) {
+			if !utf8.FullRune(prefix[len(prefix)-i:]) {
+				return prefix[:len(prefix)-i]
+			}
+			break
+		}
+	}
+	return prefix
+}
+
+// jsonTextProblem describes a strict JSON document that names a gated key at its root, or may name
+// a provider object; "" for one that names neither.
+func jsonTextProblem(doc []byte) string {
+	if key := gatedKeyAtRoot(doc); key != "" {
+		return "is JSON naming " + key
+	}
+	if providerObjectMention(doc) != "" {
+		return "is JSON naming a provider object"
+	}
+	return ""
+}
+
+// jsonTextDecodings are the encodings a JSON parser might read a body in: as it is (UTF-8), and
+// UTF-16 and UTF-32 in both byte orders. A leading byte order mark decodes to U+FEFF, which
+// jsonTextStart skips.
+var jsonTextDecodings = []func([]byte) []byte{
+	func(b []byte) []byte { return b },
+	func(b []byte) []byte { return decodeUTF16(b, false) },
+	func(b []byte) []byte { return decodeUTF16(b, true) },
+	func(b []byte) []byte { return decodeUTF32(b, false) },
+	func(b []byte) []byte { return decodeUTF32(b, true) },
+}
+
+// opensLikeJSON reports whether text opens like JSON, and whether that was decided: a text of
+// only space and comments is undecided.
+func opensLikeJSON(text []byte) (opens, decided bool) {
+	start, opens := jsonTextStart(text)
+	return opens, start < len(text)
+}
+
+// jsonTextStart skips Unicode whitespace, byte order marks and // or /* */ comments, and reports
+// where the text starts and whether it starts with "{" or "[".
+func jsonTextStart(text []byte) (int, bool) {
+	i := 0
+	for i < len(text) {
+		r, size := utf8.DecodeRune(text[i:])
+		switch {
+		case r == utf8.RuneError && size <= 1 && !utf8.FullRune(text[i:]):
+			// A rune cut by the end of a prefix: undecided, read on.
+			return len(text), false
+		case r == utf8.RuneError && size <= 1:
+			return i, false
+		case r == '/' && i+1 == len(text):
+			// A "/" cut by the end of a prefix may open a comment: undecided.
+			return len(text), false
+		case unicode.IsSpace(r) || r == 0xfeff || r == 0x200b:
+			i += size
+		case r == '/' && i+1 < len(text) && text[i+1] == '/':
+			end := bytes.IndexByte(text[i:], '\n')
+			if end < 0 {
+				return len(text), false
+			}
+			i += end + 1
+		case r == '/' && i+1 < len(text) && text[i+1] == '*':
+			end := bytes.Index(text[i+2:], []byte("*/"))
+			if end < 0 {
+				return len(text), false
+			}
+			i += end + 4
+		default:
+			return i, r == '{' || r == '['
+		}
+	}
+	return i, false
+}
+
+// gatedKeyAtRoot returns the gated key a strict JSON document names in its root object or an
+// object of a root array, or "".
+func gatedKeyAtRoot(doc []byte) string {
+	var key string
+	named := func(object gjson.Result) bool {
+		object.ForEach(func(member, _ gjson.Result) bool {
+			if gated := gatedBodyKey(member.Str); gated != "" {
+				key = gated
+				return false
+			}
+			return true
+		})
+		return key != ""
+	}
+	root := gjson.ParseBytes(doc)
+	if root.IsObject() {
+		named(root)
+	} else {
+		root.ForEach(func(_, element gjson.Result) bool {
+			return !(element.IsObject() && named(element))
+		})
+	}
+	return key
+}
+
+// decodeUTF16 reads b as UTF-16 in the given byte order and returns it as UTF-8.
+func decodeUTF16(b []byte, bigEndian bool) []byte {
+	units := make([]uint16, 0, len(b)/2)
+	for ; len(b) >= 2; b = b[2:] {
+		if bigEndian {
+			units = append(units, uint16(b[0])<<8|uint16(b[1]))
+		} else {
+			units = append(units, uint16(b[1])<<8|uint16(b[0]))
+		}
+	}
+	out := make([]byte, 0, len(units))
+	for _, r := range utf16.Decode(units) {
+		out = utf8.AppendRune(out, r)
+	}
+	return out
+}
+
+// decodeUTF32 reads b as UTF-32 in the given byte order and returns it as UTF-8.
+func decodeUTF32(b []byte, bigEndian bool) []byte {
+	out := make([]byte, 0, len(b)/4)
+	for ; len(b) >= 4; b = b[4:] {
+		var r uint32
+		if bigEndian {
+			r = uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
+		} else {
+			r = uint32(b[3])<<24 | uint32(b[2])<<16 | uint32(b[1])<<8 | uint32(b[0])
+		}
+		out = utf8.AppendRune(out, rune(r))
+	}
+	return out
+}
+
+// ProviderObjectBodyMarkers are the keys a JSON body names a provider object under (a file, a
+// cached content, a code interpreter container). Governance's object gate parses a body only when
+// it holds one of these, a \u escape that could spell one, or a storage URI
+// (MayNameProviderObject), and MislabeledJSONBody refuses content that may name one.
+var ProviderObjectBodyMarkers = []string{
+	`"file_id`, `"fileUri"`, `"file_uri"`, `"cached_content"`, `"cachedContent"`, `code_interpreter`,
+	`"input_file_id"`, `"training_file"`, `"validation_file"`, `"fileName"`,
+}
+
+// StorageURIMarkers are the storage URI forms a body names a recorded file by: gs: and s3:
+// schemes, and the Google Cloud Storage and AWS hosts (compared without case).
+var StorageURIMarkers = []string{"gs:", "s3:", "storage.cloud.google.com", "googleapis.com", "amazonaws.com", "arn:aws"}
+
+// MayNameProviderObject reports whether a raw body could name a provider object: a marker key,
+// a \u escape (which can spell any marker character: file\u005fid decodes to file_id), or a
+// storage URI. Bodies that cannot are forwarded without a JSON parse.
+func MayNameProviderObject(body []byte) bool {
+	if bytes.Contains(body, []byte(`\u`)) {
+		return true
+	}
+	for _, marker := range ProviderObjectBodyMarkers {
+		if bytes.Contains(body, []byte(marker)) {
+			return true
+		}
+	}
+	for _, marker := range StorageURIMarkers {
+		if containsFold(body, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// containsFold reports whether s contains the lower-case ASCII marker in any case, without
+// copying s: the prefilter runs on every passthrough body, most of which name nothing.
+func containsFold(s []byte, marker string) bool {
+	if len(marker) == 0 {
+		return true
+	}
+	first, upper := marker[0], marker[0]
+	if 'a' <= first && first <= 'z' {
+		upper = first - 'a' + 'A'
+	}
+	for i := 0; i+len(marker) <= len(s); i++ {
+		if c := s[i]; c != first && c != upper {
+			continue
+		}
+		match := true
+		for j := 1; j < len(marker); j++ {
+			c := s[i+j]
+			if 'A' <= c && c <= 'Z' {
+				c += 'a' - 'A'
+			}
+			if c != marker[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
+}
+
+// providerObjectMention reports, as a label, a JSON text that may name a provider object when its
+// keys are compared without case: a lenient vendor parser may fold them.
+func providerObjectMention(doc []byte) string {
+	if MayNameProviderObject(doc) {
+		return "a provider object"
+	}
+	for _, marker := range ProviderObjectBodyMarkers {
+		if containsFold(doc, strings.ToLower(marker)) {
+			return "a provider object"
+		}
+	}
+	return ""
+}
+
+// FileUploadRoute is a route that stores the request body as a file and runs no model. Path is a
+// pattern over "/"-separated segments: "*" matches one segment, "**" any number of them. Paths are
+// as forwarded, after a passthrough prefix is stripped.
+type FileUploadRoute struct {
+	Method string
+	Path   string
+}
+
+// FileUploadRoutes are the upload routes of the vendors Bifrost serves: every typed file upload
+// route Bifrost registers is one of these, and TestEveryFileUploadRouteIsInTheSharedList fails
+// when a provider adds one that is not. A file is content, so MislabeledJSONBody does not apply
+// on these routes (core's guard skips it): a batch input file is JSON Lines naming a model on
+// every line, uploaded under whatever type its SDK guesses (Python's mimetypes knows no .jsonl, so
+// often application/octet-stream).
+//
+// Each is the root of an upload collection, never a route that attaches an existing object:
+// POST /v1/vector_stores/{id}/files and /v1/containers/{id}/files name a file by id, so they stay
+// under the guard and governance's object gate.
+var FileUploadRoutes = []FileUploadRoute{
+	{Method: "POST", Path: "/v1/files"},           // OpenAI, Anthropic and compatible
+	{Method: "POST", Path: "/files"},              // OpenAI-compatible without a version
+	{Method: "POST", Path: "/openai/files"},       // Azure OpenAI
+	{Method: "POST", Path: "/openai/v1/files"},    // Azure OpenAI v1
+	{Method: "POST", Path: "/v1/uploads/*/parts"}, // OpenAI's multi-part upload
+	{Method: "POST", Path: "/upload/*/files"},     // Gemini's media upload, /upload/v1beta/files
+}
+
+// IsFileUploadPath reports a request to one of FileUploadRoutes.
+func IsFileUploadPath(method, path string) bool {
+	segments := strings.Split(strings.Trim(path, "/"), "/")
+	for _, route := range FileUploadRoutes {
+		if strings.EqualFold(method, route.Method) && matchRouteSegments(strings.Split(strings.Trim(route.Path, "/"), "/"), segments) {
+			return true
+		}
+	}
+	return false
+}
+
+// matchRouteSegments matches path segments against a FileUploadRoute pattern.
+func matchRouteSegments(pattern, segments []string) bool {
+	if len(pattern) == 0 {
+		return len(segments) == 0
+	}
+	switch pattern[0] {
+	case "**":
+		for i := 0; i <= len(segments); i++ {
+			if matchRouteSegments(pattern[1:], segments[i:]) {
+				return true
+			}
+		}
+		return false
+	case "*":
+		return len(segments) > 0 && segments[0] != "" && matchRouteSegments(pattern[1:], segments[1:])
+	}
+	return len(segments) > 0 && segments[0] == pattern[0] && matchRouteSegments(pattern[1:], segments[1:])
+}
+
+// ambiguousJSONDocument checks one JSON document: nested no deeper than maxForwardedBodyDepth
+// (counted before gjson's validator, which recurses once per level, sees it), strictly valid,
+// and repeating no member.
+func ambiguousJSONDocument(doc []byte) (string, bool) {
+	if member, deep := jsonNestedTooDeep(doc); deep {
+		return member, true
+	}
+	if !gjson.ValidBytes(doc) {
+		return "a JSON body that does not parse strictly", true
+	}
+	return ambiguousJSONMember(doc)
 }
 
 // jsonLinesMediaTypes are the declared types under which a body is read as JSON Lines: one JSON
@@ -230,15 +679,8 @@ func ambiguousJSONLinesMember(body []byte) (string, bool) {
 		if len(line) == 0 {
 			continue
 		}
-		prefix := "line " + strconv.Itoa(number) + ": "
-		if member, deep := jsonNestedTooDeep(line); deep {
-			return prefix + member, true
-		}
-		if !gjson.ValidBytes(line) {
-			return prefix + "a JSON body that does not parse strictly", true
-		}
-		if member, ambiguous := ambiguousJSONMember(line); ambiguous {
-			return prefix + member, true
+		if member, ambiguous := ambiguousJSONDocument(line); ambiguous {
+			return "line " + strconv.Itoa(number) + ": " + member, true
 		}
 	}
 	return "", false
@@ -310,17 +752,27 @@ func plainHeaderValue(value string) bool {
 // utf8ByteOrderMark opens some JSON documents; Python's json.loads, among others, skips it.
 var utf8ByteOrderMark = []byte{0xef, 0xbb, 0xbf}
 
-// gatedBodyKeys are the members an access gate or the router reads from a forwarded body by
+// GatedBodyKeys are the members an access gate or the router reads from a forwarded body by
 // name. Two of them that differ only in case are ambiguous too: a typed decoder fills the field
 // from either, gjson and the vendor read the exact spelling. They are read only from the root
 // object and from the objects of a root array (governance's passthrough models, a typed decoder
 // of the request), so only those objects are compared without case: elsewhere, such as a tool's
 // input_schema.properties, keys are user-defined and case-sensitive.
-var gatedBodyKeys = []string{"model"}
+var GatedBodyKeys = []string{BodyModelKey, BodyStreamKey}
+
+// BodyModelKey is the member the gates (governance's model access and limits) and the router read
+// a forwarded body's model from. Readers use this constant, never a literal:
+// TestBodyReadersGateOnlyOnTheSharedKeyList fails otherwise.
+const BodyModelKey = "model"
+
+// BodyStreamKey is the member the passthrough router and governance read a stream flag from. It is
+// gated: a misread sends a stream down the non-stream path, whose usage parser finds no usage in
+// SSE, so the answer escapes token limits and pricing.
+const BodyStreamKey = "stream"
 
 // gatedBodyKey returns the gated key name folds to, or "".
 func gatedBodyKey(name string) string {
-	for _, key := range gatedBodyKeys {
+	for _, key := range GatedBodyKeys {
 		if strings.EqualFold(name, key) {
 			return key
 		}
@@ -559,10 +1011,22 @@ func ambiguousMultipartField(body []byte, boundary string) (string, bool) {
 		}
 		name, readable := multipartPartName(part)
 		text := part.FileName() == ""
-		part.Close()
 		if !readable {
+			part.Close()
 			return multipartUnreadableDisposition, true
 		}
+		// A part is read as JSON only when it is a field (no filename) that declares a JSON type.
+		// A part with a filename is a file, whatever type its SDK guessed: a batch input .jsonl
+		// part names a model on every line and runs none. A part with no type is a form field.
+		if member, ambiguous := ambiguousMultipartPartContent(part, text); ambiguous {
+			part.Close()
+			label := name
+			if label == "" {
+				label = "(unnamed part)"
+			}
+			return "multipart field " + label + ": " + member, true
+		}
+		part.Close()
 		if name == "" || strings.HasSuffix(name, "[]") {
 			continue
 		}
@@ -574,4 +1038,35 @@ func ambiguousMultipartField(body []byte, boundary string) (string, bool) {
 		}
 		seen[name] = seenName{text: text || seen[name].text}
 	}
+}
+
+// ambiguousMultipartPartContent checks a field part's content by the part's own declared type: a
+// field declaring a JSON or JSON Lines type is checked as one, any other part is content. A file
+// part (field false) is content whatever its type. A part with
+// two Content-Type headers, or one that does not parse, is refused like such a body.
+func ambiguousMultipartPartContent(part *multipart.Part, field bool) (string, bool) {
+	if !field {
+		return "", false
+	}
+	types := part.Header.Values("Content-Type")
+	switch len(types) {
+	case 0:
+		return "", false
+	case 1:
+	default:
+		return "a part with two Content-Type headers", true
+	}
+	class := ClassifyForwardedBody(types[0], []byte{'{'}) // the format is the declared type's alone
+	switch class.Format {
+	case ForwardedBodyUnreadable:
+		return class.Reason, true
+	case ForwardedBodyJSON, ForwardedBodyJSONLines:
+	default:
+		return "", false
+	}
+	content, err := io.ReadAll(part)
+	if err != nil {
+		return multipartUnparsable, true
+	}
+	return AmbiguousBodyMember(content, types[0])
 }

@@ -1403,6 +1403,15 @@ func validateWriterConfig(config logstore.WriterConfig) error {
 	if config.DeferredUsageConcurrency > maxWriterDeferredUsageConcurrency {
 		return fmt.Errorf("writer deferred_usage_concurrency must be at most %d, got %d", maxWriterDeferredUsageConcurrency, config.DeferredUsageConcurrency)
 	}
+	if config.PendingLogTTL != "" {
+		ttl, err := time.ParseDuration(config.PendingLogTTL)
+		if err != nil {
+			return fmt.Errorf("writer pending_log_ttl must be a valid Go duration: %w", err)
+		}
+		if ttl < minPendingLogTTL {
+			return fmt.Errorf("writer pending_log_ttl must be at least %s, got %s", minPendingLogTTL, ttl)
+		}
+	}
 	return nil
 }
 
@@ -1442,6 +1451,7 @@ type LoggerPlugin struct {
 	writerPaused                 atomic.Bool                    // Set by batchWriter while it waits out another node's logstore migration
 	maintenanceCapSpent          atomic.Bool                    // batchWriter already paused maintenanceMaxPause for the current migration window
 	cleanupTicker                *time.Ticker                   // Ticker for cleaning up old processing logs
+	pendingTTL                   time.Duration                  // writer.pending_log_ttl; zero means pendingLogTTL (see pendingIdleTTL)
 	logMsgPool                   sync.Pool                      // Pool for reusing LogMessage structs
 	updateDataPool               sync.Pool                      // Pool for reusing UpdateLogData structs
 	pendingLogsEntries           sync.Map                       // Maps requestID -> *PendingLogData (PreLLMHook input data awaiting PostLLMHook)
@@ -1500,13 +1510,15 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore 
 	if err := validateWriterConfig(writerConfig); err != nil {
 		return nil, err
 	}
-	logger.Info("initializing logging writer settings: max_batch_size=%d batch_interval=%s max_batch_bytes=%d write_queue_capacity=%d deferred_usage_concurrency=%d",
+	logger.Info("initializing logging writer settings: max_batch_size=%d batch_interval=%s max_batch_bytes=%d write_queue_capacity=%d deferred_usage_concurrency=%d pending_log_ttl=%s",
 		writerConfig.MaxBatchSize,
 		writerConfig.BatchInterval,
 		writerConfig.MaxBatchBytes,
 		writerConfig.WriteQueueCapacity,
 		writerConfig.DeferredUsageConcurrency,
+		writerConfig.PendingLogTTL,
 	)
+	pendingTTL, _ := time.ParseDuration(writerConfig.PendingLogTTL) // validated above
 
 	batchCtx, batchCancel := context.WithCancel(ctx)
 	plugin := &LoggerPlugin{
@@ -1551,8 +1563,10 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore 
 		plugin.userAgentMappings.Store([]compiledUserAgentMapping{})
 	}
 
-	// Start cleanup ticker (runs every 1 minute)
-	plugin.cleanupTicker = time.NewTicker(1 * time.Minute)
+	// Start the cleanup ticker: every minute, or every half pending TTL when that
+	// is shorter, so an idle entry is evicted at most half a TTL late.
+	plugin.pendingTTL = pendingTTL
+	plugin.cleanupTicker = time.NewTicker(cleanupInterval(pendingTTL))
 	plugin.wg.Add(1)
 	go plugin.cleanupWorker()
 

@@ -13033,6 +13033,8 @@ var nestedPriceProbeModels = map[schemas.ModelProvider][]string{
 	// BFL's images are served only on the image task routes (TXE-7499): FLUX 3 Klein takes a
 	// size, a resolution tier and an images array; Kontext takes numbered input images.
 	schemas.BFL: {"flux-3-image-klein", "flux-kontext-pro"},
+	// MAI-Image on Azure AI Foundry writes width and height from size (TXE-6543).
+	schemas.Azure: {"MAI-Image-2.5"},
 }
 
 // voicelessVariant asks a probe for its operation with no voice at all. Every speech variant

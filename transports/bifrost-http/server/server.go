@@ -631,6 +631,10 @@ func (s *BifrostHTTPServer) markPluginDisabled(name string) error {
 
 // getGovernancePluginName returns the governance plugin name from context or default
 func (s *BifrostHTTPServer) getGovernancePluginName() string {
+	// A nil *BifrostContext would reach governancePluginNameFromContext as a non-nil interface.
+	if s.Ctx == nil {
+		return governance.PluginName
+	}
 	return governancePluginNameFromContext(s.Ctx)
 }
 
@@ -2633,6 +2637,12 @@ func (s *BifrostHTTPServer) RemovePlugin(ctx context.Context, displayName string
 	// CanChat stayed true, because it only asks whether logs is non-nil.
 	if _, ok := plugin.(*logging.LoggerPlugin); ok && s.WarpHandler != nil {
 		s.WarpHandler.Service().SetLogReader(nil)
+	}
+	// 3b. The logging plugin ran the sweepers that settle provider jobs. Rewiring with it gone
+	// tells governance nothing settles, so a budgeted video or batch create is refused, not
+	// admitted and never charged (TXE-7963).
+	if plugin != nil && plugin.GetName() == logging.PluginName {
+		s.WireBatchAccountingSweeper()
 	}
 
 	// 4. Update status and marshaller

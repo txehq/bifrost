@@ -3,6 +3,7 @@ package logging
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/capsohq/bifrost/framework/logstore"
 )
@@ -31,6 +32,20 @@ func TestValidateWriterConfigBounds(t *testing.T) {
 		{
 			name:   "valid config passes",
 			mutate: func(c *logstore.WriterConfig) {},
+		},
+		{
+			name:    "pending log ttl that is not a duration is rejected",
+			mutate:  func(c *logstore.WriterConfig) { c.PendingLogTTL = "soon" },
+			wantErr: "pending_log_ttl must be a valid Go duration",
+		},
+		{
+			name:    "pending log ttl below the floor is rejected",
+			mutate:  func(c *logstore.WriterConfig) { c.PendingLogTTL = "10ms" },
+			wantErr: "pending_log_ttl must be at least",
+		},
+		{
+			name:   "pending log ttl at the floor is accepted",
+			mutate: func(c *logstore.WriterConfig) { c.PendingLogTTL = minPendingLogTTL.String() },
 		},
 		{
 			name:    "write queue capacity above the cap is rejected",
@@ -93,5 +108,29 @@ func TestValidateWriterConfigBounds(t *testing.T) {
 				t.Fatalf("validateWriterConfig() error = %q, want it to contain %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+// TestPendingLogTTLDefaultsAndSweepInterval (TXE-7328): an unset
+// writer.pending_log_ttl keeps the 15-minute eviction and the one-minute sweep;
+// a short one sweeps every half TTL, so the eviction path the harness pins is
+// reached within a second or two.
+func TestPendingLogTTLDefaultsAndSweepInterval(t *testing.T) {
+	var unset *logstore.WriterConfig
+	got, err := time.ParseDuration(unset.WithDefaults().PendingLogTTL)
+	if err != nil || got != pendingLogTTL {
+		t.Fatalf("default pending_log_ttl = %v (%v), want %v", got, err, pendingLogTTL)
+	}
+	if got := cleanupInterval(pendingLogTTL); got != maxCleanupInterval {
+		t.Fatalf("cleanupInterval(default) = %v, want %v", got, maxCleanupInterval)
+	}
+	if got := cleanupInterval(time.Second); got != 500*time.Millisecond { // literal-timing: pure arithmetic on a config value, never waited on
+		t.Fatalf("cleanupInterval(1s) = %v, want 500ms", got)
+	}
+	if got := (&LoggerPlugin{}).pendingIdleTTL(); got != pendingLogTTL {
+		t.Fatalf("pendingIdleTTL without Init = %v, want %v", got, pendingLogTTL)
+	}
+	if got := (&LoggerPlugin{pendingTTL: time.Second}).pendingIdleTTL(); got != time.Second { // literal-timing: a config value read back, never waited on
+		t.Fatalf("pendingIdleTTL = %v, want 1s", got)
 	}
 }

@@ -96,6 +96,53 @@ func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse, scopes *P
 	return mc.datasheet.CalculateCost(result, (*datasheet.LookupScopes)(scopes))
 }
 
+// PriceStatus is what the price book knows about a model's price for one kind of request; see
+// datasheet.PriceStatus.
+type PriceStatus = datasheet.PriceStatus
+
+const (
+	PriceUnpriced = datasheet.Unpriced
+	PriceFree     = datasheet.Free
+	PricePriced   = datasheet.Priced
+)
+
+// PriceStatus reports whether (provider, model) can be priced for requestType before any answer
+// exists, through the same lookup and overrides pricing uses (fork, TXE-7957).
+func (mc *ModelCatalog) PriceStatus(provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *PricingLookupScopes) PriceStatus {
+	return mc.datasheet.PriceStatus(provider, model, requestType, (*datasheet.LookupScopes)(scopes))
+}
+
+// AnswerPriceStatus is the verdict on a delivered answer from the cost calculation that charges it:
+// priced, free (the rates it met are zero), or unpriced (it met no rate); see
+// datasheet.Store.AnswerPriceStatus.
+func (mc *ModelCatalog) AnswerPriceStatus(result *schemas.BifrostResponse, scopes *PricingLookupScopes) PriceStatus {
+	return mc.datasheet.AnswerPriceStatus(result, (*datasheet.LookupScopes)(scopes))
+}
+
+// PriceIdentityForRouting is the identity of the row accounting prices routing on; see
+// datasheet.Store.PriceIdentityForRouting.
+func (mc *ModelCatalog) PriceIdentityForRouting(routing schemas.RoutingInfo, requestType schemas.RequestType, scopes *PricingLookupScopes) string {
+	return mc.datasheet.PriceIdentityForRouting(routing, requestType, (*datasheet.LookupScopes)(scopes))
+}
+
+// BatchPriceStatus is PriceStatus for a batch line settled as requestType; see
+// datasheet.Store.BatchPriceStatus.
+func (mc *ModelCatalog) BatchPriceStatus(provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *PricingLookupScopes) PriceStatus {
+	return mc.datasheet.BatchPriceStatus(provider, model, requestType, (*datasheet.LookupScopes)(scopes))
+}
+
+// PassthroughPricingRequestType is the request type a passthrough answer is priced as: inferred,
+// as pricing infers it, from the provider path and the usage the provider reported (fork, TXE-7957).
+func PassthroughPricingRequestType(provider schemas.ModelProvider, path string, usage *schemas.BifrostPassthroughUsage) schemas.RequestType {
+	return datasheet.InferPassthroughRequestType(provider, path, usage)
+}
+
+// PriceIdentity is PriceStatus with the identity of the pricing row that decided it; see
+// datasheet.PriceIdentity.
+func (mc *ModelCatalog) PriceIdentity(provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *PricingLookupScopes) (string, PriceStatus) {
+	return mc.datasheet.PriceIdentity(provider, model, requestType, (*datasheet.LookupScopes)(scopes))
+}
+
 // SetIgnoreProviderCost toggles whether the provider's self-reported usage.cost
 // is ignored, so the request is priced from the catalog and pricing overrides.
 func (mc *ModelCatalog) SetIgnoreProviderCost(provider schemas.ModelProvider, ignore bool) {

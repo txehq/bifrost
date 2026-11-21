@@ -3,6 +3,7 @@ package integrations
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -39,7 +40,7 @@ func TestCreateHandler_SkipsRequestParserInLargePayloadMode(t *testing.T) {
 	}
 
 	router := NewGenericRouter(nil, handlerStore, nil, nil, nil, nil)
-	router.SetLargePayloadHook(func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, routeType RouteConfigType) (bool, error) {
+	router.setLargePayloadHookForTest(func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, routeType RouteConfigType) (bool, error) {
 		return true, nil
 	})
 
@@ -149,4 +150,20 @@ func TestResolveLargePayloadMetadata_SyncTakesPrecedence(t *testing.T) {
 	result := resolveLargePayloadMetadata(ctx)
 	require.NotNil(t, result)
 	assert.Equal(t, "sync-model", result.Model)
+}
+
+// TestSetLargePayloadHookRefusesAnUnguardedHook: a large-payload request streams its body past
+// core's forwarded-body guard, so installing a hook fails at startup (TXE-8012). A nil hook,
+// which installs nothing, is accepted.
+func TestSetLargePayloadHookRefusesAnUnguardedHook(t *testing.T) {
+	router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, nil)
+	hook := func(*fasthttp.RequestCtx, *schemas.BifrostContext, RouteConfigType) (bool, error) { return true, nil }
+	var refusal any
+	func() {
+		defer func() { refusal = recover() }()
+		router.SetLargePayloadHook(hook)
+	}()
+	assert.Contains(t, fmt.Sprint(refusal), "forwarded-body guard", "installing a large-payload hook must fail at startup")
+	assert.Nil(t, router.largePayloadHook)
+	assert.NotPanics(t, func() { router.SetLargePayloadHook(nil) })
 }
