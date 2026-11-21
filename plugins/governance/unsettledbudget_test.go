@@ -447,6 +447,7 @@ func TestTypedRequestForwardedInputsDeferDelivery(t *testing.T) {
 	assert.False(t, isDeferredDelivery(transcription(map[string]interface{}{"webhook": false}), schemas.Elevenlabs), "webhook false is synchronous")
 	assert.False(t, isDeferredDelivery(transcription(map[string]interface{}{"diarize": true}), schemas.Elevenlabs), "other extra params are not read")
 	assert.False(t, isDeferredDelivery(transcription(nil), schemas.Elevenlabs))
+	assert.True(t, isDeferredDelivery(transcription(map[string]interface{}{"extra_params": map[string]interface{}{"webhook": true}}), schemas.Elevenlabs), "Bifrost's extra_params wrapper kept as one field is read too")
 
 	chat := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{
 		Provider: schemas.OpenAI, Model: "gpt-4o", RawRequestBody: []byte(`{"model":"gpt-4o","messages":[],"callback_url":"https://hooks.example.invalid/c"}`),

@@ -131,13 +131,24 @@ func isDeferredDelivery(req *schemas.BifrostRequest, baseProvider schemas.ModelP
 	if len(raw) > 0 && passthroughDefersDelivery(route, raw, capable, "") {
 		return true
 	}
-	if extraNamesDelivery(extra) {
-		if encoded, err := providerUtils.MarshalSorted(extra); err == nil {
-			return unitDefersDelivery(gjson.ParseBytes(encoded), capable || route != "")
-		}
+	return extraDefersDelivery(extra, capable || route != "")
+}
+
+// extraDefersDelivery judges forwarded extra params, and Bifrost's own "extra_params" wrapper inside
+// them (a native route keeps it as one unknown field; an integration route flattens it), since a
+// provider merge may forward either.
+func extraDefersDelivery(extra map[string]interface{}, capable bool) bool {
+	if nested, ok := extra["extra_params"].(map[string]interface{}); ok && extraDefersDelivery(nested, capable) {
+		return true
+	}
+	if !extraNamesDelivery(extra) {
+		return false
+	}
+	encoded, err := providerUtils.MarshalSorted(extra)
+	if err != nil {
 		return true // extra params that cannot be read are not judged foreground
 	}
-	return false
+	return unitDefersDelivery(gjson.ParseBytes(encoded), capable)
 }
 
 // requestForwardedInputs returns what a typed request forwards to the provider beyond its typed
