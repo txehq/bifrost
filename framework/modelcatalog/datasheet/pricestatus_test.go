@@ -25,8 +25,10 @@ func TestAnswerPriceStatus(t *testing.T) {
 		makeKey("free-model", "openai", "chat"): {Model: "free-model", Provider: "openai", Mode: "chat", InputCostPerToken: schemas.Ptr(0.0), OutputCostPerToken: schemas.Ptr(0.0)},
 		makeKey("flex-free", "openai", "chat"): {Model: "flex-free", Provider: "openai", Mode: "chat",
 			InputCostPerToken: schemas.Ptr(2.5e-06), OutputCostPerToken: schemas.Ptr(1e-05), InputCostPerTokenFlex: schemas.Ptr(0.0), OutputCostPerTokenFlex: schemas.Ptr(0.0)},
-		makeKey("per-second", "openai", "chat"): {Model: "per-second", Provider: "openai", Mode: "chat", InputCostPerSecond: schemas.Ptr(0.001)},
-		makeKey("free-input", "openai", "chat"): {Model: "free-input", Provider: "openai", Mode: "chat", InputCostPerToken: schemas.Ptr(0.0), OutputCostPerToken: schemas.Ptr(1e-05)},
+		makeKey("per-second", "openai", "chat"):               {Model: "per-second", Provider: "openai", Mode: "chat", InputCostPerSecond: schemas.Ptr(0.001)},
+		makeKey("free-input", "openai", "chat"):               {Model: "free-input", Provider: "openai", Mode: "chat", InputCostPerToken: schemas.Ptr(0.0), OutputCostPerToken: schemas.Ptr(1e-05)},
+		makeKey("container", "openai", "container_create"):    {Model: "container", Provider: "openai", Mode: "container_create", CodeInterpreterCostPerSession: schemas.Ptr(0.0)},
+		makeKey("container-4g", "openai", "container_create"): {Model: "container-4g", Provider: "openai", Mode: "container_create", CodeInterpreterCostPerSession: schemas.Ptr(0.12)},
 	})
 	answer := func(model string, tier *schemas.BifrostServiceTier, usage *schemas.BifrostLLMUsage) *schemas.BifrostResponse {
 		return &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
@@ -73,6 +75,15 @@ func TestAnswerPriceStatus(t *testing.T) {
 	}
 	assert.Equal(t, Free, s.AnswerPriceStatus(passthrough("free-model"), nil), "a passthrough on a free model")
 	assert.Equal(t, Unpriced, s.AnswerPriceStatus(passthrough("per-second"), nil), "a passthrough on a row its usage does not meet")
+	// A container create is judged by its container row, as accounting prices it.
+	container := func(memory string) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{ContainerCreateResponse: &schemas.BifrostContainerCreateResponse{
+			MemoryLimit: memory,
+			ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.ContainerCreateRequest, Provider: schemas.OpenAI},
+		}}
+	}
+	assert.Equal(t, Free, s.AnswerPriceStatus(container(""), nil), "a container on a free base row")
+	assert.Equal(t, Priced, s.AnswerPriceStatus(container("4g"), nil), "a container on a priced tier row")
 	tiers := map[string]bool{}
 	pricing := reflect.TypeOf(configstoreTables.TableModelPricing{})
 	for _, i := range tierPriceFieldIndexes() {

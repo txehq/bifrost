@@ -210,11 +210,31 @@ func (s *Store) AnswerPriceStatus(result *schemas.BifrostResponse, scopes *Looku
 			}
 			requestType = inferPassthroughRequestType(routing.Provider, path, passthrough.PassthroughUsage)
 		}
+		// A container create is priced under its container identifier, not a model (extractCostInput):
+		// its memory tier's row, else the base container row.
+		containers := []string(nil)
+		if created := result.ContainerCreateResponse; created != nil {
+			if created.MemoryLimit != "" {
+				containers = append(containers, "container-"+created.MemoryLimit)
+			}
+			containers = append(containers, "container")
+		} else if passthrough := result.PassthroughResponse; passthrough != nil && passthrough.PassthroughUsage != nil && passthrough.PassthroughUsage.ContainerIdentifier != "" {
+			containers = append(containers, passthrough.PassthroughUsage.ContainerIdentifier, "container")
+			requestType = schemas.ContainerCreateRequest
+		}
 		var lookupScopes LookupScopes
 		if scopes != nil {
 			lookupScopes = *scopes
 		}
-		if routing.Model != "" && rowPriceStatus(s.resolvePricingRow(routing, requestType, lookupScopes)) == Free {
+		for _, container := range containers {
+			if row := s.resolvePricingRow(schemas.RoutingInfo{Provider: routing.Provider, Model: container}, requestType, lookupScopes); row != nil {
+				if rowPriceStatus(row) == Free {
+					return Free
+				}
+				return Unpriced
+			}
+		}
+		if len(containers) == 0 && routing.Model != "" && rowPriceStatus(s.resolvePricingRow(routing, requestType, lookupScopes)) == Free {
 			return Free
 		}
 	}
