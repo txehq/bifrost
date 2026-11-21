@@ -3011,6 +3011,12 @@ const handleRequest = (req, res) => {
 		const answer = storageBatchRetrieve(decodeURIComponent(storageBatch[1]));
 		return send(answer.status, {}, answer.body);
 	}
+	// Folder 406's batch list (TXE-7953): pageSize=406 lists one pending embedding job, in the vendor's own shape,
+	// with the vendor's page token for its next page; /genai must return the job unchanged under Bifrost's token.
+	if (req.method === "GET" && path === "/pp/gemini/batches" && new URL(req.url, "http://localhost").searchParams.get("pageSize") === "406") {
+		countHit("gemini.batches list 406");
+		return send(200, {}, JSON.stringify({ operations: [geminiEmbedBatchJob("emb-fixture-listed", "BATCH_STATE_PENDING", { displayName: "fixture-listed-batch", batchStats: { requestCount: "2", pendingRequestCount: "2" } })], nextPageToken: "vendor-page-2" }));
+	}
 	// Folder 513's batch list (TXE-8031): the oversize job, listed.
 	if (req.method === "GET" && path === "/pp/gemini/batches" && new URL(req.url, "http://localhost").searchParams.get("pageSize") === "513") {
 		countHit("gemini.batches list 513");

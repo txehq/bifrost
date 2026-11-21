@@ -3044,6 +3044,9 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 		// Gemini has no batch metadata field; the display name is what a caller can find
 		// a batch by in the list, so it is returned as the vendor recorded it.
 		DisplayName: geminiDisplayName(geminiResp.Metadata),
+		// The vendor's own job, for the native /genai route (TXE-7953). body is the provider's
+		// own copy (CheckAndDecodeBody).
+		NativeJob: body,
 		RequestCounts: schemas.BatchRequestCounts{
 			Total:     totalRequests,
 			Completed: completedCount,
@@ -3133,9 +3136,19 @@ func (provider *GeminiProvider) batchListByKey(ctx *schemas.BifrostContext, key 
 		return nil, latency, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
 	}
 
+	// Each job as the vendor sent it, for the native /genai route (TXE-7953).
+	nativeJobs := geminiListedJobs(body)
+	if len(nativeJobs) != len(geminiResp.Operations) {
+		nativeJobs = nil
+	}
+
 	// Convert to Bifrost format
 	data := make([]schemas.BifrostBatchRetrieveResponse, 0, len(geminiResp.Operations))
-	for _, batch := range geminiResp.Operations {
+	for i, batch := range geminiResp.Operations {
+		var nativeJob []byte
+		if nativeJobs != nil {
+			nativeJob = nativeJobs[i]
+		}
 		var state, createTime string
 		if batch.Metadata != nil {
 			state, createTime = batch.Metadata.State, batch.Metadata.CreateTime
@@ -3148,6 +3161,7 @@ func (provider *GeminiProvider) batchListByKey(ctx *schemas.BifrostContext, key 
 			Status:        ToBifrostBatchStatus(state),
 			CreatedAt:     parseGeminiTimestamp(createTime),
 			OperationName: &batch.Name,
+			NativeJob:     nativeJob,
 			ExtraFields:   schemas.BifrostResponseExtraFields{},
 		})
 	}
@@ -3300,7 +3314,7 @@ func (provider *GeminiProvider) batchRetrieveByKey(ctx *schemas.BifrostContext, 
 		return nil, providerUtils.SetErrorLatency(parseGeminiError(resp), latency)
 	}
 
-	// Taken, not copied: the job's output is kept as NativeOutput, a slice of body (TXE-8031).
+	// Taken, not copied: the body is kept as NativeJob (TXE-7953, TXE-8031).
 	body, err := providerUtils.TakeDecodedBody(resp)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
@@ -3349,7 +3363,7 @@ func (provider *GeminiProvider) batchRetrieveByKey(ctx *schemas.BifrostContext, 
 			Latency:     latency.Milliseconds(),
 			RawResponse: rawResponse,
 		},
-		NativeOutput: geminiBatchNativeOutput(body),
+		NativeJob: body,
 	}
 
 	// The end time is the time of the terminal phase the batch reached.

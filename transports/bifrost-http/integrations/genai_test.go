@@ -1112,3 +1112,102 @@ func BenchmarkExtractModelAndRequestType(b *testing.B) {
 		})
 	}
 }
+
+// TestGenAIEveryNativeBatchRouteReturnsTheVendorsJob (TXE-7953): every native /genai batch route
+// that answers with a job (each create method in gemini.GeminiBatchCreateMethods, typed and raw
+// passthrough; get; list) returns Gemini's own job object unchanged. The recording upstream
+// answers with a job whose state, model, displayName and @type a rebuilt job would lose: PENDING
+// and RUNNING are both in_progress in the unified response, which has no model, and the rebuilt
+// @type named the generateContent job for every kind. A create method added later is driven
+// here without a change.
+func TestGenAIEveryNativeBatchRouteReturnsTheVendorsJob(t *testing.T) {
+	jobFor := func(method, id string) string {
+		kind := map[string]string{
+			gemini.GeminiBatchGenerateContentMethod:   "GenerateContentBatch",
+			gemini.GeminiAsyncBatchEmbedContentMethod: "EmbedContentBatch",
+		}[method]
+		require.NotEmpty(t, kind, "a create method with no job kind in this test: %s", method)
+		return `{"name":"batches/` + id + `","metadata":{"@type":"type.googleapis.com/google.ai.generativelanguage.v1main.` + kind + `",` +
+			`"name":"batches/` + id + `","model":"models/vendor-model-` + method + `","displayName":"vendor-name-` + method + `",` +
+			`"state":"BATCH_STATE_PENDING","createTime":"2026-11-21T00:00:00Z","updateTime":"2026-11-21T00:00:01Z",` +
+			`"batchStats":{"requestCount":"1","pendingRequestCount":"1"},"priority":"0"}}`
+	}
+	sdkBody := map[string]string{
+		gemini.GeminiBatchGenerateContentMethod: `{"batch":{"displayName":"mine","inputConfig":{"requests":{"requests":[` +
+			`{"request":{"contents":[{"role":"user","parts":[{"text":"hi"}]}]},"metadata":{"key":"k1"}}]}}}}`,
+		gemini.GeminiAsyncBatchEmbedContentMethod: `{"batch":{"displayName":"mine","inputConfig":{"requests":{"requests":[` +
+			`{"request":{"content":{"parts":[{"text":"alpha"}]}}}]}}}}`,
+	}
+
+	for _, method := range gemini.GeminiBatchCreateMethods {
+		for _, mode := range []struct{ name, header string }{{"typed path", ""}, {"raw passthrough", "gemini"}} {
+			t.Run(method+"/"+mode.name, func(t *testing.T) {
+				created, got := jobFor(method, "created-"+method), jobFor(method, "got-"+method)
+				var paths []string
+				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					paths = append(paths, r.Method+" "+r.URL.Path)
+					w.Header().Set("Content-Type", "application/json")
+					switch {
+					case r.Method == http.MethodPost:
+						_, _ = w.Write([]byte(created))
+					case strings.HasSuffix(r.URL.Path, "/batches"):
+						_, _ = w.Write([]byte(`{"operations":[` + got + `]}`))
+					default:
+						_, _ = w.Write([]byte(got))
+					}
+				}))
+				defer upstream.Close()
+
+				account := &nativeMessagesTestAccount{
+					configs: map[schemas.ModelProvider]*schemas.ProviderConfig{
+						schemas.Gemini: {NetworkConfig: schemas.NetworkConfig{BaseURL: upstream.URL + "/v1beta", AllowPrivateNetwork: true}},
+					},
+					keys: map[schemas.ModelProvider][]schemas.Key{
+						schemas.Gemini: {{ID: "gemini-key", Value: schemas.SecretVar{Val: "gemini-secret"}, Models: schemas.WhiteList{"*"}, Weight: 1, UseForBatchAPI: schemas.Ptr(true)}},
+					},
+				}
+				client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: bifrost.NewNoOpLogger(), InitialPoolSize: 1})
+				require.NoError(t, err)
+				defer client.Shutdown()
+				router := NewGenericRouter(client, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
+				batchRoutes := CreateGenAIBatchRouteConfigs("/genai", &mockHandlerStore{})
+
+				create := &fasthttp.RequestCtx{}
+				create.Request.Header.SetMethod(fasthttp.MethodPost)
+				create.Request.SetRequestURI("/genai/v1beta/models/vendor-model:" + method)
+				create.SetUserValue("model", "vendor-model:"+method)
+				create.Request.Header.SetContentType("application/json")
+				if mode.header != "" {
+					create.Request.Header.Set("x-model-provider", mode.header)
+				}
+				create.Request.SetBody([]byte(sdkBody[method]))
+				createRoute := findGenAIRouteForTest(t, CreateGenAIRouteConfigs("/genai"), "/genai/v1beta/models/{model:*}", "POST")
+				create.SetUserValue(schemas.BifrostContextKeyHTTPRequestType, createRoute.GetHTTPRequestType(create))
+				router.createHandler(createRoute)(create)
+				require.Equal(t, fasthttp.StatusOK, create.Response.StatusCode(), "%s", create.Response.Body())
+				assert.JSONEq(t, created, string(create.Response.Body()), "create returns the vendor's job")
+
+				get := &fasthttp.RequestCtx{}
+				get.Request.Header.SetMethod(fasthttp.MethodGet)
+				get.Request.SetRequestURI("/genai/v1beta/batches/got-" + method)
+				get.SetUserValue("batch_id", "batches/got-"+method)
+				getRoute := findGenAIRouteForTest(t, batchRoutes, "/genai/v1beta/batches/{batch_id}", "GET")
+				get.SetUserValue(schemas.BifrostContextKeyHTTPRequestType, getRoute.GetHTTPRequestType(get))
+				router.createHandler(getRoute)(get)
+				require.Equal(t, fasthttp.StatusOK, get.Response.StatusCode(), "%s", get.Response.Body())
+				assert.JSONEq(t, got, string(get.Response.Body()), "get returns the vendor's job")
+
+				list := &fasthttp.RequestCtx{}
+				list.Request.Header.SetMethod(fasthttp.MethodGet)
+				list.Request.SetRequestURI("/genai/v1beta/batches")
+				listRoute := findGenAIRouteForTest(t, batchRoutes, "/genai/v1beta/batches", "GET")
+				list.SetUserValue(schemas.BifrostContextKeyHTTPRequestType, listRoute.GetHTTPRequestType(list))
+				router.createHandler(listRoute)(list)
+				require.Equal(t, fasthttp.StatusOK, list.Response.StatusCode(), "%s", list.Response.Body())
+				assert.JSONEq(t, `{"operations":[`+got+`]}`, string(list.Response.Body()), "list returns each vendor job")
+
+				require.Len(t, paths, 3, "%v", paths)
+			})
+		}
+	}
+}

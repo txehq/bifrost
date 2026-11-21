@@ -1,6 +1,7 @@
 package gemini
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -1763,26 +1764,6 @@ func TestGeminiBatchCreateRefusesMoreLinesThanTheLimit(t *testing.T) {
 	})
 }
 
-// BenchmarkGeminiBatchNativeOutput measures what a Gemini batch retrieve now does on top of its
-// decode (TXE-7030): find metadata.output (or a done operation's response) and copy it so it
-// outlives the pooled body. A job without output costs the two lookups only.
-func BenchmarkGeminiBatchNativeOutput(b *testing.B) {
-	pending := []byte(`{"name":"batches/b1","metadata":{"name":"batches/b1","state":"BATCH_STATE_RUNNING","batchStats":{"requestCount":"2"}}}`)
-	done := []byte(`{"name":"batches/b1","done":true,"metadata":{"name":"batches/b1","state":"BATCH_STATE_SUCCEEDED","batchStats":{"requestCount":"2"},` +
-		`"output":{"inlinedResponses":{"inlinedResponses":[{"response":{"embedding":{"values":[0.11,0.12]}}},{"response":{"embedding":{"values":[0.21,0.22]}}}]}}}}`)
-	for _, tc := range []struct {
-		name string
-		body []byte
-	}{{"running, no output", pending}, {"succeeded, two inline embeddings", done}} {
-		b.Run(tc.name, func(b *testing.B) {
-			b.ReportAllocs()
-			for b.Loop() {
-				_ = geminiBatchNativeOutput(tc.body)
-			}
-		})
-	}
-}
-
 // TestGeminiBatchInputFileNameReadsEveryAlias (TXE-7030, Codex security finding on #407): the
 // input file of a native batch create is read from the body as Gemini reads it. ProtoJSON
 // accepts inputConfig/input_config and fileName/file_name, and a parser may keep the last of a
@@ -1902,8 +1883,7 @@ func TestGeminiBatchRetrieveAllocatesWithinTheRetrieveShare(t *testing.T) {
 	retrieve := func() int {
 		resp, bifrostErr := provider.BatchRetrieve(newRetrieveCtx(), keys, &schemas.BifrostBatchRetrieveRequest{Provider: schemas.Gemini, BatchID: "big"})
 		require.Nil(t, bifrostErr)
-		body, err := ToGeminiBatchRetrieveBody(resp)
-		require.NoError(t, err)
+		body := ToGeminiBatchRetrieveBody(resp)
 		// What the router writes (sendSuccess): a json.RawMessage as it is (SetBodyRaw), anything
 		// else encoded and copied into the response buffer.
 		if raw, ok := body.(json.RawMessage); ok && raw != nil {
@@ -1925,4 +1905,92 @@ func TestGeminiBatchRetrieveAllocatesWithinTheRetrieveShare(t *testing.T) {
 	t.Logf("%.2f bytes allocated per job byte (%d MiB job)", perByte, len(job)>>20)
 	assert.LessOrEqual(t, perByte, float64(network.RetrieveResponseShare),
 		"a retrieve at its limit would hold more than client.max_response_body_size_mb")
+}
+
+// TXE-7953: the native route returns the vendor's job unchanged. The one addition is a done job
+// whose output is only under the Operation's response: it gets the output at metadata.output too,
+// where Google's SDK reads a job's results.
+func TestGeminiJobForSDKKeepsTheVendorsJob(t *testing.T) {
+	mirrored := `{"name":"batches/a","metadata":{"state":"BATCH_STATE_SUCCEEDED","output":{"inlinedResponses":{"inlinedResponses":[{"response":{}}]}}},"done":true,"response":{"inlinedResponses":{"inlinedResponses":[{"response":{}}]}}}`
+	assert.Equal(t, mirrored, string(geminiJobForSDK([]byte(mirrored))), "a job that has metadata.output is returned as it is")
+
+	pending := `{"name":"batches/b","metadata":{"@type":"t","state":"BATCH_STATE_PENDING","model":"models/m","displayName":"d"}}`
+	assert.Equal(t, pending, string(geminiJobForSDK([]byte(pending))), "a job with no output is returned as it is")
+
+	responseOnly := `{"name":"batches/c","metadata":{"state":"BATCH_STATE_SUCCEEDED","model":"models/m"},"done":true,"response":{"@type":"o","responsesFile":"files/r"}}`
+	got := geminiJobForSDK([]byte(responseOnly))
+	assert.Equal(t, "files/r", gjson.GetBytes(got, "metadata.output.responsesFile").String(), "%s", got)
+	assert.Equal(t, "models/m", gjson.GetBytes(got, "metadata.model").String(), "%s", got)
+	assert.Equal(t, "files/r", gjson.GetBytes(got, "response.responsesFile").String(), "the vendor's response stays: %s", got)
+}
+
+// TestGeminiListedJobsAreSlicesOfTheListBody (TXE-7953): each listed job is the vendor's bytes,
+// sliced from the list body, not copied: a listed job carries its inline results.
+func TestGeminiListedJobsAreSlicesOfTheListBody(t *testing.T) {
+	body := []byte("{ \"operations\" : [ {\"name\":\"batches/a\",\"metadata\":{\"state\":\"BATCH_STATE_PENDING\"}} ,\n {\"name\":\"batches/b\",\"done\":true} ], \"nextPageToken\":\"t\" }")
+	jobs := geminiListedJobs(body)
+	require.Len(t, jobs, 2)
+	assert.Equal(t, `{"name":"batches/a","metadata":{"state":"BATCH_STATE_PENDING"}}`, string(jobs[0]))
+	assert.Equal(t, `{"name":"batches/b","done":true}`, string(jobs[1]))
+	for _, job := range jobs {
+		start := bytes.Index(body, job)
+		require.GreaterOrEqual(t, start, 0)
+		assert.Same(t, &body[start], &job[0], "a slice of the list body, not a copy")
+	}
+	assert.Nil(t, geminiListedJobs([]byte(`{"nextPageToken":"t"}`)))
+}
+
+// BenchmarkGeminiNativeBatchBodies measures what the /genai batch routes do to answer with the
+// vendor's own job (TXE-7953), through what the router writes: create and retrieve hand the job back
+// (geminiJobForSDK looks up metadata and metadata.output without copying); a list splits the body
+// into its jobs and writes them under Bifrost's page token. Before, each route rebuilt the job from
+// the unified response and encoded it, and retrieve also spliced in the vendor's output.
+func BenchmarkGeminiNativeBatchBodies(b *testing.B) {
+	pending := []byte(`{"name":"batches/b1","metadata":{"@type":"type.googleapis.com/google.ai.generativelanguage.v1main.EmbedContentBatch","name":"batches/b1","model":"models/gemini-embedding-001","displayName":"d","state":"BATCH_STATE_PENDING","createTime":"2026-11-21T00:00:00Z","batchStats":{"requestCount":"2","pendingRequestCount":"2"}}}`)
+	done := []byte(`{"name":"batches/b1","done":true,"metadata":{"@type":"type.googleapis.com/google.ai.generativelanguage.v1main.EmbedContentBatch","name":"batches/b1","model":"models/gemini-embedding-001","displayName":"d","state":"BATCH_STATE_SUCCEEDED","createTime":"2026-11-21T00:00:00Z","batchStats":{"requestCount":"2","successfulRequestCount":"2"},` +
+		`"output":{"inlinedResponses":{"inlinedResponses":[{"response":{"embedding":{"values":[0.11,0.12]}}},{"response":{"embedding":{"values":[0.21,0.22]}}}]}}}}`)
+	list := []byte(`{"operations":[` + string(pending) + `,` + string(done) + `],"nextPageToken":"vendor-page-2"}`)
+	cursor := "bifrost-cursor"
+	b.Run("create, pending job", func(b *testing.B) {
+		resp := &schemas.BifrostBatchCreateResponse{ID: "batches/b1", NativeJob: pending}
+		b.ReportAllocs()
+		for b.Loop() {
+			benchWriteGenAIBody(b, ToGeminiBatchCreateBody(resp))
+		}
+	})
+	for name, job := range map[string][]byte{"retrieve, pending job": pending, "retrieve, done job with two inline embeddings": done} {
+		b.Run(name, func(b *testing.B) {
+			resp := &schemas.BifrostBatchRetrieveResponse{ID: "batches/b1", NativeJob: job}
+			b.ReportAllocs()
+			for b.Loop() {
+				benchWriteGenAIBody(b, ToGeminiBatchRetrieveBody(resp))
+			}
+		})
+	}
+	b.Run("list of two jobs: split and write", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			jobs := geminiListedJobs(list)
+			resp := &schemas.BifrostBatchListResponse{Data: make([]schemas.BifrostBatchRetrieveResponse, len(jobs)), NextCursor: &cursor}
+			for i, job := range jobs {
+				resp.Data[i].NativeJob = job
+			}
+			body, err := ToGeminiBatchListBody(resp)
+			if err != nil {
+				b.Fatal(err)
+			}
+			benchWriteGenAIBody(b, body)
+		}
+	})
+}
+
+// benchWriteGenAIBody is what the router does with a converter's result (sendSuccess): a
+// json.RawMessage is written as it is, anything else is encoded.
+func benchWriteGenAIBody(b *testing.B, body interface{}) {
+	if raw, ok := body.(json.RawMessage); ok && raw != nil {
+		return
+	}
+	if _, err := sonic.Marshal(body); err != nil {
+		b.Fatal(err)
+	}
 }
