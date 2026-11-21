@@ -238,27 +238,31 @@ func passthroughDefersDelivery(path string, body []byte, capableProvider bool, c
 	if len(bytes.TrimSpace(body)) == 0 {
 		return false
 	}
-	// The declared type picks the parser, as the vendor's decoder does: a body declared as a form
-	// is read as one even when it also parses as JSON. A form body (multipart/form-data or
-	// urlencoded) carries its settings as form fields: an ElevenLabs speech-to-text upload sends
-	// webhook=true that way. They are read with the same rule.
-	declaredForm := declaresForm(contentType)
-	if declaredForm || !gjson.ValidBytes(body) {
-		if fields, isForm, ok := formFields(body, contentType); isForm {
-			if !ok {
-				// A form the caller declared (or opened with a boundary) that does not parse cannot
-				// be judged, and a vendor's lenient decoder may still read a webhook from it.
+	// A form body (multipart/form-data or urlencoded) carries its settings as form fields: an
+	// ElevenLabs speech-to-text upload sends webhook=true that way. They are read with the same rule.
+	// A body declared as a form is read as one even when it also parses as JSON, and a body that
+	// parses as JSON is judged as JSON too, whatever it declares: the vendor's decoder may follow
+	// either, so the request defers when either reading does.
+	validJSON := gjson.ValidBytes(body)
+	if declaresForm(contentType) || !validJSON {
+		fields, isForm, ok := formFields(body, contentType)
+		if isForm && !ok {
+			// A form the caller declared (or opened with a boundary) that does not parse cannot be
+			// judged, and a vendor's lenient decoder may still read a webhook from it.
+			return true
+		}
+		for _, field := range fields {
+			if unitDefersDelivery(field, capable) {
 				return true
 			}
-			for _, field := range fields {
-				if unitDefersDelivery(field, capable) {
-					return true
-				}
-			}
-			return false
 		}
-		// Neither JSON nor a form: fail closed where deferral is known.
-		return capable
+		if !validJSON {
+			if isForm {
+				return false
+			}
+			// Neither JSON nor a form: fail closed where deferral is known.
+			return capable
+		}
 	}
 	root := gjson.ParseBytes(body)
 	switch {
