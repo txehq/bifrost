@@ -54,11 +54,11 @@ func passthroughResponses(body string) *schemas.BifrostRequest {
 // key with no dollar budget, it is served.
 func TestBackgroundResponsesUnderADollarBudgetIsRefusedBeforeTheCall(t *testing.T) {
 	plugin, _ := unpricedBudgetPlugin(t)
+	// Each request ends at admission (preLLM), so the next is admitted after it rather than
+	// concurrently with it on a row no answer has priced yet (TXE-7977).
 	pre := func(vk string, req *schemas.BifrostRequest) *schemas.LLMPluginShortCircuit {
 		t.Helper()
-		_, shortCircuit, err := plugin.PreLLMHook(resolverCtx(plugin.store, vk), req)
-		require.NoError(t, err)
-		return shortCircuit
+		return preLLM(t, plugin, vk, req)
 	}
 	background, foreground := true, false
 
