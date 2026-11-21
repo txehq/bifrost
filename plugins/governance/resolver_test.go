@@ -1452,3 +1452,20 @@ func TestBodyNamesEveryModelReadsOnlyAClassifiedJSONBody(t *testing.T) {
 	assert.False(t, passthroughBodyNamesEveryModel(request("text/plain")))
 	assert.False(t, passthroughBodyNamesEveryModel(request("application/octet-stream")))
 }
+
+// TestSuppressesUsageReadsOnlyAClassifiedJSONBody: a passthrough stream asks for usage only in a
+// body the shared classifier reads as JSON (TXE-8012). The same text declared as another type asks
+// the vendor for nothing, so the stream is read as suppressing usage, failing closed.
+func TestSuppressesUsageReadsOnlyAClassifiedJSONBody(t *testing.T) {
+	stream := func(contentType string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.PassthroughStreamRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+			Provider: schemas.OpenAI, Method: "POST", Path: "/v1/files",
+			Body:        []byte(`{"stream":true,"stream_options":{"include_usage":true}}`),
+			SafeHeaders: map[string]string{"content-type": contentType},
+		}}
+	}
+	assert.False(t, suppressesUsage(nil, stream("application/json")))
+	assert.False(t, suppressesUsage(nil, stream("")), "an undeclared body opening with { is classified JSON")
+	assert.True(t, suppressesUsage(nil, stream("text/plain")))
+	assert.True(t, suppressesUsage(nil, stream("application/octet-stream")))
+}
