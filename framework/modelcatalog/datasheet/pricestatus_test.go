@@ -100,6 +100,47 @@ func TestAnswerPriceStatus(t *testing.T) {
 	assert.Zero(t, s.CalculateCostBreakdown(answer("free-model", nil, tokens), nil).TotalCost)
 }
 
+// BenchmarkAnswerPriceStatus is what TXE-8016 adds to the post-hook of a budgeted answer: one cost
+// breakdown for a priced answer (governance computes its own cost first and calls this only for a $0
+// one), and for a $0 answer a second breakdown with tier rates stood in for, plus a row lookup when
+// that also costs nothing.
+func BenchmarkAnswerPriceStatus(b *testing.B) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o", "openai", "chat"): {Model: "gpt-4o", Provider: "openai", Mode: "chat", InputCostPerToken: schemas.Ptr(2.5e-06), OutputCostPerToken: schemas.Ptr(1e-05)},
+		makeKey("flex-free", "openai", "chat"): {Model: "flex-free", Provider: "openai", Mode: "chat",
+			InputCostPerToken: schemas.Ptr(2.5e-06), OutputCostPerToken: schemas.Ptr(1e-05), InputCostPerTokenFlex: schemas.Ptr(0.0), OutputCostPerTokenFlex: schemas.Ptr(0.0)},
+		makeKey("per-second", "openai", "chat"): {Model: "per-second", Provider: "openai", Mode: "chat", InputCostPerSecond: schemas.Ptr(0.001)},
+	})
+	flex := schemas.BifrostServiceTierFlex
+	answer := func(model string, tier *schemas.BifrostServiceTier) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+			Model: model, ServiceTier: tier, Usage: &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ChatCompletionRequest, Provider: schemas.OpenAI, OriginalModelRequested: model,
+				RoutingInfo: schemas.RoutingInfo{Provider: schemas.OpenAI, Model: model},
+			},
+		}}
+	}
+	for _, bc := range []struct {
+		name   string
+		answer *schemas.BifrostResponse
+		want   PriceStatus
+	}{
+		{"priced", answer("gpt-4o", nil), Priced},
+		{"free_flex", answer("flex-free", &flex), Free},
+		{"unpriced", answer("per-second", nil), Unpriced},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if got := s.AnswerPriceStatus(bc.answer, nil); got != bc.want {
+					b.Fatalf("got %v, want %v", got, bc.want)
+				}
+			}
+		})
+	}
+}
+
 // A batch line is priced only by the rates batch settlement applies (CalculateBatchCostDetailsForUsage):
 // a row priced per image or per second has a synchronous price and no batch one.
 func TestBatchPriceStatus(t *testing.T) {
