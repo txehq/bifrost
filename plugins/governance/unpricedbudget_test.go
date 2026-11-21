@@ -675,8 +675,6 @@ func TestAnswerFreeUnderTheServingAliasDoesNotRefuseTheModel(t *testing.T) {
 	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", chatOn("alias-label")), "an answer free under the serving alias does not refuse the label")
 }
 
-// A queued acknowledgment (Runware's taskType and taskUUID only) and a stream chunk before the last
-// are not answers yet: neither refuses the model, and a later stream's final chunk is judged.
 // A passthrough read (polling an operation, fetching a resource) runs no model: it is not refused
 // under a dollar budget for naming none, and its $0 answer refuses nothing.
 func TestPassthroughReadIsNotPriced(t *testing.T) {
@@ -775,7 +773,12 @@ func TestPassthroughErrorEnvelopeIsNotAnAnswer(t *testing.T) {
 	assert.False(t, passthroughGenerated(failed))
 }
 
-func TestQueuedPassthroughAcknowledgmentDoesNotRefuseTheModel(t *testing.T) {
+// A queued acknowledgment (Runware's taskType and taskUUID only) is not an answer, but under a dollar
+// budget it means the request asked for deferred delivery the gate did not recognise, and nothing
+// will charge the work: it refuses the model under the budget from then on (TXE-8013). A refused
+// passthrough and a stream chunk before the last are not answers and refuse nothing; a later
+// stream's final chunk is judged.
+func TestQueuedPassthroughAcknowledgmentUnderABudgetRefusesTheModel(t *testing.T) {
 	assert.True(t, passthroughQueuedAcknowledgment([]byte(`{"data":[{"taskType":"imageInference","taskUUID":"a"}]}`)))
 	assert.False(t, passthroughQueuedAcknowledgment([]byte(`{"data":[{"taskType":"imageInference","taskUUID":"a","imageURL":"https://example.invalid/1.png"}]}`)))
 	assert.False(t, passthroughQueuedAcknowledgment([]byte(`{"data":[]}`)))
@@ -804,9 +807,11 @@ func TestQueuedPassthroughAcknowledgmentDoesNotRefuseTheModel(t *testing.T) {
 	_, _, err = plugin.PostLLMHook(ctx, answer(schemas.PassthroughRequest, `{"data":[{"taskType":"imageInference","taskUUID":"a"}]}`), nil)
 	require.NoError(t, err)
 	plugin.wg.Wait()
-	assert.Nil(t, preLLM(t, plugin, "sk-bf-budget", request(schemas.PassthroughRequest)), "a queued acknowledgment does not refuse the model")
+	requireUnpricedRefusal(t, preLLM(t, plugin, "sk-bf-budget", request(schemas.PassthroughRequest)), "a queued acknowledgment under a budget escaped the deferred-delivery gate")
+	assert.Nil(t, preLLM(t, plugin, "sk-bf-open", request(schemas.PassthroughRequest)), "a key with no dollar budget is not refused")
 
 	// A passthrough the provider refused (a 4xx relayed as the answer) delivered nothing.
+	plugin, _ = unpricedBudgetPlugin(t)
 	ctx = resolverCtx(plugin.store, "sk-bf-budget")
 	_, shortCircuit, err = plugin.PreLLMHook(ctx, request(schemas.PassthroughRequest))
 	require.NoError(t, err)

@@ -1,0 +1,522 @@
+{
+  "name": "657. A Runware task delivered async or to a webhook under a dollar budget is refused before the call (runware-deferred) [SERIAL]",
+  "description": "TXE-8013 security and billing regression. Local fixture regression: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream. A Runware passthrough task sent with deliveryMethod async, or with a webhookURL, is answered with a queued acknowledgment, and nothing charges the task when it finishes: a webhook result never passes Bifrost, and the getResponse that fetches an async one names no model. Under a dollar budget both are now refused 403 (error_type policy_model_blocked, type background_unsettled) before the upstream call. The same task sent sync passes the deferred-delivery gate and is judged by the price book instead: the fixture prices no Runware model, so it is refused model_unpriced (TXE-7957), which shows the two gates apart. The same rule reaches past Runware: a typed chat on the priced openai/gpt-6-luna that forwards callback_url in its extra params (x-bf-passthrough-extra-params, 657.4), and a passthrough transcription carrying webhook=true as a multipart (657.5) or urlencoded (657.6) form field, are refused background_unsettled. Red before TXE-8013: 657.4 reached the fixture (which answers 404 for a chat on gpt-6-luna) instead of being refused, and 657.5 was not refused background_unsettled. No row reaches the upstream, so the fixture needs no Runware or transcription handler. [SERIAL]: the rows read the fixture's total hit counter.",
+  "item": [
+    {
+      "name": "657.1 [EXPECT-403] a Runware task sent with deliveryMethod async under a dollar budget is refused before the call (runware-deferred)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "// A run-scoped key over the fixture's runware and openai, funded by a $100 dollar budget.",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var run = 'harness-runware-deferred-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+              "pm.collectionVariables.set('rdbBudgetVk', 'missing');",
+              "function totalHits(done) {",
+              "  pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__hits', method: 'GET' }, function (err, res) {",
+              "    var hits = (!err && res.code === 200) ? (res.json().data[0].hits || {}) : {};",
+              "    var total = 0;",
+              "    Object.keys(hits).forEach(function (k) { if (k.indexOf('__') !== 0) { total += hits[k]; } });",
+              "    done(err, total, hits);",
+              "  });",
+              "}",
+              "var body = { name: run, budgets: [{ max_limit: 100, reset_duration: '1h' }], provider_configs: [{ provider: 'runware', allowed_models: ['*'], key_ids: ['*'], weight: 1 }, { provider: 'openai', allowed_models: ['*'], key_ids: ['*'], weight: 1 }] };",
+              "pm.sendRequest({ url: BASE + '/api/governance/virtual-keys', method: 'POST', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify(body) } }, function (err, res) {",
+              "  pm.test('runware-deferred setup: created the budgeted key', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code, res.text()).to.eql(200);",
+              "  });",
+              "  var vk = res.json().virtual_key;",
+              "  pm.collectionVariables.set('rdbBudgetVk', (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value);",
+              "  pm.collectionVariables.set('rdbBudgetId', vk.id);",
+              "  totalHits(function (err2, total) { pm.collectionVariables.set('rdbHitsBefore', String(total)); });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "function totalHits(done) {",
+              "  pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__hits', method: 'GET' }, function (err, res) {",
+              "    var hits = (!err && res.code === 200) ? (res.json().data[0].hits || {}) : {};",
+              "    var total = 0;",
+              "    Object.keys(hits).forEach(function (k) { if (k.indexOf('__') !== 0) { total += hits[k]; } });",
+              "    done(err, total, hits);",
+              "  });",
+              "}",
+              "pm.test('runware-deferred: an async Runware task under a dollar budget is refused 403 policy_model_blocked (background_unsettled)', function () {",
+              "  var text = pm.response.text();",
+              "  pm.expect(pm.response.code, text).to.equal(403);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, text).to.equal('policy_model_blocked');",
+              "  pm.expect(j.type, text).to.equal('background_unsettled');",
+              "});",
+              "totalHits(function (err, total, hits) {",
+              "  pm.test('runware-deferred: an async Runware task under a dollar budget did not reach the upstream', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(total, JSON.stringify(hits)).to.equal(Number(pm.collectionVariables.get('rdbHitsBefore')));",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-vk",
+            "value": "{{rdbBudgetVk}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "[{\"taskType\":\"imageInference\",\"taskUUID\":\"{{$guid}}\",\"model\":\"runware:101@1\",\"positivePrompt\":\"a red ceramic teapot\",\"width\":512,\"height\":512,\"numberResults\":1,\"outputType\":\"URL\",\"deliveryMethod\":\"async\"}]",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/runware_passthrough/v1",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "runware_passthrough",
+            "v1"
+          ]
+        }
+      }
+    },
+    {
+      "name": "657.2 [EXPECT-403] a Runware task sent with a webhookURL under a dollar budget is refused before the call (runware-deferred)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "function totalHits(done) {",
+              "  pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__hits', method: 'GET' }, function (err, res) {",
+              "    var hits = (!err && res.code === 200) ? (res.json().data[0].hits || {}) : {};",
+              "    var total = 0;",
+              "    Object.keys(hits).forEach(function (k) { if (k.indexOf('__') !== 0) { total += hits[k]; } });",
+              "    done(err, total, hits);",
+              "  });",
+              "}",
+              "pm.test('runware-deferred: a Runware task posted to a webhook under a dollar budget is refused 403 policy_model_blocked (background_unsettled)', function () {",
+              "  var text = pm.response.text();",
+              "  pm.expect(pm.response.code, text).to.equal(403);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, text).to.equal('policy_model_blocked');",
+              "  pm.expect(j.type, text).to.equal('background_unsettled');",
+              "});",
+              "totalHits(function (err, total, hits) {",
+              "  pm.test('runware-deferred: a Runware task posted to a webhook under a dollar budget did not reach the upstream', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(total, JSON.stringify(hits)).to.equal(Number(pm.collectionVariables.get('rdbHitsBefore')));",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-vk",
+            "value": "{{rdbBudgetVk}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "[{\"taskType\":\"imageInference\",\"taskUUID\":\"{{$guid}}\",\"model\":\"runware:101@1\",\"positivePrompt\":\"a red ceramic teapot\",\"width\":512,\"height\":512,\"numberResults\":1,\"outputType\":\"URL\",\"webhookURL\":\"https://hooks.example.invalid/runware\"}]",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/runware_passthrough/v1",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "runware_passthrough",
+            "v1"
+          ]
+        }
+      }
+    },
+    {
+      "name": "657.3 [EXPECT-403] the same task sent sync passes the deferred-delivery gate and is judged by the price book (runware-deferred)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "function totalHits(done) {",
+              "  pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__hits', method: 'GET' }, function (err, res) {",
+              "    var hits = (!err && res.code === 200) ? (res.json().data[0].hits || {}) : {};",
+              "    var total = 0;",
+              "    Object.keys(hits).forEach(function (k) { if (k.indexOf('__') !== 0) { total += hits[k]; } });",
+              "    done(err, total, hits);",
+              "  });",
+              "}",
+              "pm.test('runware-deferred: a sync Runware task the fixture cannot price is refused 403 policy_model_blocked (model_unpriced)', function () {",
+              "  var text = pm.response.text();",
+              "  pm.expect(pm.response.code, text).to.equal(403);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, text).to.equal('policy_model_blocked');",
+              "  pm.expect(j.type, text).to.equal('model_unpriced');",
+              "});",
+              "totalHits(function (err, total, hits) {",
+              "  pm.test('runware-deferred: a sync Runware task the fixture cannot price did not reach the upstream', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(total, JSON.stringify(hits)).to.equal(Number(pm.collectionVariables.get('rdbHitsBefore')));",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-vk",
+            "value": "{{rdbBudgetVk}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "[{\"taskType\":\"imageInference\",\"taskUUID\":\"{{$guid}}\",\"model\":\"runware:101@1\",\"positivePrompt\":\"a red ceramic teapot\",\"width\":512,\"height\":512,\"numberResults\":1,\"outputType\":\"URL\",\"deliveryMethod\":\"sync\"}]",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/runware_passthrough/v1",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "runware_passthrough",
+            "v1"
+          ]
+        }
+      }
+    },
+    {
+      "name": "657.4 [EXPECT-403] a typed chat on a priced model whose forwarded extra params name a callback URL, under a dollar budget, is refused before the call (runware-deferred)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "function totalHits(done) {",
+              "  pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__hits', method: 'GET' }, function (err, res) {",
+              "    var hits = (!err && res.code === 200) ? (res.json().data[0].hits || {}) : {};",
+              "    var total = 0;",
+              "    Object.keys(hits).forEach(function (k) { if (k.indexOf('__') !== 0) { total += hits[k]; } });",
+              "    done(err, total, hits);",
+              "  });",
+              "}",
+              "pm.test('runware-deferred: a typed chat forwarding a callback URL in extra params is refused 403 policy_model_blocked (background_unsettled)', function () {",
+              "  var text = pm.response.text();",
+              "  pm.expect(pm.response.code, text).to.equal(403);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, text).to.equal('policy_model_blocked');",
+              "  pm.expect(j.type, text).to.equal('background_unsettled');",
+              "});",
+              "totalHits(function (err, total, hits) {",
+              "  pm.test('runware-deferred: a typed chat forwarding a callback URL in extra params did not reach the upstream', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(total, JSON.stringify(hits)).to.equal(Number(pm.collectionVariables.get('rdbHitsBefore')));",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-vk",
+            "value": "{{rdbBudgetVk}}"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"openai/gpt-6-luna\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"extra_params\":{\"callback_url\":\"https://hooks.example.invalid/chat\"}}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "657.5 [EXPECT-403] a multipart passthrough transcription with the form field webhook=true, under a dollar budget, is refused before the call (runware-deferred)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "function totalHits(done) {",
+              "  pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__hits', method: 'GET' }, function (err, res) {",
+              "    var hits = (!err && res.code === 200) ? (res.json().data[0].hits || {}) : {};",
+              "    var total = 0;",
+              "    Object.keys(hits).forEach(function (k) { if (k.indexOf('__') !== 0) { total += hits[k]; } });",
+              "    done(err, total, hits);",
+              "  });",
+              "}",
+              "pm.test('runware-deferred: a multipart passthrough posted to a webhook is refused 403 policy_model_blocked (background_unsettled)', function () {",
+              "  var text = pm.response.text();",
+              "  pm.expect(pm.response.code, text).to.equal(403);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, text).to.equal('policy_model_blocked');",
+              "  pm.expect(j.type, text).to.equal('background_unsettled');",
+              "});",
+              "totalHits(function (err, total, hits) {",
+              "  pm.test('runware-deferred: a multipart passthrough posted to a webhook did not reach the upstream', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(total, JSON.stringify(hits)).to.equal(Number(pm.collectionVariables.get('rdbHitsBefore')));",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{rdbBudgetVk}}"
+          }
+        ],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "model",
+              "value": "gpt-6-luna",
+              "type": "text"
+            },
+            {
+              "key": "webhook",
+              "value": "true",
+              "type": "text"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai_passthrough/v1/audio/transcriptions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai_passthrough",
+            "v1",
+            "audio",
+            "transcriptions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "657.6 [EXPECT-403] an urlencoded passthrough transcription with webhook=true, under a dollar budget, is refused before the call (runware-deferred)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "function totalHits(done) {",
+              "  pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__hits', method: 'GET' }, function (err, res) {",
+              "    var hits = (!err && res.code === 200) ? (res.json().data[0].hits || {}) : {};",
+              "    var total = 0;",
+              "    Object.keys(hits).forEach(function (k) { if (k.indexOf('__') !== 0) { total += hits[k]; } });",
+              "    done(err, total, hits);",
+              "  });",
+              "}",
+              "pm.test('runware-deferred: an urlencoded passthrough posted to a webhook is refused 403 policy_model_blocked (background_unsettled)', function () {",
+              "  var text = pm.response.text();",
+              "  pm.expect(pm.response.code, text).to.equal(403);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, text).to.equal('policy_model_blocked');",
+              "  pm.expect(j.type, text).to.equal('background_unsettled');",
+              "});",
+              "totalHits(function (err, total, hits) {",
+              "  pm.test('runware-deferred: an urlencoded passthrough posted to a webhook did not reach the upstream', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(total, JSON.stringify(hits)).to.equal(Number(pm.collectionVariables.get('rdbHitsBefore')));",
+              "  });",
+              "});",
+              "var id = pm.collectionVariables.get('rdbBudgetId');",
+              "if (id) { pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/governance/virtual-keys/' + id, method: 'DELETE' }, function () {}); }"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-vk",
+            "value": "{{rdbBudgetVk}}"
+          }
+        ],
+        "body": {
+          "mode": "urlencoded",
+          "urlencoded": [
+            {
+              "key": "model",
+              "value": "gpt-6-luna"
+            },
+            {
+              "key": "webhook",
+              "value": "true"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai_passthrough/v1/audio/transcriptions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai_passthrough",
+            "v1",
+            "audio",
+            "transcriptions"
+          ]
+        }
+      }
+    }
+  ]
+}
