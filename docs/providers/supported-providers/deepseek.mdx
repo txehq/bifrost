@@ -194,7 +194,7 @@ Bifrost sets the correct header automatically based on the resolved endpoint mod
 
 DeepSeek models run with thinking enabled by default, even when no `reasoning` parameter is set, and reject certain forced `tool_choice` combinations while thinking is on. Bifrost automatically disables thinking (`thinking: {"type": "disabled"}`) to avoid this, but which combination triggers the fix depends on the endpoint mode:
 
-- **Default (OpenAI-compatible):** Thinking is disabled when `tool_choice` is the generic `"required"` string (forcing some tool call, without pinning a specific one).
+- **Default (OpenAI-compatible):** Thinking is disabled when `tool_choice` forces a tool call, or when an assistant tool-call turn in the history carries no `reasoning` to replay. This happens only when the request asks for no reasoning level. A request that sets `reasoning.effort` (other than `none`) or `reasoning.max_tokens` is refused with 400 `caller_unsupported_parameter` on that field, since it cannot be served at the level asked. A `thinking` type you set through extra params is sent as you set it.
 - **`use_anthropic_endpoints: true`:** Thinking is disabled when `tool_choice` pins a specific named function, for both Chat Completions and the Responses API. `tool_choice: "required"`/`"any"` is left untouched in this mode, since DeepSeek's Anthropic-compatible endpoint accepts that combination with thinking on.
 - **Native Anthropic Messages (`/anthropic/v1/messages`):** Nothing is changed. The body reaches DeepSeek as sent, so the caller disables thinking itself when it pins a tool (see [Native Anthropic Messages](#native-anthropic-messages)).
 
@@ -308,9 +308,9 @@ Lists available models from DeepSeek through `/models`.
 
 <Accordion title="Forced Tool Choice Disables Thinking (Mode-Dependent)">
 **Severity**: Medium
-**Behavior**: When thinking is on (the default), Bifrost forces `thinking: {"type": "disabled"}` in the outbound request — for the generic `tool_choice: "required"` on the default OpenAI-compatible endpoint, or for a `tool_choice` pinning a specific named function on the Anthropic-compatible endpoint
+**Behavior**: When thinking is on (the default), Bifrost forces `thinking: {"type": "disabled"}` in the outbound request: on the default OpenAI-compatible endpoint, for a forced `tool_choice` or an un-replayable tool-call turn when the request asks for no reasoning level (one that asks for a level is refused with 400); on the Anthropic-compatible endpoint, for a `tool_choice` pinning a specific named function
 **Impact**: Prevents DeepSeek's `"Thinking mode does not support this tool_choice"` error for the combination each endpoint mode actually rejects; the other combination is left untouched on each path
-**Code**: `disableThinkingForForcedToolChoice` in `core/providers/deepseek/deepseek.go` (OpenAI-compatible path); `core/providers/anthropic/chat.go` and `core/providers/anthropic/responses.go`, gated on `Provider == DeepSeek` (Anthropic-compatible path)
+**Code**: `applyDeepSeekThinkingOff` in `core/providers/openai/chat.go`, judged by `chatReasoningRefusal` (OpenAI-compatible path); `core/providers/anthropic/chat.go` and `core/providers/anthropic/responses.go`, gated on `Provider == DeepSeek` (Anthropic-compatible path)
 </Accordion>
 
 <Accordion title="Extra Parameters Not Passed Through in Anthropic-Compatible Mode">

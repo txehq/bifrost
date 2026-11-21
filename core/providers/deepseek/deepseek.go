@@ -3,7 +3,6 @@ package deepseek
 
 import (
 	"context"
-	"maps"
 	"strings"
 	"time"
 
@@ -72,92 +71,6 @@ func (provider *DeepSeekProvider) anthropicHeaders(key schemas.Key) map[string]s
 		headers["x-api-key"] = key.Value.GetValue()
 	}
 	return headers
-}
-
-// applyDeepSeekThinkingCompatibility returns a request with thinking forced off when
-// DeepSeek's OpenAI-compatible endpoint would otherwise reject it. Thinking is enabled by
-// default upstream (effort "high"), so this shim stays as narrow as possible: anything it
-// catches silently loses reasoning, with no error surfaced to the caller.
-//
-// The original request is never mutated. Params and ExtraParams are shared with the caller
-// and with any fallback attempt against a different provider, so writing through would leak
-// thinking:disabled well beyond this call.
-func applyDeepSeekThinkingCompatibility(request *schemas.BifrostChatRequest) *schemas.BifrostChatRequest {
-	if request == nil || request.Params == nil {
-		return request
-	}
-	if !requiresDeepSeekThinkingDisabled(request) {
-		return request
-	}
-
-	paramsCopy := *request.Params
-	extraParams := make(map[string]any, len(paramsCopy.ExtraParams)+1)
-	maps.Copy(extraParams, paramsCopy.ExtraParams)
-	extraParams["thinking"] = map[string]any{"type": "disabled"}
-	paramsCopy.ExtraParams = extraParams
-
-	requestCopy := *request
-	requestCopy.Params = &paramsCopy
-	return &requestCopy
-}
-
-// requiresDeepSeekThinkingDisabled reports whether DeepSeek's OpenAI-compatible endpoint
-// would reject this request with thinking on. Two cases qualify:
-//
-//  1. A forced tool_choice ("required"/"any", or the struct form pinning a specific
-//     function/custom/allowed_tools call) — DeepSeek returns 400 "Thinking mode does not
-//     support this tool_choice" while thinking is enabled.
-//  2. A history containing an assistant tool_call turn that carries no replayable
-//     reasoning. DeepSeek requires reasoning_content to be replayed on tool_call turns and
-//     400s without it; when the caller cannot supply it, thinking has to stay off. Only
-//     ChatAssistantMessage.Reasoning counts here - reasoning_details is inbound-only and
-//     never reaches the wire - and this is judged from the messages alone, since a caller
-//     may replay tool_call turns without re-declaring Params.Tools.
-//
-// Everything else keeps thinking on. In particular, a plain multi-turn conversation needs no
-// reasoning replay whatsoever — per DeepSeek's thinking-mode guide, "the intermediate
-// assistant's reasoning_content does not need to participate in the context concatenation"
-// when there is no tool call. Assistant turns without reasoning are therefore expected and
-// must not disable thinking (issue #5887).
-func requiresDeepSeekThinkingDisabled(request *schemas.BifrostChatRequest) bool {
-	if tc := request.Params.ToolChoice; tc != nil {
-		switch {
-		case tc.ChatToolChoiceStr != nil:
-			switch schemas.ChatToolChoiceType(*tc.ChatToolChoiceStr) {
-			case schemas.ChatToolChoiceTypeRequired, schemas.ChatToolChoiceTypeAny:
-				return true
-			}
-		case tc.ChatToolChoiceStruct != nil:
-			switch tc.ChatToolChoiceStruct.Type {
-			case schemas.ChatToolChoiceTypeRequired, schemas.ChatToolChoiceTypeAny,
-				schemas.ChatToolChoiceTypeFunction, schemas.ChatToolChoiceTypeCustom,
-				schemas.ChatToolChoiceTypeAllowedTools:
-				return true
-			}
-		}
-	}
-
-	// The replay requirement follows the messages, not the tool declarations: a caller that
-	// drops Params.Tools on a final summarizing turn still replays the assistant tool_call
-	// turns, and DeepSeek still demands reasoning_content on them.
-	for _, msg := range request.Input {
-		if msg.Role != schemas.ChatMessageRoleAssistant || msg.ChatAssistantMessage == nil {
-			continue
-		}
-		if len(msg.ChatAssistantMessage.ToolCalls) == 0 {
-			continue
-		}
-		// Only Reasoning can satisfy the replay requirement: it is the sole field
-		// ConvertBifrostMessagesToOpenAIMessages copies onto the outbound assistant
-		// message, as reasoning_content. ReasoningDetails is inbound-only and never
-		// reaches the wire (see core/providers/openai/types.go), so a details-only turn
-		// would keep thinking on and then 400 for the missing reasoning_content.
-		if msg.ChatAssistantMessage.Reasoning == nil {
-			return true
-		}
-	}
-
-	return false
 }
 
 // stampServedModel records the model DeepSeek actually served as the server-side
@@ -350,7 +263,6 @@ func (provider *DeepSeekProvider) chatCompletion(ctx *schemas.BifrostContext, ke
 	}
 
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
-	request = applyDeepSeekThinkingCompatibility(request)
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
@@ -405,7 +317,6 @@ func (provider *DeepSeekProvider) ChatCompletionStream(ctx *schemas.BifrostConte
 	}
 
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
-	request = applyDeepSeekThinkingCompatibility(request)
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamingClient,

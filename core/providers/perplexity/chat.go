@@ -298,3 +298,14 @@ func (response *PerplexityChatResponse) ToBifrostChatResponse(model string) *sch
 
 	return bifrostResponse
 }
+
+// perplexityReasoningBudgetError refuses a reasoning budget sent without an effort: Perplexity's
+// request takes reasoning_effort only, so the budget would be dropped and the request billed at
+// the model's default reasoning (contract C4; fork, TXE-8011). With an effort, the effort governs.
+func perplexityReasoningBudgetError(reasoning *schemas.ChatReasoning) *schemas.BifrostError {
+	if reasoning == nil || reasoning.MaxTokens == nil || reasoning.Effort != nil {
+		return nil
+	}
+	return schemas.NewUnsupportedParameterError("reasoning.max_tokens",
+		"reasoning.max_tokens is not supported on provider perplexity, which takes reasoning_effort only: send an effort instead")
+}
