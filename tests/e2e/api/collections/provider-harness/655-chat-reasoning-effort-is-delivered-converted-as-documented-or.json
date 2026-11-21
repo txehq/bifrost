@@ -1,6 +1,6 @@
 {
   "name": "655. Chat reasoning effort is delivered, converted as documented, or refused (chat reasoning effort)",
-  "description": "Local fixture regression for TXE-7954 (Bifrost-Tokun contract C4), no live provider calls. Start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json, and run with providerErrorFixture=1; every case is skipped otherwise. The OpenAI-shape chat converter rewrote reasoning effort per provider without telling the caller. It now sends an effort as asked, converts it only in a documented way, or refuses the request with 400 caller_unsupported_parameter before any upstream call. 655.2 is Tokun's measured traffic (94% of chat reasoning requests, 2026-11-06 to 11-20): minimal on gpt-6-luna through the openai-based custom provider cp_plain, whose ladder has no minimal, is sent as the nearest level, low (a documented conversion). 655.3 sends an effort on the ladder unchanged. 655.4 and 655.5 send none to MiniMax M3.1, which always thinks and rejects none, unary and streamed: Bifrost used to drop the effort and bill the model's default reasoning; now the request is refused and nothing reaches the vendor. 655.6 to 655.10 pin the other refusals: Mistral low (forced to high before), BytePlus none under thinking the caller enabled (dropped before), and a reasoning budget on DeepSeek, GLM and Qwen (none documents one). The fixture config has mistral, glm and qwen on /pp/ownkey for these rows; nothing reaches it. Against a gateway without the fix, 655.4 to 655.10 fail: each request is sent.",
+  "description": "Local fixture regression for TXE-7954 (Bifrost-Tokun contract C4), no live provider calls. Start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json, and run with providerErrorFixture=1; every case is skipped otherwise. The OpenAI-shape chat converter rewrote reasoning effort per provider without telling the caller. It now sends an effort as asked, converts it only in a documented way, or refuses the request with 400 caller_unsupported_parameter before any upstream call. 655.2 is Tokun's measured traffic (94% of chat reasoning requests, 2026-11-06 to 11-20): minimal on gpt-6-luna through the openai-based custom provider cp_plain, whose ladder has no minimal, is sent as the nearest level, low (a documented conversion). 655.3 sends an effort on the ladder unchanged. 655.4 and 655.5 send none to MiniMax M3.1, which always thinks and rejects none, unary and streamed: Bifrost used to drop the effort and bill the model's default reasoning; now the request is refused and nothing reaches the vendor. 655.6 to 655.10 pin the other refusals: Mistral low (forced to high before), BytePlus none under thinking the caller enabled (dropped before), and a reasoning budget on DeepSeek, GLM and Qwen (none documents one). The fixture config has mistral, glm and qwen on /pp/ownkey for these rows; nothing reaches it. 655.11 pins a delivery: DeepSeek documents reasoning_effort next to thinking.type, so an effort now reaches it with thinking enabled instead of being dropped. Against a gateway without the fix, 655.4 to 655.11 fail: each refused request is sent, and 655.11 arrives without reasoning_effort.",
   "item": [
     {
       "name": "655.1 fixture counters and recorded requests reset",
@@ -530,6 +530,63 @@
         "body": {
           "mode": "raw",
           "raw": "{\n  \"model\": \"qwen/qwen3-max\",\n  \"reasoning\": {\n    \"max_tokens\": 2048\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"txe-7954-qwen-budget\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "655.11 DeepSeek receives reasoning_effort high next to thinking enabled, as its API documents (chat reasoning effort)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the request succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('the fixture reports what reached it', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/oc/chat/completions' && c.body.indexOf('txe-7954-deepseek-effort') !== -1; });",
+              "  pm.test('one request reached DeepSeek', function () { pm.expect(calls.length, res.text()).to.equal(1); });",
+              "  var sent = JSON.parse(calls[0].body);",
+              "  pm.test('thinking is enabled', function () { pm.expect((sent.thinking || {}).type, calls[0].body).to.equal('enabled'); });",
+              "  pm.test('reasoning_effort reached DeepSeek as asked', function () { pm.expect(sent.reasoning_effort, calls[0].body).to.equal('high'); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"txe-7954-deepseek-effort\"\n    }\n  ],\n  \"reasoning_effort\": \"high\"\n}"
         },
         "url": {
           "raw": "{{baseUrl}}/v1/chat/completions",
