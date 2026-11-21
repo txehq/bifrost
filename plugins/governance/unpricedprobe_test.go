@@ -372,6 +372,18 @@ func TestRequestSuppressingUsageIsProbedOnAConfirmedRow(t *testing.T) {
 	assert.True(t, suppressesUsage(&schemas.BifrostRequest{PassthroughRequest: &schemas.BifrostPassthroughRequest{Body: []byte(`{"model":"m","stream_options":{"include_usage":false}}`)}}))
 	assert.False(t, suppressesUsage(&schemas.BifrostRequest{PassthroughRequest: &schemas.BifrostPassthroughRequest{Body: []byte(`{"model":"m","stream_options":{"include_usage":true}}`)}}))
 	assert.True(t, suppressesUsage(&schemas.BifrostRequest{ChatRequest: &schemas.BifrostChatRequest{RawRequestBody: []byte(`{"stream_options":{"include_usage":false}}`)}}))
+	for _, value := range []string{`0`, `"false"`, `null`} {
+		assert.True(t, suppressesUsage(&schemas.BifrostRequest{PassthroughRequest: &schemas.BifrostPassthroughRequest{Body: []byte(`{"stream_options":{"include_usage":` + value + `}}`)}}), value)
+	}
+	assert.False(t, suppressesUsage(&schemas.BifrostRequest{PassthroughRequest: &schemas.BifrostPassthroughRequest{Body: []byte(`{"stream_options":{}}`)}}))
+	stream := func(body string) *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{RequestType: schemas.PassthroughStreamRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{Body: []byte(body)}}
+	}
+	assert.True(t, suppressesUsage(stream(`{"model":"m","stream":true}`)), "a forwarded stream that does not ask for usage")
+	assert.True(t, suppressesUsage(stream(`not json`)), "a forwarded stream whose body cannot be read")
+	assert.False(t, suppressesUsage(stream(`{"model":"m","stream":true,"stream_options":{"include_usage":true}}`)))
+	assert.True(t, suppressesUsage(&schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{Body: []byte(`{"model":"m","stream":true}`)}}), "a body asking to stream")
+	assert.False(t, suppressesUsage(&schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{Body: []byte(`{"model":"m"}`)}}), "a unary passthrough")
 
 	probes := newUnpricedProbes()
 	scopes := []string{"s"}

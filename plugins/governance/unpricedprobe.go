@@ -293,7 +293,7 @@ func (r *BudgetResolver) probeRows(ctx *schemas.BifrostContext, provider schemas
 		if row := read(scopes); row != "" {
 			return []string{row}
 		}
-		return nil
+		return r.everyCandidateRow(provider, model, mode, scopes)
 	}
 	var config configstore.ProviderConfig
 	ok := false
@@ -304,7 +304,7 @@ func (r *BudgetResolver) probeRows(ctx *schemas.BifrostContext, provider schemas
 		if row := read(scopes); row != "" {
 			return []string{row}
 		}
-		return nil
+		return r.everyCandidateRow(provider, model, mode, scopes)
 	}
 	var allowed []string
 	restricted := false
@@ -332,7 +332,16 @@ func (r *BudgetResolver) probeRows(ctx *schemas.BifrostContext, provider schemas
 		if row := read(scopes); row != "" {
 			return []string{row}
 		}
+		return r.everyCandidateRow(provider, model, mode, scopes)
 	}
+	return rows
+}
+
+// everyCandidateRow is the fail-closed fallback when no serving key reads a row: every row the
+// request could be priced as (priceIdentities, the rows its refusal records), so concurrent
+// requests still serialize on them.
+func (r *BudgetResolver) everyCandidateRow(provider schemas.ModelProvider, model string, mode schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) []string {
+	_, rows := r.priceIdentities(provider, model, mode, scopes)
 	return rows
 }
 
@@ -346,11 +355,15 @@ func suppressesUsage(req *schemas.BifrostRequest) bool {
 	off := func(options *schemas.ChatStreamOptions) bool {
 		return options != nil && options.IncludeUsage != nil && !*options.IncludeUsage
 	}
+	// A body is read failing closed: any include_usage other than JSON true (false, 0, "false",
+	// null) may turn usage off at the vendor. A body repeating the member never gets here: core
+	// refuses a forwarded body that repeats a member before any plugin reads it (TXE-7994).
 	offInBody := func(body []byte) bool {
 		if len(body) == 0 || !gjson.ValidBytes(body) {
 			return false
 		}
-		return gjson.GetBytes(body, "stream_options.include_usage").Type == gjson.False
+		value := gjson.GetBytes(body, "stream_options.include_usage")
+		return value.Exists() && value.Type != gjson.True
 	}
 	switch {
 	case req.ChatRequest != nil:
@@ -358,7 +371,17 @@ func suppressesUsage(req *schemas.BifrostRequest) bool {
 	case req.TextCompletionRequest != nil:
 		return (req.TextCompletionRequest.Params != nil && off(req.TextCompletionRequest.Params.StreamOptions)) || offInBody(req.TextCompletionRequest.RawRequestBody)
 	case req.PassthroughRequest != nil:
-		return offInBody(req.PassthroughRequest.Body)
+		body := req.PassthroughRequest.Body
+		// A forwarded stream reports usage only when it asks for it explicitly (OpenAI-shaped vendors
+		// send none otherwise): one that does not, or whose body cannot be read, is read as
+		// suppressing it.
+		if req.RequestType == schemas.PassthroughStreamRequest || gjson.GetBytes(body, "stream").Type == gjson.True {
+			if len(body) == 0 || !gjson.ValidBytes(body) {
+				return true
+			}
+			return gjson.GetBytes(body, "stream_options.include_usage").Type != gjson.True
+		}
+		return offInBody(body)
 	}
 	return false
 }
