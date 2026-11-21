@@ -461,17 +461,34 @@ func ToGeminiBatchListBody(resp *schemas.BifrostBatchListResponse) (interface{},
 }
 
 // geminiListedJobs returns each job of a batch list body as the vendor sent it, in order, as
-// slices of body (the provider's own copy). Nil when the body has no operations array.
+// slices of body (the provider's own copy), never copies: a listed job carries its inline results.
+// Nil when the body has no operations array.
 func geminiListedJobs(body []byte) [][]byte {
-	operations := gjson.GetBytes(body, "operations")
-	if !operations.IsArray() {
+	if len(body) == 0 {
+		return nil
+	}
+	// gjson.GetBytes would copy each match; Get over a string view of body only reports where it is.
+	view := unsafe.String(unsafe.SliceData(body), len(body))
+	operations := gjson.Get(view, "operations")
+	if !operations.IsArray() || operations.Index <= 0 {
 		return nil
 	}
 	var jobs [][]byte
+	ok := true
 	operations.ForEach(func(_, job gjson.Result) bool {
-		jobs = append(jobs, []byte(job.Raw))
+		// ForEach gives each value its offset in body (it adds operations.Index).
+		start := job.Index
+		end := start + len(job.Raw)
+		if job.Index <= 0 || end > len(body) || string(body[start:end]) != job.Raw {
+			ok = false
+			return false
+		}
+		jobs = append(jobs, body[start:end:end])
 		return true
 	})
+	if !ok {
+		return nil
+	}
 	return jobs
 }
 
