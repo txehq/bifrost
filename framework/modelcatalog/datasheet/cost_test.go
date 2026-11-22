@@ -11457,7 +11457,7 @@ func TestRequestTTLPricedCacheWritesCoverOnlyTheirModels(t *testing.T) {
 	for provider, entry := range RequestTTLPricedCacheWrites {
 		models := requestTTLPricedModels[provider]
 		covered := requestTTLPricedModel(t, provider)
-		priced := usageWithRequestedCacheWriteTier(untiered(), provider, schemas.RoutingInfo{Model: covered}, "1h")
+		priced := usageWithRequestedCacheWriteTier(untiered(), RequestTTLPricedCacheWrites, provider, schemas.RoutingInfo{Model: covered}, "1h")
 		require.NotNil(t, priced.PromptTokensDetails.CachedWriteTokenDetails, "%s/%s takes the requested tier", provider, covered)
 		assert.Equal(t, 1000, priced.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h)
 		if entry.Models == nil {
@@ -11467,24 +11467,146 @@ func TestRequestTTLPricedCacheWritesCoverOnlyTheirModels(t *testing.T) {
 		require.NotEmpty(t, models.uncovered, "%s's entry is scoped to some models: name one it does not cover in requestTTLPricedModels", provider)
 		require.False(t, entry.Covers(models.uncovered), "%s's entry covers %q", provider, models.uncovered)
 		usage := untiered()
-		assert.Same(t, usage, usageWithRequestedCacheWriteTier(usage, provider, schemas.RoutingInfo{Model: models.uncovered}, "1h"), "%s/%s keeps its usage", provider, models.uncovered)
+		assert.Same(t, usage, usageWithRequestedCacheWriteTier(usage, RequestTTLPricedCacheWrites, provider, schemas.RoutingInfo{Model: models.uncovered}, "1h"), "%s/%s keeps its usage", provider, models.uncovered)
 	}
 
 	// An Azure deployment id names no model; the alias's canonical name is the one matched.
 	name := "gpt-6-astra"
 	deployment := schemas.RoutingInfo{Model: "prod-chat", ResolvedKeyAlias: &schemas.ResolvedKeyAlias{ModelID: "prod-chat-0042", ModelName: &name}}
-	priced := usageWithRequestedCacheWriteTier(untiered(), schemas.Azure, deployment, "12h")
+	priced := usageWithRequestedCacheWriteTier(untiered(), RequestTTLPricedCacheWrites, schemas.Azure, deployment, "12h")
 	require.NotNil(t, priced.PromptTokensDetails.CachedWriteTokenDetails)
 	assert.Equal(t, 1000, priced.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens12h)
 	claude := "claude-sonnet-5"
 	usage := untiered()
-	assert.Same(t, usage, usageWithRequestedCacheWriteTier(usage, schemas.Azure,
+	assert.Same(t, usage, usageWithRequestedCacheWriteTier(usage, RequestTTLPricedCacheWrites, schemas.Azure,
 		schemas.RoutingInfo{Model: "prod-claude", ResolvedKeyAlias: &schemas.ResolvedKeyAlias{ModelID: "prod-claude-7", ModelName: &claude}}, "1h"))
 	// OpenRouter's wire id carries the vendor prefix the entry is scoped by.
-	priced = usageWithRequestedCacheWriteTier(untiered(), schemas.OpenRouter,
+	priced = usageWithRequestedCacheWriteTier(untiered(), RequestTTLPricedCacheWrites, schemas.OpenRouter,
 		schemas.RoutingInfo{Model: "my-gpt", ResolvedKeyAlias: &schemas.ResolvedKeyAlias{ModelID: "openai/gpt-6-astra"}}, "12h")
 	require.NotNil(t, priced.PromptTokensDetails.CachedWriteTokenDetails)
 	assert.Equal(t, 1000, priced.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens12h)
+}
+
+// cacheControlTTLPricedModels names, for every CacheControlTTLPricedCacheWrites entry, a model the
+// entry covers and, for a scoped entry, one of the provider's models it does not (fork, TXE-8086).
+var cacheControlTTLPricedModels = map[schemas.ModelProvider]struct{ covered, uncovered string }{
+	schemas.OpenRouter: {covered: "anthropic/claude-fable-5.2", uncovered: "openai/gpt-6-astra"},
+}
+
+// TXE-8086: a vendor that bills a write at a block's cache_control.ttl and reports one figure
+// (OpenRouter's Claude models) is costed at the longest cache_control.ttl the body sent, from the
+// scope core stamps (RequestedCacheControlTTL). Every CacheControlTTLPricedCacheWrites entry runs,
+// directly and through a custom provider on its base, on chat, Responses and their streams, and a
+// model the entry does not cover keeps the base write rate whatever the scope says.
+func TestCacheControlTTLPricedCacheWritesCostTheRequestedTier(t *testing.T) {
+	const (
+		input     = 0.0000006
+		output    = 0.0000025
+		baseWrite = 0.000003
+		hourWrite = 0.000006
+	)
+	require.NotEmpty(t, CacheControlTTLPricedCacheWrites)
+	for base, entry := range CacheControlTTLPricedCacheWrites {
+		models, ok := cacheControlTTLPricedModels[base]
+		require.True(t, ok, "CacheControlTTLPricedCacheWrites lists %s: name a model it covers in cacheControlTTLPricedModels", base)
+		require.True(t, entry.Covers(models.covered), "%s's entry does not cover its example model %q", base, models.covered)
+		rows := map[string]configstoreTables.TableModelPricing{}
+		for _, model := range []string{models.covered, models.uncovered} {
+			if model == "" {
+				continue
+			}
+			pricing := chatPricing(input, output)
+			pricing.Model, pricing.Provider = model, string(base)
+			pricing.CacheCreationInputTokenCost = bifrost.Ptr(baseWrite)
+			pricing.CacheCreationInputTokenCostAbove1hr = bifrost.Ptr(hourWrite)
+			rows[makeKey(pricing.Model, pricing.Provider, pricing.Mode)] = pricing
+		}
+		s := testStoreWithPricing(rows)
+		custom := schemas.ModelProvider("tkp_on_" + string(base))
+		s.SetCustomProviderBase(custom, base)
+		for _, provider := range []schemas.ModelProvider{base, custom} {
+			for _, requestType := range []schemas.RequestType{
+				schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest, schemas.ResponsesRequest, schemas.ResponsesStreamRequest,
+			} {
+				for _, tc := range []struct {
+					model, ttl string
+					writeRate  float64
+				}{
+					{models.covered, "1h", hourWrite},
+					{models.covered, "5m", baseWrite},
+					{models.covered, "", baseWrite},
+					{models.covered, "one hour", baseWrite},
+					{models.uncovered, "1h", baseWrite},
+				} {
+					if tc.model == "" {
+						continue
+					}
+					t.Run(fmt.Sprintf("%s/%s/%s/ttl=%q", provider, requestType, tc.model, tc.ttl), func(t *testing.T) {
+						usage := &schemas.BifrostLLMUsage{
+							PromptTokens: 3000, CompletionTokens: 200, TotalTokens: 3200,
+							PromptTokensDetails: &schemas.ChatPromptTokensDetails{CachedWriteTokens: 2000},
+						}
+						cost := s.CalculateCostForUsage(usage, provider, tc.model, requestType, &LookupScopes{RequestedCacheControlTTL: tc.ttl})
+						assert.InDelta(t, 1000*input+2000*tc.writeRate+200*output, cost, 1e-12)
+						assert.Nil(t, usage.PromptTokensDetails.CachedWriteTokenDetails, "usage is not changed")
+					})
+				}
+			}
+		}
+	}
+}
+
+// TXE-8086: on OpenRouter both tables apply, each to its own models. A prompt_cache_options TTL
+// never prices a Claude write and a cache_control TTL never prices an OpenAI one, since each
+// vendor model ignores the other field; with both stamped, each model takes its own.
+func TestPromptCacheAndCacheControlTTLsPriceOnlyTheirOwnModels(t *testing.T) {
+	const (
+		input     = 0.0000006
+		output    = 0.0000025
+		baseWrite = 0.000003
+		hourWrite = 0.000006
+	)
+	rows := map[string]configstoreTables.TableModelPricing{}
+	for _, model := range []string{"anthropic/claude-fable-5.2", "openai/gpt-6-astra"} {
+		pricing := chatPricing(input, output)
+		pricing.Model, pricing.Provider = model, string(schemas.OpenRouter)
+		pricing.CacheCreationInputTokenCost = bifrost.Ptr(baseWrite)
+		pricing.CacheCreationInputTokenCostAbove1hr = bifrost.Ptr(hourWrite)
+		rows[makeKey(pricing.Model, pricing.Provider, pricing.Mode)] = pricing
+	}
+	s := testStoreWithPricing(rows)
+	for _, tc := range []struct {
+		model                 string
+		promptTTL, controlTTL string
+		writeRate             float64
+	}{
+		{"anthropic/claude-fable-5.2", "1h", "", baseWrite},
+		{"anthropic/claude-fable-5.2", "", "1h", hourWrite},
+		{"anthropic/claude-fable-5.2", "5m", "1h", hourWrite},
+		{"openai/gpt-6-astra", "", "1h", baseWrite},
+		{"openai/gpt-6-astra", "1h", "", hourWrite},
+		{"openai/gpt-6-astra", "1h", "5m", hourWrite},
+	} {
+		t.Run(fmt.Sprintf("%s/prompt=%q/control=%q", tc.model, tc.promptTTL, tc.controlTTL), func(t *testing.T) {
+			usage := &schemas.BifrostLLMUsage{
+				PromptTokens: 3000, CompletionTokens: 200, TotalTokens: 3200,
+				PromptTokensDetails: &schemas.ChatPromptTokensDetails{CachedWriteTokens: 2000},
+			}
+			cost := s.CalculateCostForUsage(usage, schemas.OpenRouter, tc.model, schemas.ChatCompletionRequest,
+				&LookupScopes{RequestedPromptCacheTTL: tc.promptTTL, RequestedCacheControlTTL: tc.controlTTL})
+			assert.InDelta(t, 1000*input+2000*tc.writeRate+200*output, cost, 1e-12)
+		})
+	}
+	for provider := range CacheControlTTLPricedCacheWrites {
+		promptEntry, both := RequestTTLPricedCacheWrites[provider]
+		if !both {
+			continue
+		}
+		for _, model := range []string{cacheControlTTLPricedModels[provider].covered, requestTTLPricedModels[provider].covered} {
+			assert.False(t, promptEntry.Covers(model) && CacheControlTTLPricedCacheWrites[provider].Covers(model),
+				"%s: both tables cover %s; a model takes its TTL from one field", provider, model)
+		}
+	}
 }
 
 // A provider that reports the tier keeps its reported split whatever the request asked for, and a
@@ -11502,7 +11624,7 @@ func TestRequestedCacheTTLNeverOverridesAReportedTierOrAnUnlistedProvider(t *tes
 			CachedWriteTokenDetails: &schemas.ChatCachedWriteTokenDetails{CachedWriteTokens5m: 1000},
 		},
 	}
-	assert.Same(t, reported, usageWithRequestedCacheWriteTier(reported, schemas.Moonshot, schemas.RoutingInfo{Model: "kimi-k3"}, "1h"))
+	assert.Same(t, reported, usageWithRequestedCacheWriteTier(reported, RequestTTLPricedCacheWrites, schemas.Moonshot, schemas.RoutingInfo{Model: "kimi-k3"}, "1h"))
 
 	untiered := &schemas.BifrostLLMUsage{
 		PromptTokens: 1000, TotalTokens: 1000,
@@ -11511,7 +11633,7 @@ func TestRequestedCacheTTLNeverOverridesAReportedTierOrAnUnlistedProvider(t *tes
 	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.Anthropic, schemas.Bedrock, schemas.Groq} {
 		_, listed := RequestTTLPricedCacheWrites[provider]
 		require.False(t, listed, "%s reports its tier or may not deliver the TTL; it is not listed", provider)
-		assert.Same(t, untiered, usageWithRequestedCacheWriteTier(untiered, provider, schemas.RoutingInfo{Model: "gpt-6-astra"}, "1h"))
+		assert.Same(t, untiered, usageWithRequestedCacheWriteTier(untiered, RequestTTLPricedCacheWrites, provider, schemas.RoutingInfo{Model: "gpt-6-astra"}, "1h"))
 	}
 	assert.InDelta(t, 1000*0.000003, computeTextCostTotal(&pricing, untiered, serviceTier{}), 1e-12)
 }
@@ -11523,11 +11645,12 @@ func TestRequestedCacheTTLNeverOverridesAReportedTierOrAnUnlistedProvider(t *tes
 // set here, so a new field read from an unlisted key fails the comparison.
 func TestLookupScopesFromContextReadsOnlyPricingContextKeys(t *testing.T) {
 	values := map[schemas.BifrostContextKey]any{
-		schemas.BifrostContextKeySelectedKeyID:           "key-1",
-		schemas.BifrostContextKeyGovernanceVirtualKeyID:  "vk-1",
-		schemas.BifrostContextKeyUserID:                  "user-1",
-		schemas.BifrostContextKeyRequestStartTime:        time.Date(2026, 11, 20, 8, 0, 0, 0, time.UTC),
-		schemas.BifrostContextKeyRequestedPromptCacheTTL: "1h",
+		schemas.BifrostContextKeySelectedKeyID:            "key-1",
+		schemas.BifrostContextKeyGovernanceVirtualKeyID:   "vk-1",
+		schemas.BifrostContextKeyUserID:                   "user-1",
+		schemas.BifrostContextKeyRequestStartTime:         time.Date(2026, 11, 20, 8, 0, 0, 0, time.UTC),
+		schemas.BifrostContextKeyRequestedPromptCacheTTL:  "1h",
+		schemas.BifrostContextKeyRequestedCacheControlTTL: "1h",
 	}
 	src := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	for _, key := range schemas.PricingContextKeys {
@@ -11566,19 +11689,19 @@ func BenchmarkUsageWithRequestedCacheWriteTier(b *testing.B) {
 	b.Run("no-ttl", func(b *testing.B) {
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
-			_ = usageWithRequestedCacheWriteTier(usage, schemas.Moonshot, schemas.RoutingInfo{Model: "kimi-k3"}, "")
+			_ = usageWithRequestedCacheWriteTier(usage, RequestTTLPricedCacheWrites, schemas.Moonshot, schemas.RoutingInfo{Model: "kimi-k3"}, "")
 		}
 	})
 	b.Run("unlisted-provider", func(b *testing.B) {
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
-			_ = usageWithRequestedCacheWriteTier(usage, schemas.OpenAI, schemas.RoutingInfo{Model: "gpt-6-astra"}, "1h")
+			_ = usageWithRequestedCacheWriteTier(usage, RequestTTLPricedCacheWrites, schemas.OpenAI, schemas.RoutingInfo{Model: "gpt-6-astra"}, "1h")
 		}
 	})
 	b.Run("kimi-1h", func(b *testing.B) {
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
-			_ = usageWithRequestedCacheWriteTier(usage, schemas.Moonshot, schemas.RoutingInfo{Model: "kimi-k3"}, "1h")
+			_ = usageWithRequestedCacheWriteTier(usage, RequestTTLPricedCacheWrites, schemas.Moonshot, schemas.RoutingInfo{Model: "kimi-k3"}, "1h")
 		}
 	})
 }
@@ -11675,12 +11798,13 @@ func TestCustomProviderOnARequestTTLPricedBaseCostsTheRequestedTier(t *testing.T
 	// A custom provider on a base that is not listed keeps the base write rate.
 	s := testStoreWithPricing(nil)
 	s.SetCustomProviderBase("tkp_on_openai", schemas.OpenAI)
-	_, listed := RequestTTLPricedCacheWrites[s.requestTTLPricingProvider("tkp_on_openai")]
+	_, listed := RequestTTLPricedCacheWrites[s.requestTTLPricingProvider(RequestTTLPricedCacheWrites, "tkp_on_openai")]
 	assert.False(t, listed)
 }
 
 // cacheWriteTierDecision is how a provider and model family's long-lived cache-write rate is
-// reached (TXE-7946). Only requestTTLPriced is listed in RequestTTLPricedCacheWrites.
+// reached (TXE-7946). Only requestTTLPriced is listed in RequestTTLPricedCacheWrites, and only
+// cacheControlTTLPriced in CacheControlTTLPricedCacheWrites (TXE-8086).
 type cacheWriteTierDecision int
 
 const (
@@ -11689,10 +11813,14 @@ const (
 	// requestTTLPriced: the vendor bills the TTL of prompt_cache_options.ttl and reports one
 	// figure; the entry in RequestTTLPricedCacheWrites prices the requested tier.
 	requestTTLPriced
-	// ttlNotFromPromptCacheOptions: the long-lived write is selected by something other than
-	// prompt_cache_options.ttl, or the converter does not deliver that field, so the table
-	// cannot price it; the gap, if any, has its own ticket.
-	ttlNotFromPromptCacheOptions
+	// cacheControlTTLPriced: the vendor bills the TTL of a block's cache_control.ttl and reports
+	// one figure; the entry in CacheControlTTLPricedCacheWrites prices the longest TTL the body
+	// sent (TXE-8086).
+	cacheControlTTLPriced
+	// ttlNotDelivered: the field that selects the long-lived write never reaches the vendor from
+	// Bifrost (an encoder strips it or drops its TTL), so every write is billed at the base rate
+	// and neither table may price it; the gap, if any, has its own ticket.
+	ttlNotDelivered
 	// noWriteToPrice: the rate is not a per-token write the response reports, or no Bifrost
 	// provider reaches the row.
 	noWriteToPrice
@@ -11716,9 +11844,9 @@ var longLivedCacheWriteDecisions = map[string]struct {
 	"openai/openai":              {tierReported, "\"input_tokens_details.cache_write_tokens_details breaks writes into ttl_30m_tokens and ttl_12h_tokens\" (https://developers.openai.com/api/docs/guides/prompt-caching), read by schemas.withOpenAICacheWriteTiers; harness folders 309 and 560"},
 	"openai/other":               {tierReported, "OpenAI-served models without a gpt- name (daybreak-*) answer in OpenAI's usage shape, with the same ttl_30m/ttl_12h split"},
 	"openrouter/openai":          {requestTTLPriced, "see schemas.RequestTTLPricedCacheWrites[OpenRouter]: 12h writes are billed at the 12h rate and both TTLs are summed in cache_write_tokens"},
-	"openrouter/anthropic":       {ttlNotFromPromptCacheOptions, "OpenRouter selects Claude's 1h tier from cache_control.ttl (\"the request-level prompt_cache_options stays OpenAI-only\", https://openrouter.ai/docs/guides/best-practices/prompt-caching) and reports one cache_write_tokens figure; pricing a cache_control TTL is a separate change (follow-up of TXE-7946)"},
-	"openrouter/gemini":          {ttlNotFromPromptCacheOptions, "OpenRouter drops a breakpoint's TTL toward Google and applies prompt_cache_options to OpenAI models only (same page)"},
-	"databricks/anthropic":       {ttlNotFromPromptCacheOptions, "Databricks takes Claude caching as per-block cache_control and reports one top-level cache_creation_input_tokens (https://docs.databricks.com/aws/en/machine-learning/foundation-model-apis/api-reference); the catalog refuses prompt_cache_options there, so the TTL cannot come from it (follow-up of TXE-7946)"},
+	"openrouter/anthropic":       {cacheControlTTLPriced, "see schemas.CacheControlTTLPricedCacheWrites[OpenRouter]: Claude's 1h tier is selected by cache_control.ttl (\"the request-level prompt_cache_options stays OpenAI-only\") and the write is reported as one cache_write_tokens figure; the chat encoder sends cache_control as given (TXE-8086)"},
+	"openrouter/gemini":          {ttlNotDelivered, "OpenRouter drops a breakpoint's TTL toward Google and applies prompt_cache_options to OpenAI models only (same page)"},
+	"databricks/anthropic":       {ttlNotDelivered, "Databricks takes Claude caching as per-block cache_control and reports one top-level cache_creation_input_tokens (https://docs.databricks.com/aws/en/machine-learning/foundation-model-apis/api-reference); the catalog refuses prompt_cache_options there, its Claude docs show cache_control only as {\"type\": \"ephemeral\"} with no ttl, and Bifrost's OpenAI-shape chat encoder strips per-block cache_control for every target but OpenRouter (OpenAIChatRequest.MarshalJSON, TXE-8086)"},
 	"dashscope/other":            {noWriteToPrice, "the dashscope provider serves no chat (core/providers/dashscope/dashscope.go). The vendor reports the tier anyway: prompt_tokens_details.cache_creation splits ephemeral_5m_input_tokens from ephemeral_1h_input_tokens (https://www.alibabacloud.com/help/en/model-studio/explicit-cache-qwen4)"},
 	"hostinger_router/anthropic": {noWriteToPrice, "no Bifrost provider is named hostinger_router; only a custom provider of that name could reach the row"},
 	"moonshot/other":             {requestTTLPriced, "see schemas.RequestTTLPricedCacheWrites[Moonshot] (TXE-7069)"},
@@ -11739,7 +11867,8 @@ type upstreamLongLivedCacheWriteRowsSnapshot struct {
 // write at whatever its usage reports, and a vendor that bills by the request's TTL while
 // reporting one figure would be under-counted exactly as Kimi was (TXE-7069). Every row of the
 // committed upstream snapshot must have a decision in longLivedCacheWriteDecisions; a row is
-// covered by RequestTTLPricedCacheWrites exactly when its decision is requestTTLPriced; and a
+// covered by RequestTTLPricedCacheWrites exactly when its decision is requestTTLPriced, and by
+// CacheControlTTLPricedCacheWrites exactly when it is cacheControlTTLPriced (TXE-8086); and a
 // decision upstream no longer needs must leave the list.
 //
 // Regenerate the snapshot from a datasheet downloaded by hand (tests run offline):
@@ -11759,7 +11888,7 @@ func TestEveryLongLivedCacheWriteRateHasATierDecision(t *testing.T) {
 	require.NotEmpty(t, snapshot.Rows, "%s lists no rows", upstreamLongLivedCacheWriteRowsSnapshotPath)
 
 	seen := map[string]bool{}
-	priced := map[schemas.ModelProvider]bool{}
+	priced := map[string]bool{}
 	for _, key := range sortedKeys(snapshot.Rows) {
 		provider := normalizeProvider(snapshot.Rows[key])
 		model := extractModelName(key)
@@ -11770,20 +11899,22 @@ func TestEveryLongLivedCacheWriteRateHasATierDecision(t *testing.T) {
 		pair := provider + "/" + family
 		decided, ok := longLivedCacheWriteDecisions[pair]
 		if !ok {
-			t.Errorf("%s carries a long-lived cache-write rate, and %s has no decision: read the vendor's docs and add %q to longLivedCacheWriteDecisions (does usage report the tier, or is the write billed at the request's prompt_cache_options.ttl?), and list it in schemas.RequestTTLPricedCacheWrites if the latter", key, pair, pair)
+			t.Errorf("%s carries a long-lived cache-write rate, and %s has no decision: read the vendor's docs and add %q to longLivedCacheWriteDecisions (does usage report the tier, or is the write billed at the request's prompt_cache_options.ttl or a block's cache_control.ttl?), and list it in schemas.RequestTTLPricedCacheWrites or schemas.CacheControlTTLPricedCacheWrites if one of the latter", key, pair, pair)
 			continue
 		}
 		seen[pair] = true
-		entry, listed := RequestTTLPricedCacheWrites[schemas.ModelProvider(provider)]
-		covered := listed && entry.Covers(model)
-		switch {
-		case decided.decision == requestTTLPriced && !covered:
-			t.Errorf("%s is decided requestTTLPriced, but RequestTTLPricedCacheWrites does not cover %s on %s", pair, model, provider)
-		case decided.decision != requestTTLPriced && covered:
-			t.Errorf("RequestTTLPricedCacheWrites covers %s on %s, but %s is not decided requestTTLPriced: %s", model, provider, pair, decided.evidence)
-		}
-		if covered {
-			priced[schemas.ModelProvider(provider)] = true
+		for _, table := range ttlPricingTables {
+			entry, listed := table.entries[schemas.ModelProvider(provider)]
+			covered := listed && entry.Covers(model)
+			switch {
+			case decided.decision == table.decision && !covered:
+				t.Errorf("%s is decided %s, but %s does not cover %s on %s", pair, table.decisionName, table.name, model, provider)
+			case decided.decision != table.decision && covered:
+				t.Errorf("%s covers %s on %s, but %s is not decided %s: %s", table.name, model, provider, pair, table.decisionName, decided.evidence)
+			}
+			if covered {
+				priced[table.name+"/"+provider] = true
+			}
 		}
 	}
 	for _, pair := range sortedKeys(longLivedCacheWriteDecisions) {
@@ -11795,11 +11926,26 @@ func TestEveryLongLivedCacheWriteRateHasATierDecision(t *testing.T) {
 			t.Errorf("%s has a decision, but no row in %s needs it: remove it", pair, upstreamLongLivedCacheWriteRowsSnapshotPath)
 		}
 	}
-	for provider := range RequestTTLPricedCacheWrites {
-		if !priced[provider] {
-			t.Errorf("RequestTTLPricedCacheWrites lists %s, but it covers no row with a long-lived cache-write rate", provider)
+	for _, table := range ttlPricingTables {
+		for provider := range table.entries {
+			if !priced[table.name+"/"+string(provider)] {
+				t.Errorf("%s lists %s, but it covers no row with a long-lived cache-write rate", table.name, provider)
+			}
 		}
 	}
+}
+
+// ttlPricingTables pairs each table that prices a write at a requested TTL with the decision its
+// entries must carry, so TestEveryLongLivedCacheWriteRateHasATierDecision holds both to the
+// datasheet (TXE-8086).
+var ttlPricingTables = []struct {
+	name         string
+	entries      map[schemas.ModelProvider]schemas.RequestTTLPricedCacheWrite
+	decision     cacheWriteTierDecision
+	decisionName string
+}{
+	{"RequestTTLPricedCacheWrites", RequestTTLPricedCacheWrites, requestTTLPriced, "requestTTLPriced"},
+	{"CacheControlTTLPricedCacheWrites", CacheControlTTLPricedCacheWrites, cacheControlTTLPriced, "cacheControlTTLPriced"},
 }
 
 func writeUpstreamLongLivedCacheWriteRowsSnapshot(t *testing.T, source string) {

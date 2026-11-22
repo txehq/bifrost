@@ -3613,16 +3613,136 @@ func stampPromptCacheTTLFromBody(ctx context.Context, body []byte, rawBody bool)
 		return
 	}
 	base, _ := bifrostCtx.Value(schemas.BifrostContextKeyBaseProviderType).(schemas.ModelProvider)
-	if _, priced := schemas.RequestTTLPricedCacheWrites[base]; !priced {
-		return
+	if _, priced := schemas.RequestTTLPricedCacheWrites[base]; priced &&
+		bodyMayCarryStampedTTL(bifrostCtx, schemas.BifrostContextKeyRequestedPromptCacheTTL, rawBody) {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyRequestedPromptCacheTTL, PromptCacheTTLInBody(body))
 	}
-	if !rawBody {
-		stamped, _ := bifrostCtx.Value(schemas.BifrostContextKeyRequestedPromptCacheTTL).(string)
-		if stamped == "" && bifrostCtx.Value(schemas.BifrostContextKeyPassthroughExtraParams) != true {
-			return
+	// The same, for a vendor that bills a write at a block's cache_control.ttl (fork, TXE-8086).
+	// stampRequestedPromptCacheTTL stamps the typed request's longest cache_control.ttl first, and
+	// the body read replaces it: an encoder that strips cache_control (every OpenAI-shape chat
+	// target but OpenRouter) or turns it into a TTL-less prompt_cache_breakpoint (OpenRouter
+	// Responses) leaves no TTL in the body, so none is priced.
+	if _, priced := schemas.CacheControlTTLPricedCacheWrites[base]; priced &&
+		bodyMayCarryStampedTTL(bifrostCtx, schemas.BifrostContextKeyRequestedCacheControlTTL, rawBody) {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyRequestedCacheControlTTL, CacheControlTTLInBody(body))
+	}
+}
+
+// bodyMayCarryStampedTTL reports whether the body must be read for the TTL stamped under key: it
+// is raw, the attempt's typed request carries one (the stamp is set), or extra params are
+// merged into it. A converter writes the field only from the typed request, so a converted body
+// with neither has none to find.
+//
+// key is any, not BifrostContextKey: a typed key held in a variable is boxed on every ctx.Value
+// call, while the constant each caller passes converts to an interface without allocating.
+func bodyMayCarryStampedTTL(ctx *schemas.BifrostContext, key any, rawBody bool) bool {
+	if rawBody {
+		return true
+	}
+	if stamped, _ := ctx.Value(key).(string); stamped != "" {
+		return true
+	}
+	return ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true
+}
+
+// cacheControlTTLMaxDepth bounds how deep CacheControlTTLInBody looks. The deepest cache_control
+// a vendor reads sits a few levels down (messages[i].content[j].cache_control, or a tool result
+// nested in a message, about six), so the bound only stops a raw body crafted to recurse.
+const cacheControlTTLMaxDepth = 32
+
+// CacheControlTTLInBody returns the longest string cache_control.ttl anywhere in a JSON request
+// body, or "" when it has none (fork, TXE-8086). One write figure covers every block, so the
+// longest is the tier the vendor may have billed. The TTL returned never aliases body.
+//
+// A body with no \u escape is searched for the literal key "cache_control" and only the value
+// after each one is parsed: without \u, no other spelling of the key exists, so the search finds
+// every member a decoder reads. A body with a \u escape (a caller's raw body may spell the key
+// that way) is walked member by member instead, which costs several times more. Bifrost's
+// encoders write keys unescaped, so a converted body takes the search unless its text carries a
+// \u escape. BenchmarkStampPromptCacheTTLFromBody records both.
+func CacheControlTTLInBody(body []byte) string {
+	if !bytes.Contains(body, jsonUnicodeEscape) {
+		return cacheControlTTLByKeySearch(body)
+	}
+	return cacheControlTTLByWalk(body)
+}
+
+var (
+	jsonUnicodeEscape = []byte(`\u`)
+	cacheControlKey   = []byte(`"cache_control"`)
+)
+
+// cacheControlTTLByKeySearch reads every "cache_control" member of a body that spells its keys
+// literally. A match is a key only when its opening quote is not escaped (an even run of
+// backslashes before it) and a colon follows: inside a string every quote is escaped, and a
+// string value is never followed by a colon.
+func cacheControlTTLByKeySearch(body []byte) string {
+	if trimmed := bytes.TrimLeft(body, " \t\n\r"); len(trimmed) == 0 || trimmed[0] != '{' {
+		return ""
+	}
+	best := ""
+	for i := 0; i < len(body); {
+		j := bytes.Index(body[i:], cacheControlKey)
+		if j < 0 {
+			break
 		}
+		start := i + j
+		i = start + len(cacheControlKey)
+		backslashes := 0
+		for k := start - 1; k >= 0 && body[k] == '\\'; k-- {
+			backslashes++
+		}
+		if backslashes%2 == 1 {
+			continue
+		}
+		k := i
+		for k < len(body) && (body[k] == ' ' || body[k] == '\t' || body[k] == '\n' || body[k] == '\r') {
+			k++
+		}
+		if k >= len(body) || body[k] != ':' {
+			continue
+		}
+		value := gjson.Parse(unsafe.String(unsafe.SliceData(body[k+1:]), len(body)-k-1))
+		if !value.IsObject() {
+			continue
+		}
+		value.ForEach(func(field, ttl gjson.Result) bool {
+			if field.Str == "ttl" && ttl.Type == gjson.String {
+				best = schemas.LongerCacheTTL(best, ttl.Str)
+			}
+			return true
+		})
 	}
-	bifrostCtx.SetValue(schemas.BifrostContextKeyRequestedPromptCacheTTL, PromptCacheTTLInBody(body))
+	return strings.Clone(best)
+}
+
+// cacheControlTTLByWalk reads every "cache_control" member by walking the parsed body, so a key
+// spelled with a \u escape is read as a decoder reads it.
+func cacheControlTTLByWalk(body []byte) string {
+	root := gjson.Parse(unsafe.String(unsafe.SliceData(body), len(body)))
+	if !root.IsObject() {
+		return ""
+	}
+	best := ""
+	var walk func(v gjson.Result, depth int)
+	walk = func(v gjson.Result, depth int) {
+		v.ForEach(func(key, value gjson.Result) bool {
+			switch {
+			case key.Str == "cache_control" && value.IsObject():
+				value.ForEach(func(field, ttl gjson.Result) bool {
+					if field.Str == "ttl" && ttl.Type == gjson.String {
+						best = schemas.LongerCacheTTL(best, ttl.Str)
+					}
+					return true
+				})
+			case depth < cacheControlTTLMaxDepth && (value.IsObject() || value.IsArray()):
+				walk(value, depth+1)
+			}
+			return true
+		})
+	}
+	walk(root, 1)
+	return strings.Clone(best)
 }
 
 // PromptCacheTTLInBody returns the string prompt_cache_options.ttl of a JSON request body, or ""
