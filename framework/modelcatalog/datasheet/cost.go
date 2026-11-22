@@ -867,7 +867,10 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 		return total
 	}
 	if scopes.RequestedPromptCacheTTL != "" {
-		input.usage = usageWithRequestedCacheWriteTier(input.usage, s.requestTTLPricingProvider(routingInfo.Provider), routingInfo, scopes.RequestedPromptCacheTTL)
+		input.usage = usageWithRequestedCacheWriteTier(input.usage, RequestTTLPricedCacheWrites, s.requestTTLPricingProvider(RequestTTLPricedCacheWrites, routingInfo.Provider), routingInfo, scopes.RequestedPromptCacheTTL)
+	}
+	if scopes.RequestedCacheControlTTL != "" {
+		input.usage = usageWithRequestedCacheWriteTier(input.usage, CacheControlTTLPricedCacheWrites, s.requestTTLPricingProvider(CacheControlTTLPricedCacheWrites, routingInfo.Provider), routingInfo, scopes.RequestedCacheControlTTL)
 	}
 	// When a pricing model override is set (e.g. container creates always look
 	// up "container"), it replaces the lookup hierarchy entirely. Build a
@@ -3484,12 +3487,19 @@ func tieredCacheCreationInputAbove12hrTokenRate(pricing *configstoreTables.Table
 // TestRequestTTLPricedCacheWritesCostTheRequestedTier runs every entry.
 var RequestTTLPricedCacheWrites = schemas.RequestTTLPricedCacheWrites
 
-// requestTTLPricingProvider returns the provider whose RequestTTLPricedCacheWrites entry applies to
-// a request on provider: provider itself, or, for a custom provider configured on a listed base
+// CacheControlTTLPricedCacheWrites is schemas.CacheControlTTLPricedCacheWrites: the providers whose
+// vendor bills a cache write at a block's cache_control.ttl and reports one figure (fork,
+// TXE-8086). It is priced exactly like RequestTTLPricedCacheWrites, from the longest
+// cache_control.ttl the body sent. TestCacheControlTTLPricedCacheWritesCostTheRequestedTier runs
+// every entry.
+var CacheControlTTLPricedCacheWrites = schemas.CacheControlTTLPricedCacheWrites
+
+// requestTTLPricingProvider returns the provider whose entry in table applies to a request on
+// provider: provider itself, or, for a custom provider configured on a listed base
 // (base_provider_type: moonshot), that base, since the vendor behind it bills the same way (fork,
 // TXE-7996). TestCustomProviderOnARequestTTLPricedBaseCostsTheRequestedTier runs every entry.
-func (s *Store) requestTTLPricingProvider(provider schemas.ModelProvider) schemas.ModelProvider {
-	if _, ok := RequestTTLPricedCacheWrites[provider]; ok {
+func (s *Store) requestTTLPricingProvider(table map[schemas.ModelProvider]schemas.RequestTTLPricedCacheWrite, provider schemas.ModelProvider) schemas.ModelProvider {
+	if _, ok := table[provider]; ok {
 		return provider
 	}
 	if base, ok := s.CustomProviderBase(provider); ok {
@@ -3517,19 +3527,20 @@ func requestTTLEntryCoversAttempt(entry schemas.RequestTTLPricedCacheWrite, rout
 	return routingInfo.Model != "" && entry.Covers(routingInfo.Model)
 }
 
-// usageWithRequestedCacheWriteTier returns the usage to price. For a provider in
-// RequestTTLPricedCacheWrites whose entry covers the attempt's model, whose usage reports cache
+// usageWithRequestedCacheWriteTier returns the usage to price. For a provider in table
+// (RequestTTLPricedCacheWrites for a prompt_cache_options.ttl, CacheControlTTLPricedCacheWrites
+// for a cache_control.ttl) whose entry covers the attempt's model, whose usage reports cache
 // writes with no tier, and a requested TTL of an hour or more, it returns a copy whose writes sit
 // in the tier asked for: 12 hours or more in the 12h tier, otherwise the 1h tier. The copy is
 // local to pricing; the response's usage is never changed (contract C5). Any other case returns
 // usage itself, with no allocation. A TTL that is not a Go duration ("1h", "5m", "30m", "24h") is
 // priced at the base write rate.
-func usageWithRequestedCacheWriteTier(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, routingInfo schemas.RoutingInfo, requestedTTL string) *schemas.BifrostLLMUsage {
+func usageWithRequestedCacheWriteTier(usage *schemas.BifrostLLMUsage, table map[schemas.ModelProvider]schemas.RequestTTLPricedCacheWrite, provider schemas.ModelProvider, routingInfo schemas.RoutingInfo, requestedTTL string) *schemas.BifrostLLMUsage {
 	if requestedTTL == "" || usage == nil || usage.PromptTokensDetails == nil ||
 		usage.PromptTokensDetails.CachedWriteTokens <= 0 || usage.PromptTokensDetails.CachedWriteTokenDetails != nil {
 		return usage
 	}
-	if entry, ok := RequestTTLPricedCacheWrites[provider]; !ok || !requestTTLEntryCoversAttempt(entry, routingInfo) {
+	if entry, ok := table[provider]; !ok || !requestTTLEntryCoversAttempt(entry, routingInfo) {
 		return usage
 	}
 	ttl, err := time.ParseDuration(requestedTTL)

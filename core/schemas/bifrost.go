@@ -402,6 +402,7 @@ const (
 	BifrostContextKeyStreamStartTime                     BifrostContextKey = "bifrost-stream-start-time"                        // time.Time (start time for streaming TTFT calculation - set by bifrost)
 	BifrostContextKeyRequestStartTime                    BifrostContextKey = "bifrost-request-start-time"                       // time.Time (whole-request start for overhead - set by bifrost)
 	BifrostContextKeyRequestedPromptCacheTTL             BifrostContextKey = "bifrost-requested-prompt-cache-ttl"               // string (prompt_cache_options.ttl of the request sent to the provider, "" when none; set by bifrost on every attempt and read by pricing for a vendor that prices a cache write by it and reports no tier, TXE-7069)
+	BifrostContextKeyRequestedCacheControlTTL            BifrostContextKey = "bifrost-requested-cache-control-ttl"              // string (the longest cache_control.ttl the body sent to the provider carries, "" when none; set by bifrost on an attempt whose base provider is in CacheControlTTLPricedCacheWrites and read by pricing for a vendor that bills a write at that TTL and reports no tier, TXE-8086)
 	BifrostContextKeyTracer                              BifrostContextKey = "bifrost-tracer"                                   // Tracer (tracer instance for completing deferred spans - set by bifrost)
 	BifrostContextKeyModelCatalog                        BifrostContextKey = "bifrost-model-catalog"                            // ModelInfoProvider (model pricing/capability catalog backing ctx.GetModelInfo, ctx.CalculateCost and ctx.CalculateCostBreakdown - set by bifrost)
 	BifrostContextKeyDeferTraceCompletion                BifrostContextKey = "bifrost-defer-trace-completion"                   // bool (signals trace completion should be deferred for streaming - set by streaming handlers)
@@ -1201,6 +1202,32 @@ var RequestTTLPricedCacheWrites = map[ModelProvider]RequestTTLPricedCacheWrite{
 	},
 }
 
+// CacheControlTTLPricedCacheWrites lists the providers whose vendor bills a prompt-cache write at
+// the TTL a content block's cache_control asks for ("1h") and reports the write as one figure,
+// with no tier (fork, TXE-8086). It is RequestTTLPricedCacheWrites for cache_control.ttl: pricing
+// costs a write the response reports without a tier at the longest TTL the body sent carries.
+// One number covers every block, so a request mixing 5m and 1h blocks is costed at 1h, never
+// below what the vendor may have billed. Anthropic, Bedrock, Vertex and Azure Claude report the
+// split themselves (cache_creation, cacheDetails) and are never listed. The request path reads
+// the TTL from the body only on an attempt whose base provider is listed and whose typed request
+// carries a cache_control TTL, merges extra params, or is sent raw (core/providers/utils).
+// TestCacheControlTTLPricedCacheWritesCostTheRequestedTier (framework/modelcatalog/datasheet) runs
+// every entry, and TestEveryLongLivedCacheWriteRateHasATierDecision checks the table against the
+// datasheet.
+//
+// Databricks is not listed. Its Claude docs show cache_control as {"type": "ephemeral"} with no
+// ttl, Bifrost's OpenAI-shape chat encoder strips per-block cache_control for every provider but
+// OpenRouter, and Bifrost decodes no Databricks cache write before TXE-8087.
+var CacheControlTTLPricedCacheWrites = map[ModelProvider]RequestTTLPricedCacheWrite{
+	// The chat encoder sends cache_control to OpenRouter as given (OpenAIChatRequest.MarshalJSON).
+	// The Responses encoder turns a marker into prompt_cache_breakpoint, which has no TTL, so a
+	// Responses request carries none and is costed at the base rate, as OpenRouter bills it.
+	OpenRouter: {
+		Source: "OpenRouter on Anthropic models: the 1-hour TTL is set by \"cache_control\": {\"type\": \"ephemeral\", \"ttl\": \"1h\"} on a content block, billed at 2x the input price, and usage reports the write in one cache_write_tokens figure; \"the request-level prompt_cache_options stays OpenAI-only\" (https://openrouter.ai/docs/guides/best-practices/prompt-caching, read 2026-11-22). Bifrost prices it only when OpenRouter's own usage.cost is ignored for the provider (TXE-8086)",
+		Models: func(model string) bool { return strings.HasPrefix(model, "anthropic/") },
+	},
+}
+
 // PricingContextKeys are the context values datasheet.LookupScopesFromContext reads. A context
 // built apart from the request's (the tracer's stream accumulator) copies exactly these, so a
 // streamed total is priced like the request's own breakdown. TestLookupScopesFromContextReads
@@ -1212,6 +1239,7 @@ var PricingContextKeys = []BifrostContextKey{
 	BifrostContextKeyUserID,
 	BifrostContextKeyRequestStartTime,
 	BifrostContextKeyRequestedPromptCacheTTL,
+	BifrostContextKeyRequestedCacheControlTTL,
 }
 
 // SetProvider sets the provider on the active request variant.

@@ -5852,19 +5852,21 @@ func TestPromptCacheTTLIsReadFromTheBodyOnlyForARequestTTLPricedBase(t *testing.
 }
 
 // BenchmarkStampPromptCacheTTLFromBody: the per-request cost of reading the TTL from a 256 KB
-// body (fork, TXE-7996, TXE-7946). An unlisted base (openai) is never scanned. A listed base
-// (moonshot, azure, openrouter) is scanned only on an attempt whose request carries a TTL, or
-// whose extra params are merged into the body, or whose body is sent raw.
+// body (fork, TXE-7996, TXE-7946, TXE-8086). An unlisted base (openai) is never scanned. A listed
+// base (moonshot, azure, openrouter) is scanned only on an attempt whose request carries a TTL
+// (prompt_cache_options, or on openrouter a cache_control one), or whose extra params are merged
+// into the body, or whose body is sent raw; a raw body on openrouter is read for both.
 func BenchmarkStampPromptCacheTTLFromBody(b *testing.B) {
 	body := []byte(`{"model":"m","messages":[` + strings.Repeat(`{"role":"user","content":"hi"},`, 8000) + `{"role":"user","content":"hi"}]}`)
 	for _, base := range []schemas.ModelProvider{schemas.OpenAI, schemas.Moonshot, schemas.Azure, schemas.OpenRouter} {
 		for _, c := range []struct {
-			name, stamped string
-			raw           bool
+			name, stamped, cacheControl string
+			raw                         bool
 		}{
-			{"converted_without_ttl", "", false},
-			{"converted_with_ttl", "12h", false},
-			{"raw", "", true},
+			{"converted_without_ttl", "", "", false},
+			{"converted_with_ttl", "12h", "", false},
+			{"converted_with_cache_control_ttl", "", "1h", false},
+			{"raw", "", "", true},
 		} {
 			b.Run(string(base)+"/"+c.name, func(b *testing.B) {
 				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -5872,6 +5874,7 @@ func BenchmarkStampPromptCacheTTLFromBody(b *testing.B) {
 				b.ReportAllocs()
 				for b.Loop() {
 					ctx.SetValue(schemas.BifrostContextKeyRequestedPromptCacheTTL, c.stamped)
+					ctx.SetValue(schemas.BifrostContextKeyRequestedCacheControlTTL, c.cacheControl)
 					stampPromptCacheTTLFromBody(ctx, body, c.raw)
 				}
 			})
@@ -5898,5 +5901,147 @@ func TestPromptCacheTTLInBodyPricesAnAmbiguousBodyAtItsLongestTTL(t *testing.T) 
 		if got := PromptCacheTTLInBody([]byte(body)); got != want {
 			t.Errorf("%s: got %q, want %q", body, got, want)
 		}
+	}
+}
+
+// TestCacheControlTTLInBodyIsTheLongestBlockTTL: a vendor that bills a write at a block's
+// cache_control.ttl reports one figure for every block, so the body is priced at the longest TTL
+// a marker carries (fork, TXE-8086). Only marker positions are read: the request's own, a tool's,
+// a content block's and an assistant tool call's. A cache_control elsewhere is data (a tool
+// schema's default, a value nested in a marker, a Responses body's blocks) and is not read, nor is
+// a ttl that is not a string or a marker that is not an object. A key spelled with a \u escape is
+// read as a decoder reads it.
+func TestCacheControlTTLInBodyIsTheLongestBlockTTL(t *testing.T) {
+	for body, want := range map[string]string{
+		`{"messages":[{"role":"user","content":[{"type":"text","text":"x","cache_control":{"type":"ephemeral","ttl":"1h"}}]}]}`:                        "1h",
+		`{"messages":[{"content":[{"cache_control":{"type":"ephemeral","ttl":"5m"}},{"cache_control":{"type":"ephemeral","ttl":"1h"}}]}]}`:             "1h",
+		`{"tools":[{"type":"function","cache_control":{"type":"ephemeral","ttl":"1h"}}],"messages":[]}`:                                                "1h",
+		`{"messages":[{"role":"assistant","tool_calls":[{"id":"c","cache_control":{"ttl":"1h"}}]}]}`:                                                   "1h",
+		`{"cache_control":{"type":"ephemeral","ttl":"1h"}}`:                                                                                            "1h",
+		`{"messages":[{"content":[{"cache_control":{"ttl":"1h"}}]}]}`:                                                                                  "1h",
+		`{"messages":[{"content":[{"cache_control":{"ttl":"5m"}}]}],"tools":[{"function":{"parameters":{"default":{"cache_control":{"ttl":"1h"}}}}}]}`: "5m",
+		`{"messages":[{"content":[{"cache_control":{"cache_control":{"ttl":"1h"}}}]}]}`:                                                                "",
+		`{"input":[{"role":"user","content":[{"type":"input_text","text":"x","cache_control":{"ttl":"1h"}}]}]}`:                                        "",
+		`{"messages":[{"content":"say \"cache_control\": {\"ttl\":\"1h\"}"}]}`:                                                                         "",
+		`{"messages":[{"content":[{"cache_control":{"type":"ephemeral"}}]}]}`:                                                                          "",
+		`{"messages":[{"content":[{"cache_control":{"ttl":3600}}]}]}`:                                                                                  "",
+		`{"messages":[{"content":[{"cache_control":"1h"}]}]}`:                                                                                          "",
+		`{"messages":"x","tools":{"cache_control":{"ttl":"1h"}}}`:                                                                                      "",
+		`{"model":"m"}`: "",
+		`not json`:      "",
+		`["a"]`:         "",
+	} {
+		if got := CacheControlTTLInBody([]byte(body)); got != want {
+			t.Errorf("%.90s: got %q, want %q", body, got, want)
+		}
+	}
+}
+
+// TestCacheControlTTLIsReadFromTheBodyOnlyForACacheControlTTLPricedBase: the body is read for a
+// cache_control TTL only on an attempt whose base provider bills by it, and then only when the
+// typed request carried one, extra params are merged in, or the body is raw (fork, TXE-8086).
+// The body read replaces the typed stamp, so an encoder that dropped the marker prices nothing.
+func TestCacheControlTTLIsReadFromTheBodyOnlyForACacheControlTTLPricedBase(t *testing.T) {
+	withTTL := []byte(`{"model":"anthropic/claude","messages":[{"role":"user","content":[{"type":"text","text":"x","cache_control":{"type":"ephemeral","ttl":"1h"}}]}]}`)
+	stripped := []byte(`{"model":"anthropic/claude","messages":[{"role":"user","content":[{"type":"text","text":"x"}]}]}`)
+	for _, c := range []struct {
+		name            string
+		base            schemas.ModelProvider
+		stamped         string
+		merged, rawBody bool
+		body            []byte
+		want            string
+	}{
+		{name: "typed ttl, body carries it", base: schemas.OpenRouter, stamped: "1h", body: withTTL, want: "1h"},
+		{name: "typed ttl, encoder stripped it", base: schemas.OpenRouter, stamped: "1h", body: stripped, want: ""},
+		{name: "no typed ttl, not scanned", base: schemas.OpenRouter, body: withTTL, want: ""},
+		{name: "merged extra params", base: schemas.OpenRouter, merged: true, body: withTTL, want: "1h"},
+		{name: "raw body", base: schemas.OpenRouter, rawBody: true, body: withTTL, want: "1h"},
+		{name: "unlisted base", base: schemas.Databricks, stamped: "1h", body: withTTL, want: "1h"},
+		{name: "prompt-ttl-only base", base: schemas.Azure, stamped: "1h", rawBody: true, body: withTTL, want: "1h"},
+	} {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, c.base)
+		ctx.SetValue(schemas.BifrostContextKeyRequestedCacheControlTTL, c.stamped)
+		if c.merged {
+			ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+		}
+		stampPromptCacheTTLFromBody(ctx, c.body, c.rawBody)
+		got, _ := ctx.Value(schemas.BifrostContextKeyRequestedCacheControlTTL).(string)
+		// An unlisted base keeps whatever was stamped; the stamp is only read for a listed one.
+		want := c.want
+		if c.name == "unlisted base" || c.name == "prompt-ttl-only base" {
+			want = c.stamped
+		}
+		if got != want {
+			t.Errorf("%s: cache_control ttl stamped %q, want %q", c.name, got, want)
+		}
+	}
+	for _, base := range []schemas.ModelProvider{schemas.Anthropic, schemas.Bedrock, schemas.Vertex, schemas.Azure, schemas.Databricks} {
+		if _, listed := schemas.CacheControlTTLPricedCacheWrites[base]; listed {
+			t.Fatalf("%s must not be listed in CacheControlTTLPricedCacheWrites", base)
+		}
+	}
+}
+
+// BenchmarkCacheControlTTLInBody states what reading cache_control.ttl from a 256 KB chat body
+// costs (fork, TXE-8086): a body of few long messages, and one of thousands of short ones, each
+// with one marked block at the end.
+func BenchmarkCacheControlTTLInBody(b *testing.B) {
+	marked := `{"role":"user","content":[{"type":"text","text":"x","cache_control":{"type":"ephemeral","ttl":"1h"}}]}`
+	body := func(message string) []byte {
+		messages := strings.Repeat(message, 256*1024/len(message))
+		return []byte(`{"model":"anthropic/claude","messages":[` + messages + marked + `]}`)
+	}
+	for _, c := range []struct {
+		name string
+		body []byte
+	}{
+		{"256KiB long messages", body(`{"role":"user","content":[{"type":"text","text":"` + strings.Repeat("lorem ipsum ", 300) + `"}]},`)},
+		{"256KiB short messages", body(`{"role":"user","content":[{"type":"text","text":"hi"}]},`)},
+	} {
+		b.Run(c.name, func(b *testing.B) {
+			b.SetBytes(int64(len(c.body)))
+			b.ReportAllocs()
+			for b.Loop() {
+				if CacheControlTTLInBody(c.body) != "1h" {
+					b.Fatal("ttl not read")
+				}
+			}
+		})
+	}
+}
+
+// TestCacheControlTTLInBodyBoundsACraftedBody: the read has a fixed depth, so a body crafted with
+// thousands of nested markers is one pass (BenchmarkCacheControlTTLInBodyCrafted records it) and
+// prices nothing, while 101 sibling block markers are all read (fork, TXE-8086).
+func TestCacheControlTTLInBodyBoundsACraftedBody(t *testing.T) {
+	if got := CacheControlTTLInBody(craftedNestedCacheControlBody()); got != "" {
+		t.Fatalf("20,000 nested markers: got %q, want \"\"", got)
+	}
+	var siblings strings.Builder
+	siblings.WriteString(`{"messages":[`)
+	for i := 0; i < 100; i++ {
+		siblings.WriteString(`{"content":[{"type":"text","text":"x","cache_control":{"type":"ephemeral","ttl":"5m"}}]},`)
+	}
+	siblings.WriteString(`{"content":[{"type":"text","text":"x","cache_control":{"type":"ephemeral","ttl":"1h"}}]}]}`)
+	if got := CacheControlTTLInBody([]byte(siblings.String())); got != "1h" {
+		t.Fatalf("101 markers, the last at 1h: got %q, want 1h", got)
+	}
+}
+
+// craftedNestedCacheControlBody nests 20,000 cache_control markers inside a content block's.
+func craftedNestedCacheControlBody() []byte {
+	return []byte(`{"messages":[{"content":[{"cache_control":` + strings.Repeat(`{"cache_control":`, 20000) + `{"ttl":"1h"}` + strings.Repeat(`}`, 20000) + `}]}]}`)
+}
+
+// BenchmarkCacheControlTTLInBodyCrafted: the cost of a body crafted with 20,000 nested markers
+// (TXE-8086).
+func BenchmarkCacheControlTTLInBodyCrafted(b *testing.B) {
+	body := craftedNestedCacheControlBody()
+	b.SetBytes(int64(len(body)))
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = CacheControlTTLInBody(body)
 	}
 }

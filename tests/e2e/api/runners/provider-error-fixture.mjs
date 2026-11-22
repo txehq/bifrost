@@ -1793,6 +1793,11 @@ const wireAnswer = (path, body, bytes) => {
 	// Folder 660 (TXE-7946): Azure's and OpenRouter's Responses API report a cache write as one cache_write_tokens figure,
 	// with no TTL tier and no usage.cost, so the gateway prices the write from the sheet at the tier the request asked for.
 	// azure posts to <endpoint>/openai/v1/responses, openrouter to <base_url>/v1/responses.
+	// Folder 660 (TXE-8086): OpenRouter's Chat Completions API reports a Claude cache write the same way, one
+	// cache_write_tokens figure whatever cache_control.ttl the blocks asked for. openrouter posts to <base_url>/v1/chat/completions.
+	if (path === "/pp/cachettl/v1/chat/completions" && String(body.model || "").includes("fixture-cache-ttl")) {
+		return { status: 200, body: JSON.stringify({ id: "chatcmpl_cachettl", object: "chat.completion", created: 1, model: body.model, choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "hello" } }], usage: { prompt_tokens: 3000, prompt_tokens_details: { cached_tokens: 0, cache_write_tokens: 2000 }, completion_tokens: 200, total_tokens: 3200 } }) };
+	}
 	if ((path === "/pp/cachettl/openai/v1/responses" || path === "/pp/cachettl/v1/responses") && String(body.model || "").includes("fixture-cache-ttl")) {
 		return { status: 200, body: JSON.stringify({ id: "resp_cachettl", object: "response", created_at: 1, status: "completed", model: body.model, output: [{ type: "message", id: "msg_cachettl", role: "assistant", status: "completed", content: [{ type: "output_text", text: "hello", annotations: [] }] }], usage: { input_tokens: 3000, input_tokens_details: { cached_tokens: 0, cache_write_tokens: 2000 }, output_tokens: 200, total_tokens: 3200 } }) };
 	}

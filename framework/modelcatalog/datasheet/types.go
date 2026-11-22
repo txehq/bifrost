@@ -658,6 +658,11 @@ type LookupScopes struct {
 	// prices a cache write only for a provider in RequestTTLPricedCacheWrites whose response
 	// reports no tier; usage is never rewritten with it (contract C5; fork, TXE-7069).
 	RequestedPromptCacheTTL string
+	// RequestedCacheControlTTL is the longest cache_control.ttl the body sent carries ("" for
+	// none), stamped on an attempt whose base provider is in CacheControlTTLPricedCacheWrites
+	// (schemas.BifrostContextKeyRequestedCacheControlTTL). It prices a cache write only for a
+	// provider in that table whose response reports no tier (fork, TXE-8086).
+	RequestedCacheControlTTL string
 
 	// zeroRatesAs, when positive, stands in for every price explicitly set to zero on a resolved row
 	// (AnswerPriceStatus). An answer that costs more with it applied was priced by zero rates and is
@@ -688,13 +693,15 @@ func LookupScopesFromContext(ctx *schemas.BifrostContext, provider string) *Look
 	selectedKeyID, _ := ctx.Value(schemas.BifrostContextKeySelectedKeyID).(string)
 	billedAt, _ := ctx.Value(schemas.BifrostContextKeyRequestStartTime).(time.Time)
 	requestedTTL, _ := ctx.Value(schemas.BifrostContextKeyRequestedPromptCacheTTL).(string)
+	cacheControlTTL, _ := ctx.Value(schemas.BifrostContextKeyRequestedCacheControlTTL).(string)
 	return &LookupScopes{
-		UserID:                  userID,
-		VirtualKeyID:            virtualKeyID,
-		SelectedKeyID:           selectedKeyID,
-		Provider:                provider,
-		BilledAt:                billedAt,
-		RequestedPromptCacheTTL: requestedTTL,
+		UserID:                   userID,
+		VirtualKeyID:             virtualKeyID,
+		SelectedKeyID:            selectedKeyID,
+		Provider:                 provider,
+		BilledAt:                 billedAt,
+		RequestedPromptCacheTTL:  requestedTTL,
+		RequestedCacheControlTTL: cacheControlTTL,
 	}
 }
 
