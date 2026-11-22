@@ -39,6 +39,113 @@ jobs:
             api.github.com:443
             github.com:443
 
+      # TXE-7574: provider keys and LIVE_PROVIDERS_CANARY must exist only as secrets of the
+      # live-providers environment. release.yml passes each one to release-pipeline.yml under
+      # its own name, and the value passed is this caller's own: empty, unless a repository or
+      # organization secret of that name exists. Such a secret would reach every called job,
+      # including those that name no environment, with no reviewer's approval, and it would win
+      # over the environment's value (both measured 2026-11-22). This job names no environment,
+      # so it sees exactly those values. It prints names only, and fails before anything is
+      # called. check-provider-key-environment.py requires this step to cover every provider
+      # credential the caller passes.
+      - name: Check that no provider key or canary is a repository or organization secret
+        id: environment-only-secrets
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ASSEMBLYAI_API_KEY: ${{ secrets.ASSEMBLYAI_API_KEY }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+          AZURE_API_KEY: ${{ secrets.AZURE_API_KEY }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_SPEECH_API_KEY: ${{ secrets.AZURE_SPEECH_API_KEY }}
+          BEDROCK_API_KEY: ${{ secrets.BEDROCK_API_KEY }}
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
+          DEEPINFRA_API_KEY: ${{ secrets.DEEPINFRA_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GITHUB_COPILOT_PRIVATE_KEY: ${{ secrets.GITHUB_COPILOT_PRIVATE_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
+          LIVE_PROVIDERS_CANARY: ${{ secrets.LIVE_PROVIDERS_CANARY }}
+          MAXIM_API_KEY: ${{ secrets.MAXIM_API_KEY }}
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
+          PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
+          REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          RUNWARE_API_KEY: ${{ secrets.RUNWARE_API_KEY }}
+          RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+          VERCEL_AI_GATEWAY_API_KEY: ${{ secrets.VERCEL_AI_GATEWAY_API_KEY }}
+          VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
+          VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+        run: |
+          present=""
+          for name in \
+            ANTHROPIC_API_KEY \
+            ASSEMBLYAI_API_KEY \
+            AWS_ACCESS_KEY_ID \
+            AWS_SECRET_ACCESS_KEY \
+            AWS_SESSION_TOKEN \
+            AZURE_API_KEY \
+            AZURE_CLIENT_SECRET \
+            AZURE_SPEECH_API_KEY \
+            BEDROCK_API_KEY \
+            CEREBRAS_API_KEY \
+            CLOUDFLARE_API_TOKEN \
+            COHERE_API_KEY \
+            DASHSCOPE_API_KEY \
+            DATABRICKS_TOKEN \
+            DEEPGRAM_API_KEY \
+            DEEPINFRA_API_KEY \
+            DEEPSEEK_API_KEY \
+            ELEVENLABS_API_KEY \
+            FIREWORKS_API_KEY \
+            GEMINI_API_KEY \
+            GITHUB_COPILOT_PRIVATE_KEY \
+            GROQ_API_KEY \
+            HUGGING_FACE_API_KEY \
+            LIVE_PROVIDERS_CANARY \
+            MAXIM_API_KEY \
+            MISTRAL_API_KEY \
+            NEBIUS_API_KEY \
+            OPENAI_API_KEY \
+            OPENROUTER_API_KEY \
+            PARASAIL_API_KEY \
+            PERPLEXITY_API_KEY \
+            REPLICATE_API_KEY \
+            RUNPOD_API_KEY \
+            RUNWARE_API_KEY \
+            RUNWAY_API_KEY \
+            SARVAM_API_KEY \
+            SGL_API_KEY \
+            TYPESAFE_API_KEY \
+            VERCEL_AI_GATEWAY_API_KEY \
+            VERTEX_CREDENTIALS \
+            VOYAGE_API_KEY \
+            XAI_API_KEY; do
+            if [ -n "${!name}" ]; then present="$present $name"; fi
+          done
+          if [ -n "$present" ]; then
+            echo "::error::These names exist as repository or organization secrets:$present. Delete them; provider keys and LIVE_PROVIDERS_CANARY belong only in the live-providers environment (TXE-7574)."
+            exit 1
+          fi
+          echo "No provider key or canary exists as a repository or organization secret."
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -54,6 +161,8 @@ jobs:
         run: ./.github/workflows/scripts/release-trigger.sh "$EVENT_NAME" "$BEFORE_SHA" "$AFTER_SHA"
 
   release:
+    # gate's environment-only-secrets step must pass before any provider key is passed
+    # (check-provider-key-environment.py).
     needs: [gate]
     if: needs.gate.outputs.may-release == 'true'
     # One release at a time. GitHub keeps one pending run per group and cancels the older

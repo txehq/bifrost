@@ -39,7 +39,18 @@ caller must pass exactly that form and nothing else. So the check also fails whe
   * a caller of a workflow in this repository does not pass every secret that workflow's
     live-providers jobs read as `NAME: ${{ secrets.NAME }}`;
   * a caller passes a provider credential that the called workflow's live-providers jobs
-    do not read, or passes one to a workflow this check cannot read.
+    do not read, or passes one to a workflow this check cannot read;
+  * a caller passes provider credentials without needing a job whose
+    `environment-only-secrets` step covers them all. The value a caller passes is its own:
+    empty while the secret exists only in the environment, but a repository or organization
+    secret of that name would be passed instead, and a called job, with or without the
+    environment, would read it with no approval (measured 2026-11-22). That step runs in a
+    job that names no environment, so it reads exactly those secrets, and fails the run if
+    any is non-empty. It is the one step outside live-providers that may read a provider
+    credential, and its shape is pinned (see guard()).
+
+A job in a called workflow that names no environment and reads a provider credential fails
+under the first rule above, as in any other workflow.
 
 A read is any use of the secrets context inside `${{ }}`, the only place it exists, in
 every scope above. `secrets.NAME` and `secrets['NAME']` read the secret they name. Any
@@ -237,6 +248,46 @@ def canary_problem(job):
     return None
 
 
+GUARD_STEP_ID = "environment-only-secrets"
+GUARD_LIST = re.compile(r"for name in\s+(.*?);\s*do\b", re.DOTALL)
+
+
+def guard(job):
+    """Returns (step, names, problem) for a job's `environment-only-secrets` step, or
+    (None, None, None) when it has none. The step is the one place outside live-providers
+    that may read provider credentials. Its job names no environment, so it reads exactly
+    the repository and organization secrets of those names, which are the values a caller
+    passes with `NAME: ${{ secrets.NAME }}`, and it fails when any is non-empty. It must come
+    first after the runner hardening, read each name as itself, loop over exactly those
+    names, and fail without a way to pass."""
+    steps = list(job.get("steps") or [])
+    for i, step in enumerate(steps):
+        if isinstance(step, dict) and step.get("id") == GUARD_STEP_ID:
+            break
+    else:
+        return None, None, None
+    if not all(is_runner_hardening(s) for s in steps[:i]):
+        return step, None, f"runs a step other than the runner hardening before `{GUARD_STEP_ID}`"
+    for key in ("if", "continue-on-error", "uses"):
+        if key in step:
+            return step, None, f"`{GUARD_STEP_ID}` sets `{key}`, so it can pass with a key present"
+    env = step.get("env") or {}
+    for key, value in env.items():
+        if not (isinstance(key, str) and is_provider_credential(key) and passes_through(key, value)):
+            return step, None, (f"`{GUARD_STEP_ID}` sets env {key} to something other than the "
+                                f"provider credential of that name")
+    run = str(step.get("run", ""))
+    loop = GUARD_LIST.search(run)
+    looped = {n for n in re.split(r"[\s\\]+", loop.group(1)) if n} if loop else set()
+    if looped != set(env):
+        return step, None, (f"`{GUARD_STEP_ID}` does not loop `for name in ...; do` over "
+                            f"exactly the names in its env")
+    if '-n "${!name}"' not in run or "exit 1" not in run:
+        return step, None, (f'`{GUARD_STEP_ID}` does not fail (`exit 1`) when one of them is '
+                            f'non-empty (`-n "${{!name}}"`)')
+    return step, {str(k).upper() for k in env}, None
+
+
 LOCAL_WORKFLOW = "./.github/workflows/"
 
 
@@ -336,6 +387,24 @@ def problems(path):
                        f"`NAME: ${{{{ secrets.NAME }}}}`; a called job reads an environment "
                        f"secret as empty unless its caller passes it by its own name "
                        f"(TXE-7574)")
+            credentials = {k.upper() for k in through if is_provider_credential(k)}
+            if credentials:
+                needs = job.get("needs") or []
+                needs = [needs] if isinstance(needs, str) else needs
+                guarded = set()
+                for need in needs:
+                    needed_job = (doc.get("jobs") or {}).get(need)
+                    if isinstance(needed_job, dict) and "environment" not in needed_job:
+                        _, names, problem = guard(needed_job)
+                        if names and not problem:
+                            guarded |= names
+                unguarded = credentials - guarded
+                if unguarded:
+                    yield (f"{where}: passes {listed(unguarded)} by name, and needs no job "
+                           f"whose `{GUARD_STEP_ID}` step fails when one of them is a "
+                           f"repository or organization secret; such a secret would be the "
+                           f"value passed, and every called job, those without the "
+                           f"environment too, would read it with no approval (TXE-7574)")
             continue
 
         if environment_name(job) == ENVIRONMENT:
@@ -361,6 +430,12 @@ def problems(path):
                            f"as `NAME: ${{{{ secrets.NAME }}}}` (TXE-7574)")
             continue
 
+        step, _, problem = guard(job)
+        if problem:
+            yield (f"{where}: {problem}; it is the only step outside "
+                   f"`environment: {ENVIRONMENT}` that may read provider credentials (TXE-7574)")
+        elif step is not None:
+            job = dict(job, steps=[s for s in job.get("steps") or [] if s is not step])
         found = list(secret_reads(job, "job"))
         if not found:
             continue

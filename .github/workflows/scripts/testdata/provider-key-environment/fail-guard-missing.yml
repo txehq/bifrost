@@ -1,0 +1,10 @@
+# expect: job release: passes LIVE_PROVIDERS_CANARY, OPENAI_API_KEY by name, and needs no job whose `environment-only-secrets` step fails
+# Without the guard, a repository secret named like a key would be the value passed, and called jobs that name no environment would read it.
+on: push
+jobs:
+  release:
+    uses: ./.github/workflows/pass-called-declares-environment-secrets.yml
+    secrets:
+      LIVE_PROVIDERS_CANARY: ${{ secrets.LIVE_PROVIDERS_CANARY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}

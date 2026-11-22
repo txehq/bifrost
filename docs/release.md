@@ -105,8 +105,13 @@ is set yet. `check-provider-key-environment.py` (workflow-lint) fails:
   canary or a provider key in any other form.
 
 The canary and the provider keys must stay environment secrets only. A repository or
-organization secret of the same name would be the caller's value, and it would win over the
-environment's. The canary's value is not sensitive; any non-empty string works:
+organization secret of the same name would be the caller's value. It would win over the
+environment's value, and called jobs that name no environment would read it with no approval.
+So `release.yml`'s `gate` job, which names no environment and runs before anything is called,
+has the step `environment-only-secrets`. It fails the run, naming them, when any provider key
+or the canary exists as a repository or organization secret. The checker requires that step to
+cover every provider credential `release.yml` passes. The canary's value is not sensitive; any
+non-empty string works:
 
 ```bash
 gh secret set LIVE_PROVIDERS_CANARY --env live-providers -R txehq/bifrost --body present
