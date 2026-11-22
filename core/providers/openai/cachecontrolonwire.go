@@ -140,8 +140,14 @@ func cacheControlTTLRefusal(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 	if bifrostReq == nil {
 		return nil
 	}
+	// Only a provider that sends the marker without its ttl can refuse; every other request
+	// returns after one map lookup, before the request is walked. For those that can, the walk
+	// (no allocation) runs before the model-family check, which resolves the canonical model.
 	rule := perBlockCacheControlRules[schemas.ResolveBaseProvider(ctx, bifrostReq.Provider)]
-	if rule.ttlSent || !chatCarriesCacheControlTTL(bifrostReq) {
+	if rule.ttlSent || rule.treatment == cacheControlStripped {
+		return nil
+	}
+	if !chatCarriesCacheControlTTL(bifrostReq) {
 		return nil
 	}
 	if !perBlockCacheControlOnWire(ctx, bifrostReq.Provider, schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)) {

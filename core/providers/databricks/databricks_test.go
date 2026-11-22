@@ -18,7 +18,9 @@ import (
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/internal/llmtests"
 	"github.com/capsohq/bifrost/core/livetest"
+	"github.com/capsohq/bifrost/core/providers/anthropic"
 	"github.com/capsohq/bifrost/core/providers/databricks"
+	"github.com/capsohq/bifrost/core/providers/openai"
 	"github.com/capsohq/bifrost/core/schemas"
 )
 
@@ -1934,5 +1936,95 @@ func TestDatabricksClaudeReceivesPerBlockCacheControl(t *testing.T) {
 	case b := <-bodies:
 		t.Errorf("the refused request reached Databricks: %s", b)
 	default:
+	}
+}
+
+// TestDatabricksClaudeCacheControlSurvivesConvertedIngress pins TXE-8179 on the routes that reach
+// the chat encoder through a conversion: an OpenAI Responses body (/v1/responses) and an
+// Anthropic Messages body (/anthropic/v1/messages), each turned into a Responses request by its
+// ingress converter and served through Databricks' chat emulation once the endpoint declines
+// native Responses. The markers must reach Databricks, and a ttl must be refused before any call.
+func TestDatabricksClaudeCacheControlSurvivesConvertedIngress(t *testing.T) {
+	t.Parallel()
+
+	bodies := make(chan string, 8)
+	provider, server := newStubProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		if strings.HasSuffix(r.URL.Path, "/responses") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(passthroughUnsupportedBody))
+			return
+		}
+		bodies <- string(raw)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(stubChatResponse))
+	})
+	key := schemas.Key{
+		Models: []string{"*"},
+		Value:  *schemas.NewSecretVar("dapi-test"),
+		DatabricksKeyConfig: &schemas.DatabricksKeyConfig{
+			WorkspaceURL: *schemas.NewSecretVar(serverHost(t, server)),
+		},
+	}
+	cc := func(ttl string) string {
+		if ttl == "" {
+			return `{"type":"ephemeral"}`
+		}
+		return `{"type":"ephemeral","ttl":"` + ttl + `"}`
+	}
+	ingress := map[string]func(ctx *schemas.BifrostContext, ttl string) *schemas.BifrostResponsesRequest{
+		"/v1/responses": func(ctx *schemas.BifrostContext, ttl string) *schemas.BifrostResponsesRequest {
+			var req openai.OpenAIResponsesRequest
+			body := `{"model":"databricks-claude-sonnet-4-5","input":[{"role":"user","content":[{"type":"input_text","text":"long shared prefix","cache_control":` + cc(ttl) + `}]}],` +
+				`"tools":[{"type":"function","name":"lookup","parameters":{"type":"object","properties":{}},"cache_control":` + cc(ttl) + `}]}`
+			if err := schemas.Unmarshal([]byte(body), &req); err != nil {
+				t.Fatalf("decode responses body: %v", err)
+			}
+			out := req.ToBifrostResponsesRequest(ctx)
+			out.Provider = schemas.Databricks
+			return out
+		},
+		"/anthropic/v1/messages": func(ctx *schemas.BifrostContext, ttl string) *schemas.BifrostResponsesRequest {
+			var req anthropic.AnthropicMessageRequest
+			body := `{"model":"databricks-claude-sonnet-4-5","max_tokens":64,"messages":[{"role":"user","content":[{"type":"text","text":"long shared prefix","cache_control":` + cc(ttl) + `}]}],` +
+				`"tools":[{"name":"lookup","input_schema":{"type":"object","properties":{}},"cache_control":` + cc(ttl) + `}]}`
+			if err := schemas.Unmarshal([]byte(body), &req); err != nil {
+				t.Fatalf("decode messages body: %v", err)
+			}
+			out := req.ToBifrostResponsesRequest(ctx)
+			out.Provider = schemas.Databricks
+			out.Model = "databricks-claude-sonnet-4-5"
+			return out
+		},
+	}
+	for route, build := range ingress {
+		t.Run(route, func(t *testing.T) {
+			ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if _, bErr := provider.Responses(ctx, key, build(ctx, "")); bErr != nil {
+				t.Fatalf("Responses: %+v", bErr.Error)
+			}
+			select {
+			case body := <-bodies:
+				if got := strings.Count(body, `"cache_control":{"type":"ephemeral"}`); got != 2 {
+					t.Errorf("cache_control markers on the wire = %d, want 2 (content block and tool): %s", got, body)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("stub received no chat request")
+			}
+
+			ttlCtx, ttlCancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+			defer ttlCancel()
+			_, bErr := provider.Responses(ttlCtx, key, build(ttlCtx, "1h"))
+			if bErr == nil || bErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter || bErr.Error == nil || bErr.Error.Param != "cache_control.ttl" {
+				t.Fatalf("a 1h marker = %+v, want 400 caller_unsupported_parameter on cache_control.ttl", bErr)
+			}
+			select {
+			case body := <-bodies:
+				t.Errorf("the refused request reached Databricks: %s", body)
+			default:
+			}
+		})
 	}
 }

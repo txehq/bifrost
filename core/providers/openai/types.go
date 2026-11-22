@@ -634,6 +634,13 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 						contentCopy.ContentBlocks[j] = block
 					}
 				}
+				// A lone text block whose only extra was the stripped marker goes as a plain
+				// string, the shape the message had before the Responses→chat conversion began
+				// keeping markers (TXE-8179), and the one every OpenAI-shape upstream takes.
+				if msg.Content.StringWithoutMarker && len(contentCopy.ContentBlocks) == 1 && !keepCacheControl &&
+					isPlainTextBlock(contentCopy.ContentBlocks[0]) {
+					contentCopy = schemas.ChatMessageContent{ContentStr: contentCopy.ContentBlocks[0].Text}
+				}
 				processedMessages[i].Content = &contentCopy
 			}
 		}
@@ -1160,6 +1167,13 @@ func stripCompactionItemSummary(data []byte, items []schemas.ResponsesMessage) [
 	}
 	joined.WriteByte(']')
 	return joined.Bytes()
+}
+
+// isPlainTextBlock reports whether a content block is text and nothing else.
+func isPlainTextBlock(b schemas.ChatContentBlock) bool {
+	return b.Type == schemas.ChatContentBlockTypeText && b.Text != nil &&
+		b.Refusal == nil && b.ImageURLStruct == nil && b.InputAudio == nil && b.File == nil &&
+		b.CacheControl == nil && b.Citations == nil && b.PromptCacheBreakpoint == nil && b.CachePoint == nil && b.GuardContent == nil
 }
 
 // Helper function to check if a chat message has any CacheControl fields or FileType in file blocks

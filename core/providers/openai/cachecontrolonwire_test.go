@@ -182,3 +182,70 @@ func TestCacheControlTTLPricingAgreesWithTheEncoder(t *testing.T) {
 		}
 	}
 }
+
+// BenchmarkCacheControlTTLRefusal measures the TTL check ChatRequestRefusal runs on every chat
+// request the shared handlers send (TXE-8179). A provider that strips the marker, or sends it with
+// its ttl, returns after one map lookup; only Databricks Claude walks the request.
+func BenchmarkCacheControlTTLRefusal(b *testing.B) {
+	conversation := func(provider schemas.ModelProvider, model string, ttl *string) *schemas.BifrostChatRequest {
+		req := &schemas.BifrostChatRequest{Provider: provider, Model: model, Params: &schemas.ChatParameters{}}
+		for i := 0; i < 40; i++ {
+			req.Input = append(req.Input, schemas.ChatMessage{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+				{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("turn")},
+				{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("more")},
+			}}})
+		}
+		for i := 0; i < 10; i++ {
+			req.Params.Tools = append(req.Params.Tools, schemas.ChatTool{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "t"}})
+		}
+		if ttl != nil {
+			last := &req.Input[len(req.Input)-1].Content.ContentBlocks[1]
+			last.CacheControl = &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral, TTL: ttl}
+		}
+		return req
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	for _, tc := range []struct {
+		name string
+		req  *schemas.BifrostChatRequest
+	}{
+		{"openai-40-turns", conversation(schemas.OpenAI, "gpt-4.1", nil)},
+		{"openrouter-40-turns", conversation(schemas.OpenRouter, "anthropic/claude-sonnet-4-5", nil)},
+		{"databricks-claude-40-turns", conversation(schemas.Databricks, "databricks-claude-sonnet-4-5", nil)},
+		{"databricks-claude-40-turns-ttl", conversation(schemas.Databricks, "databricks-claude-sonnet-4-5", schemas.Ptr("1h"))},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = cacheControlTTLRefusal(ctx, tc.req)
+			}
+		})
+	}
+}
+
+// The Responses→chat conversion now keeps a block's marker, so a lone marked text block stays a
+// block. A provider that strips the marker still gets the plain string it got before, and a
+// provider that sends it gets the block with the marker (TXE-8179).
+func TestConvertedLoneMarkedTextBlockKeepsItsWireShape(t *testing.T) {
+	var in OpenAIResponsesRequest
+	body := `{"model":"m","input":[{"role":"user","content":[{"type":"input_text","text":"long shared prefix","cache_control":{"type":"ephemeral"}}]}]}`
+	if err := schemas.Unmarshal([]byte(body), &in); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	for provider, want := range map[schemas.ModelProvider]string{
+		schemas.Moonshot:   `"content":"long shared prefix"`,
+		schemas.OpenRouter: `"content":[{"type":"text","text":"long shared prefix","cache_control":{"type":"ephemeral"}}]`,
+	} {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		req := in.ToBifrostResponsesRequest(ctx)
+		req.Provider = provider
+		req.Model = "anthropic/claude-sonnet-4-5"
+		wire, err := json.Marshal(ToOpenAIChatRequest(ctx, req.ToChatRequest()))
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if !strings.Contains(string(wire), want) {
+			t.Errorf("%s: wire %s, want it to contain %s", provider, wire, want)
+		}
+	}
+}

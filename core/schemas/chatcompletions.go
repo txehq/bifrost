@@ -1259,6 +1259,10 @@ func (cm *ChatMessage) UnmarshalJSON(data []byte) error {
 type ChatMessageContent struct {
 	ContentStr    *string
 	ContentBlocks []ChatContentBlock
+	// StringWithoutMarker marks a lone text block kept only for its cache_control, by the
+	// Responses→chat conversion (ToChatMessages), where it used to become ContentStr. An encoder
+	// that strips the marker sends it as the string it was before (TXE-8179). Never serialized.
+	StringWithoutMarker bool `json:"-"`
 }
 
 // MarshalJSON implements custom JSON marshalling for ChatMessageContent.
