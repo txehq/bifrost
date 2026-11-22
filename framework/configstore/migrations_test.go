@@ -4074,6 +4074,48 @@ func TestMigrationClearPluginConfigHashes(t *testing.T) {
 	require.NoError(t, migrationClearPluginConfigHashes(ctx, db, testMigrationLogger))
 }
 
+// TestMigrationAddGithubCopilotConfigColumns_NonRollbackable pins that rolling these
+// columns back is refused rather than performed. github_copilot_private_key holds a GitHub
+// App private key, which GitHub lets you download exactly once: dropping the column does
+// not merely lose a config value, it forces the operator to generate a new key on GitHub
+// and re-install it. The columns are additive, so an older binary ignores them safely and
+// there is nothing a rollback needs to undo. App auth is gone (TXE-6085), but the columns
+// and their data stay for a rollback to a binary that still has it.
+func TestMigrationAddGithubCopilotConfigColumns_NonRollbackable(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	app := &tables.TableKeyGithubCopilotApp{}
+
+	require.NoError(t, db.AutoMigrate(&tables.TableKey{}))
+	for _, column := range tables.GithubCopilotAppColumns {
+		if db.Migrator().HasColumn(app, column) {
+			require.NoError(t, db.Migrator().DropColumn(app, column))
+		}
+	}
+
+	require.NoError(t, migrationAddGithubCopilotConfigColumns(ctx, db, testMigrationLogger))
+	for _, column := range tables.GithubCopilotAppColumns {
+		require.True(t, db.Migrator().HasColumn(app, column), "migration should have added %s", column)
+	}
+
+	// A key carrying App credentials is exactly the state a rollback would destroy.
+	require.NoError(t, db.Exec(`INSERT INTO config_keys (name, provider_id, provider, key_id, value, encryption_status, created_at, updated_at, github_copilot_private_key)
+		VALUES ('copilot-rollback', 1, 'github-copilot', 'copilot-rollback-1', '', 'plain_text', ?, ?, '-----BEGIN RSA PRIVATE KEY-----')`, time.Now(), time.Now()).Error)
+
+	err := rollbackGithubCopilotConfigColumns(db)
+	require.Error(t, err, "rollback must refuse: dropping the columns destroys an unrecoverable App private key")
+	assert.Contains(t, err.Error(), "non-rollbackable")
+	for _, column := range tables.GithubCopilotAppColumns {
+		assert.True(t, db.Migrator().HasColumn(app, column), "a refused rollback must leave %s intact", column)
+	}
+
+	var got tables.TableKeyGithubCopilotApp
+	require.NoError(t, db.Where("key_id = ?", "copilot-rollback-1").Take(&got).Error)
+	require.NotNil(t, got.GithubCopilotPrivateKey)
+	assert.Equal(t, "-----BEGIN RSA PRIVATE KEY-----", got.GithubCopilotPrivateKey.GetValue(),
+		"the private key must survive the refused rollback")
+}
+
 // TestMigrationMigrateVKStandaloneLimitsKeepsDifferingRateLimits pins that the
 // standalone-limits migration (upstream #7291) only drops a VK-scoped model config's
 // rate limit when it duplicates the VK's own config.json row in both limits and live

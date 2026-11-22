@@ -119,7 +119,8 @@ type TableKey struct {
 
 	EncryptionStatus string `gorm:"type:varchar(20);default:'plain_text'" json:"-"`
 
-	// GitHub Copilot config fields (embedded)
+	// The GitHub App columns of GitHub Copilot keys are not mapped here; see
+	// TableKeyGithubCopilotApp.
 
 	// oauth_key_config: the credential fields get their own encrypted columns; the
 	// non-secret settings (grant, scopes, claims, auth style) travel as one JSON column.
@@ -149,6 +150,80 @@ type TableKey struct {
 
 // TableName sets the table name for each model
 func (TableKey) TableName() string { return "config_keys" }
+
+// GithubCopilotAppColumns are the GitHub App credential columns that GitHub Copilot keys
+// stored until App auth was removed (upstream d9633b2fa, adopted by the fork in TXE-6085).
+var GithubCopilotAppColumns = []string{
+	"github_copilot_app_id",
+	"github_copilot_installation_id",
+	"github_copilot_repository_id",
+	"github_copilot_private_key",
+	"github_copilot_github_domain",
+}
+
+// TableKeyGithubCopilotApp maps the GitHub App columns of config_keys and nothing else.
+//
+// Nothing reads them at runtime any more. They are kept, data included, so a rollback to a
+// binary with App auth finds its keys intact: GitHub issues an App private key once. TableKey
+// does not map them, so no save built from a schemas.Key writes them, and a new binary can
+// neither clear nor overwrite them. What a save can still do is mark the row encrypted while
+// they are plaintext, and the older binary decrypts them whenever the row says encrypted, so
+// that row would no longer load there. TableKey.BeforeSave prevents that through
+// encryptGithubCopilotAppColumns, using the same SecretVar encoding the older binary wrote.
+type TableKeyGithubCopilotApp struct {
+	ID                          uint               `gorm:"primaryKey"`
+	EncryptionStatus            string             `gorm:"type:varchar(20)"`
+	GithubCopilotAppID          *schemas.SecretVar `gorm:"type:text"`
+	GithubCopilotInstallationID *schemas.SecretVar `gorm:"type:text"`
+	GithubCopilotRepositoryID   *schemas.SecretVar `gorm:"type:text"`
+	GithubCopilotPrivateKey     *schemas.SecretVar `gorm:"type:text"`
+	GithubCopilotGithubDomain   *schemas.SecretVar `gorm:"type:text"`
+}
+
+// TableName is config_keys: these are columns of TableKey's table.
+func (TableKeyGithubCopilotApp) TableName() string { return TableKey{}.TableName() }
+
+func (a *TableKeyGithubCopilotApp) fields() []**schemas.SecretVar {
+	return []**schemas.SecretVar{&a.GithubCopilotAppID, &a.GithubCopilotInstallationID, &a.GithubCopilotRepositoryID, &a.GithubCopilotPrivateKey, &a.GithubCopilotGithubDomain}
+}
+
+// encryptGithubCopilotAppColumns encrypts the stored GitHub App columns of key row id when
+// the row is still plaintext, in the transaction of the save that is about to mark it
+// encrypted. It is a no-op for a new row, a row already encrypted (its App columns were
+// encrypted with it), a row with no App columns set, and a table without the columns. It is
+// called only when encryption is enabled, and costs a column check and one row read per save
+// of an existing key then; key saves are configuration writes, never on the request path.
+func encryptGithubCopilotAppColumns(tx *gorm.DB, id uint) error {
+	if id == 0 {
+		return nil
+	}
+	db := tx.Session(&gorm.Session{NewDB: true, Context: tx.Statement.Context})
+	if !db.Migrator().HasColumn(&TableKeyGithubCopilotApp{}, "github_copilot_private_key") {
+		return nil
+	}
+	var stored []TableKeyGithubCopilotApp
+	if err := db.Where("id = ?", id).Limit(1).Find(&stored).Error; err != nil {
+		return err
+	}
+	if len(stored) == 0 || stored[0].EncryptionStatus == EncryptionStatusEncrypted {
+		return nil
+	}
+	row := &stored[0]
+	set := false
+	for _, field := range row.fields() {
+		if *field == nil {
+			continue
+		}
+		set = true
+		if err := encryptSecretVarPtr(field); err != nil {
+			return err
+		}
+	}
+	if !set {
+		return nil
+	}
+	return db.Model(&TableKeyGithubCopilotApp{ID: id}).Select(GithubCopilotAppColumns).Updates(row).Error
+}
 
 // BeforeSave is a GORM hook that serializes runtime config structs into JSON columns and
 // encrypts sensitive fields (API key value, Azure endpoint/client ID/secret/tenant ID/API version,
@@ -753,6 +828,11 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		}
 		if err := encryptSecretVarPtr(&k.OAuthSettingsJSON); err != nil {
 			return fmt.Errorf("failed to encrypt oauth settings: %w", err)
+		}
+		// GitHub Copilot's App columns are not mapped (TableKeyGithubCopilotApp), so the
+		// stored ones are encrypted here when this save turns a plaintext row encrypted.
+		if err := encryptGithubCopilotAppColumns(tx, k.ID); err != nil {
+			return fmt.Errorf("failed to encrypt stored github copilot app columns: %w", err)
 		}
 		k.EncryptionStatus = EncryptionStatusEncrypted
 	}
