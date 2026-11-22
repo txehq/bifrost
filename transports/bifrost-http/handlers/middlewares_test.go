@@ -1213,6 +1213,11 @@ func TestAuthMiddleware_EncodedTraversalDoesNotBypassAuth(t *testing.T) {
 		{"provider update", "PUT", "/api/providers/{provider}", "/api/providers/..%2Fskills%2Fserve%2Fmalicious", 401},
 		{"provider key creation", "POST", "/api/providers/{provider}/keys", "/api/providers/..%2Fskills%2Fserve%2Fmalicious/keys", 401},
 		{"provider deletion", "DELETE", "/api/providers/{provider}", "/api/providers/..%2Fskills%2Fserve%2Fmalicious", 401},
+		// GitHub Copilot sign-in (upstream 5f90fe51a) mints a credential; it is a management
+		// route like key creation, never public (TXE-6085).
+		{"copilot sign-in start", "POST", "/api/providers/{provider}/sign-in", "/api/providers/github-copilot/sign-in", 401},
+		{"copilot sign-in poll", "POST", "/api/providers/{provider}/sign-in/poll", "/api/providers/github-copilot/sign-in/poll", 401},
+		{"copilot sign-in traversal", "POST", "/api/providers/{provider}/sign-in", "/api/providers/..%2Fskills%2Fserve%2Fmalicious/sign-in", 401},
 		{"plugin dev prefix", "PUT", "/api/plugins/{name}", "/api/plugins/..%2Fdev%2Fmalicious", 401},
 		{"lowercase slash", "PUT", "/api/providers/{provider}", "/api/providers/..%2fskills%2fserve%2fmalicious", 401},
 		{"encoded dots", "PUT", "/api/providers/{provider}", "/api/providers/%2e%2e%2Fskills%2Fserve%2Fmalicious", 401},
