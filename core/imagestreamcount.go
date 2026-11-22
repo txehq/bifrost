@@ -11,12 +11,12 @@ func decideImageStreamCountForAttempt(provider schemas.Provider, requestType sch
 	if !schemas.IsImageStreamRequestType(requestType) {
 		return nil
 	}
-	count, param := schemas.RequestedStreamImageCount(req)
-	if count <= 1 {
+	several, param, value := schemas.RequestedStreamImageCount(req)
+	if !several {
 		return nil
 	}
 	if counter, ok := provider.(schemas.ImageStreamCounter); ok && counter.StreamsEveryImage(requestType) {
 		return nil
 	}
-	return schemas.NewImageStreamCountError(provider.GetProviderKey(), param, count)
+	return schemas.NewImageStreamCountError(provider.GetProviderKey(), param, value)
 }
