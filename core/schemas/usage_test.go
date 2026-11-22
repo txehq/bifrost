@@ -1039,15 +1039,21 @@ func TestMergeStreamFrameCarriesNormalizedAnthropicCacheTokens(t *testing.T) {
 
 // BenchmarkBifrostLLMUsageNormalizeVendorSpellings measures the response-path cost of decoding a
 // usage object and normalizing it (TXE-6439). A usage with no top-level vendor spelling, which
-// is every vendor but SGLang and StepFun, must pay nothing beyond the decode: the normalizer is
-// two integer comparisons there. Only the StepFun row allocates, for the details object it fills.
+// is every vendor but SGLang, StepFun and an Anthropic-spelled cache count, must pay nothing
+// beyond the decode: the normalizer is four integer comparisons there. Only the StepFun and the
+// Anthropic-cache rows allocate, for the details object they fill (TXE-8087 added the two
+// anthropic-cache rows; the PR records before/after numbers).
 func BenchmarkBifrostLLMUsageNormalizeVendorSpellings(b *testing.B) {
 	bodies := map[string][]byte{
 		"tokens-only":      []byte(`{"prompt_tokens":591,"completion_tokens":120,"total_tokens":711}`),
 		"nested-details":   []byte(`{"prompt_tokens":591,"completion_tokens":120,"total_tokens":711,"prompt_tokens_details":{"cached_tokens":512,"audio_tokens":0},"completion_tokens_details":{"reasoning_tokens":4,"audio_tokens":0,"accepted_prediction_tokens":0,"rejected_prediction_tokens":0}}`),
 		"top-level-cached": []byte(`{"cached_tokens":512,"prompt_tokens":591,"completion_tokens":120,"total_tokens":711}`),
+		// Databricks-hosted Claude (TXE-8087): folded and added to prompt_tokens, and the same
+		// counts with a total that marks them inclusive.
+		"anthropic-cache":           []byte(`{"prompt_tokens":12,"completion_tokens":20,"total_tokens":4832,"cache_read_input_tokens":4736,"cache_creation_input_tokens":64}`),
+		"anthropic-cache-inclusive": []byte(`{"prompt_tokens":5000,"completion_tokens":20,"total_tokens":5020,"cache_read_input_tokens":4736,"cache_creation_input_tokens":64}`),
 	}
-	for _, name := range []string{"tokens-only", "nested-details", "top-level-cached"} {
+	for _, name := range []string{"tokens-only", "nested-details", "top-level-cached", "anthropic-cache", "anthropic-cache-inclusive"} {
 		body := bodies[name]
 		b.Run("decode/"+name, func(b *testing.B) {
 			b.ReportAllocs()

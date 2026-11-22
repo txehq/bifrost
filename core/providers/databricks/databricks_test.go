@@ -1761,3 +1761,98 @@ func TestDatabricksClaudeCacheUsage(t *testing.T) {
 	}
 	assertDatabricksClaudeCacheUsage(t, "streamed", last)
 }
+
+// TestDatabricksClaudeCacheUsageThroughResponsesFallback pins the same cache counts on the
+// Responses route. A pay-per-token Claude endpoint declines native Responses, so the provider
+// emulates through chat completions; the counts must survive that and the conversion to
+// Responses usage (input_tokens_details), buffered and streamed (TXE-8087).
+func TestDatabricksClaudeCacheUsageThroughResponsesFallback(t *testing.T) {
+	t.Parallel()
+
+	stream := "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"databricks-claude-sonnet-4-5\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"}}]}\n\n" +
+		"data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"databricks-claude-sonnet-4-5\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":" + databricksClaudeCacheUsage + "}\n\n" +
+		"data: [DONE]\n\n"
+	buffered := `{"id":"c1","object":"chat.completion","created":1700000000,"model":"databricks-claude-sonnet-4-5",` +
+		`"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":` + databricksClaudeCacheUsage + `}`
+
+	provider, server := newStubProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if strings.HasSuffix(r.URL.Path, "/responses") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(passthroughUnsupportedBody))
+			return
+		}
+		if body["stream"] == true {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte(stream))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(buffered))
+	})
+	key := schemas.Key{
+		Models: []string{"*"},
+		Value:  *schemas.NewSecretVar("dapi-test"),
+		DatabricksKeyConfig: &schemas.DatabricksKeyConfig{
+			WorkspaceURL: *schemas.NewSecretVar(serverHost(t, server)),
+		},
+	}
+	newRequest := func() *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{
+			Provider: schemas.Databricks,
+			Model:    "databricks-claude-sonnet-4-5",
+			Input: []schemas.ResponsesMessage{{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hey")},
+			}},
+		}
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	resp, bErr := provider.Responses(ctx, key, newRequest())
+	if bErr != nil {
+		t.Fatalf("Responses: %v", bErr)
+	}
+	u := resp.Usage
+	if u == nil || u.InputTokensDetails == nil {
+		t.Fatalf("responses usage = %+v, want input_tokens_details", u)
+	}
+	if u.InputTokensDetails.CachedReadTokens != 4736 || u.InputTokensDetails.CachedWriteTokens != 64 {
+		t.Errorf("responses cached read/write = %d/%d, want 4736/64", u.InputTokensDetails.CachedReadTokens, u.InputTokensDetails.CachedWriteTokens)
+	}
+	if u.InputTokens != 4812 || u.OutputTokens != 20 || u.TotalTokens != 4832 {
+		t.Errorf("responses input/output/total = %d/%d/%d, want 4812/20/4832", u.InputTokens, u.OutputTokens, u.TotalTokens)
+	}
+	assertDatabricksClaudeCacheUsage(t, "responses buffered (as chat usage)", u.ToBifrostLLMUsage())
+
+	// The stream is emulated through chat; core converts the chat chunks to Responses events
+	// above the provider, so the provider's chunks carry the chat usage.
+	streamCtx, streamCancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+	defer streamCancel()
+	postHookRunner := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, bErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return result, bErr
+	}
+	chunks, bErr := provider.ResponsesStream(streamCtx, postHookRunner, nil, key, newRequest())
+	if bErr != nil {
+		t.Fatalf("ResponsesStream: %v", bErr)
+	}
+	var last *schemas.BifrostLLMUsage
+	for chunk := range chunks {
+		if chunk == nil {
+			continue
+		}
+		if chunk.BifrostError != nil {
+			t.Fatalf("stream error: %+v", chunk.BifrostError)
+		}
+		if chunk.BifrostChatResponse != nil && chunk.BifrostChatResponse.Usage != nil {
+			last = chunk.BifrostChatResponse.Usage
+		}
+		if chunk.BifrostResponsesStreamResponse != nil && chunk.BifrostResponsesStreamResponse.Response != nil && chunk.BifrostResponsesStreamResponse.Response.Usage != nil {
+			last = chunk.BifrostResponsesStreamResponse.Response.Usage.ToBifrostLLMUsage()
+		}
+	}
+	assertDatabricksClaudeCacheUsage(t, "responses streamed", last)
+}

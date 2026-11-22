@@ -3529,6 +3529,14 @@ const handleRequest = (req, res) => {
 		countHit("batch.retrieve");
 		return send(200, {}, JSON.stringify(fixtureBatch("in_progress")));
 	}
+	// Folder 662 (TXE-8087): a pay-per-token Claude endpoint declines native Responses with this 400, so the gateway
+	// emulates /v1/responses through the chat route below.
+	if (req.method === "POST" && path === "/serving-endpoints/responses") {
+		return drain(req, () => {
+			countHit("databricks.responses");
+			send(400, {}, JSON.stringify({ error: { message: "Responses API passthrough is not supported for model databricks-claude-cache-fixture.", type: "invalid_request_error" } }));
+		});
+	}
 	// Folder 662 (TXE-8087): Databricks Model Serving's chat route, reached on the TLS listener (Databricks is https only).
 	if (req.method === "POST" && path === "/serving-endpoints/chat/completions") {
 		const body = [];
