@@ -48,12 +48,52 @@ const (
 //     content-free, so this upload is the only copy of that output: a dropped
 //     Put lost it for good.
 //   - The other kinds stay fire-and-forget, so object-store latency never backs
-//     up the upload queues. A dropped one is counted in droppedUploads.
+//     up the upload queues. A dropped one is counted in droppedUploads. TXE-7948
+//     decided on one retry each under a per-shard retry budget, held until a
+//     deployment enables object storage; until then newHybridLogStore warns at
+//     startup (unretriedUploadsWarning).
 var uploadKindRetries = map[uploadKind]bool{
 	uploadKindLog:      false,
 	uploadKindMCP:      false,
 	uploadKindAgent:    false,
 	uploadKindLogMerge: true,
+}
+
+// String names an upload kind in log lines, such as the startup warning from
+// unretriedUploadsWarning. TestHybrid_EveryUploadKindHasRetryPolicy fails on a
+// declared kind that falls through to the numeric default.
+func (k uploadKind) String() string {
+	switch k {
+	case uploadKindLog:
+		return "insert"
+	case uploadKindMCP:
+		return "mcp"
+	case uploadKindAgent:
+		return "agent"
+	case uploadKindLogMerge:
+		return "merge"
+	}
+	return fmt.Sprintf("uploadKind(%d)", uint8(k))
+}
+
+// unretriedUploadsWarning is the warning newHybridLogStore logs once when
+// object storage is turned on. It names every upload kind that
+// uploadKindRetries leaves fire-and-forget, so the list follows that map,
+// and it returns "" once every kind is retried. With a hybrid store the DB row
+// keeps no full copy of the payload, so one failed Put of such a kind loses
+// it. TXE-7948 holds the bounded retry for these kinds until a deployment
+// enables object storage (TXE-8078).
+func unretriedUploadsWarning() string {
+	var kinds []string
+	for k := uploadKind(0); int(k) < len(uploadKindRetries); k++ {
+		if !uploadKindRetries[k] {
+			kinds = append(kinds, k.String())
+		}
+	}
+	if len(kinds) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("objectstore: %s uploads to object storage are not retried. The database row keeps no full copy of the payload, so one failed Put loses it; each loss is counted in droppedUploads. A bounded retry for these uploads is held until a deployment enables object storage: see TXE-7948", strings.Join(kinds, ", "))
 }
 
 // defaultUploadRetryBackoff is the wait before each retry of an upload whose
@@ -172,6 +212,9 @@ func newHybridLogStore(inner LogStore, objects objectstore.ObjectStore, prefix s
 		offloadErrorRawBodies: offloadErrorRawBodies,
 		objectExt:             jsonObjectExt,
 		uploadRetryBackoff:    defaultUploadRetryBackoff,
+	}
+	if msg := unretriedUploadsWarning(); msg != "" && logger != nil {
+		logger.Warn("%s", msg)
 	}
 	// Start upload workers, one per queue shard. Uploads for one log id always
 	// land on the same shard (see uploadShard), so an insert's upload and a

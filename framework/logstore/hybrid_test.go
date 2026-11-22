@@ -2388,6 +2388,75 @@ func TestHybrid_EveryUploadKindHasRetryPolicy(t *testing.T) {
 	require.NotEmpty(t, declared, "no uploadKind constants found in hybrid.go")
 	assert.Len(t, uploadKindRetries, len(declared), "uploadKindRetries has an entry for a kind hybrid.go does not declare")
 	assert.True(t, uploadKindRetries[uploadKindLogMerge], "a merge upload carries the only copy of a late output and must be retried (TXE-7328)")
+	for i := range declared {
+		name := fmt.Sprint(uploadKind(i))
+		assert.NotEqual(t, fmt.Sprint(i), name, "upload kind %s has no name in uploadKind.String: the startup warning would print a number", declared[i])
+		assert.NotContains(t, name, "uploadKind(", "upload kind %s has no name in uploadKind.String: the startup warning would print a number", declared[i])
+	}
+}
+
+// warnRecordingLogger records every Warn line, formatted, so a test can read
+// what an operator would see in the pod log.
+type warnRecordingLogger struct {
+	hybridTestLogger
+	mu    sync.Mutex
+	warns []string
+}
+
+func (l *warnRecordingLogger) Warn(msg string, args ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.warns = append(l.warns, fmt.Sprintf(msg, args...))
+}
+
+func (l *warnRecordingLogger) warnsMentioning(s string) []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []string
+	for _, w := range l.warns {
+		if strings.Contains(w, s) {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+// TestHybrid_ConstructionWarnsThatUploadsAreNotRetried (TXE-8078): turning on
+// object storage logs one warning that names the upload kinds whose failed Put
+// loses the payload, so whoever enables hybrid mode learns about TXE-7948
+// from the pod log, not from a ticket. A retried kind (merge) is not named.
+func TestHybrid_ConstructionWarnsThatUploadsAreNotRetried(t *testing.T) {
+	ctx := context.Background()
+	inner, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "hybrid.db")}, hybridTestLogger{})
+	require.NoError(t, err)
+	logger := &warnRecordingLogger{}
+	hybrid := newHybridLogStore(inner, objectstore.NewInMemoryObjectStore(), "test", logger, nil, nil)
+	defer hybrid.Close(ctx)
+
+	warns := logger.warnsMentioning("TXE-7948")
+	require.Len(t, warns, 1, "constructing the hybrid store logs the not-retried warning exactly once; got warnings %q", logger.warns)
+	for _, kind := range []string{"insert", "mcp", "agent"} {
+		assert.Contains(t, warns[0], kind, "the warning names every upload kind uploadKindRetries leaves fire-and-forget")
+	}
+	assert.NotContains(t, warns[0], "merge", "merge uploads are retried (TXE-7328), so the warning does not name them")
+	assert.Contains(t, warns[0], "droppedUploads", "the warning says where a lost upload is counted")
+}
+
+// TestNewLogStore_WithoutObjectStorageDoesNotWarnAboutUploads (TXE-8078): a
+// store with no object storage never uploads, so it logs no upload warning.
+func TestNewLogStore_WithoutObjectStorageDoesNotWarnAboutUploads(t *testing.T) {
+	ctx := context.Background()
+	logger := &warnRecordingLogger{}
+	store, err := NewLogStore(ctx, &Config{
+		Enabled: true,
+		Type:    LogStoreTypeSQLite,
+		Config:  &SQLiteConfig{Path: filepath.Join(t.TempDir(), "plain.db")},
+	}, logger)
+	require.NoError(t, err)
+	defer store.Close(ctx)
+	_, isHybrid := store.(*HybridLogStore)
+	require.False(t, isHybrid, "no ObjectStorage means no hybrid wrapper")
+	assert.Empty(t, logger.warnsMentioning("TXE-7948"))
 }
 
 // TestHybrid_BatchUpdateKeepsStoredTimestamp: the reconcile's entry carries no
