@@ -180,6 +180,43 @@
         "default_request_timeout_in_seconds": 10
       }
     },
+    "azure": {
+      "keys": [
+        {
+          "name": "local-error-fixture",
+          "value": "test-key",
+          "models": [
+            "gpt-fixture-cache-ttl"
+          ],
+          "weight": 1,
+          "azure_key_config": {
+            "endpoint": "http://127.0.0.1:8791/pp/cachettl"
+          }
+        }
+      ],
+      "network_config": {
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
+    "openrouter": {
+      "keys": [
+        {
+          "name": "local-error-fixture",
+          "value": "test-key",
+          "models": [
+            "openai/gpt-fixture-cache-ttl",
+            "anthropic/claude-fixture-cache-ttl"
+          ],
+          "weight": 1
+        }
+      ],
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/cachettl",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
     "glm": {
       "keys": [
         {

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 )
 
 const (
@@ -1154,16 +1155,50 @@ func (br *BifrostRequest) RequestedPromptCacheTTLOnWire(extraParamsMerged bool) 
 	return ttl
 }
 
+// RequestTTLPricedCacheWrite is one entry of RequestTTLPricedCacheWrites.
+type RequestTTLPricedCacheWrite struct {
+	// Source is the vendor document or recorded response the entry rests on.
+	Source string
+	// Models, when set, limits the entry to the models the vendor prices by
+	// prompt_cache_options.ttl. Pricing asks it about each name the attempt carries (a key
+	// alias's canonical model name, its wire model id, the requested model) and the entry applies
+	// when any is covered, so it must answer true for a name, never true for "not some other
+	// family": an opaque Azure deployment id is no model's name. A request it covers under no
+	// name is priced by its usage alone. Nil covers every model of the provider.
+	Models func(model string) bool
+}
+
+// Covers reports whether the entry applies to a request that names model.
+func (e RequestTTLPricedCacheWrite) Covers(model string) bool {
+	return e.Models == nil || e.Models(model)
+}
+
 // RequestTTLPricedCacheWrites lists the providers whose vendor prices a prompt-cache write by the
 // TTL the request asked for (prompt_cache_options.ttl) and reports the write as one figure, with
 // no tier (fork, TXE-7069). For these, a write the response reports without a tier is costed at
-// the tier the request asked for. A provider whose usage reports the tier (Anthropic's
-// ephemeral_1h_input_tokens, OpenAI's ttl_30m/ttl_12h tokens) is never listed: its reported split
-// is what the vendor billed. TestRequestTTLPricedCacheWritesCostTheRequestedTier (framework/modelcatalog/datasheet) runs every
-// entry. The request path reads prompt_cache_options.ttl from the body it sends only on an attempt
-// whose base provider is listed (core/providers/utils, TXE-7996).
-var RequestTTLPricedCacheWrites = map[ModelProvider]string{
-	Moonshot: "Kimi bills a cache write by the request's prompt_cache_options.ttl and reports one cache_write_tokens figure without the TTL (the datasheet's moonshot/kimi-k3 row: $3/M base write, $6/M above 1 hour); TXE-6527 delivers the TTL to the vendor as sent",
+// the tier the request asked for; a write the response does split by tier keeps that split. A
+// provider whose usage reports the tier (Anthropic's ephemeral_1h_input_tokens, Bedrock's
+// cacheDetails, OpenAI's ttl_30m/ttl_12h tokens) is never listed: its reported split is what the
+// vendor billed. TestRequestTTLPricedCacheWritesCostTheRequestedTier (framework/modelcatalog/datasheet)
+// runs every entry, and TestEveryLongLivedCacheWriteRateHasATierDecision fails when the datasheet
+// carries a long-lived cache-write rate for a provider and model family nobody classified
+// (TXE-7946). The request path reads prompt_cache_options.ttl from the body it sends only on an
+// attempt whose base provider is listed (core/providers/utils, TXE-7996).
+var RequestTTLPricedCacheWrites = map[ModelProvider]RequestTTLPricedCacheWrite{
+	Moonshot: {Source: "Kimi bills a cache write by the request's prompt_cache_options.ttl and reports one cache_write_tokens figure without the TTL (the datasheet's moonshot/kimi-k3 row: $3/M base write, $6/M above 1 hour); TXE-6527 delivers the TTL to the vendor as sent"},
+	// Only OpenAI's models on Azure take prompt_cache_options. Claude on Azure is served through
+	// the Anthropic Messages API: its TTL is set per block in cache_control and its usage splits
+	// the write by tier (cache_creation), so it is not covered.
+	Azure: {
+		Source: "Azure OpenAI on GPT-5.6 and later: \"Cache-write rates for supported GPT-5.6 and later deployments depend on the selected TTL\", set by prompt_cache_options.ttl (30m, or 12h on the Responses and Decisions APIs), and usage reports \"cache writes in cache_write_tokens\" with no split by TTL (https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/prompt-caching, read 2026-11-22). The converter sends the field as given on chat and Responses (contract C4, TXE-7063); a split the response does report wins (TXE-7946)",
+		Models: IsOpenAIModel,
+	},
+	// OpenRouter applies prompt_cache_options to OpenAI models only: "the request-level
+	// prompt_cache_options stays OpenAI-only", and a Claude TTL travels in cache_control.
+	OpenRouter: {
+		Source: "OpenRouter on OpenAI models: \"Tokens written with a 12-hour TTL are billed at the 12-hour cache-write rate; the rest of the write is billed at the 30-minute rate. Both are included in cache_write_tokens in the response usage\", with the TTL set by prompt_cache_options.ttl (https://openrouter.ai/docs/guides/best-practices/prompt-caching, read 2026-11-22). Bifrost prices it only when OpenRouter's own usage.cost is ignored for the provider; the TTL reaches OpenRouter as sent on Responses and is refused on chat by the catalog (TXE-7946)",
+		Models: func(model string) bool { return strings.HasPrefix(model, "openai/") },
+	},
 }
 
 // PricingContextKeys are the context values datasheet.LookupScopesFromContext reads. A context
