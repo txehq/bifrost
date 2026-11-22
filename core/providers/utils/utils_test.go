@@ -5809,24 +5809,39 @@ func BenchmarkPromptCacheTTLInBody(b *testing.B) {
 // other provider pays for the scan; for those, the stamp is the body's TTL, "" when it has none.
 func TestPromptCacheTTLIsReadFromTheBodyOnlyForARequestTTLPricedBase(t *testing.T) {
 	body := []byte(`{"model":"m","prompt_cache_options":{"ttl":"1h"}}`)
+	escaped := []byte(`{"model":"m","prompt_cache_options":{"ttl":"1h"}}`)
 	for _, c := range []struct {
-		base schemas.ModelProvider
-		body []byte
-		want string
+		base            schemas.ModelProvider
+		stamped         string
+		merged, rawBody bool
+		body            []byte
+		want            string
 	}{
-		{schemas.Moonshot, body, "1h"},
-		{schemas.Moonshot, []byte(`{"model":"m"}`), ""},
-		{schemas.OpenAI, body, "typed"},
-		{"", body, "typed"},
+		{base: schemas.Moonshot, stamped: "typed", body: body, want: "1h"},
+		{base: schemas.Moonshot, stamped: "typed", body: []byte(`{"model":"m"}`), want: ""},
+		{base: schemas.OpenAI, stamped: "typed", body: body, want: "typed"},
+		{stamped: "typed", body: body, want: "typed"},
+		// TXE-7946: a converted body is scanned only when its request carries a TTL or merges
+		// extra params; with neither, no converter writes one, so the stamp of "" stands
+		// unread.
+		{base: schemas.Azure, body: body, want: ""},
+		{base: schemas.Azure, merged: true, body: body, want: "1h"},
+		{base: schemas.OpenRouter, stamped: "12h", body: body, want: "1h"},
+		// A raw body is always scanned, an escaped key included.
+		{base: schemas.OpenRouter, rawBody: true, body: body, want: "1h"},
+		{base: schemas.Azure, rawBody: true, body: escaped, want: "1h"},
 	} {
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-		ctx.SetValue(schemas.BifrostContextKeyRequestedPromptCacheTTL, "typed")
+		ctx.SetValue(schemas.BifrostContextKeyRequestedPromptCacheTTL, c.stamped)
+		if c.merged {
+			ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+		}
 		if c.base != "" {
 			ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, c.base)
 		}
-		stampPromptCacheTTLFromBody(ctx, c.body)
+		stampPromptCacheTTLFromBody(ctx, c.body, c.rawBody)
 		if got, _ := ctx.Value(schemas.BifrostContextKeyRequestedPromptCacheTTL).(string); got != c.want {
-			t.Errorf("base %q: stamped %q, want %q", c.base, got, c.want)
+			t.Errorf("base %q, stamped %q, merged %t, raw %t: stamped %q, want %q", c.base, c.stamped, c.merged, c.rawBody, got, c.want)
 		}
 	}
 	for _, base := range []schemas.ModelProvider{schemas.OpenAI, schemas.Anthropic, schemas.Gemini} {
@@ -5836,19 +5851,31 @@ func TestPromptCacheTTLIsReadFromTheBodyOnlyForARequestTTLPricedBase(t *testing.
 	}
 }
 
-// BenchmarkStampPromptCacheTTLFromBody: the per-request cost on an attempt whose base provider is
-// not listed (every provider but Kimi today), where the body is not scanned (fork, TXE-7996).
+// BenchmarkStampPromptCacheTTLFromBody: the per-request cost of reading the TTL from a 256 KB
+// body (fork, TXE-7996, TXE-7946). An unlisted base (openai) is never scanned. A listed base
+// (moonshot, azure, openrouter) is scanned only on an attempt whose request carries a TTL, or
+// whose extra params are merged into the body, or whose body is sent raw.
 func BenchmarkStampPromptCacheTTLFromBody(b *testing.B) {
 	body := []byte(`{"model":"m","messages":[` + strings.Repeat(`{"role":"user","content":"hi"},`, 8000) + `{"role":"user","content":"hi"}]}`)
-	for _, base := range []schemas.ModelProvider{schemas.OpenAI, schemas.Moonshot} {
-		b.Run(string(base), func(b *testing.B) {
-			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-			ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, base)
-			b.ReportAllocs()
-			for b.Loop() {
-				stampPromptCacheTTLFromBody(ctx, body)
-			}
-		})
+	for _, base := range []schemas.ModelProvider{schemas.OpenAI, schemas.Moonshot, schemas.Azure, schemas.OpenRouter} {
+		for _, c := range []struct {
+			name, stamped string
+			raw           bool
+		}{
+			{"converted_without_ttl", "", false},
+			{"converted_with_ttl", "12h", false},
+			{"raw", "", true},
+		} {
+			b.Run(string(base)+"/"+c.name, func(b *testing.B) {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, base)
+				b.ReportAllocs()
+				for b.Loop() {
+					ctx.SetValue(schemas.BifrostContextKeyRequestedPromptCacheTTL, c.stamped)
+					stampPromptCacheTTLFromBody(ctx, body, c.raw)
+				}
+			})
+		}
 	}
 }
 

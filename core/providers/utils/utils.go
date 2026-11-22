@@ -3581,10 +3581,10 @@ func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGette
 		if mt != nil {
 			mt.EndSpan(mhdl, schemas.SpanStatusOk, "")
 		}
-		stampPromptCacheTTLFromBody(ctx, jsonBody)
+		stampPromptCacheTTLFromBody(ctx, jsonBody, false)
 		return jsonBody, nil
 	} else {
-		stampPromptCacheTTLFromBody(ctx, rawBody)
+		stampPromptCacheTTLFromBody(ctx, rawBody, true)
 		return rawBody, nil
 	}
 }
@@ -3597,7 +3597,17 @@ func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGette
 // fails when they differ. Pricing reads the TTL only for a vendor in
 // schemas.RequestTTLPricedCacheWrites, so the body is scanned only when the attempt's base
 // provider (a custom provider's included) is one of them.
-func stampPromptCacheTTLFromBody(ctx context.Context, body []byte) {
+//
+// Even then, a converted body (rawBody false) is scanned only when the attempt's stamp is not
+// empty or its extra params are merged into the body. A converter writes prompt_cache_options
+// only from the typed request, and stampRequestedPromptCacheTTL has already read the typed
+// TTL and, with the merge on, the extra param. So a converted body whose request carries
+// neither has no TTL, and the stamp of "" stands. That keeps the scan off the common Azure and
+// OpenRouter request (TXE-7946): on a 256 KB body it costs about 77 µs, against a context read
+// (BenchmarkStampPromptCacheTTLFromBody). A raw body is the caller's own bytes, so it is always
+// scanned. A substring pre-check would miss a key spelled with a JSON escape, which gjson and
+// the vendor both still read.
+func stampPromptCacheTTLFromBody(ctx context.Context, body []byte, rawBody bool) {
 	bifrostCtx, ok := ctx.(*schemas.BifrostContext)
 	if !ok || bifrostCtx == nil {
 		return
@@ -3605,6 +3615,12 @@ func stampPromptCacheTTLFromBody(ctx context.Context, body []byte) {
 	base, _ := bifrostCtx.Value(schemas.BifrostContextKeyBaseProviderType).(schemas.ModelProvider)
 	if _, priced := schemas.RequestTTLPricedCacheWrites[base]; !priced {
 		return
+	}
+	if !rawBody {
+		stamped, _ := bifrostCtx.Value(schemas.BifrostContextKeyRequestedPromptCacheTTL).(string)
+		if stamped == "" && bifrostCtx.Value(schemas.BifrostContextKeyPassthroughExtraParams) != true {
+			return
+		}
 	}
 	bifrostCtx.SetValue(schemas.BifrostContextKeyRequestedPromptCacheTTL, PromptCacheTTLInBody(body))
 }
