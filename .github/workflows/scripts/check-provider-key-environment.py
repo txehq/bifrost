@@ -435,7 +435,10 @@ def problems(path):
             yield (f"{where}: {problem}; it is the only step outside "
                    f"`environment: {ENVIRONMENT}` that may read provider credentials (TXE-7574)")
         elif step is not None:
-            job = dict(job, steps=[s for s in job.get("steps") or [] if s is not step])
+            # Only the guard's validated env entries are exempt; a secret read anywhere else in
+            # the step (its run, name or shell) is checked like any other.
+            bare = {k: v for k, v in step.items() if k != "env"}
+            job = dict(job, steps=[bare if s is step else s for s in job.get("steps") or []])
         found = list(secret_reads(job, "job"))
         if not found:
             continue
