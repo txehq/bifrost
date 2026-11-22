@@ -77,7 +77,10 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           # Optional: for SSE MCP tests (e.g. remote proxy). Set in repo secrets.
           MCP_SSE_HEADERS: ${{ secrets.MCP_SSE_HEADERS }}
-        run: ./.github/workflows/scripts/test-e2e-ui.sh
+        # TXE-8129: count the provider keys this step gets, and warn when there are none.
+        run: |
+          python3 "$GITHUB_WORKSPACE/.github/workflows/scripts/count-provider-keys.py"
+          ./.github/workflows/scripts/test-e2e-ui.sh
 
       - name: Upload Playwright artifacts
         if: failure()

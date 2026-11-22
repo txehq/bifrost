@@ -22,4 +22,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.branch }}
-      - run: ./.github/workflows/scripts/test-core.sh
+      # The keys are in the job's env, so a step with none of its own counts them all.
+      - run: |
+          python3 "$GITHUB_WORKSPACE/.github/workflows/scripts/count-provider-keys.py"
+          ./.github/workflows/scripts/test-core.sh

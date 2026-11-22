@@ -14,7 +14,9 @@ jobs:
           LIVE_PROVIDERS_CANARY: ${{ secrets.LIVE_PROVIDERS_CANARY }}
         run: |
           if [ -z "$LIVE_PROVIDERS_CANARY" ]; then exit 1; fi
-      - run: make test-core
+      - run: |
+          python3 "$GITHUB_WORKSPACE/.github/workflows/scripts/count-provider-keys.py"
+          make test-core
         env:
           OPENAI_API_KEY: ${{ secrets['OPENAI_API_KEY'] }}
   docs:
