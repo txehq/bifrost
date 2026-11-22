@@ -3619,9 +3619,9 @@ func stampPromptCacheTTLFromBody(ctx context.Context, body []byte, rawBody bool)
 	}
 	// The same, for a vendor that bills a write at a block's cache_control.ttl (fork, TXE-8086).
 	// stampRequestedPromptCacheTTL stamps the typed request's longest cache_control.ttl first, and
-	// the body read replaces it: an encoder that strips cache_control (every OpenAI-shape chat
-	// target but OpenRouter) or turns it into a TTL-less prompt_cache_breakpoint (OpenRouter
-	// Responses) leaves no TTL in the body, so none is priced.
+	// the body read replaces it: an encoder that strips cache_control (an OpenAI-shape chat target
+	// whose perBlockCacheControlRules entry does not send it, TXE-8179) or turns it into a TTL-less
+	// prompt_cache_breakpoint (OpenRouter Responses) leaves no TTL in the body, so none is priced.
 	if _, priced := schemas.CacheControlTTLPricedCacheWrites[base]; priced &&
 		bodyMayCarryStampedTTL(bifrostCtx, schemas.BifrostContextKeyRequestedCacheControlTTL, rawBody) {
 		bifrostCtx.SetValue(schemas.BifrostContextKeyRequestedCacheControlTTL, CacheControlTTLInBody(body))

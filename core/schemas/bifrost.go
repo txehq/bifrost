@@ -1216,10 +1216,14 @@ var RequestTTLPricedCacheWrites = map[ModelProvider]RequestTTLPricedCacheWrite{
 // datasheet.
 //
 // Databricks is not listed. Its Claude docs show cache_control as {"type": "ephemeral"} with no
-// ttl, Bifrost's OpenAI-shape chat encoder strips per-block cache_control for every provider but
-// OpenRouter, and Bifrost decodes no Databricks cache write before TXE-8087.
+// ttl, so the OpenAI-shape chat encoder sends Databricks Claude its markers but refuses one that
+// carries a ttl (perBlockCacheControlRules in core/providers/openai, TXE-8179); TXE-8102 probes
+// whether Databricks honours a ttl. The encoder table and this one must agree: every provider
+// listed here sends its markers' ttl there, and none sends a ttl without an entry here
+// (TestCacheControlTTLPricingAgreesWithTheEncoder).
 var CacheControlTTLPricedCacheWrites = map[ModelProvider]RequestTTLPricedCacheWrite{
-	// The chat encoder sends cache_control to OpenRouter as given (OpenAIChatRequest.MarshalJSON).
+	// The chat encoder sends cache_control to OpenRouter as given, ttl included
+	// (perBlockCacheControlRules in core/providers/openai).
 	// The Responses encoder turns a marker into prompt_cache_breakpoint, which has no TTL, so a
 	// Responses request carries none and is costed at the base rate, as OpenRouter bills it.
 	OpenRouter: {

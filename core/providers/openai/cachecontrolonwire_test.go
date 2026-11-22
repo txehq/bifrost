@@ -160,3 +160,25 @@ func TestCacheControlTTLRefusal(t *testing.T) {
 		})
 	}
 }
+
+// The encoder table and the cache-control TTL pricing table (schemas.CacheControlTTLPricedCacheWrites,
+// TXE-8086) cannot drift: a provider priced at its markers' ttl must send the marker with its ttl,
+// or the vendor bills a 5-minute write that pricing costs at the asked tier; and a provider that
+// sends a ttl must have a pricing decision, or the vendor bills a 1-hour write that pricing costs
+// at the base rate (TXE-8179).
+func TestCacheControlTTLPricingAgreesWithTheEncoder(t *testing.T) {
+	for provider := range schemas.CacheControlTTLPricedCacheWrites {
+		rule, ok := perBlockCacheControlRules[provider]
+		if !ok || rule.treatment == cacheControlStripped || !rule.ttlSent {
+			t.Errorf("%s is priced at its cache_control ttl (CacheControlTTLPricedCacheWrites) but perBlockCacheControlRules does not send its markers with their ttl: %+v", provider, rule)
+		}
+	}
+	for provider, rule := range perBlockCacheControlRules {
+		if rule.treatment == cacheControlStripped || !rule.ttlSent {
+			continue
+		}
+		if _, priced := schemas.CacheControlTTLPricedCacheWrites[provider]; !priced {
+			t.Errorf("%s sends cache_control with its ttl but has no entry in schemas.CacheControlTTLPricedCacheWrites: decide how its ttl is priced", provider)
+		}
+	}
+}
