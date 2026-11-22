@@ -79,6 +79,14 @@ export const itemMatchesProvider = (item, ancestorNames, provider) => {
   const isOpenRouter = haystack.includes("openrouter");
   if (provider === "openrouter") return isOpenRouter;
   if (isOpenRouter) return false;
+  // GitHub Copilot rows (model "github-copilot/<model>") serve gpt-, claude- and gemini models,
+  // and its sign-in rows (/api/providers/github-copilot/sign-in, and the refusal on
+  // /api/providers/openai/sign-in) carry no model prefix, so they'd otherwise be claimed by those
+  // partitions and run without Copilot credentials. Route them exclusively to github-copilot
+  // (upstream 8207f16e3 filter-collection.mjs, moved here with the other partition rules).
+  const isCopilot = haystack.includes("github-copilot");
+  if (provider === "github-copilot") return isCopilot;
+  if (isCopilot) return false;
   // Bedrock Mantle rows (model "bedrock_mantle/...") contain the substring "bedrock", so they'd
   // otherwise be claimed by the bedrock partition too. Route them exclusively to bedrock_mantle.
   const isMantle = haystack.includes("bedrock_mantle") || haystack.includes("bedrock-mantle");

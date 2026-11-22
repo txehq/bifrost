@@ -2112,7 +2112,6 @@ func mergeProviderKeys(provider schemas.ModelProvider, keysInConfigJSON, dbKeys 
 					SGLKeyConfig:           dbKey.SGLKeyConfig,
 					DatabricksKeyConfig:    dbKey.DatabricksKeyConfig,
 					BFLKeyConfig:           dbKey.BFLKeyConfig,
-					GithubCopilotKeyConfig: dbKey.GithubCopilotKeyConfig,
 					CloudflareKeyConfig:    dbKey.CloudflareKeyConfig,
 					OAuthKeyConfig:         dbKey.OAuthKeyConfig,
 					Enabled:                dbKey.Enabled,
@@ -2206,7 +2205,6 @@ func reconcileProviderKeys(provider schemas.ModelProvider, keysInConfigJSON, dbK
 					SGLKeyConfig:           dbKey.SGLKeyConfig,
 					DatabricksKeyConfig:    dbKey.DatabricksKeyConfig,
 					BFLKeyConfig:           dbKey.BFLKeyConfig,
-					GithubCopilotKeyConfig: dbKey.GithubCopilotKeyConfig,
 					CloudflareKeyConfig:    dbKey.CloudflareKeyConfig,
 					OAuthKeyConfig:         dbKey.OAuthKeyConfig,
 					Enabled:                dbKey.Enabled,
@@ -9117,15 +9115,6 @@ func (c *Config) GetAllKeys() ([]configstoreTables.TableKey, error) {
 				cfg := *key.BFLKeyConfig // safe copy
 				cfg.WebhookSecret = cfg.WebhookSecret.Redacted()
 				configStoreKey.BFLKeyConfig = &cfg
-			}
-			if key.GithubCopilotKeyConfig != nil {
-				cfg := *key.GithubCopilotKeyConfig // safe copy
-				cfg.AppID = *cfg.AppID.Redacted()
-				cfg.InstallationID = *cfg.InstallationID.Redacted()
-				cfg.RepositoryID = *cfg.RepositoryID.Redacted()
-				cfg.PrivateKey = *cfg.PrivateKey.Redacted()
-				cfg.GithubDomain = *cfg.GithubDomain.Redacted()
-				configStoreKey.GithubCopilotKeyConfig = &cfg
 			}
 			if key.CloudflareKeyConfig != nil {
 				cfg := *key.CloudflareKeyConfig // safe copy
