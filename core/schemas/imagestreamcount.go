@@ -1,10 +1,9 @@
 package schemas
 
 import (
+	"encoding/json"
 	"fmt"
-	"math"
 	"strconv"
-	"strings"
 )
 
 // Streamed image count (fork, TXE-8077, contract C4 and C5).
@@ -45,9 +44,9 @@ var imageCountExtraParams = []string{"num_images", "number_of_images", "num_outp
 
 // RequestedStreamImageCount reports whether a streamed image request may ask for more than one
 // image, and if so the field that asks and the value it gave: n above 1, or a vendor name of n in
-// extra params whose value is not a whole number of at most 1. A value under a vendor name that
-// does not read as a whole number ("3.0", " 3", 2.5, true) is counted as asking for more, because
-// the vendor may read it as a count: the check fails closed. It reports false for a request that
+// extra params whose value is not exactly 0 or 1. Any other value under a vendor name ("3.0", " 3",
+// 2.5, -1, 1e20, true) is counted as asking for more, because the vendor may read it as a count:
+// the check fails closed. It reports false for a request that
 // asks for at most one image, and for any other request type.
 func RequestedStreamImageCount(req *BifrostRequest) (bool, string, string) {
 	if req == nil {
@@ -71,7 +70,7 @@ func RequestedStreamImageCount(req *BifrostRequest) (bool, string, string) {
 		if !present || value == nil {
 			continue
 		}
-		if v, ok := wholeImageCount(value); ok && v <= 1 {
+		if isZeroOrOneImage(value) {
 			continue
 		}
 		return true, name, BoundEchoedName(fmt.Sprint(value))
@@ -79,26 +78,42 @@ func RequestedStreamImageCount(req *BifrostRequest) (bool, string, string) {
 	return false, "", ""
 }
 
-// wholeImageCount reads value as a whole number the way a JSON body carries one: an integer type,
-// a float with no fraction, or a string of decimal digits with no sign, space or point.
-func wholeImageCount(value interface{}) (int, bool) {
+// isZeroOrOneImage reports whether value asks for at most one image: exactly 0 or 1 as a number of
+// any JSON-decoded or Go numeric type, or as the string "0" or "1". Everything else, a negative or
+// out-of-range number included, is read as asking for more, so no conversion can wrap a large
+// value into an allowed one.
+func isZeroOrOneImage(value interface{}) bool {
 	switch v := value.(type) {
 	case float64:
-		if v != math.Trunc(v) || math.IsInf(v, 0) {
-			return 0, false
-		}
+		return v == 0 || v == 1
 	case float32:
-		if float64(v) != math.Trunc(float64(v)) {
-			return 0, false
-		}
-	case bool:
-		return 0, false
+		return v == 0 || v == 1
+	case int:
+		return v == 0 || v == 1
+	case int8:
+		return v == 0 || v == 1
+	case int16:
+		return v == 0 || v == 1
+	case int32:
+		return v == 0 || v == 1
+	case int64:
+		return v == 0 || v == 1
+	case uint:
+		return v == 0 || v == 1
+	case uint8:
+		return v == 0 || v == 1
+	case uint16:
+		return v == 0 || v == 1
+	case uint32:
+		return v == 0 || v == 1
+	case uint64:
+		return v == 0 || v == 1
+	case json.Number:
+		return v == "0" || v == "1"
 	case string:
-		if v == "" || strings.TrimLeft(v, "0123456789") != "" {
-			return 0, false
-		}
+		return v == "0" || v == "1"
 	}
-	return SafeExtractInt(value)
+	return false
 }
 
 // NewImageStreamCountError is the 400 caller_unsupported_parameter answered to a streamed image

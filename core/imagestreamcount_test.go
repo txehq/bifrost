@@ -105,11 +105,11 @@ func TestImageStreamCountReadsVendorNamesOfN(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, param := range []string{"num_images", "number_of_images", "num_outputs"} {
-		for _, value := range []interface{}{3, float64(3), "3", "3.0", " 3", "+2", 2.5, float64(1.5), true, "two", []interface{}{1}} {
+		for _, value := range []interface{}{3, float64(3), "3", "3.0", " 3", "+2", 2.5, float64(1.5), true, "two", []interface{}{1}, -1, float64(-1), 1e20, float64(1 << 63), uint64(1 << 63), int64(-1 << 63), "01", "007"} {
 			req := imageStreamRequest(schemas.HuggingFace, schemas.ImageGenerationStreamRequest, "fal-ai/flux/dev", nil, map[string]interface{}{param: value})
 			assertImageStreamCountRefusal(t, param, decideImageStreamCountForAttempt(provider, schemas.ImageGenerationStreamRequest, req), param)
 		}
-		for _, value := range []interface{}{1, float64(1), "1", 0, "0", nil} {
+		for _, value := range []interface{}{1, float64(1), "1", 0, "0", int64(1), uint8(0), nil} {
 			req := imageStreamRequest(schemas.HuggingFace, schemas.ImageGenerationStreamRequest, "fal-ai/flux/dev", nil, map[string]interface{}{param: value})
 			if refusal := decideImageStreamCountForAttempt(provider, schemas.ImageGenerationStreamRequest, req); refusal != nil {
 				t.Errorf("%s=%#v must not be refused, got %+v", param, value, refusal)
