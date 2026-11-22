@@ -9334,7 +9334,22 @@ func promptCacheResponsesRequest(ctx *schemas.BifrostContext, config *schemas.Pr
 	}
 	cp := *r
 	cp.Input = providerUtils.InjectResponsesCacheBreakpointsSkipping(promptCache, r.Input, injectedMCPInstructionsResponsesIndex(ctx, r.Input))
+	restampInjectedCacheControlTTL(ctx, provider, &schemas.BifrostRequest{ResponsesRequest: &cp})
 	return &cp
+}
+
+// restampInjectedCacheControlTTL re-reads the longest typed cache_control.ttl after prompt_cache
+// injection added markers (a configured ttl: "1h"), which happens after
+// stampRequestedPromptCacheTTL. Without it, a request whose only 1h markers were injected would
+// skip the body read and be priced at the base rate (fork, TXE-8086). Only a base provider in
+// CacheControlTTLPricedCacheWrites is stamped.
+func restampInjectedCacheControlTTL(ctx *schemas.BifrostContext, provider schemas.ModelProvider, prepared *schemas.BifrostRequest) {
+	if ctx == nil {
+		return
+	}
+	if _, listed := schemas.CacheControlTTLPricedCacheWrites[schemas.ResolveBaseProvider(ctx, provider)]; listed {
+		ctx.SetValue(schemas.BifrostContextKeyRequestedCacheControlTTL, prepared.RequestedCacheControlTTL())
+	}
 }
 
 // prepareResponsesRequest returns the Responses request to dispatch for one attempt:
@@ -9581,6 +9596,7 @@ func promptCacheChatRequest(ctx *schemas.BifrostContext, config *schemas.Provide
 	}
 	cp := *r
 	cp.Input = providerUtils.InjectChatCacheBreakpointsSkipping(promptCache, r.Input, injectedMCPInstructionsChatIndex(ctx, r.Input))
+	restampInjectedCacheControlTTL(ctx, provider, &schemas.BifrostRequest{ChatRequest: &cp})
 	return &cp
 }
 

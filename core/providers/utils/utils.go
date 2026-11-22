@@ -3645,118 +3645,90 @@ func bodyMayCarryStampedTTL(ctx *schemas.BifrostContext, key any, rawBody bool) 
 	return ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true
 }
 
-// cacheControlTTLMaxDepth bounds how deep CacheControlTTLInBody looks. The deepest cache_control
-// a vendor reads sits a few levels down (messages[i].content[j].cache_control, or a tool result
-// nested in a message, about six), so the bound only stops a raw body crafted to recurse.
-const cacheControlTTLMaxDepth = 32
-
-// CacheControlTTLInBody returns the longest string cache_control.ttl anywhere in a JSON request
-// body, or "" when it has none (fork, TXE-8086). One write figure covers every block, so the
-// longest is the tier the vendor may have billed. The TTL returned never aliases body.
+// CacheControlTTLInBody returns the longest string cache_control.ttl a Chat Completions request
+// body carries where a vendor reads a cache marker, or "" when it carries none (fork, TXE-8086).
+// One write figure covers every block, so the longest is the tier the vendor may have billed. The
+// positions are the request's own cache_control, each tool's, each content block's
+// (messages[].content[]) and each assistant tool call's (messages[].tool_calls[]), which are
+// where Bifrost's chat encoder writes a marker and OpenRouter reads one. A cache_control anywhere
+// else is data, such as a tool schema's default, and is not read. So is any marker in a Responses
+// body: OpenRouter's Responses API reads no per-block cache_control.
 //
-// A body with no \u escape is searched for the literal key "cache_control" and only the value
-// after each one is parsed: without \u, no other spelling of the key exists, so the search finds
-// every member a decoder reads. A body with a \u escape (a caller's raw body may spell the key
-// that way) is walked member by member instead, which costs several times more. Bifrost's
-// encoders write keys unescaped, so a converted body takes the search unless its text carries a
-// \u escape. BenchmarkStampPromptCacheTTLFromBody records both.
+// It reads in place without decoding, and the walk has a fixed depth, so a body costs one pass
+// over each message whatever its nesting. gjson unescapes keys, so a key spelled with a \u escape
+// is read as a decoder reads it. A message or item whose text holds neither the literal
+// cache_control nor a \u escape (the only way to spell those letters otherwise) cannot hold a
+// marker and is skipped without parsing its members. The TTL returned never aliases body.
 func CacheControlTTLInBody(body []byte) string {
-	if !bytes.Contains(body, jsonUnicodeEscape) {
-		return cacheControlTTLByKeySearch(body)
-	}
-	return cacheControlTTLByWalk(body)
-}
-
-// cacheControlKeySearchMaxMatches caps the "cache_control" matches the key search reads before it
-// hands the body to the walk. Bifrost clamps the markers it sends a Claude model on OpenRouter to
-// four (clampOpenRouterCacheControl), so a converted body stays under it; a body past it is read
-// correctly, by the slower walk. The cap
-// bounds a crafted body's key search at 16 passes over it (BenchmarkCacheControlTTLInBodyCrafted).
-const cacheControlKeySearchMaxMatches = 16
-
-var (
-	jsonUnicodeEscape = []byte(`\u`)
-	cacheControlKey   = []byte(`"cache_control"`)
-)
-
-// cacheControlTTLByKeySearch reads every "cache_control" member of a body that spells its keys
-// literally. A match is a key only when its opening quote is not escaped (an even run of
-// backslashes before it) and a colon follows: inside a string every quote is escaped, and a
-// string value is never followed by a colon.
-func cacheControlTTLByKeySearch(body []byte) string {
-	if trimmed := bytes.TrimLeft(body, " \t\n\r"); len(trimmed) == 0 || trimmed[0] != '{' {
-		return ""
-	}
-	best := ""
-	for i, matches := 0, 0; i < len(body); matches++ {
-		// Each match parses the value after it, and a value nested in an earlier one is read
-		// again, so a body crafted with thousands of nested markers would cost quadratic time.
-		// A real request carries a handful (Anthropic allows four breakpoints); past the cap the
-		// depth-bounded walk reads the body, which visits each value a bounded number of times.
-		if matches == cacheControlKeySearchMaxMatches {
-			return cacheControlTTLByWalk(body)
-		}
-		j := bytes.Index(body[i:], cacheControlKey)
-		if j < 0 {
-			break
-		}
-		start := i + j
-		i = start + len(cacheControlKey)
-		backslashes := 0
-		for k := start - 1; k >= 0 && body[k] == '\\'; k-- {
-			backslashes++
-		}
-		if backslashes%2 == 1 {
-			continue
-		}
-		k := i
-		for k < len(body) && (body[k] == ' ' || body[k] == '\t' || body[k] == '\n' || body[k] == '\r') {
-			k++
-		}
-		if k >= len(body) || body[k] != ':' {
-			continue
-		}
-		value := gjson.Parse(unsafe.String(unsafe.SliceData(body[k+1:]), len(body)-k-1))
-		if !value.IsObject() {
-			continue
-		}
-		value.ForEach(func(field, ttl gjson.Result) bool {
-			if field.Str == "ttl" && ttl.Type == gjson.String {
-				best = schemas.LongerCacheTTL(best, ttl.Str)
-			}
-			return true
-		})
-	}
-	return strings.Clone(best)
-}
-
-// cacheControlTTLByWalk reads every "cache_control" member by walking the parsed body, so a key
-// spelled with a \u escape is read as a decoder reads it.
-func cacheControlTTLByWalk(body []byte) string {
 	root := gjson.Parse(unsafe.String(unsafe.SliceData(body), len(body)))
 	if !root.IsObject() {
 		return ""
 	}
-	best := ""
-	var walk func(v gjson.Result, depth int)
-	walk = func(v gjson.Result, depth int) {
-		v.ForEach(func(key, value gjson.Result) bool {
-			switch {
-			case key.Str == "cache_control" && value.IsObject():
-				value.ForEach(func(field, ttl gjson.Result) bool {
-					if field.Str == "ttl" && ttl.Type == gjson.String {
-						best = schemas.LongerCacheTTL(best, ttl.Str)
+	var w cacheControlTTLReader
+	root.ForEach(func(key, value gjson.Result) bool {
+		switch key.Str {
+		case "cache_control":
+			w.marker(value)
+		case "tools":
+			w.eachMarkerIn(value)
+		case "messages":
+			if value.IsArray() {
+				value.ForEach(func(_, msg gjson.Result) bool {
+					if msg.IsObject() && mayHoldCacheControl(msg.Raw) {
+						msg.ForEach(func(field, v gjson.Result) bool {
+							switch field.Str {
+							case "content", "tool_calls":
+								w.eachMarkerIn(v)
+							}
+							return true
+						})
 					}
 					return true
 				})
-			case depth < cacheControlTTLMaxDepth && (value.IsObject() || value.IsArray()):
-				walk(value, depth+1)
 			}
-			return true
-		})
+		}
+		return true
+	})
+	return strings.Clone(w.best)
+}
+
+type cacheControlTTLReader struct{ best string }
+
+// mayHoldCacheControl reports whether raw JSON could hold a "cache_control" member: it spells
+// the key literally, or carries a \u escape that could spell it.
+func mayHoldCacheControl(raw string) bool {
+	return strings.Contains(raw, "cache_control") || strings.Contains(raw, `\u`)
+}
+
+// eachMarkerIn reads the cache_control member of every object in the array v.
+func (w *cacheControlTTLReader) eachMarkerIn(v gjson.Result) {
+	if !v.IsArray() {
+		return
 	}
-	walk(root, 1)
-	return strings.Clone(best)
+	v.ForEach(func(_, item gjson.Result) bool {
+		if item.IsObject() && mayHoldCacheControl(item.Raw) {
+			item.ForEach(func(field, value gjson.Result) bool {
+				if field.Str == "cache_control" {
+					w.marker(value)
+				}
+				return true
+			})
+		}
+		return true
+	})
+}
+
+// marker reads the string ttl members of one cache_control object.
+func (w *cacheControlTTLReader) marker(v gjson.Result) {
+	if !v.IsObject() {
+		return
+	}
+	v.ForEach(func(field, ttl gjson.Result) bool {
+		if field.Str == "ttl" && ttl.Type == gjson.String {
+			w.best = schemas.LongerCacheTTL(w.best, ttl.Str)
+		}
+		return true
+	})
 }
 
 // PromptCacheTTLInBody returns the string prompt_cache_options.ttl of a JSON request body, or ""

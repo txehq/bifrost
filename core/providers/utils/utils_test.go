@@ -5906,38 +5906,33 @@ func TestPromptCacheTTLInBodyPricesAnAmbiguousBodyAtItsLongestTTL(t *testing.T) 
 
 // TestCacheControlTTLInBodyIsTheLongestBlockTTL: a vendor that bills a write at a block's
 // cache_control.ttl reports one figure for every block, so the body is priced at the longest TTL
-// any block, tool or message carries (fork, TXE-8086). A ttl that is not a string and a
-// cache_control that is not an object are not read, nor is a "cache_control" inside a string. A
-// body with a \u escape is walked, so a key spelled with one is read as a decoder reads it; the
-// walk stops at cacheControlTTLMaxDepth, while the key search has no depth to bound.
+// a marker carries (fork, TXE-8086). Only marker positions are read: the request's own, a tool's,
+// a content block's and an assistant tool call's. A cache_control elsewhere is data (a tool
+// schema's default, a value nested in a marker, a Responses body's blocks) and is not read, nor is
+// a ttl that is not a string or a marker that is not an object. A key spelled with a \u escape is
+// read as a decoder reads it.
 func TestCacheControlTTLInBodyIsTheLongestBlockTTL(t *testing.T) {
-	nested := func(inner string) string {
-		return strings.Repeat(`{"a":`, cacheControlTTLMaxDepth) + inner + strings.Repeat(`}`, cacheControlTTLMaxDepth)
-	}
 	for body, want := range map[string]string{
-		`{"messages":[{"content":[{"cache\u005fcontrol":{"ttl":"1h"}}]}]}`:                                                                 "1h",
-		`{"messages":[{"content":"\u00e9","x":[{"cache_control":{"ttl":"5m"}},{"cache_control":{"ttl":"1h"}}]}]}`:                          "1h",
-		`{"messages":[{"content":"say \"cache_control\": {\"ttl\":\"1h\"}"}]}`:                                                             "",
-		`{"messages":[{"content":"x\\","cache_control" : {"ttl":"1h"}}]}`:                                                                  "1h",
-		`{"messages":[{"type":"cache_control","text":"x"}]}`:                                                                               "",
-		`  {"cache_control":{"ttl":"1h"}}`:                                                                                                 "1h",
-		nested(`{"cache_control":{"ttl":"1h"}}`):                                                                                           "1h",
-		nested(`{"x":"\u00e9","cache_control":{"ttl":"1h"}}`):                                                                              "",
-		`{"messages":[{"role":"user","content":[{"type":"text","text":"x","cache_control":{"type":"ephemeral","ttl":"1h"}}]}]}`:            "1h",
-		`{"messages":[{"content":[{"cache_control":{"type":"ephemeral","ttl":"5m"}},{"cache_control":{"type":"ephemeral","ttl":"1h"}}]}]}`: "1h",
-		`{"tools":[{"type":"function","cache_control":{"type":"ephemeral","ttl":"1h"}}],"messages":[]}`:                                    "1h",
-		`{"messages":[{"tool_calls":[{"id":"c","cache_control":{"ttl":"1h"}}]}]}`:                                                          "1h",
-		`{"cache_control":{"type":"ephemeral","ttl":"1h"}}`:                                                                                "1h",
-		`{"messages":[{"content":[{"cache_control":{"type":"ephemeral"}}]}]}`:                                                              "",
-		`{"messages":[{"content":[{"cache_control":{"ttl":3600}}]}]}`:                                                                      "",
-		`{"messages":[{"content":[{"cache_control":"1h"}]}]}`:                                                                              "",
-		`{"messages":[{"content":"cache_control ttl 1h"}]}`:                                                                                "",
+		`{"messages":[{"role":"user","content":[{"type":"text","text":"x","cache_control":{"type":"ephemeral","ttl":"1h"}}]}]}`:                        "1h",
+		`{"messages":[{"content":[{"cache_control":{"type":"ephemeral","ttl":"5m"}},{"cache_control":{"type":"ephemeral","ttl":"1h"}}]}]}`:             "1h",
+		`{"tools":[{"type":"function","cache_control":{"type":"ephemeral","ttl":"1h"}}],"messages":[]}`:                                                "1h",
+		`{"messages":[{"role":"assistant","tool_calls":[{"id":"c","cache_control":{"ttl":"1h"}}]}]}`:                                                   "1h",
+		`{"cache_control":{"type":"ephemeral","ttl":"1h"}}`:                                                                                            "1h",
+		`{"messages":[{"content":[{"cache_control":{"ttl":"1h"}}]}]}`:                                                                                  "1h",
+		`{"messages":[{"content":[{"cache_control":{"ttl":"5m"}}]}],"tools":[{"function":{"parameters":{"default":{"cache_control":{"ttl":"1h"}}}}}]}`: "5m",
+		`{"messages":[{"content":[{"cache_control":{"cache_control":{"ttl":"1h"}}}]}]}`:                                                                "",
+		`{"input":[{"role":"user","content":[{"type":"input_text","text":"x","cache_control":{"ttl":"1h"}}]}]}`:                                        "",
+		`{"messages":[{"content":"say \"cache_control\": {\"ttl\":\"1h\"}"}]}`:                                                                         "",
+		`{"messages":[{"content":[{"cache_control":{"type":"ephemeral"}}]}]}`:                                                                          "",
+		`{"messages":[{"content":[{"cache_control":{"ttl":3600}}]}]}`:                                                                                  "",
+		`{"messages":[{"content":[{"cache_control":"1h"}]}]}`:                                                                                          "",
+		`{"messages":"x","tools":{"cache_control":{"ttl":"1h"}}}`:                                                                                      "",
 		`{"model":"m"}`: "",
 		`not json`:      "",
 		`["a"]`:         "",
 	} {
 		if got := CacheControlTTLInBody([]byte(body)); got != want {
-			t.Errorf("%.80s: got %q, want %q", body, got, want)
+			t.Errorf("%.90s: got %q, want %q", body, got, want)
 		}
 	}
 }
@@ -5990,20 +5985,20 @@ func TestCacheControlTTLIsReadFromTheBodyOnlyForACacheControlTTLPricedBase(t *te
 }
 
 // BenchmarkCacheControlTTLInBody states what reading cache_control.ttl from a 256 KB chat body
-// costs (fork, TXE-8086): the key search on a body with no \u escape, and the walk on one with one.
+// costs (fork, TXE-8086): a body of few long messages, and one of thousands of short ones, each
+// with one marked block at the end.
 func BenchmarkCacheControlTTLInBody(b *testing.B) {
-	message := `{"role":"user","content":[{"type":"text","text":"` + strings.Repeat("lorem ipsum ", 30) + `"}]},`
 	marked := `{"role":"user","content":[{"type":"text","text":"x","cache_control":{"type":"ephemeral","ttl":"1h"}}]}`
-	body := func(text string) []byte {
-		messages := strings.Repeat(strings.Replace(message, "lorem", text, 1), 256*1024/len(message))
+	body := func(message string) []byte {
+		messages := strings.Repeat(message, 256*1024/len(message))
 		return []byte(`{"model":"anthropic/claude","messages":[` + messages + marked + `]}`)
 	}
 	for _, c := range []struct {
 		name string
 		body []byte
 	}{
-		{"256KiB key search", body("lorem")},
-		{"256KiB walk (a \\u escape in the text)", body(`café`)},
+		{"256KiB long messages", body(`{"role":"user","content":[{"type":"text","text":"` + strings.Repeat("lorem ipsum ", 300) + `"}]},`)},
+		{"256KiB short messages", body(`{"role":"user","content":[{"type":"text","text":"hi"}]},`)},
 	} {
 		b.Run(c.name, func(b *testing.B) {
 			b.SetBytes(int64(len(c.body)))
@@ -6017,14 +6012,11 @@ func BenchmarkCacheControlTTLInBody(b *testing.B) {
 	}
 }
 
-// TestCacheControlTTLInBodyBoundsACraftedBody: past cacheControlKeySearchMaxMatches markers the
-// key search hands the body to the depth-bounded walk (fork, TXE-8086), whose cost
-// BenchmarkCacheControlTTLInBodyCrafted records. The walk reads each marker's own members and
-// does not look for markers inside a marker, so 20,000 nested markers price nothing, while 101
-// sibling block markers are all read.
+// TestCacheControlTTLInBodyBoundsACraftedBody: the read has a fixed depth, so a body crafted with
+// thousands of nested markers is one pass (BenchmarkCacheControlTTLInBodyCrafted records it) and
+// prices nothing, while 101 sibling block markers are all read (fork, TXE-8086).
 func TestCacheControlTTLInBodyBoundsACraftedBody(t *testing.T) {
-	nested := []byte(`{"a":` + strings.Repeat(`{"cache_control":`, 20000) + `{"ttl":"1h"}` + strings.Repeat(`}`, 20000) + `}`)
-	if got := CacheControlTTLInBody(nested); got != "" {
+	if got := CacheControlTTLInBody(craftedNestedCacheControlBody()); got != "" {
 		t.Fatalf("20,000 nested markers: got %q, want \"\"", got)
 	}
 	var siblings strings.Builder
@@ -6038,10 +6030,15 @@ func TestCacheControlTTLInBodyBoundsACraftedBody(t *testing.T) {
 	}
 }
 
+// craftedNestedCacheControlBody nests 20,000 cache_control markers inside a content block's.
+func craftedNestedCacheControlBody() []byte {
+	return []byte(`{"messages":[{"content":[{"cache_control":` + strings.Repeat(`{"cache_control":`, 20000) + `{"ttl":"1h"}` + strings.Repeat(`}`, 20000) + `}]}]}`)
+}
+
 // BenchmarkCacheControlTTLInBodyCrafted: the cost of a body crafted with 20,000 nested markers
-// (TXE-8086), which the match cap sends to the walk.
+// (TXE-8086).
 func BenchmarkCacheControlTTLInBodyCrafted(b *testing.B) {
-	body := []byte(`{"a":` + strings.Repeat(`{"cache_control":`, 20000) + `{"ttl":"1h"}` + strings.Repeat(`}`, 20000) + `}`)
+	body := craftedNestedCacheControlBody()
 	b.SetBytes(int64(len(body)))
 	b.ReportAllocs()
 	for b.Loop() {

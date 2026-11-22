@@ -1349,6 +1349,48 @@ func TestProviderDispatchStampsRequestedCacheControlTTL(t *testing.T) {
 	}
 }
 
+// TXE-8086 (codex-review on #436): prompt_cache injection adds markers after the dispatch stamp,
+// so a request whose only 1h markers are injected must be re-stamped from the prepared request.
+// Without it the body read is skipped and the write is priced at the base rate. Only a listed
+// base is re-stamped, and the shared request keeps no marker.
+func TestPromptCacheInjectionRestampsTheCacheControlTTL(t *testing.T) {
+	hour := "1h"
+	config := &schemas.ProviderConfig{PromptCache: &schemas.PromptCacheConfig{AutoInject: true, TTL: &hour}}
+	for _, base := range []schemas.ModelProvider{schemas.OpenRouter, schemas.Anthropic} {
+		model := "claude-sonnet-4"
+		if base == schemas.OpenRouter {
+			model = "anthropic/claude-sonnet-4"
+		}
+		var want any
+		if base == schemas.OpenRouter {
+			want = "1h"
+		}
+		t.Run(string(base)+"/chat", func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, base)
+			req := chatReqWithText("stable prefix")
+			req.Provider, req.Model = base, model
+			out := promptCacheChatRequest(ctx, config, base, req)
+			require.NotSame(t, req, out, "expected an injected marker")
+			assert.Equal(t, want, ctx.Value(requestedCacheControlTTLKey))
+			assert.Nil(t, req.Input[0].Content.ContentBlocks[0].CacheControl)
+		})
+		t.Run(string(base)+"/responses", func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, base)
+			req := &schemas.BifrostResponsesRequest{Provider: base, Model: model, Input: []schemas.ResponsesMessage{{
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+					Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("stable prefix"),
+				}}},
+			}}}
+			out := promptCacheResponsesRequest(ctx, config, base, req)
+			require.NotSame(t, req, out, "expected an injected marker")
+			assert.Equal(t, want, ctx.Value(requestedCacheControlTTLKey))
+		})
+	}
+}
+
 // The dispatch cost of the cache_control stamp (TXE-8086), on a 200-message chat request: an
 // unlisted base pays a map lookup and a context read; a listed one walks the typed request.
 func BenchmarkStampRequestedCacheControlTTL(b *testing.B) {
