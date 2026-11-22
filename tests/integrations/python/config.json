@@ -1817,17 +1817,5 @@
     "oauth2_server_config": {
       "issuer_url": "http://localhost:8080"
     }
-  },
-  "vector_store": {
-    "enabled": true,
-    "type": "weaviate",
-    "config": {
-      "scheme": "http",
-      "host": "localhost:9000",
-      "grpc_config": {
-        "host": "localhost:50051",
-        "secured": false
-      }
-    }
   }
 }
