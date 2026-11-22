@@ -232,6 +232,16 @@ func ProviderSupportsOAuthKeyConfig(providerKey schemas.ModelProvider) bool {
 	return providerKey == schemas.OpenAI
 }
 
+// KeyHasCredential reports whether a key carries a credential key selection accepts: a
+// non-blank value, or none on a provider (the base provider for a custom one) whose keys
+// may carry none (keyValueMayBeEmpty). It is the one statement of that rule: key selection
+// skips a key it rejects without a log line, and the gateway reports such keys once at load
+// with the same function (TXE-6085), so the two cannot disagree. TestKeyCredentialRuleHasOneSource
+// fails when core applies keyValueMayBeEmpty anywhere else.
+func KeyHasCredential(providerKey schemas.ModelProvider, key *schemas.Key) bool {
+	return strings.TrimSpace(key.Value.GetValue()) != "" || keyValueMayBeEmpty(providerKey, key)
+}
+
 // keyValueMayBeEmpty reports whether a key with no value is still usable: either the provider
 // carries its credentials in its own key config (CanProviderKeyValueBeEmpty), or the key
 // mints its bearer from oauth_key_config on a provider that honours it.

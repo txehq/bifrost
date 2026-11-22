@@ -173,6 +173,32 @@ tokens and refreshes those automatically, so the key keeps working with no actio
 To revoke it, go to GitHub **Settings** > **Applications** > **Authorized GitHub Apps**.
 Signing in again replaces the key's token.
 
+Sign-in reaches GitHub the way the provider does: through the GitHub Copilot provider's own
+proxy (or the inherited global proxy, or the global proxy enabled for API traffic) and with
+its `network_config` TLS settings, so a deployment behind a TLS-inspecting proxy trusts the
+same `ca_cert_pem` for both. The form stops polling when GitHub's device code expires.
+
+### Migrating from GitHub App keys
+
+Versions up to 2.4.0-sync.15 could authenticate a key with GitHub App credentials
+(`github_copilot_key_config`: app ID, installation ID, repository ID, private key and an
+optional GitHub Enterprise domain), with usage billed to the organization that owns the
+installation. That mode is gone: a key now authenticates only with the token in `value`, and
+usage bills to the Copilot seat of the user the token belongs to. Organization billing through
+an App installation and GitHub Enterprise (`*.ghe.com`) domains are no longer supported.
+
+- A key that held only App credentials has no token after the upgrade. Bifrost never selects
+  it, and logs an error at startup naming the provider and the key. Open the key and click
+  **Sign in with GitHub**, or paste a fine-grained personal access token with the **Copilot
+  Requests** permission.
+- The stored App credentials are not deleted. They stay in the config store's
+  `github_copilot_*` columns, unused and encrypted with their row when encryption is on, so
+  rolling back to an earlier version finds them intact.
+- In `config.json`, Bifrost ignores a `github_copilot_key_config` block, and a key that has
+  nothing else is reported at startup like any key without a token. `config.schema.json` no
+  longer describes the block and requires a `value`, so an editor or CI check that validates
+  against the schema flags such a key. Replace the block with a `value`.
+
 ---
 
 # 1. Chat Completions

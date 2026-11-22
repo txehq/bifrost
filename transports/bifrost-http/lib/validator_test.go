@@ -3668,6 +3668,9 @@ func TestSchemaGithubCopilotCredentialRequired(t *testing.T) {
 	for name, key := range map[string]string{
 		"no token":       `"name": "k", "models": ["*"], "weight": 1.0`,
 		"an empty token": `"name": "k", "value": "", "models": ["*"], "weight": 1.0`,
+		// GitHub App auth was removed (TXE-6085): a key written for it carries no token, which
+		// the schema refuses as it does any key without one.
+		"only the removed App block": `"name": "k", "models": ["*"], "weight": 1.0, "github_copilot_key_config": {"app_id": "1", "installation_id": "2", "repository_id": "3", "private_key": "pem"}`,
 	} {
 		if err := validateConfig(t, compiled, copilotKeyConfig(key)); err == nil {
 			t.Errorf("%s should be invalid", name)

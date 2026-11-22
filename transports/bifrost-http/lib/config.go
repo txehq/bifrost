@@ -1922,6 +1922,7 @@ func loadProviders(ctx context.Context, config *Config, configData *ConfigData) 
 		}
 	}
 	config.Providers = providersInConfigStore
+	logUnusableProviderKeys(config.Providers)
 	return nil
 }
 

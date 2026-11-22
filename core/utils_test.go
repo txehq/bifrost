@@ -1597,3 +1597,64 @@ func BenchmarkRefuseAmbiguousForwardedBody(b *testing.B) {
 		})
 	}
 }
+
+// TestKeyHasCredential pins the credential rule key selection applies, which the gateway also
+// uses to report unusable keys at load (TXE-6085). A GitHub Copilot key whose GitHub App
+// credentials were removed has no value, and is not selectable.
+func TestKeyHasCredential(t *testing.T) {
+	blank := *schemas.NewSecretVar("  ")
+	cases := []struct {
+		name     string
+		provider schemas.ModelProvider
+		key      schemas.Key
+		want     bool
+	}{
+		{"a value", schemas.GithubCopilot, schemas.Key{Value: *schemas.NewSecretVar("github_pat_x")}, true},
+		{"no value on a provider whose keys need one", schemas.GithubCopilot, schemas.Key{}, false},
+		{"a blank value", schemas.OpenAI, schemas.Key{Value: blank}, false},
+		{"no value on a provider whose keys carry their credential elsewhere", schemas.Bedrock, schemas.Key{}, true},
+		{"oauth_key_config on a provider that honours it", schemas.OpenAI, schemas.Key{OAuthKeyConfig: &schemas.OAuthKeyConfig{}}, true},
+		{"oauth_key_config on a provider that does not", schemas.GithubCopilot, schemas.Key{OAuthKeyConfig: &schemas.OAuthKeyConfig{}}, false},
+	}
+	for _, tc := range cases {
+		if got := KeyHasCredential(tc.provider, &tc.key); got != tc.want {
+			t.Errorf("%s: KeyHasCredential(%s) = %v, want %v", tc.name, tc.provider, got, tc.want)
+		}
+	}
+}
+
+// TestKeyCredentialRuleHasOneSource fails when core applies the empty-value exception
+// (keyValueMayBeEmpty) anywhere but KeyHasCredential. Key selection skips a key that rule
+// rejects without a log line, and the gateway reports such keys at load through
+// KeyHasCredential, so a second spelling of the rule would let the two disagree.
+func TestKeyCredentialRuleHasOneSource(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	for _, file := range files {
+		if strings.HasSuffix(file, "_test.go") {
+			continue
+		}
+		data, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, line := range strings.Split(string(data), "\n") {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "func keyValueMayBeEmpty(") {
+				continue
+			}
+			if strings.Contains(line, "keyValueMayBeEmpty(") {
+				calls++
+				if file != "utils.go" || !strings.Contains(line, `return strings.TrimSpace(key.Value.GetValue()) != "" || keyValueMayBeEmpty(providerKey, key)`) {
+					t.Errorf("%s:%d applies keyValueMayBeEmpty directly; call KeyHasCredential instead", file, i+1)
+				}
+			}
+		}
+	}
+	if calls != 1 {
+		t.Errorf("keyValueMayBeEmpty is called %d times outside comments; want exactly once, inside KeyHasCredential", calls)
+	}
+}
