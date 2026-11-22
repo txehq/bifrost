@@ -416,6 +416,14 @@ func (provider *BytePlusProvider) TranscriptionStream(ctx *schemas.BifrostContex
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionStreamRequest, provider.GetProviderKey())
 }
 
+// StreamsEveryImage declares that a Seedream stream relays every finished image under its own
+// image_index and that its final frame carries Ark's own count of the images it generated as
+// usage.output_images (ToBifrostImageUsage), so core lets a streamed n above 1 through
+// (schemas.ImageStreamCounter, TXE-8077). TestBytePlusImageGenerationStream pins it.
+func (provider *BytePlusProvider) StreamsEveryImage(requestType schemas.RequestType) bool {
+	return schemas.IsImageStreamRequestType(requestType)
+}
+
 // ImageGenerationStream streams a Seedream generation, one event per finished image. Ark streams
 // only on Seedream 5.0 lite, 4.5 and 4.0; other models reject the stream field with a 400.
 func (provider *BytePlusProvider) ImageGenerationStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
