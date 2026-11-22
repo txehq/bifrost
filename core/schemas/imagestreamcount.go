@@ -38,9 +38,12 @@ func IsImageStreamRequestType(t RequestType) bool {
 var ImageStreamRequestTypes = []RequestType{ImageGenerationStreamRequest, ImageEditStreamRequest}
 
 // imageCountExtraParams are the vendor names of n that reach a vendor unchanged as extra params:
-// fal-ai's num_images, and replicate's number_of_images and num_outputs. A count sent under one of
-// them asks the vendor for several images as n does.
-var imageCountExtraParams = []string{"num_images", "number_of_images", "num_outputs"}
+// fal-ai's num_images, replicate's number_of_images and num_outputs, and the names hosted diffusion
+// models commonly give the same count (batch_size, num_images_per_prompt, num_samples, samples,
+// max_images). A count sent under one of them asks the vendor for several images as n does. The
+// list cannot be complete, since a hosted model names its own inputs; TXE-8082 covers a stream
+// that delivers more images than it reports.
+var imageCountExtraParams = []string{"num_images", "number_of_images", "num_outputs", "batch_size", "num_images_per_prompt", "num_samples", "samples", "max_images"}
 
 // RequestedStreamImageCount reports whether a streamed image request may ask for more than one
 // image, and if so the field that asks and the value it gave: n above 1, or a vendor name of n in
