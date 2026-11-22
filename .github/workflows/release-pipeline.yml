@@ -13,11 +13,24 @@ on:
         required: false
         type: boolean
         default: false
-    # Repository secrets the release jobs read, passed by name from release.yml. Provider
-    # credentials are not here: they are secrets of the live-providers environment, which the
-    # jobs that read them name (check-provider-key-environment.py). test-release-gates.py keeps
-    # this list equal to the non-provider secrets this file reads.
+    # Every secret the release jobs read, each passed from release.yml under its own name
+    # with the caller's value of that same secret. That includes the provider credentials and
+    # LIVE_PROVIDERS_CANARY, which exist only as secrets of the live-providers environment.
+    # A called job reads an environment secret as empty unless this list declares it and the
+    # caller passes it by its own name, even when the job names the environment. The caller's
+    # value of such a secret is empty, so the job that names live-providers reads the
+    # environment's value (measured with a scratch environment on 2026-11-22, TXE-7574; the
+    # sync.15 release run 44992898623 failed every canary without it).
+    # check-provider-key-environment.py fails a live-providers job here that reads a secret
+    # this list does not declare, and a caller that does not pass one. test-release-gates.py
+    # keeps this list equal to the secrets this file reads.
     secrets:
+      ANTHROPIC_API_KEY:
+        required: false
+      ASSEMBLYAI_API_KEY:
+        required: false
+      AWS_ACCESS_KEY_ID:
+        required: false
       AWS_ARN:
         required: false
       AWS_BEDROCK_ROLE_ARN:
@@ -26,27 +39,61 @@ on:
         required: false
       AWS_S3_BUCKET:
         required: false
+      AWS_SECRET_ACCESS_KEY:
+        required: false
+      AWS_SESSION_TOKEN:
+        required: false
+      AZURE_API_KEY:
+        required: false
       AZURE_API_VERSION:
         required: false
       AZURE_CLIENT_ID:
         required: false
+      AZURE_CLIENT_SECRET:
+        required: false
       AZURE_ENDPOINT:
+        required: false
+      AZURE_SPEECH_API_KEY:
         required: false
       AZURE_SPEECH_ENDPOINT:
         required: false
       AZURE_TENANT_ID:
         required: false
+      BEDROCK_API_KEY:
+        required: false
       BEDROCK_GUARDRAIL_IDENTIFIER:
         required: false
       BIFROST_ENCRYPTION_KEY:
         required: false
+      CEREBRAS_API_KEY:
+        required: false
       CLOUDFLARE_ACCOUNT_ID:
+        required: false
+      CLOUDFLARE_API_TOKEN:
         required: false
       CODECOV_TOKEN:
         required: false
+      COHERE_API_KEY:
+        required: false
+      DASHSCOPE_API_KEY:
+        required: false
+      DATABRICKS_TOKEN:
+        required: false
       DATABRICKS_WORKSPACE_URL:
         required: false
+      DEEPGRAM_API_KEY:
+        required: false
+      DEEPINFRA_API_KEY:
+        required: false
+      DEEPSEEK_API_KEY:
+        required: false
       DISCORD_WEBHOOK:
+        required: false
+      ELEVENLABS_API_KEY:
+        required: false
+      FIREWORKS_API_KEY:
+        required: false
+      GEMINI_API_KEY:
         required: false
       GH_TOKEN:
         required: false
@@ -54,11 +101,33 @@ on:
         required: false
       GITHUB_COPILOT_INSTALLATION_ID:
         required: false
+      GITHUB_COPILOT_PRIVATE_KEY:
+        required: false
       GITHUB_COPILOT_REPOSITORY_ID:
         required: false
       GOOGLE_LOCATION:
         required: false
+      GROQ_API_KEY:
+        required: false
+      HUGGING_FACE_API_KEY:
+        required: false
+      LIVE_PROVIDERS_CANARY:
+        required: false
+      MAXIM_API_KEY:
+        required: false
       MAXIM_LOG_REPO_ID:
+        required: false
+      MISTRAL_API_KEY:
+        required: false
+      NEBIUS_API_KEY:
+        required: false
+      OPENAI_API_KEY:
+        required: false
+      OPENROUTER_API_KEY:
+        required: false
+      PARASAIL_API_KEY:
+        required: false
+      PERPLEXITY_API_KEY:
         required: false
       R2_ACCESS_KEY_ID:
         required: false
@@ -68,17 +137,39 @@ on:
         required: false
       R2_SECRET_ACCESS_KEY:
         required: false
+      REPLICATE_API_KEY:
+        required: false
       REPLICATE_OWNER:
+        required: false
+      RUNPOD_API_KEY:
         required: false
       RUNPOD_NETWORK_VOLUME_ID:
         required: false
       RUNPOD_REASONING_NETWORK_VOLUME_ID:
+        required: false
+      RUNWARE_API_KEY:
+        required: false
+      RUNWAY_API_KEY:
+        required: false
+      SARVAM_API_KEY:
+        required: false
+      SGL_API_KEY:
+        required: false
+      TYPESAFE_API_KEY:
+        required: false
+      VERCEL_AI_GATEWAY_API_KEY:
+        required: false
+      VERTEX_CREDENTIALS:
         required: false
       VERTEX_GCS_BUCKET:
         required: false
       VERTEX_GCS_PREFIX:
         required: false
       VERTEX_PROJECT_ID:
+        required: false
+      VOYAGE_API_KEY:
+        required: false
+      XAI_API_KEY:
         required: false
 
 permissions:

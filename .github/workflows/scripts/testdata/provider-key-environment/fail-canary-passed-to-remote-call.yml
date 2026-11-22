@@ -1,0 +1,9 @@
+# expect: job release: passes LIVE_PROVIDERS_CANARY to a reusable workflow
+# A workflow in another repository is one this check cannot read, so it cannot see that the
+# called job names live-providers and reads the canary: a caller passes it nowhere else.
+on: workflow_dispatch
+jobs:
+  release:
+    uses: txehq/other/.github/workflows/release-pipeline.yml@main
+    secrets:
+      LIVE_PROVIDERS_CANARY: ${{ secrets.LIVE_PROVIDERS_CANARY }}

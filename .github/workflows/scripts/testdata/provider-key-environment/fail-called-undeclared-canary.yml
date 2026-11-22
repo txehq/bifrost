@@ -1,0 +1,20 @@
+# expect: job test-plugins: names `environment: live-providers` in a called workflow and reads LIVE_PROVIDERS_CANARY, OPENAI_API_KEY, which on.workflow_call.secrets does not declare
+# The sync.15 shape (release run 44992898623): a bare workflow_call declares no secrets, so the
+# canary and every provider key read as empty in the job that names the environment.
+on: workflow_call
+jobs:
+  test-plugins:
+    environment: live-providers
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+      - id: live-providers-canary
+        env:
+          LIVE_PROVIDERS_CANARY: ${{ secrets.LIVE_PROVIDERS_CANARY }}
+        run: |
+          if [ -z "$LIVE_PROVIDERS_CANARY" ]; then exit 1; fi
+      - env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: make test-plugins

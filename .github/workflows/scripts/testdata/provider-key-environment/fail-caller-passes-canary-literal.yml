@@ -1,0 +1,11 @@
+# expect: job release: passes LIVE_PROVIDERS_CANARY to a reusable workflow
+# A value the caller passes wins over the environment's (measured 2026-11-22, TXE-7574), so a
+# literal canary would pass in the called job whether or not environment secrets reach it.
+on: push
+jobs:
+  release:
+    uses: ./.github/workflows/pass-called-declares-environment-secrets.yml
+    secrets:
+      LIVE_PROVIDERS_CANARY: ${{ 'present' || secrets.LIVE_PROVIDERS_CANARY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}

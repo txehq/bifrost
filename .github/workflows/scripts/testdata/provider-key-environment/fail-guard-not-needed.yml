@@ -1,0 +1,30 @@
+# expect: job release: passes LIVE_PROVIDERS_CANARY, OPENAI_API_KEY by name, and needs no job whose `environment-only-secrets` step fails
+# A guard the call does not need may still be running, or have failed, when the call passes the keys.
+on: push
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: step-security/harden-runner@v2
+        with:
+          egress-policy: block
+      - id: environment-only-secrets
+        env:
+          LIVE_PROVIDERS_CANARY: ${{ secrets.LIVE_PROVIDERS_CANARY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          present=""
+          for name in \
+            LIVE_PROVIDERS_CANARY \
+            OPENAI_API_KEY; do
+            if [ -n "${!name}" ]; then present="$present $name"; fi
+          done
+          if [ -n "$present" ]; then exit 1; fi
+      - uses: actions/checkout@v6
+      - run: ./decide.sh
+  release:
+    uses: ./.github/workflows/pass-called-declares-environment-secrets.yml
+    secrets:
+      LIVE_PROVIDERS_CANARY: ${{ secrets.LIVE_PROVIDERS_CANARY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}

@@ -18,7 +18,6 @@ Usage: python3 test-release-gates.py
 """
 import ast
 import fnmatch
-import importlib.util
 import json
 import os
 import re
@@ -635,27 +634,26 @@ def resolve(value, parts):
 
 
 class TheCallerPassesEverySecretTheReleaseJobsRead(unittest.TestCase):
-    """A called workflow sees a repository secret only when its caller passes it, and an
-    unpassed one reads as empty, silently. Provider credentials are never passed: they are
-    live-providers environment secrets read by the jobs that name it, and passing one, or
-    `secrets: inherit`, fails check-provider-key-environment.py. So every other secret the
-    release jobs read is declared by release-pipeline.yml and passed by name from release.yml."""
+    """A called workflow's job sees a secret only when the called workflow declares it and
+    its caller passes it, and an unpassed one reads as empty, silently. That holds for the
+    live-providers environment's secrets too, even in a job that names the environment
+    (measured 2026-11-22, TXE-7574). So every secret the release jobs read, provider
+    credentials and LIVE_PROVIDERS_CANARY included, is declared by release-pipeline.yml and
+    passed from release.yml as `NAME: ${{ secrets.NAME }}`: the caller's value of an
+    environment-only secret is empty, so the called job reads the environment's value."""
 
     def test_declared_passed_and_read_are_one_list(self):
-        spec = importlib.util.spec_from_file_location("provider_keys", WORKFLOWS / "scripts" / "check-provider-key-environment.py")
-        keys = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(keys)
         read = {n for n in re.findall(r"secrets\.([A-Z0-9_]+)", WORKFLOW.read_text())
-                if n != "GITHUB_TOKEN" and not keys.is_provider_credential(n)}
+                if n != "GITHUB_TOKEN"}
+        self.assertIn("LIVE_PROVIDERS_CANARY", read)
         declared = set(triggers(WORKFLOW_DOC)["workflow_call"].get("secrets") or {})
         passed = ENTRY_JOBS["release"].get("secrets")
         self.assertIsInstance(passed, dict, "pass secrets by name, never `inherit`")
-        self.assertEqual(declared, read, "release-pipeline.yml declares exactly the repository secrets it reads")
+        self.assertEqual(declared, read, "release-pipeline.yml declares exactly the secrets it reads")
         self.assertEqual(set(passed), read, "release.yml passes exactly those")
         for name, value in passed.items():
             with self.subTest(secret=name):
                 self.assertEqual(value, f"${{{{ secrets.{name} }}}}")
-                self.assertFalse(keys.is_provider_credential(name))
 
 
 class ReleasesShareOneGroup(unittest.TestCase):

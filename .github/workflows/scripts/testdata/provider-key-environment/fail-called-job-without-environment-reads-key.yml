@@ -1,0 +1,15 @@
+# expect: job build: reads OPENAI_API_KEY, and the job names no environment
+# A called job that names no environment reads the caller's value of a passed name: a
+# repository or organization secret of that name, with no approval (measured 2026-11-22,
+# TXE-7574). It may not read a provider credential at all.
+on:
+  workflow_call:
+    secrets:
+      OPENAI_API_KEY: {required: false}
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: make build
