@@ -1,0 +1,11 @@
+# expect: whose live-providers jobs read LIVE_PROVIDERS_CANARY, and does not pass each
+# A plain literal reads no secret, but it still wins over the environment's value, so the
+# canary would pass in the called job whether or not environment secrets reach it.
+on: push
+jobs:
+  release:
+    uses: ./.github/workflows/pass-called-declares-environment-secrets.yml
+    secrets:
+      LIVE_PROVIDERS_CANARY: present
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}

@@ -83,20 +83,37 @@ Since TXE-7566 the Release Pipeline's workflow file is `release.yml`, and
   `release` skipped.
 
 The provider keys are `live-providers` environment secrets that the called jobs read
-themselves. Every job that names `live-providers` first runs the step `live-providers-canary`
-(TXE-7574). It reads the environment secret `LIVE_PROVIDERS_CANARY` and fails the job when the
-value is empty, before any provider key is used. A green canary shows that the environment's
-secrets reached that job, including the jobs in the called `release-pipeline.yml`, whether or
-not any provider key is set yet. `check-provider-key-environment.py` (workflow-lint) fails a
-live-providers job without the step, and fails a caller that passes the canary. The canary
-must stay an environment secret only. Its value is not sensitive; any non-empty string works:
+themselves. A job in a called workflow reads an environment secret only when the called
+workflow declares it in `on.workflow_call.secrets` and its caller passes it as
+`NAME: ${{ secrets.NAME }}`; otherwise the value is empty, even in a job that names the
+environment. The caller's own value of an environment-only secret is empty, so the called job
+reads the environment's value. A non-empty value from the caller wins over the environment's.
+All of this was measured with a scratch environment on 2026-11-22 (TXE-7574) after the sync.15
+release run 44992898623 failed every canary. So `release-pipeline.yml` declares every secret
+it reads, provider keys and the canary included, and `release.yml` passes each one under its
+own name.
+
+Every job that names `live-providers` first runs the step `live-providers-canary`. It reads the
+environment secret `LIVE_PROVIDERS_CANARY` and fails the job when the value is empty, before
+any provider key is used. A green canary shows that the environment's secrets reached that
+job, including the jobs in the called `release-pipeline.yml`, whether or not any provider key
+is set yet. `check-provider-key-environment.py` (workflow-lint) fails:
+
+- a live-providers job without the step;
+- a called live-providers job that reads a secret its workflow does not declare;
+- a caller that does not pass each such secret as `NAME: ${{ secrets.NAME }}`, or passes the
+  canary or a provider key in any other form.
+
+The canary and the provider keys must stay environment secrets only. A repository or
+organization secret of the same name would be the caller's value, and it would win over the
+environment's. The canary's value is not sensitive; any non-empty string works:
 
 ```bash
 gh secret set LIVE_PROVIDERS_CANARY --env live-providers -R txehq/bifrost --body present
 ```
 
-If a canary fails with the secret set, stop releasing with live jobs and read TXE-7574 for the
-two ways out.
+If a canary fails with the secret set, stop releasing with live jobs. Check first that the job's
+workflow declares the secret and that its caller passes it by its own name (TXE-7574).
 
 ## Retrying a release that failed
 

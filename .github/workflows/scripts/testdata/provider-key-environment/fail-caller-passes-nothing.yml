@@ -1,0 +1,6 @@
+# expect: whose live-providers jobs read AWS_REGION, LIVE_PROVIDERS_CANARY, OPENAI_API_KEY, and does not pass each
+# A call with no secrets at all: every environment secret reads as empty in the called job.
+on: push
+jobs:
+  release:
+    uses: ./.github/workflows/pass-called-declares-environment-secrets.yml

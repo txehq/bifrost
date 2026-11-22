@@ -1,0 +1,11 @@
+# expect: job release: passes XAI_API_KEY to a reusable workflow
+# Passing a provider credential by its own name is allowed only to a live-providers job that reads it.
+on: push
+jobs:
+  release:
+    uses: ./.github/workflows/pass-called-declares-environment-secrets.yml
+    secrets:
+      LIVE_PROVIDERS_CANARY: ${{ secrets.LIVE_PROVIDERS_CANARY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      XAI_API_KEY: ${{ secrets.XAI_API_KEY }}

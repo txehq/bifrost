@@ -19,9 +19,27 @@ environment's secrets. This check enforces the workflow half of that. It fails w
     environment); this includes the original finding, a key in the job-level env of a
     job that checks out a caller-chosen ref;
   * the workflow-level `env:` reads a provider credential, which hands it to every job;
-  * a reusable-workflow call passes a provider credential, in `secrets:` or `with:`, or
-    uses `secrets: inherit`: a calling job cannot name an environment, so the called
-    workflow's job must name live-providers and read the secret itself.
+  * a reusable-workflow call uses `secrets: inherit`, or passes a provider credential in
+    `with:` or in any other form than the one below: a calling job cannot name an
+    environment, so the called workflow's job must name live-providers and read the secret
+    itself.
+
+A called workflow's job sees only the secrets its workflow declares in
+`on.workflow_call.secrets` and its caller passes, even when the job names an environment
+that holds the secret (TXE-7574, measured with a scratch environment on 2026-11-22: an
+environment secret the caller did not pass read as empty, declared or not). When the caller
+passes `NAME: ${{ secrets.NAME }}`, the caller's own value is empty, because the secret
+exists only in the environment, and the called job that names the environment reads the
+environment's value. A non-empty value from the caller wins over the environment's, so the
+caller must pass exactly that form and nothing else. So the check also fails when:
+
+  * a job in a called workflow names `environment: live-providers` and reads a secret that
+    `on.workflow_call.secrets` does not declare, or reads secrets dynamically (no caller
+    can pass those by name);
+  * a caller of a workflow in this repository does not pass every secret that workflow's
+    live-providers jobs read as `NAME: ${{ secrets.NAME }}`;
+  * a caller passes a provider credential that the called workflow's live-providers jobs
+    do not read, or passes one to a workflow this check cannot read.
 
 A read is any use of the secrets context inside `${{ }}`, the only place it exists, in
 every scope above. `secrets.NAME` and `secrets['NAME']` read the secret they name. Any
@@ -67,9 +85,10 @@ OTHER_PROVIDER_CREDENTIALS = {
     "GITHUB_COPILOT_PRIVATE_KEY",  # the Copilot provider's GitHub App key
     "VERTEX_CREDENTIALS",  # Vertex service-account JSON
     # Not a vendor credential: the live-providers canary (TXE-7574). It follows the same
-    # rules, so it is read only in jobs that name the environment and is never passed to a
-    # called workflow. A passed copy could stand in for the environment secret, and the
-    # canary would then prove nothing about how environment secrets reach those jobs.
+    # rules, so it is read only in jobs that name the environment, and a caller passes it
+    # only as `LIVE_PROVIDERS_CANARY: ${{ secrets.LIVE_PROVIDERS_CANARY }}`. A literal or a
+    # differently named secret would win over the environment's value, and the canary would
+    # then prove nothing about how environment secrets reach those jobs.
     "LIVE_PROVIDERS_CANARY",
 }
 
@@ -141,20 +160,24 @@ def string_spans(expression):
     return spans
 
 
-def secret_reads(node, path):
-    """Yields (path, name) for each provider credential read under node, and
-    (path, None) for each dynamic read of the secrets context, which can reach any."""
+def all_secret_reads(node, path):
+    """Yields (path, name) for each secret read under node, and (path, None) for each
+    dynamic read of the secrets context, which can reach any."""
     for where, text in strings(node, path):
         for expression in expressions(text):
             literals = string_spans(expression)
             for use in SECRETS_USE.finditer(expression):
                 if any(start <= use.start() < end for start, end in literals):
                     continue  # the word inside a string, not the secrets context
-                name = use.group("dotted") or use.group("quoted")
-                if name is None:
-                    yield where, None
-                elif is_provider_credential(name):
-                    yield where, name
+                yield where, use.group("dotted") or use.group("quoted")
+
+
+def secret_reads(node, path):
+    """Yields (path, name) for each provider credential read under node, and
+    (path, None) for each dynamic read of the secrets context, which can reach any."""
+    for where, name in all_secret_reads(node, path):
+        if name is None or is_provider_credential(name):
+            yield where, name
 
 
 def summarize(reads):
@@ -214,10 +237,63 @@ def canary_problem(job):
     return None
 
 
+LOCAL_WORKFLOW = "./.github/workflows/"
+
+
+def workflow_call(doc):
+    """Returns the workflow's `on.workflow_call` mapping ({} when it is bare), or None when
+    the workflow cannot be called. PyYAML reads the bare key `on` as True."""
+    on = doc.get("on", doc.get(True))
+    if on == "workflow_call" or (isinstance(on, list) and "workflow_call" in on):
+        return {}
+    if isinstance(on, dict) and "workflow_call" in on:
+        return on["workflow_call"] if isinstance(on["workflow_call"], dict) else {}
+    return None
+
+
+def environment_secret_reads(doc):
+    """Returns {name: job id} for each secret that a job naming live-providers reads, with
+    the key None for a dynamic read. GITHUB_TOKEN is always there and is left out."""
+    reads = {}
+    for job_id, job in (doc.get("jobs") or {}).items():
+        if isinstance(job, dict) and "uses" not in job and environment_name(job) == ENVIRONMENT:
+            for _, secret in all_secret_reads(job, "job"):
+                if secret is None or secret.upper() != "GITHUB_TOKEN":
+                    reads.setdefault(secret, job_id)
+    return reads
+
+
+def called_workflow(caller_path, uses):
+    """Loads the workflow a `uses: ./.github/workflows/<file>` call names, from the caller's
+    own directory, or returns None for a workflow this check cannot read."""
+    if not isinstance(uses, str) or not uses.startswith(LOCAL_WORKFLOW):
+        return None
+    path = os.path.join(os.path.dirname(os.path.abspath(caller_path)), uses[len(LOCAL_WORKFLOW):])
+    if not os.path.isfile(path):
+        return None
+    with open(path) as fh:
+        doc = yaml.safe_load(fh) or {}
+    return doc if workflow_call(doc) is not None else None
+
+
+def passes_through(name, value):
+    """True for `NAME: ${{ secrets.NAME }}`: the caller's own value of the secret, which is
+    empty for an environment-only secret, so the called job reads the environment's."""
+    return isinstance(value, str) and value.strip() == "${{ secrets.%s }}" % name
+
+
+def listed(names):
+    names = sorted(names)
+    shown = ", ".join(names[:4])
+    return shown + (f" and {len(names) - 4} more" if len(names) > 4 else "")
+
+
 def problems(path):
     with open(path) as fh:
         doc = yaml.safe_load(fh) or {}
     name = os.path.basename(path)
+    call = workflow_call(doc)
+    declared = {str(k).upper() for k in ((call or {}).get("secrets") or {})}
 
     top = list(secret_reads(doc.get("env") or {}, "env"))
     if top:
@@ -235,11 +311,31 @@ def problems(path):
                 yield (f"{where}: `secrets: inherit` hands every provider credential to the "
                        f"called workflow; its job must name `environment: {ENVIRONMENT}` "
                        f"and read the secret itself")
-            found = list(secret_reads({k: v for k, v in job.items() if k != "uses"}, "call"))
+            called = called_workflow(path, job["uses"])
+            needed = environment_secret_reads(called) if called is not None else {}
+            needed_upper = {n.upper() for n in needed if n is not None}
+            passed = job.get("secrets") if isinstance(job.get("secrets"), dict) else {}
+            through = {k for k, v in passed.items()
+                       if isinstance(k, str) and k.upper() in needed_upper and passes_through(k, v)}
+            rest = {k: v for k, v in job.items() if k != "uses"}
+            if passed:
+                rest["secrets"] = {k: v for k, v in passed.items() if k not in through}
+            found = list(secret_reads(rest, "call"))
             if found:
                 yield (f"{where}: passes {summarize(found)} to a reusable workflow; a calling "
                        f"job cannot name an environment, so the called workflow's job must "
-                       f"name `environment: {ENVIRONMENT}` and read the secret itself")
+                       f"name `environment: {ENVIRONMENT}` and read the secret itself. A "
+                       f"caller passes a provider credential only as "
+                       f"`NAME: ${{{{ secrets.NAME }}}}`, and only to a workflow in this "
+                       f"repository whose live-providers jobs read it")
+            through_upper = {k.upper() for k in through}
+            missing = {n for n in needed if n is not None and n.upper() not in through_upper}
+            if missing and job.get("secrets") != "inherit":
+                yield (f"{where}: calls {job['uses']}, whose live-providers jobs read "
+                       f"{listed(missing)}, and does not pass each as "
+                       f"`NAME: ${{{{ secrets.NAME }}}}`; a called job reads an environment "
+                       f"secret as empty unless its caller passes it by its own name "
+                       f"(TXE-7574)")
             continue
 
         if environment_name(job) == ENVIRONMENT:
@@ -248,6 +344,21 @@ def problems(path):
                 yield (f"{where}: names `environment: {ENVIRONMENT}` but {problem}; the "
                        f"canary step fails the job when the environment's secrets did not "
                        f"reach it (TXE-7574)")
+            if call is not None:
+                reads = {s for _, s in all_secret_reads(job, "job")
+                         if s is None or s.upper() != "GITHUB_TOKEN"}
+                if None in reads:
+                    yield (f"{where}: names `environment: {ENVIRONMENT}` in a called workflow "
+                           f"and reads secrets dynamically (secrets[...], toJSON(secrets)); a "
+                           f"called job gets only the secrets its caller passes by name, so "
+                           f"read each one by name")
+                undeclared = {s for s in reads if s is not None and s.upper() not in declared}
+                if undeclared:
+                    yield (f"{where}: names `environment: {ENVIRONMENT}` in a called workflow "
+                           f"and reads {listed(undeclared)}, which on.workflow_call.secrets "
+                           f"does not declare; a called job reads an environment secret as "
+                           f"empty unless its workflow declares it and the caller passes it "
+                           f"as `NAME: ${{{{ secrets.NAME }}}}` (TXE-7574)")
             continue
 
         found = list(secret_reads(job, "job"))
