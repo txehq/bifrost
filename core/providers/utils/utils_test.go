@@ -6016,3 +6016,35 @@ func BenchmarkCacheControlTTLInBody(b *testing.B) {
 		})
 	}
 }
+
+// TestCacheControlTTLInBodyBoundsACraftedBody: past cacheControlKeySearchMaxMatches markers the
+// key search hands the body to the depth-bounded walk (fork, TXE-8086), whose cost
+// BenchmarkCacheControlTTLInBodyCrafted records. The walk reads each marker's own members and
+// does not look for markers inside a marker, so 20,000 nested markers price nothing, while 101
+// sibling block markers are all read.
+func TestCacheControlTTLInBodyBoundsACraftedBody(t *testing.T) {
+	nested := []byte(`{"a":` + strings.Repeat(`{"cache_control":`, 20000) + `{"ttl":"1h"}` + strings.Repeat(`}`, 20000) + `}`)
+	if got := CacheControlTTLInBody(nested); got != "" {
+		t.Fatalf("20,000 nested markers: got %q, want \"\"", got)
+	}
+	var siblings strings.Builder
+	siblings.WriteString(`{"messages":[`)
+	for i := 0; i < 100; i++ {
+		siblings.WriteString(`{"content":[{"type":"text","text":"x","cache_control":{"type":"ephemeral","ttl":"5m"}}]},`)
+	}
+	siblings.WriteString(`{"content":[{"type":"text","text":"x","cache_control":{"type":"ephemeral","ttl":"1h"}}]}]}`)
+	if got := CacheControlTTLInBody([]byte(siblings.String())); got != "1h" {
+		t.Fatalf("101 markers, the last at 1h: got %q, want 1h", got)
+	}
+}
+
+// BenchmarkCacheControlTTLInBodyCrafted: the cost of a body crafted with 20,000 nested markers
+// (TXE-8086), which the match cap sends to the walk.
+func BenchmarkCacheControlTTLInBodyCrafted(b *testing.B) {
+	body := []byte(`{"a":` + strings.Repeat(`{"cache_control":`, 20000) + `{"ttl":"1h"}` + strings.Repeat(`}`, 20000) + `}`)
+	b.SetBytes(int64(len(body)))
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = CacheControlTTLInBody(body)
+	}
+}

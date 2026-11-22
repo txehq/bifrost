@@ -3667,6 +3667,13 @@ func CacheControlTTLInBody(body []byte) string {
 	return cacheControlTTLByWalk(body)
 }
 
+// cacheControlKeySearchMaxMatches caps the "cache_control" matches the key search reads before it
+// hands the body to the walk. Bifrost clamps the markers it sends a Claude model on OpenRouter to
+// four (clampOpenRouterCacheControl), so a converted body stays under it; a body past it is read
+// correctly, by the slower walk. The cap
+// bounds a crafted body's key search at 16 passes over it (BenchmarkCacheControlTTLInBodyCrafted).
+const cacheControlKeySearchMaxMatches = 16
+
 var (
 	jsonUnicodeEscape = []byte(`\u`)
 	cacheControlKey   = []byte(`"cache_control"`)
@@ -3681,7 +3688,14 @@ func cacheControlTTLByKeySearch(body []byte) string {
 		return ""
 	}
 	best := ""
-	for i := 0; i < len(body); {
+	for i, matches := 0, 0; i < len(body); matches++ {
+		// Each match parses the value after it, and a value nested in an earlier one is read
+		// again, so a body crafted with thousands of nested markers would cost quadratic time.
+		// A real request carries a handful (Anthropic allows four breakpoints); past the cap the
+		// depth-bounded walk reads the body, which visits each value a bounded number of times.
+		if matches == cacheControlKeySearchMaxMatches {
+			return cacheControlTTLByWalk(body)
+		}
 		j := bytes.Index(body[i:], cacheControlKey)
 		if j < 0 {
 			break
