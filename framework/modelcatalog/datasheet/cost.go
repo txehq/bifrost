@@ -867,7 +867,7 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 		return total
 	}
 	if scopes.RequestedPromptCacheTTL != "" {
-		input.usage = usageWithRequestedCacheWriteTier(input.usage, s.requestTTLPricingProvider(routingInfo.Provider), scopes.RequestedPromptCacheTTL)
+		input.usage = usageWithRequestedCacheWriteTier(input.usage, s.requestTTLPricingProvider(routingInfo.Provider), routingInfo, scopes.RequestedPromptCacheTTL)
 	}
 	// When a pricing model override is set (e.g. container creates always look
 	// up "container"), it replaces the lookup hierarchy entirely. Build a
@@ -3498,18 +3498,38 @@ func (s *Store) requestTTLPricingProvider(provider schemas.ModelProvider) schema
 	return provider
 }
 
+// requestTTLEntryCoversAttempt reports whether entry applies to the attempt: under the key
+// alias's canonical model name, its wire model id, or the model the attempt was made for. An
+// Azure wire id is an opaque deployment name while the alias's model name is the real one, and an
+// OpenRouter wire id is the vendor-prefixed name the entry is scoped by (fork, TXE-7946).
+func requestTTLEntryCoversAttempt(entry schemas.RequestTTLPricedCacheWrite, routingInfo schemas.RoutingInfo) bool {
+	if entry.Models == nil {
+		return true
+	}
+	if rka := routingInfo.ResolvedKeyAlias; rka != nil {
+		if rka.ModelName != nil && *rka.ModelName != "" && entry.Covers(*rka.ModelName) {
+			return true
+		}
+		if rka.ModelID != "" && entry.Covers(rka.ModelID) {
+			return true
+		}
+	}
+	return routingInfo.Model != "" && entry.Covers(routingInfo.Model)
+}
+
 // usageWithRequestedCacheWriteTier returns the usage to price. For a provider in
-// RequestTTLPricedCacheWrites whose usage reports cache writes with no tier, and a requested TTL
-// of an hour or more, it returns a copy whose writes sit in the tier asked for: 12 hours or more
-// in the 12h tier, otherwise the 1h tier. The copy is local to pricing; the response's usage is
-// never changed (contract C5). Any other case returns usage itself, with no allocation. A TTL
-// that is not a Go duration ("1h", "5m", "30m", "24h") is priced at the base write rate.
-func usageWithRequestedCacheWriteTier(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, requestedTTL string) *schemas.BifrostLLMUsage {
+// RequestTTLPricedCacheWrites whose entry covers the attempt's model, whose usage reports cache
+// writes with no tier, and a requested TTL of an hour or more, it returns a copy whose writes sit
+// in the tier asked for: 12 hours or more in the 12h tier, otherwise the 1h tier. The copy is
+// local to pricing; the response's usage is never changed (contract C5). Any other case returns
+// usage itself, with no allocation. A TTL that is not a Go duration ("1h", "5m", "30m", "24h") is
+// priced at the base write rate.
+func usageWithRequestedCacheWriteTier(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, routingInfo schemas.RoutingInfo, requestedTTL string) *schemas.BifrostLLMUsage {
 	if requestedTTL == "" || usage == nil || usage.PromptTokensDetails == nil ||
 		usage.PromptTokensDetails.CachedWriteTokens <= 0 || usage.PromptTokensDetails.CachedWriteTokenDetails != nil {
 		return usage
 	}
-	if _, ok := RequestTTLPricedCacheWrites[provider]; !ok {
+	if entry, ok := RequestTTLPricedCacheWrites[provider]; !ok || !requestTTLEntryCoversAttempt(entry, routingInfo) {
 		return usage
 	}
 	ttl, err := time.ParseDuration(requestedTTL)

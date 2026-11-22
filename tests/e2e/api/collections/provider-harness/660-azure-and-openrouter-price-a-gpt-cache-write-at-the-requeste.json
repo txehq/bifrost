@@ -1,0 +1,331 @@
+{
+  "name": "660. Azure and OpenRouter price a GPT cache write at the requested TTL, and an OpenRouter Claude write at its own (azure and openrouter cache ttl pricing)",
+  "description": "TXE-7946, a follow-up to TXE-7069 (folders 646 and 654). Azure OpenAI on GPT-5.6 and later, and OpenRouter on OpenAI models, bill a cache write at the tier of the request's prompt_cache_options.ttl and report one cache_write_tokens figure with no split by TTL, so both are listed in RequestTTLPricedCacheWrites. OpenRouter applies prompt_cache_options to OpenAI models only, so its entry covers openai/* and a Claude write keeps its base rate. The fixture's pricing sheet has azure/gpt-fixture-cache-ttl and openrouter/openai/gpt-fixture-cache-ttl at $1/M input, $2/M output, $3/M cache write and $7.50/M above 12 hours, and openrouter/anthropic/claude-fixture-cache-ttl with $6/M above an hour. /pp/cachettl answers /v1/responses (and Azure's /openai/v1/responses) with 3,000 input tokens, 2,000 of them written to the cache, 200 output tokens and no usage.cost. At 12h that is $0.0164, and at 30m, or on the Claude row, $0.0074. Against a gateway without the change, rows 660.1 and 660.3 are logged at $0.0074.",
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "if (pm.variables.get('videoSettlementFixture') !== '1') {",
+          "  pm.execution.skipRequest();",
+          "}"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "660.1 azure/gpt-fixture-cache-ttl POST /v1/responses with prompt_cache_options.ttl 12h is logged at $0.0164 (azure and openrouter cache ttl pricing)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.variables.set('cacheTtlRequestId1', 'cache-ttl-1-' + Date.now() + '-' + Math.floor(Math.random() * 1e6));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// TXE-7946: Azure bills a GPT-5.6+ cache write at the prompt_cache_options.ttl tier and reports one cache_write_tokens figure, so the gateway prices the write at the 12-hour rate the request asked for.",
+              "var requestId = pm.variables.get('cacheTtlRequestId1');",
+              "pm.test('the response succeeds', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "pm.test('usage carries the write as the vendor reported it, with no tier derived from the request', function () {",
+              "  var d = (pm.response.json().usage || {}).input_tokens_details || {};",
+              "  pm.expect(d.cache_write_tokens, JSON.stringify(d)).to.eql(2000);",
+              "  pm.expect(d.cache_write_tokens_details, JSON.stringify(d)).to.be.undefined;",
+              "  pm.expect(d.cached_write_token_details, JSON.stringify(d)).to.be.undefined;",
+              "});",
+              "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+              "var token = pm.variables.get('setupToken');",
+              "function check(attempt) {",
+              "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + requestId, method: 'GET', header: { 'X-Bifrost-Setup-Token': token } }, function (err, res) {",
+              "    if (!err && res.code === 200 && res.json().status === 'success') {",
+              "      var j = res.json();",
+              "      pm.test('the 2,000-token cache write is priced at the 12-hour rate', function () {",
+              "        pm.expect(j.provider, JSON.stringify(j)).to.eql('azure');",
+              "        pm.expect(j.cost, 'logged with no cost: ' + JSON.stringify(j)).to.be.a('number');",
+              "        pm.expect(j.cost, JSON.stringify(j)).to.be.closeTo(0.0164, 1e-12);",
+              "      });",
+              "      return;",
+              "    }",
+              "    if (attempt < 10) { setTimeout(function () { check(attempt + 1); }, 1000); return; }",
+              "    pm.test('the log row appeared', function () { pm.expect.fail('log ' + requestId + ' never appeared: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+              "  });",
+              "}",
+              "check(0);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-request-id",
+            "value": "{{cacheTtlRequestId1}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"azure/gpt-fixture-cache-ttl\",\"input\":\"hi\",\"prompt_cache_options\":{\"ttl\":\"12h\"}}"
+        }
+      }
+    },
+    {
+      "name": "660.2 azure/gpt-fixture-cache-ttl POST /v1/responses with prompt_cache_options.ttl 30m is logged at $0.0074 (azure and openrouter cache ttl pricing)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.variables.set('cacheTtlRequestId2', 'cache-ttl-2-' + Date.now() + '-' + Math.floor(Math.random() * 1e6));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// TXE-7946: A 30-minute TTL is OpenAI's base write tier: no long-lived rate applies.",
+              "var requestId = pm.variables.get('cacheTtlRequestId2');",
+              "pm.test('the response succeeds', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "pm.test('usage carries the write as the vendor reported it, with no tier derived from the request', function () {",
+              "  var d = (pm.response.json().usage || {}).input_tokens_details || {};",
+              "  pm.expect(d.cache_write_tokens, JSON.stringify(d)).to.eql(2000);",
+              "  pm.expect(d.cache_write_tokens_details, JSON.stringify(d)).to.be.undefined;",
+              "  pm.expect(d.cached_write_token_details, JSON.stringify(d)).to.be.undefined;",
+              "});",
+              "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+              "var token = pm.variables.get('setupToken');",
+              "function check(attempt) {",
+              "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + requestId, method: 'GET', header: { 'X-Bifrost-Setup-Token': token } }, function (err, res) {",
+              "    if (!err && res.code === 200 && res.json().status === 'success') {",
+              "      var j = res.json();",
+              "      pm.test('the 2,000-token cache write is priced at the base write rate', function () {",
+              "        pm.expect(j.provider, JSON.stringify(j)).to.eql('azure');",
+              "        pm.expect(j.cost, 'logged with no cost: ' + JSON.stringify(j)).to.be.a('number');",
+              "        pm.expect(j.cost, JSON.stringify(j)).to.be.closeTo(0.0074, 1e-12);",
+              "      });",
+              "      return;",
+              "    }",
+              "    if (attempt < 10) { setTimeout(function () { check(attempt + 1); }, 1000); return; }",
+              "    pm.test('the log row appeared', function () { pm.expect.fail('log ' + requestId + ' never appeared: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+              "  });",
+              "}",
+              "check(0);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-request-id",
+            "value": "{{cacheTtlRequestId2}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"azure/gpt-fixture-cache-ttl\",\"input\":\"hi\",\"prompt_cache_options\":{\"ttl\":\"30m\"}}"
+        }
+      }
+    },
+    {
+      "name": "660.3 openrouter/openai/gpt-fixture-cache-ttl POST /v1/responses with prompt_cache_options.ttl 12h is logged at $0.0164 (azure and openrouter cache ttl pricing)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.variables.set('cacheTtlRequestId3', 'cache-ttl-3-' + Date.now() + '-' + Math.floor(Math.random() * 1e6));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// TXE-7946: OpenRouter bills 12-hour writes on OpenAI models at the 12-hour rate and sums both TTLs in cache_write_tokens; with no usage.cost in the answer the gateway prices from the sheet.",
+              "var requestId = pm.variables.get('cacheTtlRequestId3');",
+              "pm.test('the response succeeds', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "pm.test('usage carries the write as the vendor reported it, with no tier derived from the request', function () {",
+              "  var d = (pm.response.json().usage || {}).input_tokens_details || {};",
+              "  pm.expect(d.cache_write_tokens, JSON.stringify(d)).to.eql(2000);",
+              "  pm.expect(d.cache_write_tokens_details, JSON.stringify(d)).to.be.undefined;",
+              "  pm.expect(d.cached_write_token_details, JSON.stringify(d)).to.be.undefined;",
+              "});",
+              "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+              "var token = pm.variables.get('setupToken');",
+              "function check(attempt) {",
+              "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + requestId, method: 'GET', header: { 'X-Bifrost-Setup-Token': token } }, function (err, res) {",
+              "    if (!err && res.code === 200 && res.json().status === 'success') {",
+              "      var j = res.json();",
+              "      pm.test('the 2,000-token cache write is priced at the 12-hour rate', function () {",
+              "        pm.expect(j.provider, JSON.stringify(j)).to.eql('openrouter');",
+              "        pm.expect(j.cost, 'logged with no cost: ' + JSON.stringify(j)).to.be.a('number');",
+              "        pm.expect(j.cost, JSON.stringify(j)).to.be.closeTo(0.0164, 1e-12);",
+              "      });",
+              "      return;",
+              "    }",
+              "    if (attempt < 10) { setTimeout(function () { check(attempt + 1); }, 1000); return; }",
+              "    pm.test('the log row appeared', function () { pm.expect.fail('log ' + requestId + ' never appeared: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+              "  });",
+              "}",
+              "check(0);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-request-id",
+            "value": "{{cacheTtlRequestId3}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"openrouter/openai/gpt-fixture-cache-ttl\",\"input\":\"hi\",\"prompt_cache_options\":{\"ttl\":\"12h\"}}"
+        }
+      }
+    },
+    {
+      "name": "660.4 openrouter/anthropic/claude-fixture-cache-ttl POST /v1/responses with prompt_cache_options.ttl 1h is logged at $0.0074 (azure and openrouter cache ttl pricing)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.variables.set('cacheTtlRequestId4', 'cache-ttl-4-' + Date.now() + '-' + Math.floor(Math.random() * 1e6));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// TXE-7946: OpenRouter ignores prompt_cache_options on Claude (its TTL travels in cache_control), so a requested 1h TTL must not raise the price of a Claude write.",
+              "var requestId = pm.variables.get('cacheTtlRequestId4');",
+              "pm.test('the response succeeds', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "pm.test('usage carries the write as the vendor reported it, with no tier derived from the request', function () {",
+              "  var d = (pm.response.json().usage || {}).input_tokens_details || {};",
+              "  pm.expect(d.cache_write_tokens, JSON.stringify(d)).to.eql(2000);",
+              "  pm.expect(d.cache_write_tokens_details, JSON.stringify(d)).to.be.undefined;",
+              "  pm.expect(d.cached_write_token_details, JSON.stringify(d)).to.be.undefined;",
+              "});",
+              "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+              "var token = pm.variables.get('setupToken');",
+              "function check(attempt) {",
+              "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + requestId, method: 'GET', header: { 'X-Bifrost-Setup-Token': token } }, function (err, res) {",
+              "    if (!err && res.code === 200 && res.json().status === 'success') {",
+              "      var j = res.json();",
+              "      pm.test('the cache write stays at the base write rate: OpenRouter applies prompt_cache_options to OpenAI models only', function () {",
+              "        pm.expect(j.provider, JSON.stringify(j)).to.eql('openrouter');",
+              "        pm.expect(j.cost, 'logged with no cost: ' + JSON.stringify(j)).to.be.a('number');",
+              "        pm.expect(j.cost, JSON.stringify(j)).to.be.closeTo(0.0074, 1e-12);",
+              "      });",
+              "      return;",
+              "    }",
+              "    if (attempt < 10) { setTimeout(function () { check(attempt + 1); }, 1000); return; }",
+              "    pm.test('the log row appeared', function () { pm.expect.fail('log ' + requestId + ' never appeared: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+              "  });",
+              "}",
+              "check(0);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-request-id",
+            "value": "{{cacheTtlRequestId4}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"openrouter/anthropic/claude-fixture-cache-ttl\",\"input\":\"hi\",\"prompt_cache_options\":{\"ttl\":\"1h\"}}"
+        }
+      }
+    }
+  ]
+}

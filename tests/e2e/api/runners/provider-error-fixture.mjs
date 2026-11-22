@@ -575,6 +575,24 @@ const fixturePricing = {
 		input_cost_per_token: 0.000001, output_cost_per_token: 0.000002,
 		cache_creation_input_token_cost: 0.000003, cache_creation_input_token_cost_above_1hr: 0.000006,
 	},
+	// Folder 660 (TXE-7946): GPT rows on azure and openrouter with OpenAI's two write rates, $3/M at 30 minutes and
+	// $7.50/M at 12 hours, and a Claude row on openrouter with its 1-hour rate. 1,000 input, 2,000 written and 200 output
+	// tokens cost $0.0074 at the base write rate and $0.0164 at the 12-hour rate.
+	"azure/gpt-fixture-cache-ttl": {
+		provider: "azure", mode: "chat",
+		input_cost_per_token: 0.000001, output_cost_per_token: 0.000002,
+		cache_creation_input_token_cost: 0.000003, cache_creation_input_token_cost_above_12hr: 0.0000075,
+	},
+	"openrouter/openai/gpt-fixture-cache-ttl": {
+		provider: "openrouter", mode: "chat",
+		input_cost_per_token: 0.000001, output_cost_per_token: 0.000002,
+		cache_creation_input_token_cost: 0.000003, cache_creation_input_token_cost_above_12hr: 0.0000075,
+	},
+	"openrouter/anthropic/claude-fixture-cache-ttl": {
+		provider: "openrouter", mode: "chat",
+		input_cost_per_token: 0.000001, output_cost_per_token: 0.000002,
+		cache_creation_input_token_cost: 0.000003, cache_creation_input_token_cost_above_1hr: 0.000006,
+	},
 	"databricks/databricks-gemini-4-argon": {
 		provider: "databricks", mode: "chat",
 		input_cost_per_token: 2.49998e-06, output_cost_per_token: 1.249997e-05, cache_read_input_token_cost: 1.2502e-07, cache_creation_input_token_cost: 2.49998e-06,
@@ -1749,6 +1767,12 @@ const wireAnswer = (path, body, bytes) => {
 	// Folder 654 (TXE-7996): Kimi's Responses API reports a cache write as one figure, with no TTL tier.
 	if (path.startsWith("/pp/ownkey/") && path.endsWith("/responses") && body.model === "fixture-kimi-ttl-priced") {
 		return { status: 200, body: JSON.stringify({ id: "resp_ownkey_ttl", object: "response", created_at: 1, status: "completed", model: body.model, output: [{ type: "message", id: "msg_ownkey_ttl", role: "assistant", status: "completed", content: [{ type: "output_text", text: "hello", annotations: [] }] }], usage: { input_tokens: 3000, input_tokens_details: { cached_tokens: 0, cache_write_tokens: 2000 }, output_tokens: 200, total_tokens: 3200 } }) };
+	}
+	// Folder 660 (TXE-7946): Azure's and OpenRouter's Responses API report a cache write as one cache_write_tokens figure,
+	// with no TTL tier and no usage.cost, so the gateway prices the write from the sheet at the tier the request asked for.
+	// azure posts to <endpoint>/openai/v1/responses, openrouter to <base_url>/v1/responses.
+	if ((path === "/pp/cachettl/openai/v1/responses" || path === "/pp/cachettl/v1/responses") && String(body.model || "").includes("fixture-cache-ttl")) {
+		return { status: 200, body: JSON.stringify({ id: "resp_cachettl", object: "response", created_at: 1, status: "completed", model: body.model, output: [{ type: "message", id: "msg_cachettl", role: "assistant", status: "completed", content: [{ type: "output_text", text: "hello", annotations: [] }] }], usage: { input_tokens: 3000, input_tokens_details: { cached_tokens: 0, cache_write_tokens: 2000 }, output_tokens: 200, total_tokens: 3200 } }) };
 	}
 	if (path.startsWith("/pp/ownkey/") && path.endsWith("/chat/completions")) {
 		// Folder 654 (TXE-7996): Kimi reports a cache write as one figure, with no TTL tier.
