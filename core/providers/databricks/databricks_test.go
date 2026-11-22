@@ -1655,3 +1655,108 @@ func TestDatabricksDecisionWithoutAnswersFails(t *testing.T) {
 		t.Errorf("got %+v, %+v; want the no-answers error", resp, bErr)
 	}
 }
+
+// databricksClaudeCacheUsage is a Databricks-hosted Claude usage with prompt caching active.
+// Databricks documents cache_read_input_tokens and cache_creation_input_tokens as "a top-level
+// usage field for Databricks-hosted Claude endpoints when caching is active"
+// (docs.databricks.com/aws/en/machine-learning/foundation-model-apis/api-reference, Usage table,
+// read 2026-11-22). The docs do not say whether prompt_tokens includes them and no recorded
+// response exists, so this is written from the docs in Anthropic's convention, where the cache
+// counts sit apart from the base input (the convention the batch settlement already applies to
+// these spellings, framework/jobaccounting usageFromValue). TXE-8087.
+const databricksClaudeCacheUsage = `{"prompt_tokens":12,"completion_tokens":20,"total_tokens":32,"cache_read_input_tokens":4736,"cache_creation_input_tokens":64}`
+
+// assertDatabricksClaudeCacheUsage checks the unified usage of databricksClaudeCacheUsage: reads
+// and writes under prompt_tokens_details, each counted once inside prompt_tokens, and no
+// top-level Anthropic spelling left to serialize.
+func assertDatabricksClaudeCacheUsage(t *testing.T, label string, u *schemas.BifrostLLMUsage) {
+	t.Helper()
+	if u == nil || u.PromptTokensDetails == nil {
+		t.Fatalf("%s: usage = %+v, want prompt_tokens_details", label, u)
+	}
+	d := u.PromptTokensDetails
+	if d.CachedReadTokens != 4736 || d.CachedWriteTokens != 64 {
+		t.Errorf("%s: cached read/write = %d/%d, want 4736/64", label, d.CachedReadTokens, d.CachedWriteTokens)
+	}
+	if u.PromptTokens != 12+4736+64 || u.CompletionTokens != 20 || u.TotalTokens != 12+4736+64+20 {
+		t.Errorf("%s: prompt/completion/total = %d/%d/%d, want 4812/20/4832", label, u.PromptTokens, u.CompletionTokens, u.TotalTokens)
+	}
+	out, err := schemas.Marshal(u)
+	if err != nil {
+		t.Fatalf("%s: marshal: %v", label, err)
+	}
+	if strings.Contains(string(out), "cache_read_input_tokens") || strings.Contains(string(out), "cache_creation_input_tokens") {
+		t.Errorf("%s: served usage %s still carries a top-level Anthropic cache spelling", label, out)
+	}
+}
+
+// TestDatabricksClaudeCacheUsage pins that a Databricks Claude answer's top-level cache counts
+// reach unified usage (contract C5) on the buffered and the streamed chat route, so a cache
+// write is priced at cache_creation_input_token_cost and a read at the cache-read rate instead of
+// being dropped (TXE-8087).
+func TestDatabricksClaudeCacheUsage(t *testing.T) {
+	t.Parallel()
+
+	stream := "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"databricks-claude-sonnet-4-5\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"}}]}\n\n" +
+		"data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"databricks-claude-sonnet-4-5\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":" + databricksClaudeCacheUsage + "}\n\n" +
+		"data: [DONE]\n\n"
+	buffered := `{"id":"c1","object":"chat.completion","created":1700000000,"model":"databricks-claude-sonnet-4-5",` +
+		`"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":` + databricksClaudeCacheUsage + `}`
+
+	provider, server := newStubProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["stream"] == true {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte(stream))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(buffered))
+	})
+	key := schemas.Key{
+		Models: []string{"*"},
+		Value:  *schemas.NewSecretVar("dapi-test"),
+		DatabricksKeyConfig: &schemas.DatabricksKeyConfig{
+			WorkspaceURL: *schemas.NewSecretVar(serverHost(t, server)),
+		},
+	}
+	newRequest := func() *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Provider: schemas.Databricks,
+			Model:    "databricks-claude-sonnet-4-5",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hey")}}},
+		}
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	resp, bErr := provider.ChatCompletion(ctx, key, newRequest())
+	if bErr != nil {
+		t.Fatalf("ChatCompletion: %v", bErr)
+	}
+	assertDatabricksClaudeCacheUsage(t, "buffered", resp.Usage)
+
+	streamCtx, streamCancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+	defer streamCancel()
+	postHookRunner := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, bErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return result, bErr
+	}
+	chunks, bErr := provider.ChatCompletionStream(streamCtx, postHookRunner, nil, key, newRequest())
+	if bErr != nil {
+		t.Fatalf("ChatCompletionStream: %v", bErr)
+	}
+	var last *schemas.BifrostLLMUsage
+	for chunk := range chunks {
+		if chunk == nil {
+			continue
+		}
+		if chunk.BifrostError != nil {
+			t.Fatalf("stream error: %+v", chunk.BifrostError)
+		}
+		if chunk.BifrostChatResponse != nil && chunk.BifrostChatResponse.Usage != nil {
+			last = chunk.BifrostChatResponse.Usage
+		}
+	}
+	assertDatabricksClaudeCacheUsage(t, "streamed", last)
+}

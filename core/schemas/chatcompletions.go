@@ -1968,7 +1968,13 @@ type BifrostLLMUsage struct {
 	CompletionTokensDetails *ChatCompletionTokensDetails `json:"completion_tokens_details,omitempty"`
 	ReasoningTokens         int                          `json:"reasoning_tokens,omitempty"` // SGLang's top-level spelling; folded by NormalizeReasoningTokens
 	CachedTokens            int                          `json:"cached_tokens,omitempty"`    // StepFun's top-level spelling; folded by NormalizeCachedTokens
-	TotalTokens             int                          `json:"total_tokens"`
+	// CacheReadInputTokens and CacheCreationInputTokens are Anthropic's top-level spellings, which
+	// Databricks-hosted Claude endpoints return next to an OpenAI-shaped usage. Anthropic counts
+	// them apart from the base input; NormalizeAnthropicCacheTokens folds them into
+	// PromptTokensDetails and PromptTokens (TXE-8087).
+	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+	TotalTokens              int `json:"total_tokens"`
 	// AudioSeconds carries duration-based audio usage when a provider reports
 	// seconds instead of tokens.
 	AudioSeconds *float64 `json:"audio_seconds,omitempty"`
@@ -2137,13 +2143,45 @@ func (u *BifrostLLMUsage) NormalizeCachedTokens() {
 	u.CachedTokens = 0
 }
 
+// NormalizeAnthropicCacheTokens folds Anthropic's top-level cache_read_input_tokens and
+// cache_creation_input_tokens into PromptTokensDetails.CachedReadTokens and CachedWriteTokens.
+// Databricks-hosted Claude endpoints return them next to an OpenAI-shaped usage when caching is
+// active (docs.databricks.com/aws/en/machine-learning/foundation-model-apis/api-reference, Usage
+// table); any OpenAI-compatible upstream that copies Anthropic's usage does the same.
+//
+// The spelling decides the convention, as in the batch settlement (framework/jobaccounting
+// usageFromValue): Anthropic counts cache reads and writes apart from the base input, so they are
+// added to PromptTokens, which in Bifrost includes every cached token. A count nested under
+// prompt_tokens_details is already part of PromptTokens and is kept beside them. TotalTokens is
+// raised to at least PromptTokens+CompletionTokens. A zero or absent count changes nothing.
+func (u *BifrostLLMUsage) NormalizeAnthropicCacheTokens() {
+	if u == nil || (u.CacheReadInputTokens == 0 && u.CacheCreationInputTokens == 0) {
+		return
+	}
+	read := max(u.CacheReadInputTokens, 0)
+	write := max(u.CacheCreationInputTokens, 0)
+	u.CacheReadInputTokens = 0
+	u.CacheCreationInputTokens = 0
+	if read == 0 && write == 0 {
+		return
+	}
+	if u.PromptTokensDetails == nil {
+		u.PromptTokensDetails = &ChatPromptTokensDetails{}
+	}
+	u.PromptTokensDetails.CachedReadTokens += read
+	u.PromptTokensDetails.CachedWriteTokens += write
+	u.PromptTokens += read + write
+	u.TotalTokens = max(u.TotalTokens, u.PromptTokens+u.CompletionTokens)
+}
+
 // NormalizeVendorSpellings moves every top-level field an OpenAI-compatible vendor reports under
 // its own name into the unified location, and clears it. Decode sites call this one method, so a
-// spelling added later needs no new call. It costs two integer comparisons on a usage that
+// spelling added later needs no new call. It costs four integer comparisons on a usage that
 // carries none of them.
 func (u *BifrostLLMUsage) NormalizeVendorSpellings() {
 	u.NormalizeReasoningTokens()
 	u.NormalizeCachedTokens()
+	u.NormalizeAnthropicCacheTokens()
 }
 
 type ChatPromptTokensDetails struct {

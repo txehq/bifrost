@@ -929,6 +929,84 @@ func TestMergeStreamFrameCarriesNormalizedCachedTokens(t *testing.T) {
 	}
 }
 
+// Anthropic's top-level cache spellings (Databricks-hosted Claude, TXE-8087) are counted apart
+// from the base input: they land under prompt_tokens_details and are added to prompt_tokens
+// once, total_tokens never ends below prompt+completion, a nested OpenAI-style count already
+// inside prompt_tokens is kept beside them, and a zero or absent count changes nothing.
+func TestBifrostLLMUsageNormalizeAnthropicCacheTokens(t *testing.T) {
+	cases := []struct {
+		name                  string
+		body                  string
+		wantDetails           bool
+		wantPrompt, wantTotal int
+		wantRead, wantWrite   int
+	}{
+		{"read and write", `{"prompt_tokens":12,"completion_tokens":20,"total_tokens":32,"cache_read_input_tokens":4736,"cache_creation_input_tokens":64}`, true, 4812, 4832, 4736, 64},
+		{"write only", `{"prompt_tokens":12,"completion_tokens":20,"total_tokens":32,"cache_creation_input_tokens":3000}`, true, 3012, 3032, 0, 3000},
+		{"read only", `{"prompt_tokens":12,"completion_tokens":20,"total_tokens":32,"cache_read_input_tokens":900}`, true, 912, 932, 900, 0},
+		{"total that already counts the cache is kept", `{"prompt_tokens":12,"completion_tokens":20,"total_tokens":4832,"cache_read_input_tokens":4736,"cache_creation_input_tokens":64}`, true, 4812, 4832, 4736, 64},
+		{"nested inclusive read is kept beside the exclusive one", `{"prompt_tokens":100,"completion_tokens":1,"total_tokens":101,"prompt_tokens_details":{"cached_tokens":40},"cache_read_input_tokens":10}`, true, 110, 111, 50, 0},
+		{"zeros create nothing", `{"prompt_tokens":12,"completion_tokens":20,"total_tokens":32,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}`, false, 12, 32, 0, 0},
+		{"negatives create nothing", `{"prompt_tokens":12,"completion_tokens":20,"total_tokens":32,"cache_read_input_tokens":-5}`, false, 12, 32, 0, 0},
+		{"absent creates nothing", `{"prompt_tokens":12,"completion_tokens":20,"total_tokens":32}`, false, 12, 32, 0, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var u BifrostLLMUsage
+			if err := Unmarshal([]byte(tc.body), &u); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			u.NormalizeVendorSpellings()
+			// Normalizing twice must not add the cache counts twice.
+			u.NormalizeVendorSpellings()
+			if u.CacheReadInputTokens != 0 || u.CacheCreationInputTokens != 0 {
+				t.Errorf("top-level cache spellings = %d/%d after normalizing, want cleared", u.CacheReadInputTokens, u.CacheCreationInputTokens)
+			}
+			if u.PromptTokens != tc.wantPrompt || u.TotalTokens != tc.wantTotal {
+				t.Errorf("prompt/total = %d/%d, want %d/%d", u.PromptTokens, u.TotalTokens, tc.wantPrompt, tc.wantTotal)
+			}
+			if !tc.wantDetails {
+				if u.PromptTokensDetails != nil {
+					t.Fatalf("prompt_tokens_details = %+v, want nil", u.PromptTokensDetails)
+				}
+				return
+			}
+			if u.PromptTokensDetails == nil {
+				t.Fatal("prompt_tokens_details = nil")
+			}
+			if d := u.PromptTokensDetails; d.CachedReadTokens != tc.wantRead || d.CachedWriteTokens != tc.wantWrite {
+				t.Errorf("cached read/write = %d/%d, want %d/%d", d.CachedReadTokens, d.CachedWriteTokens, tc.wantRead, tc.wantWrite)
+			}
+		})
+	}
+	var nilUsage *BifrostLLMUsage
+	nilUsage.NormalizeAnthropicCacheTokens()
+}
+
+// Every streamed frame is normalized as it is decoded. A Claude stream that reports the cache
+// counts on one frame and only the base counts on the next must keep them in the accumulated
+// usage, counted once.
+func TestMergeStreamFrameCarriesNormalizedAnthropicCacheTokens(t *testing.T) {
+	acc := &BifrostLLMUsage{}
+	for _, body := range []string{
+		`{"prompt_tokens":12,"completion_tokens":1,"total_tokens":13,"cache_read_input_tokens":4736,"cache_creation_input_tokens":64}`,
+		`{"prompt_tokens":12,"completion_tokens":20,"total_tokens":32}`,
+	} {
+		var frame BifrostLLMUsage
+		if err := Unmarshal([]byte(body), &frame); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		frame.NormalizeVendorSpellings()
+		acc.MergeStreamFrame(&frame)
+	}
+	if d := acc.PromptTokensDetails; d == nil || d.CachedReadTokens != 4736 || d.CachedWriteTokens != 64 {
+		t.Fatalf("accumulated details = %+v, want cached read 4736 and write 64", acc.PromptTokensDetails)
+	}
+	if acc.PromptTokens != 4812 || acc.CompletionTokens != 20 || acc.TotalTokens != 4832 {
+		t.Errorf("accumulated prompt/completion/total = %d/%d/%d, want 4812/20/4832", acc.PromptTokens, acc.CompletionTokens, acc.TotalTokens)
+	}
+}
+
 // BenchmarkBifrostLLMUsageNormalizeVendorSpellings measures the response-path cost of decoding a
 // usage object and normalizing it (TXE-6439). A usage with no top-level vendor spelling, which
 // is every vendor but SGLang and StepFun, must pay nothing beyond the decode: the normalizer is
