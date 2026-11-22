@@ -77,7 +77,8 @@ func (rt *ResponsesTool) ToChatTool() *ChatTool {
 	}
 
 	ct := &ChatTool{
-		Type: ChatToolType(rt.Type),
+		Type:         ChatToolType(rt.Type),
+		CacheControl: rt.CacheControl, // the chat encoder decides per provider whether it is sent (TXE-8179)
 	}
 
 	// Convert function tools
@@ -883,6 +884,9 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 				if rm.ResponsesToolMessage.Arguments != nil {
 					tc.Function.Arguments = *rm.ResponsesToolMessage.Arguments
 				}
+				// A function_call's cache_control rides on the message (Anthropic's tool_use
+				// block). The chat encoder decides per provider whether it is sent (TXE-8179).
+				tc.CacheControl = rm.CacheControl
 
 				currentToolCalls = append(currentToolCalls, tc)
 			}
@@ -980,8 +984,10 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 
 		// Convert content (skip for refusal messages since refusal is already extracted)
 		if rm.Content != nil && (rm.Type == nil || *rm.Type != ResponsesMessageTypeRefusal) {
+			// A lone text block collapses to a string unless it carries cache_control, which only
+			// a content block can hold (TXE-8179).
 			if rm.Content.ContentStr != nil ||
-				(len(rm.Content.ContentBlocks) == 1 &&
+				(len(rm.Content.ContentBlocks) == 1 && rm.Content.ContentBlocks[0].CacheControl == nil &&
 					(rm.Content.ContentBlocks[0].Type == ResponsesInputMessageContentBlockTypeText || rm.Content.ContentBlocks[0].Type == ResponsesOutputMessageContentTypeText)) {
 				if rm.Content.ContentStr != nil {
 					cm.Content = &ChatMessageContent{
@@ -1029,6 +1035,7 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 						Type:         chatBlockType,
 						Text:         block.Text,
 						GuardContent: block.GuardContent,
+						CacheControl: block.CacheControl,
 					}
 
 					// Convert specific block types
@@ -1060,6 +1067,8 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 				}
 				cm.Content = &ChatMessageContent{
 					ContentBlocks: chatBlocks,
+					// A lone text block reaches here only for its marker (see the collapse above).
+					StringWithoutMarker: len(chatBlocks) == 1 && chatBlocks[0].Type == ChatContentBlockTypeText && chatBlocks[0].CacheControl != nil,
 				}
 			}
 		}
