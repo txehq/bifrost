@@ -12340,6 +12340,17 @@ func guardBodyOutsideField(t *testing.T, body []byte, field string) []byte {
 	return rest
 }
 
+// guardBaseURL is the base URL a provider is configured with: the guard upstream over http,
+// or over https for a provider that refuses http to anything but localhost. GitHub Copilot
+// sends a Copilot API token only to an https base_url (upstream d9633b2fa); the guard's
+// intercepting proxy terminates TLS with its own CA, so both reach the same upstream.
+func guardBaseURL(provider schemas.ModelProvider) string {
+	if provider == schemas.GithubCopilot {
+		return "https://" + guardUpstreamHost
+	}
+	return "http://" + guardUpstreamHost
+}
+
 func TestExtraParamsNeverReplaceTheModelOrInputOnAnyProvider(t *testing.T) {
 	upstream := newGuardUpstream(t)
 	client := &Bifrost{logger: NewNoOpLogger()}
@@ -12367,7 +12378,7 @@ func TestExtraParamsNeverReplaceTheModelOrInputOnAnyProvider(t *testing.T) {
 		providerKey := tc.provider
 		t.Run(tc.name, func(t *testing.T) {
 			config := &schemas.ProviderConfig{
-				NetworkConfig: schemas.NetworkConfig{BaseURL: "http://" + guardUpstreamHost, DefaultRequestTimeoutInSeconds: 10},
+				NetworkConfig: schemas.NetworkConfig{BaseURL: guardBaseURL(providerKey), DefaultRequestTimeoutInSeconds: 10},
 				ProxyConfig: &schemas.ProxyConfig{
 					Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(upstream.proxyURL), CACertPEM: schemas.NewSecretVar(upstream.caPEM),
 				},
