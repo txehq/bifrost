@@ -528,3 +528,43 @@ func BenchmarkImageResponseBackfillExpiresAt(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkSetDeliveredImages measures the write of usage.output_images on an image stream's
+// final frame (TXE-8082), once per stream: with no usage yet, and with a vendor count to keep.
+func BenchmarkSetDeliveredImages(b *testing.B) {
+	b.Run("no usage", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			chunk := &BifrostImageGenerationStreamResponse{}
+			chunk.SetDeliveredImages(3)
+		}
+	})
+	b.Run("vendor count kept", func(b *testing.B) {
+		b.ReportAllocs()
+		vendor := 2
+		for i := 0; i < b.N; i++ {
+			chunk := &BifrostImageGenerationStreamResponse{Usage: &ImageUsage{OutputImages: &vendor, OutputTokensDetails: &ImageTokenDetails{NImages: 2}}}
+			chunk.SetDeliveredImages(3)
+		}
+	})
+}
+
+func TestSetDeliveredImages(t *testing.T) {
+	chunk := &BifrostImageGenerationStreamResponse{}
+	chunk.SetDeliveredImages(3)
+	if chunk.Usage == nil || chunk.Usage.OutputImages == nil || *chunk.Usage.OutputImages != 3 || chunk.Usage.OutputTokensDetails == nil || chunk.Usage.OutputTokensDetails.NImages != 3 {
+		t.Fatalf("want output_images and NImages 3, got %+v", chunk.Usage)
+	}
+	vendor := 2
+	kept := &BifrostImageGenerationStreamResponse{Usage: &ImageUsage{OutputImages: &vendor}}
+	kept.SetDeliveredImages(3)
+	if *kept.Usage.OutputImages != 2 || kept.Usage.OutputTokensDetails.NImages != 2 {
+		t.Errorf("a vendor count must be kept and priced, got %+v", kept.Usage)
+	}
+	none := &BifrostImageGenerationStreamResponse{}
+	none.SetDeliveredImages(0)
+	if *none.Usage.OutputImages != 0 || none.Usage.OutputTokensDetails.NImages != 0 {
+		t.Errorf("no image delivered must report 0 and leave NImages unset, got %+v", none.Usage)
+	}
+	(*BifrostImageGenerationStreamResponse)(nil).SetDeliveredImages(1)
+}

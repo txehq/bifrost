@@ -217,3 +217,108 @@ func TestChatCompletion_RefusesAServiceTierHuggingFaceCannotTake(t *testing.T) {
 		})
 	}
 }
+
+// TXE-8082: fal streams progress and ends on the final result, so the final frame of a fal image
+// stream reports usage.output_images, and the NImages count the stream is priced by, as the number
+// of images in the last event that carried any. Each of those images was relayed under its own
+// index. A hosted model can make several images with n unset, so 1 is never assumed.
+func TestHuggingFaceFalImageStreamReportsDeliveredImages(t *testing.T) {
+	progress := `{"progress":0.5,"message":"Generating..."}`
+	preview := `{"images":[{"url":"https://v3.fal.media/files/preview.jpeg"}]}`
+	cases := []struct {
+		name       string
+		events     []string
+		wantImages int
+	}{
+		{"one image", []string{progress, `{"images":[{"url":"https://v3.fal.media/files/a.jpeg"}],"seed":42}`}, 1},
+		{"a preview then a model default of three images", []string{progress, preview, `{"images":[{"url":"https://v3.fal.media/files/a.jpeg"},{"url":"https://v3.fal.media/files/b.jpeg"},{"url":"https://v3.fal.media/files/c.jpeg"}],"seed":42}`}, 3},
+		{"the final result in the API envelope", []string{`{"data":{"images":[{"url":"https://v3.fal.media/files/a.jpeg"},{"url":"https://v3.fal.media/files/b.jpeg"}]}}`, progress}, 2},
+	}
+	for _, tc := range cases {
+		for _, edit := range []bool{false, true} {
+			name := tc.name + "/generation"
+			if edit {
+				name = tc.name + "/edit"
+			}
+			t.Run(name, func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Content-Type", "text/event-stream")
+					for _, event := range tc.events {
+						_, _ = fmt.Fprintf(w, "data: %s\n\n", event)
+					}
+				}))
+				defer server.Close()
+				provider := huggingface.NewHuggingFaceProvider(&schemas.ProviderConfig{
+					NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL},
+				}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+				key := schemas.Key{Value: schemas.SecretVar{Val: "test-token"}, Models: []string{"*"}}
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				defer ctx.Cancel()
+				ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+				postHook := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+					return result, err
+				}
+				var stream chan *schemas.BifrostStreamChunk
+				var bifrostErr *schemas.BifrostError
+				if edit {
+					stream, bifrostErr = provider.ImageEditStream(ctx, postHook, nil, key, &schemas.BifrostImageEditRequest{Provider: schemas.HuggingFace, Model: "fal-ai/flux-kontext/dev",
+						Input: &schemas.ImageEditInput{Prompt: "make it blue", Images: []schemas.ImageInput{{Image: []byte("\x89PNG\r\n\x1a\n")}}}})
+				} else {
+					stream, bifrostErr = provider.ImageGenerationStream(ctx, postHook, nil, key, &schemas.BifrostImageGenerationRequest{Provider: schemas.HuggingFace, Model: "fal-ai/flux/dev",
+						Input: &schemas.ImageGenerationInput{Prompt: "a lighthouse"}})
+				}
+				if bifrostErr != nil {
+					t.Fatalf("stream: %+v", bifrostErr.Error)
+				}
+				var final *schemas.BifrostImageGenerationStreamResponse
+				for chunk := range stream {
+					if chunk.BifrostError != nil {
+						t.Fatalf("error chunk: %+v", chunk.BifrostError.Error)
+					}
+					if r := chunk.BifrostImageGenerationStreamResponse; r != nil && (r.Type == schemas.ImageGenerationEventTypeCompleted || r.Type == schemas.ImageEditEventTypeCompleted) {
+						final = r
+					}
+				}
+				if final == nil || final.Usage == nil || final.Usage.OutputImages == nil {
+					t.Fatalf("the completed frame carries no usage.output_images: %+v", final)
+				}
+				if *final.Usage.OutputImages != tc.wantImages {
+					t.Errorf("usage.output_images = %d, want %d", *final.Usage.OutputImages, tc.wantImages)
+				}
+				if final.Usage.OutputTokensDetails == nil || final.Usage.OutputTokensDetails.NImages != tc.wantImages {
+					t.Errorf("the stream must be priced at %d images, got %+v", tc.wantImages, final.Usage.OutputTokensDetails)
+				}
+			})
+		}
+	}
+}
+
+// A fal event with a message and no progress is still an error, as before TXE-8082.
+func TestHuggingFaceFalImageStreamMessageWithoutProgressIsAnError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"message\":\"rate limited\"}\n\n")
+	}))
+	defer server.Close()
+	provider := huggingface.NewHuggingFaceProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL}}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	postHook := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return result, err
+	}
+	stream, bifrostErr := provider.ImageGenerationStream(ctx, postHook, nil, schemas.Key{Value: schemas.SecretVar{Val: "t"}}, &schemas.BifrostImageGenerationRequest{Provider: schemas.HuggingFace, Model: "fal-ai/flux/dev",
+		Input: &schemas.ImageGenerationInput{Prompt: "a lighthouse"}})
+	if bifrostErr != nil {
+		t.Fatalf("stream: %+v", bifrostErr.Error)
+	}
+	var errMessage string
+	for chunk := range stream {
+		if chunk.BifrostError != nil && chunk.BifrostError.Error != nil {
+			errMessage = chunk.BifrostError.Error.Message
+		}
+	}
+	if errMessage != "rate limited" {
+		t.Errorf("want the stream to end on the error \"rate limited\", got %q", errMessage)
+	}
+}
