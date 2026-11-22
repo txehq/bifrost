@@ -9,8 +9,11 @@ secrets reach the job, not that any provider key is among them.
 Every job that names `environment: live-providers` runs this script as the first command of
 the step that holds its provider keys, so it counts the keys that step's suites actually
 get. It reads its own environment, takes the names that check-provider-key-environment.py
-treats as provider credentials (the canary aside), and prints how many are non-empty and
-which. It prints names only, never a value.
+treats as provider credentials (the canary aside), and prints how many are set and which.
+A credential set to one of the checker's REGISTRATION_ONLY_PLACEHOLDERS (BFL_API_KEY's
+"registration-only-no-upstream-call") is named as such and not counted: it calls nothing.
+It prints names and counts of names only, never a value or anything derived from one, such
+as its length.
 
   * No key set: a `::warning::` naming the job, and the step-summary line
     "keyless: provider suites skipped". It does not fail: running keyless is the current
@@ -38,33 +41,42 @@ def load_checker():
     return module
 
 
-def count(environ, is_provider_credential, canary):
-    """Returns (present, configured): the sorted names of the provider credentials in environ
-    that are non-empty, and of all of them. The canary is not a provider key."""
+def count(environ, is_provider_credential, canary, placeholders):
+    """Returns (present, configured, placeholder): sorted names of the provider credentials in
+    environ. present: set to a real value. configured: all of them. placeholder: set to a
+    registration-only placeholder, which lets a provider register and calls nothing, so it is
+    not a key. The canary is not a provider key."""
     names = sorted(n for n in environ if is_provider_credential(n) and n.upper() != canary)
-    return [n for n in names if environ[n].strip()], names
+    placeholder = [n for n in names if environ[n].strip() in placeholders]
+    present = [n for n in names if environ[n].strip() and n not in placeholder]
+    return present, names, placeholder
 
 
-def report(environ, present, configured):
-    """Returns (log lines, step-summary lines) for the counts. Names only, never values."""
+def report(environ, present, configured, placeholder):
+    """Returns (log lines, step-summary lines) for the counts. Names and counts of names
+    only: never a value, nor anything derived from one such as its length."""
     job = environ.get("GITHUB_JOB", "this job")
     workflow = environ.get("GITHUB_WORKFLOW", "")
     where = f"{workflow} / {job}" if workflow else job
+    note = (f"; {', '.join(placeholder)} set to a registration-only placeholder, not counted"
+            if placeholder else "")
     if present:
-        line = f"{len(present)} of {len(configured)} provider keys set: {', '.join(present)}"
+        line = f"{len(present)} of {len(configured)} provider keys set: {', '.join(present)}{note}"
         return [f"{where}: {line}"], [f"- `{job}`: {line}"]
     log = [
         f"::warning title=Keyless live-providers job::{where}: none of the {len(configured)} "
-        f"provider keys this step reads is set, so the provider suites skip and the job tests "
-        f"startup only (TXE-8129)"
+        f"provider keys this step reads is set{note}, so the provider suites skip and the job "
+        f"tests startup only (TXE-8129)"
     ]
-    return log, [f"- `{job}`: keyless: provider suites skipped (0 of {len(configured)} provider keys set)"]
+    return log, [f"- `{job}`: keyless: provider suites skipped (0 of {len(configured)} provider keys set{note})"]
 
 
 def main():
     checker = load_checker()
-    present, configured = count(os.environ, checker.is_provider_credential, checker.CANARY_SECRET)
-    log, summary = report(os.environ, present, configured)
+    present, configured, placeholder = count(
+        os.environ, checker.is_provider_credential, checker.CANARY_SECRET,
+        checker.REGISTRATION_ONLY_PLACEHOLDERS)
+    log, summary = report(os.environ, present, configured, placeholder)
     for line in log:
         print(line)
     path = os.environ.get("GITHUB_STEP_SUMMARY")

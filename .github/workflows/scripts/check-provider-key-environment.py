@@ -265,6 +265,15 @@ def canary_problem(job):
 
 KEY_COUNT_COMMAND = 'python3 "$GITHUB_WORKSPACE/.github/workflows/scripts/count-provider-keys.py"'
 
+# Literal values a live-providers job may give a provider credential instead of a secret.
+# Each one lets a provider register without making an upstream call, so it is not a key:
+# count-provider-keys.py does not count a credential set to one of these. Any other literal
+# value of a provider credential in a live-providers job fails the check, so a new
+# placeholder cannot pass for a key that arrived (Codex on PR #438).
+REGISTRATION_ONLY_PLACEHOLDERS = {
+    "registration-only-no-upstream-call",  # BFL_API_KEY: registers BFL, calls nothing
+}
+
 
 def first_command(run):
     for line in str(run).splitlines():
@@ -296,6 +305,16 @@ def key_count_problem(job):
     if unseen:
         return (f"reads {listed(unseen)} in a step where count-provider-keys.py does not "
                 f"run, so the count would not show whether those keys arrived")
+    literal = set()
+    for env in [job.get("env")] + [s.get("env") for s in job.get("steps") or [] if isinstance(s, dict)]:
+        for key, value in (env if isinstance(env, dict) else {}).items():
+            if (isinstance(key, str) and is_provider_credential(key) and key.upper() != CANARY_SECRET
+                    and "${{" not in str(value) and str(value) not in REGISTRATION_ONLY_PLACEHOLDERS):
+                literal.add(key)
+    if literal:
+        return (f"sets {listed(literal)} to a literal that is not in "
+                f"REGISTRATION_ONLY_PLACEHOLDERS, so count-provider-keys.py would count it as "
+                f"a provider key that arrived")
     return None
 
 

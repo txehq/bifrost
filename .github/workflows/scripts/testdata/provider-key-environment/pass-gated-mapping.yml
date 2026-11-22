@@ -19,3 +19,5 @@ jobs:
           make test-core
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # A registration-only placeholder, as the real jobs set it: allowed, and not counted.
+          BFL_API_KEY: registration-only-no-upstream-call
