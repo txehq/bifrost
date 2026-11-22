@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"sync/atomic"
 	"time"
 
 	"github.com/tidwall/gjson"
@@ -1970,8 +1971,8 @@ type BifrostLLMUsage struct {
 	CachedTokens            int                          `json:"cached_tokens,omitempty"`    // StepFun's top-level spelling; folded by NormalizeCachedTokens
 	// CacheReadInputTokens and CacheCreationInputTokens are Anthropic's top-level spellings, which
 	// Databricks-hosted Claude endpoints return next to an OpenAI-shaped usage. Anthropic counts
-	// them apart from the base input; NormalizeAnthropicCacheTokens folds them into
-	// PromptTokensDetails and PromptTokens (TXE-8087).
+	// them apart from the base input; NormalizeAnthropicCacheTokens folds them through
+	// FoldAnthropicCacheTokens (TXE-8087).
 	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
 	TotalTokens              int `json:"total_tokens"`
@@ -2143,45 +2144,104 @@ func (u *BifrostLLMUsage) NormalizeCachedTokens() {
 	u.CachedTokens = 0
 }
 
-// NormalizeAnthropicCacheTokens folds Anthropic's top-level cache_read_input_tokens and
-// cache_creation_input_tokens into PromptTokensDetails.CachedReadTokens and CachedWriteTokens.
-// Databricks-hosted Claude endpoints return them next to an OpenAI-shaped usage when caching is
-// active (docs.databricks.com/aws/en/machine-learning/foundation-model-apis/api-reference, Usage
-// table); any OpenAI-compatible upstream that copies Anthropic's usage does the same.
+// AnthropicCacheFold is what FoldAnthropicCacheTokens did with a usage's Anthropic-spelled cache
+// counts.
+type AnthropicCacheFold uint8
+
+const (
+	// AnthropicCacheFoldNone: there was nothing to fold.
+	AnthropicCacheFoldNone AnthropicCacheFold = iota
+	// AnthropicCacheFoldAdded: the counts were taken as Anthropic's convention, apart from the
+	// base input, and added to PromptTokens.
+	AnthropicCacheFoldAdded
+	// AnthropicCacheFoldInclusive: the payload proved the base count already includes them
+	// (total_tokens == prompt_tokens + completion_tokens), so PromptTokens was left alone. The
+	// caller logs it: if the vendor is really exclusive, this is an underbill (TXE-8087).
+	AnthropicCacheFoldInclusive
+	// AnthropicCacheFoldSkipped: the canonical cached_read_tokens or cached_write_tokens was
+	// already set, so the counts were dropped rather than counted twice.
+	AnthropicCacheFoldSkipped
+)
+
+// InclusiveAnthropicCacheLogMessage is the WARN a decode site logs, with the provider name, on an
+// AnthropicCacheFoldInclusive.
+const InclusiveAnthropicCacheLogMessage = "TXE-8087: provider=%s reported top-level cache_read_input_tokens/cache_creation_input_tokens with total_tokens == prompt_tokens + completion_tokens; treated prompt_tokens as already including the cache counts"
+
+// inclusiveAnthropicCacheFolds counts AnthropicCacheFoldInclusive outcomes since start, so the
+// convention can be read off a running node even where the decode site has no logger (batch).
+var inclusiveAnthropicCacheFolds atomic.Int64
+
+// InclusiveAnthropicCacheFolds returns how many usages FoldAnthropicCacheTokens has treated as
+// inclusive since start.
+func InclusiveAnthropicCacheFolds() int64 { return inclusiveAnthropicCacheFolds.Load() }
+
+// FoldAnthropicCacheTokens is the one place Bifrost decides how Anthropic-spelled cache counts
+// (cache_read_input_tokens / cache_creation_input_tokens, Bedrock's cacheReadInputTokens /
+// cacheWriteInputTokens) enter a usage. The chat decoders (NormalizeVendorSpellings) and the
+// batch settlement (framework/jobaccounting usageFromValue) both call it, so one payload prices
+// the same on either route.
 //
-// The spelling decides the convention, as in the batch settlement (framework/jobaccounting
-// usageFromValue): Anthropic counts cache reads and writes apart from the base input, so they are
-// added to PromptTokens, which in Bifrost includes every cached token. A count nested under
-// prompt_tokens_details is already part of PromptTokens and is kept beside them. TotalTokens is
-// raised to at least PromptTokens+CompletionTokens. A zero or absent count changes nothing.
-func (u *BifrostLLMUsage) NormalizeAnthropicCacheTokens() {
-	if u == nil || (u.CacheReadInputTokens == 0 && u.CacheCreationInputTokens == 0) {
-		return
+// Anthropic counts cache reads and writes apart from the base input, and Bifrost's PromptTokens
+// includes every cached token, so by default the counts go under PromptTokensDetails and are
+// added to PromptTokens once; TotalTokens is raised to at least PromptTokens+CompletionTokens.
+// Two exceptions:
+//   - The canonical CachedReadTokens or CachedWriteTokens is already set: the vendor reported the
+//     cache in the OpenAI convention, which is already part of PromptTokens, and the counts are
+//     dropped (AnthropicCacheFoldSkipped). A vendor reports one convention, never both.
+//   - openAIBase (the base count was spelled prompt_tokens, the shape Databricks-hosted Claude
+//     returns, whose convention Databricks does not document) and the reported total equals
+//     PromptTokens+CompletionTokens: the payload says the base already includes them, so they go
+//     under PromptTokensDetails without touching PromptTokens (AnthropicCacheFoldInclusive).
+//     Anthropic's input_tokens and Bedrock's inputTokens are documented exclusive and are not
+//     second-guessed.
+//
+// Negative counts are read as zero.
+func (u *BifrostLLMUsage) FoldAnthropicCacheTokens(read, write int, openAIBase bool) AnthropicCacheFold {
+	read, write = max(read, 0), max(write, 0)
+	if u == nil || (read == 0 && write == 0) {
+		return AnthropicCacheFoldNone
 	}
-	read := max(u.CacheReadInputTokens, 0)
-	write := max(u.CacheCreationInputTokens, 0)
-	u.CacheReadInputTokens = 0
-	u.CacheCreationInputTokens = 0
-	if read == 0 && write == 0 {
-		return
+	if d := u.PromptTokensDetails; d != nil && (d.CachedReadTokens > 0 || d.CachedWriteTokens > 0) {
+		return AnthropicCacheFoldSkipped
 	}
 	if u.PromptTokensDetails == nil {
 		u.PromptTokensDetails = &ChatPromptTokensDetails{}
 	}
-	u.PromptTokensDetails.CachedReadTokens += read
-	u.PromptTokensDetails.CachedWriteTokens += write
+	u.PromptTokensDetails.CachedReadTokens = read
+	u.PromptTokensDetails.CachedWriteTokens = write
+	if openAIBase && u.TotalTokens > 0 && u.TotalTokens == u.PromptTokens+u.CompletionTokens {
+		inclusiveAnthropicCacheFolds.Add(1)
+		return AnthropicCacheFoldInclusive
+	}
 	u.PromptTokens += read + write
 	u.TotalTokens = max(u.TotalTokens, u.PromptTokens+u.CompletionTokens)
+	return AnthropicCacheFoldAdded
+}
+
+// NormalizeAnthropicCacheTokens folds a top-level cache_read_input_tokens and
+// cache_creation_input_tokens through FoldAnthropicCacheTokens and clears them. Databricks-hosted
+// Claude endpoints return them next to an OpenAI-shaped usage when caching is active
+// (docs.databricks.com/aws/en/machine-learning/foundation-model-apis/api-reference, Usage table),
+// and so does any OpenAI-compatible upstream that copies Anthropic's usage (TXE-8087).
+func (u *BifrostLLMUsage) NormalizeAnthropicCacheTokens() AnthropicCacheFold {
+	if u == nil || (u.CacheReadInputTokens == 0 && u.CacheCreationInputTokens == 0) {
+		return AnthropicCacheFoldNone
+	}
+	read, write := u.CacheReadInputTokens, u.CacheCreationInputTokens
+	u.CacheReadInputTokens = 0
+	u.CacheCreationInputTokens = 0
+	return u.FoldAnthropicCacheTokens(read, write, true)
 }
 
 // NormalizeVendorSpellings moves every top-level field an OpenAI-compatible vendor reports under
 // its own name into the unified location, and clears it. Decode sites call this one method, so a
 // spelling added later needs no new call. It costs four integer comparisons on a usage that
-// carries none of them.
-func (u *BifrostLLMUsage) NormalizeVendorSpellings() {
+// carries none of them. It returns what happened to Anthropic-spelled cache counts, so a decode
+// site with a logger can report an AnthropicCacheFoldInclusive.
+func (u *BifrostLLMUsage) NormalizeVendorSpellings() AnthropicCacheFold {
 	u.NormalizeReasoningTokens()
 	u.NormalizeCachedTokens()
-	u.NormalizeAnthropicCacheTokens()
+	return u.NormalizeAnthropicCacheTokens()
 }
 
 type ChatPromptTokensDetails struct {

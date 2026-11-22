@@ -1662,9 +1662,10 @@ func TestDatabricksDecisionWithoutAnswersFails(t *testing.T) {
 // (docs.databricks.com/aws/en/machine-learning/foundation-model-apis/api-reference, Usage table,
 // read 2026-11-22). The docs do not say whether prompt_tokens includes them and no recorded
 // response exists, so this is written from the docs in Anthropic's convention, where the cache
-// counts sit apart from the base input (the convention the batch settlement already applies to
-// these spellings, framework/jobaccounting usageFromValue). TXE-8087.
-const databricksClaudeCacheUsage = `{"prompt_tokens":12,"completion_tokens":20,"total_tokens":32,"cache_read_input_tokens":4736,"cache_creation_input_tokens":64}`
+// counts sit apart from the base input and total_tokens counts everything (the convention the
+// batch settlement already applies to these spellings, framework/jobaccounting usageFromValue).
+// TXE-8087.
+const databricksClaudeCacheUsage = `{"prompt_tokens":12,"completion_tokens":20,"total_tokens":4832,"cache_read_input_tokens":4736,"cache_creation_input_tokens":64}`
 
 // assertDatabricksClaudeCacheUsage checks the unified usage of databricksClaudeCacheUsage: reads
 // and writes under prompt_tokens_details, each counted once inside prompt_tokens, and no

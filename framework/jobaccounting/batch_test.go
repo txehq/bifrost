@@ -3068,3 +3068,42 @@ func TestBatchSettlementCountsAndLogsATruncatedLineWithNoUsage(t *testing.T) {
 		t.Fatalf("a batch with every line billed: unbilled %d, warnings %q, err %v", settlement.UnbilledLines, recorder.warnings, err)
 	}
 }
+
+// TestUsageFromValueMatchesChatDecoderForAnthropicCacheSpellings pins the TXE-8087 class fix: a
+// usage carrying Anthropic's cache spellings is counted the same way by the batch settlement and
+// by the chat decoders (schemas.BifrostLLMUsage.NormalizeVendorSpellings), because both call
+// schemas.FoldAnthropicCacheTokens. A payload that priced differently on chat and in a batch
+// would fail here.
+func TestUsageFromValueMatchesChatDecoderForAnthropicCacheSpellings(t *testing.T) {
+	payloads := map[string]string{
+		"databricks claude, total counts the cache": `{"prompt_tokens":12,"completion_tokens":20,"total_tokens":4832,"cache_read_input_tokens":4736,"cache_creation_input_tokens":64}`,
+		"databricks claude, no total":               `{"prompt_tokens":12,"completion_tokens":20,"cache_read_input_tokens":4736,"cache_creation_input_tokens":64}`,
+		"databricks claude, inclusive by total":     `{"prompt_tokens":5000,"completion_tokens":20,"total_tokens":5020,"cache_read_input_tokens":4736,"cache_creation_input_tokens":64}`,
+		"write only":                                `{"prompt_tokens":12,"completion_tokens":20,"total_tokens":3032,"cache_creation_input_tokens":3000}`,
+		"canonical read wins":                       `{"prompt_tokens":100,"completion_tokens":1,"total_tokens":101,"prompt_tokens_details":{"cached_tokens":40},"cache_read_input_tokens":10}`,
+		"openai cache only":                         `{"prompt_tokens":100,"completion_tokens":1,"total_tokens":101,"prompt_tokens_details":{"cached_tokens":40}}`,
+		"no cache":                                  `{"prompt_tokens":12,"completion_tokens":20,"total_tokens":32}`,
+	}
+	type counts struct{ Prompt, Completion, Total, Read, Write int }
+	countsOf := func(u *schemas.BifrostLLMUsage) counts {
+		c := counts{u.PromptTokens, u.CompletionTokens, u.TotalTokens, 0, 0}
+		if d := u.PromptTokensDetails; d != nil {
+			c.Read, c.Write = d.CachedReadTokens, d.CachedWriteTokens
+		}
+		return c
+	}
+	for name, body := range payloads {
+		t.Run(name, func(t *testing.T) {
+			var chat schemas.BifrostLLMUsage
+			require.NoError(t, schemas.Unmarshal([]byte(body), &chat))
+			chat.NormalizeVendorSpellings()
+
+			var value map[string]interface{}
+			require.NoError(t, sonic.UnmarshalString(body, &value))
+			batch, err := usageFromValue(value)
+			require.NoError(t, err)
+
+			assert.Equal(t, countsOf(&chat), countsOf(batch), "chat and batch counted %s differently", body)
+		})
+	}
+}

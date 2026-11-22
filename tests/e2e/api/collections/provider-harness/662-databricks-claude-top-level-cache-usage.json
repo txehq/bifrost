@@ -1,0 +1,204 @@
+{
+  "name": "662. cc15 TXE-8087 databricks-claude-top-level-cache-usage: a Databricks Claude answer's top-level cache counts reach unified usage and cost",
+  "description": "TXE-8087. Databricks-hosted Claude endpoints return cache use as top-level usage.cache_read_input_tokens and cache_creation_input_tokens next to the OpenAI-shaped counts (docs.databricks.com/aws/en/machine-learning/foundation-model-apis/api-reference, Usage table). The OpenAI chat decoder had no field for either, so the gateway dropped them and priced the request as 12 uncached input tokens. The fixture's Model Serving route (/serving-endpoints/chat/completions on its TLS listener) answers databricks-claude-cache-fixture with 12 uncached prompt tokens, 4,736 read from the cache, 64 written to it and 20 completion tokens, in Anthropic's convention (total_tokens counts everything); no recorded Databricks response exists yet, so the shape follows the docs. The fixture's pricing sheet carries Claude Sonnet's rates for that row: $3/M input, $15/M output, $0.30/M cache read, $3.75/M cache write. 662.1 sends a buffered chat completion and 662.2 a streamed one; both must report the counts under prompt_tokens_details with prompt_tokens 4812, and log $0.0019968.",
+  "item": [
+    {
+      "name": "662.1 a buffered Databricks Claude answer reports its cache read and write in unified usage and is logged at $0.0019968 (fixture) - databricks/databricks-claude-cache-fixture",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.variables.set('dbxCacheRequestId1', 'txe-8087-1-' + Date.now() + '-' + Math.floor(Math.random() * 1e6));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the chat completion succeeds', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var u = pm.response.json().usage || {};",
+              "var d = u.prompt_tokens_details || {};",
+              "pm.test('the read and the write reach unified usage under prompt_tokens_details', function () {",
+              "  pm.expect(d.cached_read_tokens, JSON.stringify(u)).to.eql(4736);",
+              "  pm.expect(d.cached_write_tokens, JSON.stringify(u)).to.eql(64);",
+              "});",
+              "pm.test('prompt_tokens counts each cached token once, on top of the 12 uncached ones', function () {",
+              "  pm.expect(u.prompt_tokens, JSON.stringify(u)).to.eql(4812);",
+              "  pm.expect(u.completion_tokens, JSON.stringify(u)).to.eql(20);",
+              "  pm.expect(u.total_tokens, JSON.stringify(u)).to.eql(4832);",
+              "});",
+              "pm.test('no top-level Anthropic cache spelling is served back', function () {",
+              "  pm.expect(u.cache_read_input_tokens, JSON.stringify(u)).to.be.undefined;",
+              "  pm.expect(u.cache_creation_input_tokens, JSON.stringify(u)).to.be.undefined;",
+              "});",
+              "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+              "var token = pm.variables.get('setupToken');",
+              "var requestId = pm.variables.get('dbxCacheRequestId1');",
+              "function check(attempt) {",
+              "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + requestId, method: 'GET', header: { 'X-Bifrost-Setup-Token': token } }, function (err, res) {",
+              "    if (!err && res.code === 200 && res.json().status === 'success') {",
+              "      var j = res.json();",
+              "      pm.test('the answer is logged at $0.0019968, the write at the cache-creation rate', function () {",
+              "        pm.expect(j.provider, JSON.stringify(j)).to.eql('databricks');",
+              "        pm.expect(j.cost, 'logged with no cost: ' + JSON.stringify(j)).to.be.a('number');",
+              "        // 12 uncached x $3/M + 4,736 read x $0.30/M + 64 written x $3.75/M + 20 out x $15/M. Dropping the cache counts gives $0.000336.",
+              "        pm.expect(j.cost, JSON.stringify(j)).to.be.closeTo(0.0019968, 1e-12);",
+              "      });",
+              "      return;",
+              "    }",
+              "    if (attempt < 10) { setTimeout(function () { check(attempt + 1); }, 1000); return; }",
+              "    pm.test('the log row appeared', function () { pm.expect.fail('log ' + requestId + ' never appeared: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+              "  });",
+              "}",
+              "check(0);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-request-id",
+            "value": "{{dbxCacheRequestId1}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"databricks/databricks-claude-cache-fixture\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "662.2 a streamed Databricks Claude answer reports its cache read and write in unified usage and is logged at $0.0019968 (fixture) - databricks/databricks-claude-cache-fixture",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.variables.set('dbxCacheRequestId2', 'txe-8087-2-' + Date.now() + '-' + Math.floor(Math.random() * 1e6));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the chat completion succeeds', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "// The usage is on the last frame that carries one.",
+              "var last = null;",
+              "pm.response.text().split('\\n').forEach(function (line) {",
+              "  if (line.indexOf('data: ') !== 0 || line === 'data: [DONE]') { return; }",
+              "  try { var f = JSON.parse(line.slice(6)); if (f.usage) { last = f.usage; } } catch (e) {}",
+              "});",
+              "var u = last || {};",
+              "var d = u.prompt_tokens_details || {};",
+              "pm.test('the read and the write reach unified usage under prompt_tokens_details', function () {",
+              "  pm.expect(d.cached_read_tokens, JSON.stringify(u)).to.eql(4736);",
+              "  pm.expect(d.cached_write_tokens, JSON.stringify(u)).to.eql(64);",
+              "});",
+              "pm.test('prompt_tokens counts each cached token once, on top of the 12 uncached ones', function () {",
+              "  pm.expect(u.prompt_tokens, JSON.stringify(u)).to.eql(4812);",
+              "  pm.expect(u.completion_tokens, JSON.stringify(u)).to.eql(20);",
+              "  pm.expect(u.total_tokens, JSON.stringify(u)).to.eql(4832);",
+              "});",
+              "pm.test('no top-level Anthropic cache spelling is served back', function () {",
+              "  pm.expect(u.cache_read_input_tokens, JSON.stringify(u)).to.be.undefined;",
+              "  pm.expect(u.cache_creation_input_tokens, JSON.stringify(u)).to.be.undefined;",
+              "});",
+              "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+              "var token = pm.variables.get('setupToken');",
+              "var requestId = pm.variables.get('dbxCacheRequestId2');",
+              "function check(attempt) {",
+              "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + requestId, method: 'GET', header: { 'X-Bifrost-Setup-Token': token } }, function (err, res) {",
+              "    if (!err && res.code === 200 && res.json().status === 'success') {",
+              "      var j = res.json();",
+              "      pm.test('the streamed answer is logged at $0.0019968, the write at the cache-creation rate', function () {",
+              "        pm.expect(j.provider, JSON.stringify(j)).to.eql('databricks');",
+              "        pm.expect(j.cost, 'logged with no cost: ' + JSON.stringify(j)).to.be.a('number');",
+              "        // 12 uncached x $3/M + 4,736 read x $0.30/M + 64 written x $3.75/M + 20 out x $15/M. Dropping the cache counts gives $0.000336.",
+              "        pm.expect(j.cost, JSON.stringify(j)).to.be.closeTo(0.0019968, 1e-12);",
+              "      });",
+              "      return;",
+              "    }",
+              "    if (attempt < 10) { setTimeout(function () { check(attempt + 1); }, 1000); return; }",
+              "    pm.test('the log row appeared', function () { pm.expect.fail('log ' + requestId + ' never appeared: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+              "  });",
+              "}",
+              "check(0);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-request-id",
+            "value": "{{dbxCacheRequestId2}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"databricks/databricks-claude-cache-fixture\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":true,\"stream_options\":{\"include_usage\":true}}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    }
+  ]
+}
