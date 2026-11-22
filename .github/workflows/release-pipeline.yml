@@ -13,6 +13,11 @@ on:
         required: false
         type: boolean
         default: false
+      skip_core_test:
+        description: "Skip only test-core and test-core-integrations, like --skip-core-test in a push subject (release.yml passes it from a dispatch)"
+        required: false
+        type: boolean
+        default: false
     # Every secret the release jobs read, each passed from release.yml under its own name
     # with the caller's value of that same secret. That includes the provider credentials and
     # LIVE_PROVIDERS_CANARY, which exist only as secrets of the live-providers environment.
@@ -195,10 +200,13 @@ jobs:
         id: check
         env:
           COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+          EVENT_NAME: ${{ github.event_name }}
+          SKIP_CORE_TEST_INPUT: ${{ inputs.skip_core_test }}
         run: |
           # head_commit is only populated on push. On workflow_dispatch this is
-          # empty, so both flags read false there - the dispatch equivalent is the
-          # admin-gated skip_tests input below.
+          # empty, so both subject flags read false there. The dispatch equivalent
+          # of --skip-core-test is the skip_core_test input (TXE-8089); of skipping
+          # everything, the admin-gated skip_tests input below.
           FIRST_LINE=$(echo "$COMMIT_MESSAGE" | head -n 1)
           if [[ "$FIRST_LINE" == *"--skip-ci"* ]]; then
             echo "should-skip=true" >> $GITHUB_OUTPUT
@@ -225,6 +233,9 @@ jobs:
           # nothing to do with that provider - not to get a red harness out the door.
           if [[ "$FIRST_LINE" == *"--skip-core-test"* ]]; then
             echo "::warning::--skip-core-test found in the commit subject: the live provider jobs (test-core, test-core-integrations) will not run for this release. All other test jobs still gate it."
+            echo "skip-core-test=true" >> $GITHUB_OUTPUT
+          elif [[ "$EVENT_NAME" == "workflow_dispatch" && "$SKIP_CORE_TEST_INPUT" == "true" ]]; then
+            echo "::warning::skip_core_test=true on this dispatch: the live provider jobs (test-core, test-core-integrations) will not run for this release. All other test jobs still gate it."
             echo "skip-core-test=true" >> $GITHUB_OUTPUT
           else
             echo "skip-core-test=false" >> $GITHUB_OUTPUT
