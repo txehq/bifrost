@@ -1856,3 +1856,83 @@ func TestDatabricksClaudeCacheUsageThroughResponsesFallback(t *testing.T) {
 	}
 	assertDatabricksClaudeCacheUsage(t, "responses streamed", last)
 }
+
+// TestDatabricksClaudeReceivesPerBlockCacheControl pins TXE-8179: a Databricks Claude endpoint
+// receives the caller's per-block cache_control (content block, tool call, tool definition),
+// which Databricks documents for its Claude models only, and a non-Claude endpoint does not. A
+// ttl on a marker Databricks would receive is refused before any upstream call.
+func TestDatabricksClaudeReceivesPerBlockCacheControl(t *testing.T) {
+	t.Parallel()
+
+	bodies := make(chan string, 4)
+	provider, server := newStubProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		bodies <- string(raw)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(stubChatResponse))
+	})
+	key := schemas.Key{
+		Models: []string{"*"},
+		Value:  *schemas.NewSecretVar("dapi-test"),
+		DatabricksKeyConfig: &schemas.DatabricksKeyConfig{
+			WorkspaceURL: *schemas.NewSecretVar(serverHost(t, server)),
+		},
+	}
+	request := func(model string, ttl *string) *schemas.BifrostChatRequest {
+		cc := &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral, TTL: ttl}
+		return &schemas.BifrostChatRequest{
+			Provider: schemas.Databricks,
+			Model:    model,
+			Input: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+					{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("long shared prefix"), CacheControl: cc},
+				}}},
+			},
+			Params: &schemas.ChatParameters{Tools: []schemas.ChatTool{
+				{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "lookup"}, CacheControl: cc},
+			}},
+		}
+	}
+	send := func(model string, ttl *string) (string, *schemas.BifrostError) {
+		ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_, bErr := provider.ChatCompletion(ctx, key, request(model, ttl))
+		if bErr != nil {
+			return "", bErr
+		}
+		select {
+		case b := <-bodies:
+			return b, nil
+		case <-time.After(5 * time.Second):
+			t.Fatal("stub received no request")
+			return "", nil
+		}
+	}
+
+	for _, model := range []string{"databricks-claude-sonnet-4-5", "system.ai.claude-sonnet-4-5"} {
+		body, bErr := send(model, nil)
+		if bErr != nil {
+			t.Fatalf("%s: %+v", model, bErr.Error)
+		}
+		if got := strings.Count(body, `"cache_control":{"type":"ephemeral"}`); got != 2 {
+			t.Errorf("%s: cache_control markers on the wire = %d, want 2 (content block and tool): %s", model, got, body)
+		}
+	}
+	body, bErr := send("databricks-gemini-3-pro", nil)
+	if bErr != nil {
+		t.Fatalf("gemini: %+v", bErr.Error)
+	}
+	if strings.Contains(body, "cache_control") {
+		t.Errorf("a non-Claude endpoint received cache_control: %s", body)
+	}
+
+	_, bErr = send("databricks-claude-sonnet-4-5", schemas.Ptr("1h"))
+	if bErr == nil || bErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter || bErr.Error == nil || bErr.Error.Param != "cache_control.ttl" {
+		t.Fatalf("a 1h marker to Databricks Claude = %+v, want 400 caller_unsupported_parameter on cache_control.ttl", bErr)
+	}
+	select {
+	case b := <-bodies:
+		t.Errorf("the refused request reached Databricks: %s", b)
+	default:
+	}
+}

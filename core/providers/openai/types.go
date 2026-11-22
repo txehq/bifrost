@@ -456,9 +456,15 @@ type OpenAIChatRequest struct {
 	EnableThinking *bool               `json:"enable_thinking,omitempty"`
 	ThinkingBudget *int                `json:"thinking_budget,omitempty"`
 
-	// Provider is the originating provider, used for provider-specific marshalling
-	// (e.g. preserving cache_control for OpenRouter). Not serialized to wire.
+	// Provider is the originating provider, used for provider-specific marshalling. Not
+	// serialized to wire.
 	Provider schemas.ModelProvider `json:"-"`
+
+	// CacheControlOnWire decides whether per-block cache_control markers are sent. Set by
+	// ToOpenAIChatRequest from perBlockCacheControlOnWire (which resolves a custom provider's
+	// base and the model's family); when nil, MarshalJSON looks Provider and Model up in the
+	// same table. Not serialized to wire.
+	CacheControlOnWire *bool `json:"-"`
 
 	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
 	Fallbacks   []string               `json:"fallbacks,omitempty"`
@@ -521,12 +527,14 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 	}
 	type Alias OpenAIChatRequest
 
-	// OpenRouter forwards Anthropic-style cache_control breakpoints to the
-	// underlying model, so we must preserve cache_control (on content blocks
-	// and tools) when targeting OpenRouter. Everything else (citations,
-	// file types, Anthropic server tools, Anthropic-only tool flags) is still
-	// stripped — OpenRouter is otherwise an OpenAI-format endpoint.
-	keepCacheControl := req.Provider == schemas.OpenRouter
+	// Per-block cache_control (content blocks, tools, tool calls) goes only to upstreams that
+	// take it: perBlockCacheControlRules is the one table (TXE-8179). Everything else
+	// (citations, file types, Anthropic server tools, Anthropic-only tool flags) is still
+	// stripped for every provider.
+	keepCacheControl := perBlockCacheControlOnWire(nil, req.Provider, req.Model)
+	if req.CacheControlOnWire != nil {
+		keepCacheControl = *req.CacheControlOnWire
+	}
 
 	// First pass: check if we need to modify any messages
 	needsCopy := false
