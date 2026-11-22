@@ -428,6 +428,76 @@
       }
     },
     {
+      "name": "670.13 github-copilot/claude-sonnet-4.6 /v1/responses stream via /v1/messages (copilot routes)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "function sseFrames() {",
+              "  var out = [];",
+              "  pm.response.text().split(\"\\n\").forEach(function (line) {",
+              "    if (line.indexOf(\"data: \") !== 0) { return; }",
+              "    var data = line.slice(6).trim();",
+              "    if (!data || data === \"[DONE]\") { return; }",
+              "    try { out.push(JSON.parse(data)); } catch (e) {}",
+              "  });",
+              "  return out;",
+              "}",
+              "pm.test('670.13 github-copilot/claude-sonnet-4.6 /v1/responses stream via /v1/messages (copilot routes) answers 200', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+              "});",
+              "if (pm.response.code !== 200) { return; }",
+              "var frames = sseFrames();",
+              "pm.test('response is SSE', function () {",
+              "  var ct = pm.response.headers.get('content-type') || '';",
+              "  pm.expect(ct, 'expected SSE, got ' + ct).to.include('event-stream');",
+              "});",
+              "pm.test('the Claude answer streams as Responses text deltas', function () {",
+              "  var deltas = frames.filter(function (f) { return f.type === 'response.output_text.delta'; });",
+              "  pm.expect(deltas.length, 'no response.output_text.delta in: ' + pm.response.text().slice(0, 600)).to.be.above(0);",
+              "});",
+              "pm.test('no error event, and the stream completes once', function () {",
+              "  var errors = frames.filter(function (f) { return f.type === 'error' || f.type === 'response.failed'; });",
+              "  pm.expect(errors.length, 'error events: ' + JSON.stringify(errors).slice(0, 400)).to.equal(0);",
+              "  var done = frames.filter(function (f) { return f.type === 'response.completed'; });",
+              "  pm.expect(done.length, 'no response.completed in: ' + pm.response.text().slice(-400)).to.equal(1);",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/responses",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "responses"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"github-copilot/claude-sonnet-4.6\",\n  \"max_output_tokens\": 64,\n  \"instructions\": \"Reply with one word.\",\n  \"input\": \"Say hi.\",\n  \"stream\": true\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
       "name": "670.8 github-copilot /v1/models lists Copilot models (copilot routes)",
       "event": [
         {
