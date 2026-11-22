@@ -539,6 +539,7 @@ const nativeDecisionAnswer = (body) => {
 // reference, Usage table). Written from the docs, in Anthropic's convention: prompt_tokens is the uncached input and
 // total_tokens counts everything. No recorded response exists yet.
 const DATABRICKS_CLAUDE_CACHE_MODEL = "databricks-claude-cache-fixture";
+const DATABRICKS_GEMINI_FIXTURE_MODEL = "databricks-gemini-cache-fixture";
 const databricksClaudeCacheUsage = { prompt_tokens: 12, completion_tokens: 20, total_tokens: 4832, cache_read_input_tokens: 4736, cache_creation_input_tokens: 64 };
 const databricksClaudeCacheAnswer = (stream) => {
 	const base = { id: "chatcmpl-databricks-claude-cache", created: 1, model: DATABRICKS_CLAUDE_CACHE_MODEL };
@@ -3573,7 +3574,13 @@ const handleRequest = (req, res) => {
 			let parsed = {};
 			try { parsed = JSON.parse(Buffer.concat(body).toString("utf8")) || {}; } catch {}
 			countHit("databricks.chat");
+			// Folder 664 (TXE-8179) reads the body that arrived from /__wire, to see which cache_control markers reached Databricks.
+			wireCalls.push({ path, query: "", body: Buffer.concat(body).toString("utf8") });
 			if (req.headers.authorization !== "Bearer test-key") return send(401, {}, errorBody("Invalid access token", "invalid_request_error", "unauthenticated"));
+			// Folder 664's control: a non-Claude endpoint, which Databricks documents as taking no cache_control.
+			if (parsed.model === DATABRICKS_GEMINI_FIXTURE_MODEL) {
+				return send(200, {}, JSON.stringify({ id: "chatcmpl-databricks-gemini", object: "chat.completion", created: 1, model: parsed.model, choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }], usage: { prompt_tokens: 12, completion_tokens: 2, total_tokens: 14 } }));
+			}
 			if (parsed.model !== DATABRICKS_CLAUDE_CACHE_MODEL) return send(404, {}, errorBody(`unknown fixture endpoint ${parsed.model}`, "invalid_request_error", "RESOURCE_DOES_NOT_EXIST"));
 			if (parsed.stream === true) {
 				res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });

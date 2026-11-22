@@ -1,0 +1,238 @@
+{
+  "name": "664. cc15 TXE-8179 databricks-claude-per-block-cache-control: Databricks Claude receives the caller's cache_control breakpoints",
+  "description": "TXE-8179. Databricks documents per-block cache_control for its Claude endpoints only (\"This parameter is only accepted by Databricks-hosted Claude models\", docs.databricks.com/aws/en/machine-learning/foundation-model-apis/api-reference), on content blocks, tool calls and tool definitions, and documents no ttl. The OpenAI-shape chat encoder stripped every marker for every provider but OpenRouter, so Databricks Claude never cached. perBlockCacheControlRules (core/providers/openai) now decides per provider. 664.1 sends a Claude endpoint a request with a marker on a content block and on a tool: both must reach the fixture's /serving-endpoints/chat/completions. 664.2 sends the same body to a Gemini endpoint: no marker may reach it. 664.3 asks Databricks Claude for a 1-hour marker: the gateway refuses it with 400 caller_unsupported_parameter on cache_control.ttl and sends nothing upstream, because dropping the ttl would write a 5-minute cache the caller did not ask for (contract C4).",
+  "item": [
+    {
+      "name": "664.1 a Databricks Claude endpoint receives the cache_control on a content block and on a tool (fixture) - databricks/databricks-claude-cache-fixture",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// wire: the Databricks chat bodies that reached the fixture since the reset.",
+              "function wire(cb) {",
+              "  pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "    pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); });",
+              "    cb((res.json().data[0].calls || []).filter(function (c) { return c.path === '/serving-endpoints/chat/completions'; }));",
+              "  });",
+              "}",
+              "pm.test('the chat completion succeeds', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "wire(function (calls) {",
+              "  pm.test('one request reached Databricks', function () { pm.expect(calls.length, JSON.stringify(calls)).to.eql(1); });",
+              "  if (calls.length !== 1) { return; }",
+              "  var sent = JSON.parse(calls[0].body);",
+              "  pm.test('the content block keeps its cache_control', function () {",
+              "    pm.expect(sent.messages[0].content[0].cache_control, calls[0].body).to.eql({ type: 'ephemeral' });",
+              "  });",
+              "  pm.test('the tool keeps its cache_control', function () {",
+              "    pm.expect(sent.tools[0].cache_control, calls[0].body).to.eql({ type: 'ephemeral' });",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"databricks/databricks-claude-cache-fixture\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"a long shared prefix worth caching\",\"cache_control\":{\"type\":\"ephemeral\"}}]}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"parameters\":{\"type\":\"object\",\"properties\":{}}},\"cache_control\":{\"type\":\"ephemeral\"}}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "664.2 a Databricks Gemini endpoint receives no cache_control (fixture) - databricks/databricks-gemini-cache-fixture",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// wire: the Databricks chat bodies that reached the fixture since the reset.",
+              "function wire(cb) {",
+              "  pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "    pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); });",
+              "    cb((res.json().data[0].calls || []).filter(function (c) { return c.path === '/serving-endpoints/chat/completions'; }));",
+              "  });",
+              "}",
+              "pm.test('the chat completion succeeds', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "wire(function (calls) {",
+              "  pm.test('one request reached Databricks', function () { pm.expect(calls.length, JSON.stringify(calls)).to.eql(1); });",
+              "  if (calls.length !== 1) { return; }",
+              "  pm.test('no cache_control reaches a non-Claude endpoint', function () {",
+              "    pm.expect(calls[0].body, calls[0].body).to.not.include('cache_control');",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"databricks/databricks-gemini-cache-fixture\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"a long shared prefix worth caching\",\"cache_control\":{\"type\":\"ephemeral\"}}]}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"parameters\":{\"type\":\"object\",\"properties\":{}}},\"cache_control\":{\"type\":\"ephemeral\"}}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    },
+    {
+      "name": "664.3 [EXPECT-400] a 1-hour cache_control to Databricks Claude is refused with 400 cache_control.ttl and never sent (fixture) - databricks/databricks-claude-cache-fixture",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// wire: the Databricks chat bodies that reached the fixture since the reset.",
+              "function wire(cb) {",
+              "  pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "    pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); });",
+              "    cb((res.json().data[0].calls || []).filter(function (c) { return c.path === '/serving-endpoints/chat/completions'; }));",
+              "  });",
+              "}",
+              "var j = {};",
+              "try { j = pm.response.json(); } catch (e) {}",
+              "pm.test('the gateway refuses the ttl itself', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.eql(400);",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, pm.response.text().slice(0, 400)).to.equal('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, pm.response.text().slice(0, 400)).to.equal('cache_control.ttl');",
+              "});",
+              "wire(function (calls) {",
+              "  pm.test('nothing reached Databricks', function () { pm.expect(calls.length, JSON.stringify(calls)).to.eql(0); });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"databricks/databricks-claude-cache-fixture\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"a long shared prefix worth caching\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}]}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"parameters\":{\"type\":\"object\",\"properties\":{}}},\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}]}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        }
+      }
+    }
+  ]
+}
