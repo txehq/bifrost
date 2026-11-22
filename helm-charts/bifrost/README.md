@@ -4,9 +4,15 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/txehq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.51 (prereleases 2.1.52-sync.14, 2.1.52-sync.13, 2.1.52-sync.12, 2.1.52-sync.11, 2.1.52-sync.10, 2.1.52-sync.9, 2.1.52-sync.8, 2.1.52-sync.7, 2.1.52-sync.6, 2.1.52-sync.5, 2.1.52-sync.4, 2.1.52-sync.3, 2.1.52-sync.2 and 2.1.52-sync.1 carry the changes below; install them with `--devel`)
+**Latest Version:** 2.1.51 (prereleases 2.1.52-sync.15, 2.1.52-sync.14, 2.1.52-sync.13, 2.1.52-sync.12, 2.1.52-sync.11, 2.1.52-sync.10, 2.1.52-sync.9, 2.1.52-sync.8, 2.1.52-sync.7, 2.1.52-sync.6, 2.1.52-sync.5, 2.1.52-sync.4, 2.1.52-sync.3, 2.1.52-sync.2 and 2.1.52-sync.1 carry the changes below; install them with `--devel`)
 
 ## Changelog
+
+### 2.1.52-sync.15 (prerelease)
+
+The prerelease chart for transport v2.4.0-sync.15. Its templates and values are unchanged from 2.1.52-sync.14, so a chart that renders today renders the same `config.json`; `values.schema.json` adds the model families `gemma`, `llama`, `imagen`, `veo` and `mai-image` to a custom provider's `model_family` enum:
+
+- `appVersion` is now `2.4.0-sync.15`, so an empty `image.tag` selects `v2.4.0-sync.15`. That transport refuses, for a virtual key with a dollar budget, a model the price book cannot price, a queued or webhook-delivered answer nothing will charge, and concurrent requests on a row until an answer on it is priced; reads a forwarded body by its declared Content-Type and refuses an ambiguous one; and refuses request fields a vendor would drop or change (prompt-cache fields, some reasoning settings). Read the transport changelog's breaking changes before upgrading. It adds no migration.
 
 ### 2.1.52-sync.14 (prerelease)
 
