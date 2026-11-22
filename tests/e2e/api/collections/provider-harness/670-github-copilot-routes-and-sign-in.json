@@ -63,7 +63,7 @@
       }
     },
     {
-      "name": "670.2 github-copilot/claude-sonnet-4-6 /v1/chat/completions is sent to Copilot's /v1/messages (copilot routes)",
+      "name": "670.2 github-copilot/claude-sonnet-4.6 /v1/chat/completions is sent to Copilot's /v1/messages (copilot routes)",
       "event": [
         {
           "listen": "test",
@@ -74,7 +74,7 @@
               "  if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
               "  return rr;",
               "}",
-              "pm.test('670.2 github-copilot/claude-sonnet-4-6 /v1/chat/completions is sent to Copilot's /v1/messages (copilot routes) answers 200', function () {",
+              "pm.test('670.2 github-copilot/claude-sonnet-4.6 /v1/chat/completions is sent to Copilot's /v1/messages (copilot routes) answers 200', function () {",
               "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
               "});",
               "if (pm.response.code !== 200) { return; }",
@@ -116,7 +116,7 @@
         },
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"model\": \"github-copilot/claude-sonnet-4-6\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"Reply with one word.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi.\"\n    }\n  ]\n}",
+          "raw": "{\n  \"model\": \"github-copilot/claude-sonnet-4.6\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"Reply with one word.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi.\"\n    }\n  ]\n}",
           "options": {
             "raw": {
               "language": "json"
@@ -126,7 +126,7 @@
       }
     },
     {
-      "name": "670.3 github-copilot/claude-sonnet-4-6 /v1/chat/completions stream via /v1/messages (copilot routes)",
+      "name": "670.3 github-copilot/claude-sonnet-4.6 /v1/chat/completions stream via /v1/messages (copilot routes)",
       "event": [
         {
           "listen": "test",
@@ -142,7 +142,7 @@
               "  });",
               "  return out;",
               "}",
-              "pm.test('670.3 github-copilot/claude-sonnet-4-6 /v1/chat/completions stream via /v1/messages (copilot routes) answers 200', function () {",
+              "pm.test('670.3 github-copilot/claude-sonnet-4.6 /v1/chat/completions stream via /v1/messages (copilot routes) answers 200', function () {",
               "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
               "});",
               "if (pm.response.code !== 200) { return; }",
@@ -180,7 +180,7 @@
         },
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"model\": \"github-copilot/claude-sonnet-4-6\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"Reply with one word.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi.\"\n    }\n  ],\n  \"stream\": true\n}",
+          "raw": "{\n  \"model\": \"github-copilot/claude-sonnet-4.6\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"Reply with one word.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi.\"\n    }\n  ],\n  \"stream\": true\n}",
           "options": {
             "raw": {
               "language": "json"
@@ -190,7 +190,7 @@
       }
     },
     {
-      "name": "670.4 github-copilot/claude-sonnet-4-6 /v1/responses is sent to Copilot's /v1/messages (copilot routes)",
+      "name": "670.4 github-copilot/claude-sonnet-4.6 /v1/responses is sent to Copilot's /v1/messages (copilot routes)",
       "event": [
         {
           "listen": "test",
@@ -201,7 +201,7 @@
               "  if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
               "  return rr;",
               "}",
-              "pm.test('670.4 github-copilot/claude-sonnet-4-6 /v1/responses is sent to Copilot's /v1/messages (copilot routes) answers 200', function () {",
+              "pm.test('670.4 github-copilot/claude-sonnet-4.6 /v1/responses is sent to Copilot's /v1/messages (copilot routes) answers 200', function () {",
               "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
               "});",
               "if (pm.response.code !== 200) { return; }",
@@ -242,7 +242,7 @@
         },
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"model\": \"github-copilot/claude-sonnet-4-6\",\n  \"max_output_tokens\": 64,\n  \"instructions\": \"Reply with one word.\",\n  \"input\": \"Say hi.\"\n}",
+          "raw": "{\n  \"model\": \"github-copilot/claude-sonnet-4.6\",\n  \"max_output_tokens\": 64,\n  \"instructions\": \"Reply with one word.\",\n  \"input\": \"Say hi.\"\n}",
           "options": {
             "raw": {
               "language": "json"
@@ -252,13 +252,13 @@
       }
     },
     {
-      "name": "670.5 github-copilot/claude-sonnet-4-6 /anthropic/v1/messages native route (copilot routes)",
+      "name": "670.5 github-copilot/claude-sonnet-4.6 /anthropic/v1/messages native route (copilot routes)",
       "event": [
         {
           "listen": "test",
           "script": {
             "exec": [
-              "pm.test('670.5 github-copilot/claude-sonnet-4-6 /anthropic/v1/messages native route (copilot routes) answers 200', function () {",
+              "pm.test('670.5 github-copilot/claude-sonnet-4.6 /anthropic/v1/messages native route (copilot routes) answers 200', function () {",
               "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
               "});",
               "if (pm.response.code !== 200) { return; }",
@@ -294,7 +294,7 @@
         },
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"model\": \"github-copilot/claude-sonnet-4-6\",\n  \"max_tokens\": 64,\n  \"system\": \"Reply with one word.\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi.\"\n    }\n  ]\n}",
+          "raw": "{\n  \"model\": \"github-copilot/claude-sonnet-4.6\",\n  \"max_tokens\": 64,\n  \"system\": \"Reply with one word.\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi.\"\n    }\n  ]\n}",
           "options": {
             "raw": {
               "language": "json"

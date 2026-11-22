@@ -1,0 +1,441 @@
+{
+  "name": "671. ClickHouse log store user agent mappings over the management API (clickhouse user agent mappings)",
+  "description": "TXE-6085, upstream 293999f1f (user agent mappings on the ClickHouse log store). The rows run in order on the clickhouse-logstore fixture group: the provider-error gateway with its log store on a real ClickHouse (start-fixture-clickhouse.sh, FIXTURE_CLICKHOUSE_URL). They create a mapping through POST /api/logs/user-agent-mappings, read it back from the list, update it (ClickHouse re-inserts the row under the shared lock, so the list must show exactly one row with the new values), refuse an update and a delete of a missing id with 404, delete it, and read that it is gone. Gated on clickhouseLogstoreFixture; the pattern carries the run's timestamp, and the delete row removes the mapping.",
+  "item": [
+    {
+      "name": "671.1 setup: GET /api/logs/user-agent-mappings on the ClickHouse store answers a list (clickhouse user agent mappings)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/logs/user-agent-mappings",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "logs",
+            "user-agent-mappings"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('clickhouseLogstoreFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('671.1 the ClickHouse-backed list answers 200 with a mappings array', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+              "  pm.expect(pm.response.json().mappings, pm.response.text()).to.be.an('array');",
+              "});",
+              "pm.collectionVariables.set('ch_ua_pattern', 'txe6085-ch-cli/' + Date.now());"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "671.2 POST /api/logs/user-agent-mappings creates a mapping (clickhouse user agent mappings)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/logs/user-agent-mappings",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "logs",
+            "user-agent-mappings"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"pattern\": \"{{ch_ua_pattern}}\", \"match_type\": \"prefix\", \"app\": \"TXE-6085 CH CLI\", \"is_active\": true}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('clickhouseLogstoreFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('671.2 create answers 200 with the stored mapping and its id', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+              "  const m = pm.response.json();",
+              "  pm.expect(m.id, pm.response.text()).to.be.a('string').and.not.empty;",
+              "  pm.expect(m.pattern, pm.response.text()).to.equal(pm.collectionVariables.get('ch_ua_pattern'));",
+              "  pm.expect(m.app, pm.response.text()).to.equal('TXE-6085 CH CLI');",
+              "  pm.expect(m.is_active, pm.response.text()).to.equal(true);",
+              "  pm.collectionVariables.set('ch_ua_id', m.id);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "671.3 GET /api/logs/user-agent-mappings lists the new mapping (clickhouse user agent mappings)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/logs/user-agent-mappings",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "logs",
+            "user-agent-mappings"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('clickhouseLogstoreFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('671.3 the list read back from ClickHouse holds the mapping as created', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+              "  const m = pm.response.json().mappings.find((x) => x.id === pm.collectionVariables.get('ch_ua_id'));",
+              "  pm.expect(m, pm.response.text()).to.be.an('object');",
+              "  pm.expect(m.app, pm.response.text()).to.equal('TXE-6085 CH CLI');",
+              "  pm.expect(m.match_type, pm.response.text()).to.equal('prefix');",
+              "  pm.expect(m.is_active, pm.response.text()).to.equal(true);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "671.4 PUT /api/logs/user-agent-mappings/{id} renames and deactivates it (clickhouse user agent mappings)",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/logs/user-agent-mappings/{{ch_ua_id}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "logs",
+            "user-agent-mappings",
+            "{{ch_ua_id}}"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"pattern\": \"{{ch_ua_pattern}}\", \"match_type\": \"prefix\", \"app\": \"TXE-6085 CH CLI renamed\", \"is_active\": false}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('clickhouseLogstoreFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('671.4 update answers 200 with the new values', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+              "  const m = pm.response.json();",
+              "  pm.expect(m.id, pm.response.text()).to.equal(pm.collectionVariables.get('ch_ua_id'));",
+              "  pm.expect(m.app, pm.response.text()).to.equal('TXE-6085 CH CLI renamed');",
+              "  pm.expect(m.is_active, pm.response.text()).to.equal(false);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "671.5 GET /api/logs/user-agent-mappings reads the update back (clickhouse user agent mappings)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/logs/user-agent-mappings",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "logs",
+            "user-agent-mappings"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('clickhouseLogstoreFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('671.5 one row for the mapping, with the updated values (the re-insert replaced it)', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+              "  const rows = pm.response.json().mappings.filter((x) => x.id === pm.collectionVariables.get('ch_ua_id'));",
+              "  pm.expect(rows.length, pm.response.text()).to.equal(1);",
+              "  pm.expect(rows[0].app, pm.response.text()).to.equal('TXE-6085 CH CLI renamed');",
+              "  pm.expect(rows[0].is_active, pm.response.text()).to.equal(false);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "671.6 [EXPECT-404] PUT /api/logs/user-agent-mappings/{id} for a missing id (clickhouse user agent mappings)",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/logs/user-agent-mappings/txe6085-ch-missing",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "logs",
+            "user-agent-mappings",
+            "txe6085-ch-missing"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\"pattern\": \"x\", \"match_type\": \"prefix\", \"app\": \"X\", \"is_active\": true}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('clickhouseLogstoreFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('671.6 updating a missing mapping answers 404', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(404);",
+              "  pm.expect(pm.response.text()).to.include('user agent mapping not found');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "671.7 [EXPECT-404] DELETE /api/logs/user-agent-mappings/{id} for a missing id (clickhouse user agent mappings)",
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/logs/user-agent-mappings/txe6085-ch-missing",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "logs",
+            "user-agent-mappings",
+            "txe6085-ch-missing"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('clickhouseLogstoreFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('671.7 deleting a missing mapping answers 404', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(404);",
+              "  pm.expect(pm.response.text()).to.include('user agent mapping not found');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "671.8 DELETE /api/logs/user-agent-mappings/{id} deletes it (clickhouse user agent mappings)",
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/logs/user-agent-mappings/{{ch_ua_id}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "logs",
+            "user-agent-mappings",
+            "{{ch_ua_id}}"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('clickhouseLogstoreFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('671.8 delete answers 200', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+              "  pm.expect(pm.response.json().success, pm.response.text()).to.equal(true);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "671.9 GET /api/logs/user-agent-mappings no longer lists it (clickhouse user agent mappings)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/logs/user-agent-mappings",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "logs",
+            "user-agent-mappings"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('clickhouseLogstoreFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('671.9 the deleted mapping is gone from the list', function () {",
+              "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+              "  const m = pm.response.json().mappings.find((x) => x.id === pm.collectionVariables.get('ch_ua_id'));",
+              "  pm.expect(m, pm.response.text()).to.equal(undefined);",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
