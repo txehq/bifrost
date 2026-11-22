@@ -182,3 +182,42 @@ func TestImageStreamSeveralImagesRefusedBeforeUpstream(t *testing.T) {
 		}
 	}
 }
+
+// BenchmarkImageStreamCountGate measures the per-attempt gate (TXE-8077) on the request path: a
+// stream that is not an image stream (the common case, one type switch), a one-image stream, a
+// two-image stream on a provider that counts every image, and a refusal.
+func BenchmarkImageStreamCountGate(b *testing.B) {
+	client := &Bifrost{logger: NewNoOpLogger()}
+	replicate, err := client.createBaseProvider(schemas.Replicate, &schemas.ProviderConfig{})
+	if err != nil {
+		b.Fatal(err)
+	}
+	byteplus, err := client.createBaseProvider(schemas.BytePlus, &schemas.ProviderConfig{})
+	if err != nil {
+		b.Fatal(err)
+	}
+	chat := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionStreamRequest, ChatRequest: &schemas.BifrostChatRequest{Model: "m"}}
+	cases := []struct {
+		name        string
+		provider    schemas.Provider
+		requestType schemas.RequestType
+		req         *schemas.BifrostRequest
+		refused     bool
+	}{
+		{"chat stream (unaffected)", replicate, schemas.ChatCompletionStreamRequest, chat, false},
+		{"image stream n unset", replicate, schemas.ImageGenerationStreamRequest, imageStreamRequest(schemas.Replicate, schemas.ImageGenerationStreamRequest, "m", nil, nil), false},
+		{"image stream n=1 with extra params", replicate, schemas.ImageGenerationStreamRequest, imageStreamRequest(schemas.Replicate, schemas.ImageGenerationStreamRequest, "m", schemas.Ptr(1), map[string]interface{}{"seed": 7}), false},
+		{"image stream n=2 on a counting provider", byteplus, schemas.ImageGenerationStreamRequest, imageStreamRequest(schemas.BytePlus, schemas.ImageGenerationStreamRequest, "m", schemas.Ptr(2), nil), false},
+		{"image stream n=2 refused", replicate, schemas.ImageGenerationStreamRequest, imageStreamRequest(schemas.Replicate, schemas.ImageGenerationStreamRequest, "m", schemas.Ptr(2), nil), true},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				if got := decideImageStreamCountForAttempt(tc.provider, tc.requestType, tc.req) != nil; got != tc.refused {
+					b.Fatalf("refused = %v, want %v", got, tc.refused)
+				}
+			}
+		})
+	}
+}

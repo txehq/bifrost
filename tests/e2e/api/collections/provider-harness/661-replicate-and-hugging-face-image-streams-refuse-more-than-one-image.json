@@ -1,6 +1,6 @@
 {
   "name": "661. Replicate and Hugging Face image streams refuse more than one image (image stream count) [SERIAL]",
-  "description": "TXE-8077 regression, contract C4 and C5. Local fixture regression, no live provider calls: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream. The replicate and huggingface image streams relay the images under one index and end on a frame that carries one image and no usage.output_images, so a streamed request for more than one image would be billed as one while the vendor makes and bills n. Core now refuses a streamed image generation or edit asking for more than one image (n, or num_images, number_of_images or num_outputs in extra params) on every provider that does not declare that its stream relays and counts every image (schemas.ImageStreamCounter; byteplus does). Pinned: a replicate and a huggingface (fal-ai) generation stream with n above 1 are answered 400 caller_unsupported_parameter with error.param n, and /__wire shows no request reached the fixture. The edit routes and the extra-param names share the same check and are pinned by core/imagestreamcount_test.go.",
+  "description": "TXE-8077 regression, contract C4 and C5. Local fixture regression, no live provider calls: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream. The replicate and huggingface image streams relay the images under one index and end on a frame that carries one image and no usage.output_images, so a streamed request for more than one image would be billed as one while the vendor makes and bills n. Core now refuses a streamed image generation or edit asking for more than one image (n, or num_images, number_of_images or num_outputs in extra params) on every provider that does not declare that its stream relays and counts every image (schemas.ImageStreamCounter; byteplus does). Pinned, on JSON /v1/images/generations and multipart /v1/images/edits: a replicate and a huggingface (fal-ai) generation stream with n above 1, a replicate edit stream with the form field n=2, and a huggingface edit stream with the extra form field num_images=2 are each answered 400 caller_unsupported_parameter with error.param naming the field, and /__wire shows no request reached the fixture. core/imagestreamcount_test.go pins the other vendor names and values.",
   "item": [
     {
       "name": "[EXPECT-400] replicate/black-forest-labs/flux-schnell /v1/images/generations stream with n=2 is refused naming n, before any prediction is created (image stream count)",
@@ -148,6 +148,192 @@
               "pm.test('error_type is caller_unsupported_parameter', function () { pm.expect(body.extra_fields && body.extra_fields.error_type, pm.response.text()).to.equal('caller_unsupported_parameter'); });",
               "pm.test('error.param names n', function () { pm.expect(body.error && body.error.param, pm.response.text()).to.equal('n'); });",
               "pm.test('the message says n must be 1 with stream', function () { pm.expect(body.error && body.error.message, pm.response.text()).to.include('n must be 1 when stream is true').and.to.include('got n=3'); });",
+              "wire(function (calls) { pm.test('no upstream call was made', function () { pm.expect(calls, JSON.stringify(calls)).to.have.length(0); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-400] replicate/black-forest-labs/flux-kontext-pro multipart /v1/images/edits stream with n=2 is refused naming n, before any prediction is created (image stream count)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          }
+        ],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "model",
+              "value": "replicate/black-forest-labs/flux-kontext-pro",
+              "type": "text"
+            },
+            {
+              "key": "prompt",
+              "value": "make the background a deep blue",
+              "type": "text"
+            },
+            {
+              "key": "stream",
+              "value": "true",
+              "type": "text"
+            },
+            {
+              "key": "n",
+              "value": "2",
+              "type": "text"
+            },
+            {
+              "key": "image",
+              "src": "tests/e2e/api/fixtures/sample.png",
+              "type": "file"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/edits",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "edits"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('image stream count setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "pm.test('the client gets 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+              "var body = pm.response.json();",
+              "pm.test('error_type is caller_unsupported_parameter', function () { pm.expect(body.extra_fields && body.extra_fields.error_type, pm.response.text()).to.equal('caller_unsupported_parameter'); });",
+              "pm.test('error.param names n', function () { pm.expect(body.error && body.error.param, pm.response.text()).to.equal('n'); });",
+              "pm.test('the message says n must be 1 with stream', function () { pm.expect(body.error && body.error.message, pm.response.text()).to.include('n must be 1 when stream is true').and.to.include('got n=2'); });",
+              "wire(function (calls) { pm.test('no upstream call was made', function () { pm.expect(calls, JSON.stringify(calls)).to.have.length(0); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-400] huggingface/fal-ai/flux-kontext/dev multipart /v1/images/edits stream with the extra form field num_images=2 is refused naming num_images, before any upstream call (image stream count)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          }
+        ],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "model",
+              "value": "huggingface/fal-ai/flux-kontext/dev",
+              "type": "text"
+            },
+            {
+              "key": "prompt",
+              "value": "make the background a deep blue",
+              "type": "text"
+            },
+            {
+              "key": "stream",
+              "value": "true",
+              "type": "text"
+            },
+            {
+              "key": "num_images",
+              "value": "2",
+              "type": "text"
+            },
+            {
+              "key": "image",
+              "src": "tests/e2e/api/fixtures/sample.png",
+              "type": "file"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/edits",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "edits"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('image stream count setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "// wire: the requests that reached the fixture, bytes as they arrived.",
+              "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+              "pm.test('the client gets 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+              "var body = pm.response.json();",
+              "pm.test('error_type is caller_unsupported_parameter', function () { pm.expect(body.extra_fields && body.extra_fields.error_type, pm.response.text()).to.equal('caller_unsupported_parameter'); });",
+              "pm.test('error.param names num_images', function () { pm.expect(body.error && body.error.param, pm.response.text()).to.equal('num_images'); });",
+              "pm.test('the message says num_images must be 1 with stream', function () { pm.expect(body.error && body.error.message, pm.response.text()).to.include('num_images must be 1 when stream is true').and.to.include('got num_images=2'); });",
               "wire(function (calls) { pm.test('no upstream call was made', function () { pm.expect(calls, JSON.stringify(calls)).to.have.length(0); }); });"
             ]
           }
