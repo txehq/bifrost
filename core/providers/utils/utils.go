@@ -3689,10 +3689,10 @@ func CacheControlTTLInBody(body []byte) string {
 		}
 		return true
 	})
-	return strings.Clone(w.best)
+	return strings.Clone(w.max.String())
 }
 
-type cacheControlTTLReader struct{ best string }
+type cacheControlTTLReader struct{ max schemas.CacheTTLMax }
 
 // mayHoldCacheControl reports whether raw JSON could hold a "cache_control" member: it spells
 // the key literally, or carries a \u escape that could spell it.
@@ -3725,7 +3725,7 @@ func (w *cacheControlTTLReader) marker(v gjson.Result) {
 	}
 	v.ForEach(func(field, ttl gjson.Result) bool {
 		if field.Str == "ttl" && ttl.Type == gjson.String {
-			w.best = schemas.LongerCacheTTL(w.best, ttl.Str)
+			w.max.Add(ttl.Str)
 		}
 		return true
 	})

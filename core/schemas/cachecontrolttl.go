@@ -20,37 +20,67 @@ func (br *BifrostRequest) RequestedCacheControlTTL() string {
 	case br.ResponsesRequest != nil:
 		w.responses(br.ResponsesRequest)
 	}
-	return w.best
+	return w.max.String()
 }
 
-// LongerCacheTTL returns whichever of two TTLs is longer. An empty TTL loses to any other, and a
-// TTL that is not a Go duration ranks below every duration, so pricing costs it at the base rate.
-// On a tie, a is kept.
+// LongerCacheTTL returns whichever of two TTLs is longer, by the rule of CacheTTLMax.
 func LongerCacheTTL(a, b string) string {
-	if b == "" {
-		return a
-	}
-	if a == "" {
-		return b
-	}
-	da, errA := time.ParseDuration(a)
-	db, errB := time.ParseDuration(b)
-	switch {
-	case errB != nil:
-		return a
-	case errA != nil:
-		return b
-	case db > da:
-		return b
-	}
-	return a
+	var m CacheTTLMax
+	m.Add(a)
+	m.Add(b)
+	return m.String()
 }
 
-type cacheControlTTLWalk struct{ best string }
+// maxCacheTTLLen is the longest TTL that is parsed. A real one is a few characters ("5m", "1h",
+// "12h"); a longer string is unparseable for pricing and is never handed to time.ParseDuration.
+const maxCacheTTLLen = 32
+
+// CacheTTLMax keeps the longest of a stream of TTLs, parsing each one once, so reading thousands of
+// markers costs time linear in their total length (codex security review on #436, TXE-8086). An
+// empty TTL is ignored, and a TTL that is not a Go duration, or is longer than maxCacheTTLLen,
+// ranks below every duration, so pricing costs it at the base rate. The first TTL is kept on a tie
+// and while nothing parseable follows it.
+type CacheTTLMax struct {
+	best     string
+	duration time.Duration
+	parsed   bool
+}
+
+// Add offers ttl.
+func (m *CacheTTLMax) Add(ttl string) {
+	if ttl == "" {
+		return
+	}
+	duration, parsed := cacheTTLDuration(ttl)
+	switch {
+	case m.best == "":
+		m.best, m.duration, m.parsed = ttl, duration, parsed
+	case parsed && (!m.parsed || duration > m.duration):
+		m.best, m.duration, m.parsed = ttl, duration, true
+	}
+}
+
+// String returns the longest TTL offered, or "" when none was.
+func (m CacheTTLMax) String() string { return m.best }
+
+func cacheTTLDuration(ttl string) (time.Duration, bool) {
+	if len(ttl) > maxCacheTTLLen {
+		return 0, false
+	}
+	// A Go duration starts with a sign, a digit or a decimal point. Anything else is refused here,
+	// so a word ("forever") costs no error allocation.
+	if c := ttl[0]; c != '+' && c != '-' && c != '.' && (c < '0' || c > '9') {
+		return 0, false
+	}
+	duration, err := time.ParseDuration(ttl)
+	return duration, err == nil
+}
+
+type cacheControlTTLWalk struct{ max CacheTTLMax }
 
 func (w *cacheControlTTLWalk) add(cc *CacheControl) {
 	if cc != nil && cc.TTL != nil {
-		w.best = LongerCacheTTL(w.best, *cc.TTL)
+		w.max.Add(*cc.TTL)
 	}
 }
 

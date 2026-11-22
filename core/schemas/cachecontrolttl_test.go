@@ -157,3 +157,41 @@ func TestRequestedCacheControlTTLKeyIsStable(t *testing.T) {
 		t.Fatalf("BifrostContextKeyRequestedCacheControlTTL = %q", BifrostContextKeyRequestedCacheControlTTL)
 	}
 }
+
+// TestCacheTTLMaxParsesEachTTLOnce: a long invalid TTL followed by thousands of others is read in
+// time linear in their total length (codex security review on #436, TXE-8086), and a TTL longer
+// than maxCacheTTLLen is never parsed, so it ranks below every duration.
+func TestCacheTTLMaxParsesEachTTLOnce(t *testing.T) {
+	long := "1." + strings.Repeat("1", 100000) + "x"
+	var m CacheTTLMax
+	m.Add(long)
+	for i := 0; i < 10000; i++ {
+		m.Add(long)
+	}
+	if got := m.String(); got != long {
+		t.Fatalf("only unparseable TTLs: got a %d-byte TTL, want the first", len(got))
+	}
+	m.Add("5m")
+	if got := m.String(); got != "5m" {
+		t.Fatalf("a parseable TTL after unparseable ones: got %.20q, want 5m", got)
+	}
+	padded := strings.Repeat("0", maxCacheTTLLen) + "1h" // a valid Go duration, but too long to parse
+	if got := LongerCacheTTL("5m", padded); got != "5m" {
+		t.Fatalf("LongerCacheTTL(5m, %d-byte TTL) = %.20q, want 5m", len(padded), got)
+	}
+}
+
+// BenchmarkCacheTTLMaxCrafted: 10,000 TTLs after a 100 KB invalid one, the shape the review
+// measured at 5.76 s of CPU before each TTL was parsed once.
+func BenchmarkCacheTTLMaxCrafted(b *testing.B) {
+	long := "1." + strings.Repeat("1", 100000) + "x"
+	b.ReportAllocs()
+	for b.Loop() {
+		var m CacheTTLMax
+		m.Add(long)
+		for i := 0; i < 10000; i++ {
+			m.Add("forever")
+		}
+		_ = m.String()
+	}
+}
