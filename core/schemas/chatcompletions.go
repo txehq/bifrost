@@ -2209,6 +2209,17 @@ func (u *BifrostLLMUsage) FoldAnthropicCacheTokens(read, write int, openAIBase b
 	}
 	u.PromptTokensDetails.CachedReadTokens = read
 	u.PromptTokensDetails.CachedWriteTokens = write
+	// The evidence rule applies only to a prompt_tokens base. Anthropic documents input_tokens as
+	// the tokens after the last cache breakpoint, with total input = cache_read_input_tokens +
+	// cache_creation_input_tokens + input_tokens
+	// (https://docs.claude.com/en/docs/build-with-claude/prompt-caching), and Bedrock reports
+	// cacheReadInputTokens / cacheWriteInputTokens beside inputTokens
+	// (https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_TokenUsage.html), so
+	// both are exclusive whatever their total says; checking them would move Bedrock batch lines
+	// whose totalTokens is inputTokens+outputTokens to inclusive and change their billing.
+	// Databricks documents prompt_tokens only as "Number of tokens from the input prompt(s)"
+	// (https://docs.databricks.com/aws/en/machine-learning/foundation-model-apis/api-reference,
+	// Usage table), so for that spelling the payload's own total decides (TXE-8087, TXE-8102).
 	if openAIBase && u.TotalTokens > 0 && u.TotalTokens == u.PromptTokens+u.CompletionTokens {
 		inclusiveAnthropicCacheFolds.Add(1)
 		return AnthropicCacheFoldInclusive
