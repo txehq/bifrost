@@ -732,7 +732,10 @@ jobs:
           BEDROCK_GUARDRAIL_VERSION: ${{ vars.BEDROCK_GUARDRAIL_VERSION }}
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
-        run: ./.github/workflows/scripts/test-core.sh
+        # TXE-8129: count the provider keys this step gets, and warn when there are none.
+        run: |
+          python3 "$GITHUB_WORKSPACE/.github/workflows/scripts/count-provider-keys.py"
+          ./.github/workflows/scripts/test-core.sh
 
       - name: Upload provider harness reports
         if: ${{ !cancelled() }}
@@ -980,7 +983,10 @@ jobs:
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
-        run: ./.github/workflows/scripts/test-integrations.sh --parallel-files
+        # TXE-8129: count the provider keys this step gets, and warn when there are none.
+        run: |
+          python3 "$GITHUB_WORKSPACE/.github/workflows/scripts/count-provider-keys.py"
+          ./.github/workflows/scripts/test-integrations.sh --parallel-files
 
   test-core-unit:
     needs: [check-skip, detect-changes]
@@ -1465,7 +1471,9 @@ jobs:
           OPENCODE_VERSION: ${{ matrix.opencode }}
           # Distinguishes this leg's section of the shared job summary.
           CLI_VERSION_LABEL: ${{ matrix.label }}
+        # TXE-8129: count the provider keys this step gets, and warn when there are none.
         run: |
+          python3 "$GITHUB_WORKSPACE/.github/workflows/scripts/count-provider-keys.py"
           chmod +x ./.github/workflows/scripts/test-cli-harness.sh
           ./.github/workflows/scripts/test-cli-harness.sh
 
@@ -1562,7 +1570,9 @@ jobs:
         id: runpod-credentials
         env:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        # TXE-8129: count the provider keys this step gets, and warn when there are none.
         run: |
+          python3 "$GITHUB_WORKSPACE/.github/workflows/scripts/count-provider-keys.py"
           if [ -n "$RUNPOD_API_KEY" ]; then
             echo "available=true" >> "$GITHUB_OUTPUT"
           else
@@ -1742,7 +1752,10 @@ jobs:
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
-        run: ./.github/workflows/scripts/test-framework.sh
+        # TXE-8129: count the provider keys this step gets, and warn when there are none.
+        run: |
+          python3 "$GITHUB_WORKSPACE/.github/workflows/scripts/count-provider-keys.py"
+          ./.github/workflows/scripts/test-framework.sh
 
       - name: Save the Go build cache
         uses: ./.github/actions/go-cache
@@ -1921,7 +1934,10 @@ jobs:
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
-        run: ./.github/workflows/scripts/test-all-plugins.sh
+        # TXE-8129: count the provider keys this step gets, and warn when there are none.
+        run: |
+          python3 "$GITHUB_WORKSPACE/.github/workflows/scripts/count-provider-keys.py"
+          ./.github/workflows/scripts/test-all-plugins.sh
 
       - name: Save the Go build cache
         uses: ./.github/actions/go-cache
@@ -2484,7 +2500,9 @@ jobs:
           AWS_ARN: ${{ secrets.AWS_ARN }}
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+        # TXE-8129: count the provider keys this step gets, and warn when there are none.
         run: |
+          python3 "$GITHUB_WORKSPACE/.github/workflows/scripts/count-provider-keys.py"
           chmod +x ./.github/workflows/scripts/test-api-integrations.sh
           ./.github/workflows/scripts/test-api-integrations.sh
 
@@ -2916,7 +2934,9 @@ jobs:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+        # TXE-8129: count the provider keys this step gets, and warn when there are none.
         run: |
+          python3 "$GITHUB_WORKSPACE/.github/workflows/scripts/count-provider-keys.py"
           chmod +x ./.github/workflows/scripts/test-docker-image.sh
           ./.github/workflows/scripts/test-docker-image.sh linux/amd64
 
@@ -3103,7 +3123,9 @@ jobs:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+        # TXE-8129: count the provider keys this step gets, and warn when there are none.
         run: |
+          python3 "$GITHUB_WORKSPACE/.github/workflows/scripts/count-provider-keys.py"
           chmod +x ./.github/workflows/scripts/test-docker-image.sh
           ./.github/workflows/scripts/test-docker-image.sh linux/arm64
 
@@ -3257,7 +3279,10 @@ jobs:
           REPLICATE_OWNER: ${{ secrets.REPLICATE_OWNER }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
           RUNWARE_API_KEY: ${{ secrets.RUNWARE_API_KEY }}
-        run: ./.github/workflows/scripts/release-core.sh "${{ needs.detect-changes.outputs.core-version }}"
+        # TXE-8129: count the provider keys this step gets, and warn when there are none.
+        run: |
+          python3 "$GITHUB_WORKSPACE/.github/workflows/scripts/count-provider-keys.py"
+          ./.github/workflows/scripts/release-core.sh "${{ needs.detect-changes.outputs.core-version }}"
 
   framework-release:
     needs:
@@ -3411,7 +3436,10 @@ jobs:
           REPLICATE_OWNER: ${{ secrets.REPLICATE_OWNER }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
           RUNWARE_API_KEY: ${{ secrets.RUNWARE_API_KEY }}
-        run: ./.github/workflows/scripts/release-framework.sh "${{ needs.detect-changes.outputs.framework-version }}"
+        # TXE-8129: count the provider keys this step gets, and warn when there are none.
+        run: |
+          python3 "$GITHUB_WORKSPACE/.github/workflows/scripts/count-provider-keys.py"
+          ./.github/workflows/scripts/release-framework.sh "${{ needs.detect-changes.outputs.framework-version }}"
 
   plugins-release:
     needs:
@@ -3584,7 +3612,10 @@ jobs:
           REPLICATE_OWNER: ${{ secrets.REPLICATE_OWNER }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
           RUNWARE_API_KEY: ${{ secrets.RUNWARE_API_KEY }}
-        run: ./.github/workflows/scripts/release-all-plugins.sh '${{ needs.detect-changes.outputs.changed-plugins }}'
+        # TXE-8129: count the provider keys this step gets, and warn when there are none.
+        run: |
+          python3 "$GITHUB_WORKSPACE/.github/workflows/scripts/count-provider-keys.py"
+          ./.github/workflows/scripts/release-all-plugins.sh '${{ needs.detect-changes.outputs.changed-plugins }}'
 
   # Prep: update dependencies, validate build, commit/push
   bifrost-http-prep:

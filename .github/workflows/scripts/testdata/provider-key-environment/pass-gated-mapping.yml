@@ -13,6 +13,9 @@ jobs:
         run: |
           if [ -z "$LIVE_PROVIDERS_CANARY" ]; then exit 1; fi
       - uses: actions/checkout@v6
-      - run: make test-core
+      - run: |
+          # A comment before the count is not a command.
+          python3 "$GITHUB_WORKSPACE/.github/workflows/scripts/count-provider-keys.py"
+          make test-core
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}

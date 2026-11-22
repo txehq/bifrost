@@ -275,7 +275,10 @@ jobs:
           version: "575.0.1"
 
       - name: test-core
-        run: ./.github/workflows/scripts/test-core.sh
+        # TXE-8129: count the provider keys this step gets, and warn when there are none.
+        run: |
+          python3 "$GITHUB_WORKSPACE/.github/workflows/scripts/count-provider-keys.py"
+          ./.github/workflows/scripts/test-core.sh
 
       - name: test-cli-harness
         run: ./.github/workflows/scripts/test-cli-harness.sh
