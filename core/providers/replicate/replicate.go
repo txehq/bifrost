@@ -1934,12 +1934,16 @@ func (provider *ReplicateProvider) streamedImageCount(ctx *schemas.BifrostContex
 	}
 	predictionURL, urlErr := PredictionPollURL(created)
 	if urlErr != nil {
-		provider.logger.Warn("replicate image stream: no urls.get to count the finished prediction's images; reporting the %d relayed", known)
+		provider.logger.Warn("replicate image stream (TXE-8082): usage.output_images may be under-counted: no urls.get to read the finished prediction, so it reports the %d image(s) relayed", known)
 		return known
 	}
 	finished, _, _, getErr := getPrediction(ctx, provider.client, provider.networkConfig.BaseURL, predictionURL, key, provider.logger, false)
 	if getErr != nil {
-		provider.logger.Warn("replicate image stream: reading the finished prediction failed; reporting the %d relayed image(s)", known)
+		reason := "no error message"
+		if getErr.Error != nil && getErr.Error.Message != "" {
+			reason = getErr.Error.Message
+		}
+		provider.logger.Warn("replicate image stream (TXE-8082): usage.output_images may be under-counted: reading the finished prediction failed (%s), so it reports the %d image(s) relayed", reason, known)
 		return known
 	}
 	response, convErr := ToBifrostImageGenerationResponse(finished)

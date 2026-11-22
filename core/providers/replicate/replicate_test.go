@@ -2,6 +2,7 @@ package replicate_test
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -2131,6 +2132,19 @@ func BenchmarkToReplicateVideoGenerationInput(b *testing.B) {
 	})
 }
 
+// warnRecorder is a testLogger that keeps every Warn message.
+type warnRecorder struct {
+	testLogger
+	mu    sync.Mutex
+	warns []string
+}
+
+func (l *warnRecorder) Warn(format string, args ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.warns = append(l.warns, fmt.Sprintf(format, args...))
+}
+
 // TXE-8082: the final frame of a replicate image stream reports usage.output_images, and the
 // NImages count the stream is priced by, as the number of images the finished prediction made,
 // read once at urls.get after done. Replicate's stream carries no count, and a hosted model can
@@ -2181,7 +2195,8 @@ func TestReplicateImageStreamReportsDeliveredImages(t *testing.T) {
 					}
 				}))
 				defer srv.Close()
-				provider, err := replicate.NewReplicateProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: srv.URL, DefaultRequestTimeoutInSeconds: 10}}, &testLogger{})
+				logger := &warnRecorder{}
+				provider, err := replicate.NewReplicateProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: srv.URL, DefaultRequestTimeoutInSeconds: 10}}, logger)
 				require.NoError(t, err)
 				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 				defer ctx.Cancel()
@@ -2216,6 +2231,20 @@ func TestReplicateImageStreamReportsDeliveredImages(t *testing.T) {
 				mu.Lock()
 				defer mu.Unlock()
 				assert.Equal(t, 1, getCalls, "the finished prediction is read once")
+				// The fallback can under-count, so it must say so when it fires, and only then.
+				logger.mu.Lock()
+				defer logger.mu.Unlock()
+				var underCount []string
+				for _, w := range logger.warns {
+					if strings.Contains(w, "TXE-8082") && strings.Contains(w, "under-counted") && strings.Contains(w, "replicate") {
+						underCount = append(underCount, w)
+					}
+				}
+				if tc.finished == "" {
+					assert.Len(t, underCount, 1, "the fallback must warn once, naming replicate and TXE-8082: %v", logger.warns)
+				} else {
+					assert.Empty(t, underCount, "no under-count warning when the finished prediction was read")
+				}
 			})
 		}
 	}
