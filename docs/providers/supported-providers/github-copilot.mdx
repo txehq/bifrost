@@ -171,7 +171,8 @@ The token is stored as the key's `value`, encrypted at rest when an encryption k
 configured. That GitHub token does not expire; Bifrost exchanges it for short-lived Copilot
 tokens and refreshes those automatically, so the key keeps working with no action from you.
 To revoke it, go to GitHub **Settings** > **Applications** > **Authorized GitHub Apps**.
-Signing in again replaces the key's token.
+Signing in again replaces the key's token. A custom provider whose `base_provider_type` is
+`github-copilot` signs in the same way, once the provider is saved.
 
 Sign-in reaches GitHub the way the provider does: through the GitHub Copilot provider's own
 proxy (or the inherited global proxy, or the global proxy enabled for API traffic) and with

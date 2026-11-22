@@ -180,6 +180,40 @@ func TestGithubCopilotSignInUsesProviderProxy(t *testing.T) {
 	}
 }
 
+// TestGithubCopilotSignInServesCustomProvidersBasedOnCopilot pins that a custom provider whose
+// base_provider_type is github-copilot can sign in, as the key form offers it (connector finding
+// on PR 433), through that provider's own proxy. A custom provider on another base, and a name
+// that is not configured, are still refused with 400.
+func TestGithubCopilotSignInServesCustomProvidersBasedOnCopilot(t *testing.T) {
+	fake := newFakeGithubDeviceFlow(t)
+	customProxy, viaCustom := forwardProxyTo(t, fake)
+	config := &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+		"acme-copilot": {
+			CustomProviderConfig: &schemas.CustomProviderConfig{CustomProviderKey: "acme-copilot", BaseProviderType: schemas.GithubCopilot},
+			ProxyConfig:          &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(customProxy.URL)},
+		},
+		"acme-openai": {CustomProviderConfig: &schemas.CustomProviderConfig{CustomProviderKey: "acme-openai", BaseProviderType: schemas.OpenAI}},
+	}}
+	h := NewGithubCopilotSignInHandler(config)
+	h.endpoints.deviceCodeURL = "http://github.invalid/login/device/code"
+
+	start := signInRequest("acme-copilot", "")
+	h.start(start)
+	if start.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("start for a Copilot-based custom provider: status %d, want 200: %s", start.Response.StatusCode(), start.Response.Body())
+	}
+	if viaCustom.Load() != 1 {
+		t.Fatalf("the custom provider's proxy saw %d GitHub requests, want 1", viaCustom.Load())
+	}
+	for _, name := range []string{"acme-openai", "not-configured"} {
+		refused := signInRequest(name, "")
+		h.start(refused)
+		if refused.Response.StatusCode() != fasthttp.StatusBadRequest {
+			t.Errorf("start for %s: status %d, want 400", name, refused.Response.StatusCode())
+		}
+	}
+}
+
 // TestGithubCopilotSignInTrustsProviderCA pins that the provider's network_config TLS settings
 // apply: behind a TLS-inspecting proxy GitHub's certificate is signed by the operator's CA,
 // which the provider's ca_cert_pem names. Without it the same endpoint is refused.

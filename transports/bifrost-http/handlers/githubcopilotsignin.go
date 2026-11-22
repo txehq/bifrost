@@ -113,11 +113,12 @@ func (e *githubOAuthError) Error() string {
 //
 // POST /api/providers/github-copilot/sign-in
 func (h *GithubCopilotSignInHandler) start(ctx *fasthttp.RequestCtx) {
-	if !isGithubCopilotRoute(ctx) {
+	provider, ok := h.signInProvider(ctx)
+	if !ok {
 		return
 	}
 	var code githubDeviceCode
-	err := h.postForm(context.Background(), h.httpClient(), h.endpoints.deviceCodeURL, url.Values{"client_id": {githubCopilotClientID}, "scope": {"read:user"}}, &code)
+	err := h.postForm(context.Background(), h.httpClient(provider), h.endpoints.deviceCodeURL, url.Values{"client_id": {githubCopilotClientID}, "scope": {"read:user"}}, &code)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadGateway, fmt.Sprintf("GitHub rejected the sign-in: %v", err))
 		return
@@ -133,7 +134,8 @@ func (h *GithubCopilotSignInHandler) start(ctx *fasthttp.RequestCtx) {
 //
 // POST /api/providers/github-copilot/sign-in/poll
 func (h *GithubCopilotSignInHandler) poll(ctx *fasthttp.RequestCtx) {
-	if !isGithubCopilotRoute(ctx) {
+	provider, ok := h.signInProvider(ctx)
+	if !ok {
 		return
 	}
 	var req struct {
@@ -146,7 +148,7 @@ func (h *GithubCopilotSignInHandler) poll(ctx *fasthttp.RequestCtx) {
 	var token struct {
 		AccessToken string `json:"access_token"`
 	}
-	client := h.httpClient()
+	client := h.httpClient(provider)
 	err := h.postForm(context.Background(), client, h.endpoints.tokenURL, url.Values{
 		"client_id":   {githubCopilotClientID},
 		"device_code": {req.DeviceCode},
@@ -187,13 +189,14 @@ func (h *GithubCopilotSignInHandler) poll(ctx *fasthttp.RequestCtx) {
 	})
 }
 
-// httpClient returns the client for one sign-in call: the github-copilot provider's egress,
-// bounded by githubSignInTimeout whatever the provider's own request timeout is.
-func (h *GithubCopilotSignInHandler) httpClient() *http.Client {
+// httpClient returns the client for one sign-in call: the egress of the provider the key
+// belongs to (github-copilot, or a custom provider based on it), bounded by
+// githubSignInTimeout whatever the provider's own request timeout is.
+func (h *GithubCopilotSignInHandler) httpClient(provider schemas.ModelProvider) *http.Client {
 	if h.client != nil {
 		return h.client
 	}
-	proxyConfig, networkConfig := lib.ManagementEgress(h.config, schemas.GithubCopilot)
+	proxyConfig, networkConfig := lib.ManagementEgress(h.config, provider)
 	networkConfig.DefaultRequestTimeoutInSeconds = int(githubSignInTimeout / time.Second)
 	return providerUtils.NewProviderHTTPClient(proxyConfig, networkConfig, signInLogger())
 }
@@ -214,13 +217,23 @@ func sendSignInJSON(ctx *fasthttp.RequestCtx, body any) {
 	SendJSON(ctx, body)
 }
 
-// isGithubCopilotRoute refuses the sign-in routes for any other provider.
-func isGithubCopilotRoute(ctx *fasthttp.RequestCtx) bool {
-	if provider, _ := ctx.UserValue("provider").(string); schemas.ModelProvider(provider) != schemas.GithubCopilot {
-		SendError(ctx, fasthttp.StatusBadRequest, "sign-in is only available for github-copilot")
-		return false
+// signInProvider returns the provider a sign-in is for: github-copilot, or a configured custom
+// provider whose base_provider_type is github-copilot (the key form offers sign-in for both,
+// and a custom provider signs in through its own egress). Any other name is refused with 400.
+func (h *GithubCopilotSignInHandler) signInProvider(ctx *fasthttp.RequestCtx) (schemas.ModelProvider, bool) {
+	name, _ := ctx.UserValue("provider").(string)
+	provider := schemas.ModelProvider(name)
+	if provider == schemas.GithubCopilot {
+		return provider, true
 	}
-	return true
+	if h.config != nil {
+		if cfg, err := h.config.GetProviderConfigRaw(provider); err == nil && cfg.CustomProviderConfig != nil &&
+			cfg.CustomProviderConfig.BaseProviderType == schemas.GithubCopilot {
+			return provider, true
+		}
+	}
+	SendError(ctx, fasthttp.StatusBadRequest, "sign-in is only available for github-copilot and custom providers based on it; save a new custom provider before signing in")
+	return "", false
 }
 
 // postForm sends a form to a GitHub OAuth endpoint and decodes the JSON reply. GitHub reports
