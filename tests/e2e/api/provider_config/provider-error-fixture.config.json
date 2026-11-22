@@ -1472,11 +1472,12 @@
           ],
           "weight": 1,
           "databricks_key_config": {
-            "workspace_url": "127.0.0.1:8791"
+            "workspace_url": "127.0.0.1:8793"
           }
         }
       ],
       "network_config": {
+        "insecure_skip_verify": true,
         "max_retries": 0,
         "default_request_timeout_in_seconds": 10
       }

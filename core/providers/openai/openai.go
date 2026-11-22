@@ -1227,7 +1227,9 @@ func HandleOpenAIChatCompletionRequest(
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, body, sendBackRawRequest, sendBackRawResponse, latency)
 	}
-	response.Usage.NormalizeVendorSpellings()
+	if response.Usage.NormalizeVendorSpellings() == schemas.AnthropicCacheFoldInclusive {
+		logger.Warn(schemas.InclusiveAnthropicCacheLogMessage, providerName)
+	}
 
 	// A 200 is not proof of success on every OpenAI-compatible provider: some report
 	// failures in-band once the status line is already committed. Left unchecked those
@@ -1684,7 +1686,9 @@ func HandleOpenAIChatCompletionStreaming(
 			if response.Choices == nil {
 				response.Choices = []schemas.BifrostResponseChoice{}
 			}
-			response.Usage.NormalizeVendorSpellings()
+			if response.Usage.NormalizeVendorSpellings() == schemas.AnthropicCacheFoldInclusive {
+				logger.Warn(schemas.InclusiveAnthropicCacheLogMessage, providerName)
+			}
 
 			// ModelScope-style upstreams put a full `message` object next to
 			// `delta` in every stream chunk, and BifrostResponseChoice decodes

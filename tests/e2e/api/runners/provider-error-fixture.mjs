@@ -534,6 +534,22 @@ const nativeDecisionAnswer = (body) => {
 	}
 	return undefined;
 };
+// Folder 662 (TXE-8087): a Databricks-hosted Claude answer with prompt caching active. Databricks returns the cache counts as
+// top-level usage.cache_read_input_tokens and cache_creation_input_tokens next to the OpenAI-shaped counts (its API
+// reference, Usage table). Written from the docs, in Anthropic's convention: prompt_tokens is the uncached input and
+// total_tokens counts everything. No recorded response exists yet.
+const DATABRICKS_CLAUDE_CACHE_MODEL = "databricks-claude-cache-fixture";
+const databricksClaudeCacheUsage = { prompt_tokens: 12, completion_tokens: 20, total_tokens: 4832, cache_read_input_tokens: 4736, cache_creation_input_tokens: 64 };
+const databricksClaudeCacheAnswer = (stream) => {
+	const base = { id: "chatcmpl-databricks-claude-cache", created: 1, model: DATABRICKS_CLAUDE_CACHE_MODEL };
+	if (!stream) {
+		return JSON.stringify({ ...base, object: "chat.completion", choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }], usage: databricksClaudeCacheUsage });
+	}
+	return [
+		{ ...base, object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", content: "ok" } }] },
+		{ ...base, object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: databricksClaudeCacheUsage },
+	].map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("") + "data: [DONE]\n\n";
+};
 const openRouterDecisionAnswer = () => ({ model: "typesafe/jev-1.13.0", answers: {}, usage: { input_tokens: 1000, output_tokens: 10, cost: 0.25 } });
 
 // The rows the per-call pricing folder is judged against. Every other fixture model stays unpriced.
@@ -592,6 +608,12 @@ const fixturePricing = {
 		provider: "openrouter", mode: "chat",
 		input_cost_per_token: 0.000001, output_cost_per_token: 0.000002,
 		cache_creation_input_token_cost: 0.000003, cache_creation_input_token_cost_above_1hr: 0.000006,
+	},
+	// Folder 662 (TXE-8087): Claude Sonnet's list rates on Databricks, so the 4,736-token read and 64-token write the fixture
+	// reports price at $0.0019968 in all, against $0.000336 with the cache counts dropped.
+	"databricks/databricks-claude-cache-fixture": {
+		provider: "databricks", mode: "chat",
+		input_cost_per_token: 3e-06, output_cost_per_token: 1.5e-05, cache_read_input_token_cost: 3e-07, cache_creation_input_token_cost: 3.75e-06,
 	},
 	"databricks/databricks-gemini-4-argon": {
 		provider: "databricks", mode: "chat",
@@ -3506,6 +3528,31 @@ const handleRequest = (req, res) => {
 	if (req.method === "GET" && /^\/v1\/batches\/[^/]+$/.test(path)) {
 		countHit("batch.retrieve");
 		return send(200, {}, JSON.stringify(fixtureBatch("in_progress")));
+	}
+	// Folder 662 (TXE-8087): a pay-per-token Claude endpoint declines native Responses with this 400, so the gateway
+	// emulates /v1/responses through the chat route below.
+	if (req.method === "POST" && path === "/serving-endpoints/responses") {
+		return drain(req, () => {
+			countHit("databricks.responses");
+			send(400, {}, JSON.stringify({ error: { message: "Responses API passthrough is not supported for model databricks-claude-cache-fixture.", type: "invalid_request_error" } }));
+		});
+	}
+	// Folder 662 (TXE-8087): Databricks Model Serving's chat route, reached on the TLS listener (Databricks is https only).
+	if (req.method === "POST" && path === "/serving-endpoints/chat/completions") {
+		const body = [];
+		req.on("data", (c) => body.push(c));
+		return req.on("end", () => {
+			let parsed = {};
+			try { parsed = JSON.parse(Buffer.concat(body).toString("utf8")) || {}; } catch {}
+			countHit("databricks.chat");
+			if (req.headers.authorization !== "Bearer test-key") return send(401, {}, errorBody("Invalid access token", "invalid_request_error", "unauthenticated"));
+			if (parsed.model !== DATABRICKS_CLAUDE_CACHE_MODEL) return send(404, {}, errorBody(`unknown fixture endpoint ${parsed.model}`, "invalid_request_error", "RESOURCE_DOES_NOT_EXIST"));
+			if (parsed.stream === true) {
+				res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+				return res.end(databricksClaudeCacheAnswer(true));
+			}
+			return send(200, {}, databricksClaudeCacheAnswer(false));
+		});
 	}
 	if (req.method !== "POST" || (path !== "/v1/chat/completions" && path !== "/openai/v1/chat/completions" && path !== "/v1/responses" && path !== "/v1/live/sessions" && path !== "/mcp" && path !== "/v1/decisions" && path !== "/alpha/decisions" && path !== "/v1/audio/speech" && path !== "/v1/completions" && path !== "/chat/completions")) {
 		return send(404, {}, errorBody("not found", "invalid_request_error", "not_found"));

@@ -1010,52 +1010,47 @@ func usageFromValue(value interface{}) (*schemas.BifrostLLMUsage, error) {
 	if cacheWriteTokens == 0 {
 		cacheWriteTokens = cacheDetailsWriteTokens
 	}
-	// Two wire conventions, keyed by field name, and the distinction is load-bearing:
+	// Two wire conventions, keyed by field name:
 	//   - Anthropic/Bedrock (cache_read_input_tokens, cacheReadInputTokens, ...) report
-	//     cache tokens EXCLUSIVE of the base input count, so they are added in below to
-	//     normalize into our internal convention (PromptTokens is inclusive of cache).
-	//   - OpenAI/Gemini (prompt_tokens_details.cached_tokens) report cached input as a
-	//     BREAKDOWN of prompt_tokens, which already includes it — adding it would
-	//     double-count. It is only surfaced on PromptTokensDetails so the cache-read
-	//     discount applies at pricing time.
-	// A provider emits one convention or the other, never both.
+	//     cache tokens EXCLUSIVE of the base input count.
+	//   - OpenAI/Gemini (prompt_tokens_details.cached_tokens, cache_write_tokens) report
+	//     cached input as a BREAKDOWN of prompt_tokens, which already includes it.
+	// The OpenAI breakdown is set first; the Anthropic counts then go through
+	// schemas.FoldAnthropicCacheTokens, the same function the chat decoders call (TXE-8087),
+	// so one payload is counted the same way on the chat route and in a batch.
 	cacheReadTokens := usage.CacheReadInputTokens + usage.CacheReadInputTokensCamel
-	inclusiveCacheReadTokens := usage.PromptTokensDetails.CachedTokens
-
-	promptTokens := firstNonZero(usage.PromptTokens, usage.InputTokensSnake, usage.InputTokensCamel) + cacheReadTokens + cacheWriteTokens
 	completionTokens := firstNonZero(usage.CompletionTokens, usage.OutputTokensSnake, usage.OutputTokensCamel)
-	computedTotal := promptTokens + completionTokens
-	totalTokens := firstNonZero(usage.TotalTokens, usage.TotalTokensCamel)
-	if totalTokens == 0 || totalTokens < computedTotal {
-		totalTokens = computedTotal
-	}
 	out := &schemas.BifrostLLMUsage{
-		PromptTokens:     promptTokens,
+		PromptTokens:     firstNonZero(usage.PromptTokens, usage.InputTokensSnake, usage.InputTokensCamel),
 		CompletionTokens: completionTokens,
-		TotalTokens:      totalTokens,
+		TotalTokens:      firstNonZero(usage.TotalTokens, usage.TotalTokensCamel),
 		Cost:             usage.Cost,
 	}
-	totalCacheReadTokens := cacheReadTokens + inclusiveCacheReadTokens
 	// OpenAI's cache writes are a breakdown of prompt_tokens, like cached_tokens, so they are
 	// not added to the prompt count (TXE-7354).
+	inclusiveCacheReadTokens := usage.PromptTokensDetails.CachedTokens
 	inclusiveCacheWrite := usage.PromptTokensDetails.CacheWriteTokens
 	split := usage.PromptTokensDetails.CacheWriteTokensDetails
 	if inclusiveCacheWrite == 0 {
 		inclusiveCacheWrite = split.TTL30mTokens + split.TTL12hTokens
 	}
-	totalCacheWriteTokens := cacheWriteTokens + inclusiveCacheWrite
-	if totalCacheReadTokens > 0 || totalCacheWriteTokens > 0 {
+	if inclusiveCacheReadTokens > 0 || inclusiveCacheWrite > 0 {
 		out.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
-			CachedReadTokens:  totalCacheReadTokens,
-			CachedWriteTokens: totalCacheWriteTokens,
+			CachedReadTokens:  inclusiveCacheReadTokens,
+			CachedWriteTokens: inclusiveCacheWrite,
 		}
-		if cacheWrite5m > 0 || cacheWrite1h > 0 || split.TTL30mTokens > 0 || split.TTL12hTokens > 0 {
-			out.PromptTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{
-				CachedWriteTokens5m:  cacheWrite5m,
-				CachedWriteTokens1h:  cacheWrite1h,
-				CachedWriteTokens30m: split.TTL30mTokens,
-				CachedWriteTokens12h: split.TTL12hTokens,
-			}
+	}
+	out.FoldAnthropicCacheTokens(cacheReadTokens, cacheWriteTokens, usage.PromptTokens != 0)
+	if computedTotal := out.PromptTokens + out.CompletionTokens; out.TotalTokens < computedTotal {
+		out.TotalTokens = computedTotal
+	}
+	if out.PromptTokensDetails != nil &&
+		(cacheWrite5m > 0 || cacheWrite1h > 0 || split.TTL30mTokens > 0 || split.TTL12hTokens > 0) {
+		out.PromptTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{
+			CachedWriteTokens5m:  cacheWrite5m,
+			CachedWriteTokens1h:  cacheWrite1h,
+			CachedWriteTokens30m: split.TTL30mTokens,
+			CachedWriteTokens12h: split.TTL12hTokens,
 		}
 	}
 	for _, d := range []*batchModalityTokens{&usage.PromptTokensDetails.batchModalityTokens, usage.InputTokensDetails} {
