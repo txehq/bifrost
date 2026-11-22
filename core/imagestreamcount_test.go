@@ -221,3 +221,83 @@ func BenchmarkImageStreamCountGate(b *testing.B) {
 		})
 	}
 }
+
+// imageStreamFinalCounts lists every provider that implements a streamed image request type, with
+// the test that shows its final frame carries usage.output_images equal to the images delivered
+// (TXE-8082, contract C5). TestEveryImageStreamReportsOutputImages fails a provider that streams
+// images without a case here, so a new image-stream handler ships with that test.
+var imageStreamFinalCounts = map[schemas.ModelProvider]map[schemas.RequestType]string{
+	schemas.OpenAI: {
+		schemas.ImageGenerationStreamRequest: "providers/openai TestImageStreamReportsOutputImages",
+		schemas.ImageEditStreamRequest:       "providers/openai TestImageStreamReportsOutputImages",
+	},
+	schemas.Azure: {
+		schemas.ImageGenerationStreamRequest: "providers/azure TestAzureImageStreamReportsOutputImages",
+		schemas.ImageEditStreamRequest:       "providers/azure TestAzureImageStreamReportsOutputImages",
+	},
+	schemas.BytePlus: {
+		schemas.ImageGenerationStreamRequest: "providers/byteplus TestBytePlusImageGenerationStream",
+		schemas.ImageEditStreamRequest:       "providers/byteplus TestBytePlusImageEditStreamUsesEditEvents (same handler as generation)",
+	},
+	schemas.Replicate: {
+		schemas.ImageGenerationStreamRequest: "providers/replicate TestReplicateImageStreamReportsDeliveredImages",
+		schemas.ImageEditStreamRequest:       "providers/replicate TestReplicateImageStreamReportsDeliveredImages",
+	},
+	schemas.HuggingFace: {
+		schemas.ImageGenerationStreamRequest: "providers/huggingface TestHuggingFaceFalImageStreamReportsDeliveredImages",
+		schemas.ImageEditStreamRequest:       "providers/huggingface TestHuggingFaceFalImageStreamReportsDeliveredImages",
+	},
+}
+
+// TestEveryImageStreamReportsOutputImages is the class check of TXE-8082: every standard provider
+// either answers a streamed image generation and edit with unsupported_operation, or is listed in
+// imageStreamFinalCounts with the test that shows its final frame reports usage.output_images.
+// Each provider is called with a cancelled context and a closed loopback base URL, so no request
+// leaves the machine.
+func TestEveryImageStreamReportsOutputImages(t *testing.T) {
+	client := &Bifrost{logger: NewNoOpLogger()}
+	streams := map[schemas.ModelProvider]map[schemas.RequestType]bool{}
+	postHook := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return result, err
+	}
+	for _, providerKey := range schemas.StandardProviders {
+		provider, err := client.createBaseProvider(providerKey, &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: "http://127.0.0.1:1", DefaultRequestTimeoutInSeconds: 1}})
+		if err != nil {
+			t.Fatalf("construct %s: %v", providerKey, err)
+		}
+		for _, requestType := range schemas.ImageStreamRequestTypes {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.Cancel()
+			req := imageStreamRequest(providerKey, requestType, "fal-ai/m", nil, nil)
+			var stream chan *schemas.BifrostStreamChunk
+			var bifrostErr *schemas.BifrostError
+			if requestType == schemas.ImageGenerationStreamRequest {
+				stream, bifrostErr = provider.ImageGenerationStream(ctx, postHook, nil, schemas.Key{}, req.ImageGenerationRequest)
+			} else {
+				stream, bifrostErr = provider.ImageEditStream(ctx, postHook, nil, schemas.Key{}, req.ImageEditRequest)
+			}
+			if stream != nil {
+				for range stream {
+				}
+			}
+			name := string(providerKey) + "/" + string(requestType)
+			if bifrostErr != nil && bifrostErr.Error != nil && bifrostErr.Error.Code != nil && *bifrostErr.Error.Code == "unsupported_operation" {
+				continue
+			}
+			if streams[providerKey] == nil {
+				streams[providerKey] = map[schemas.RequestType]bool{}
+			}
+			streams[providerKey][requestType] = true
+			if imageStreamFinalCounts[providerKey][requestType] == "" {
+				t.Errorf("%s streams images, but imageStreamFinalCounts has no test for it: add one showing its final frame reports usage.output_images equal to the images delivered", name)
+			}
+		}
+	}
+	for providerKey, types := range imageStreamFinalCounts {
+		for requestType := range types {
+			if !streams[providerKey][requestType] {
+				t.Errorf("imageStreamFinalCounts lists %s/%s, which answers unsupported_operation: remove the case", providerKey, requestType)
+			}
+		}
+	}
+}

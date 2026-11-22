@@ -366,6 +366,7 @@ type HuggingFaceFalAIImageStreamRequest struct {
 
 - **Chunk Indexing**: Each chunk has an `Index` field (0, 1, 2, ...) and `ChunkIndex` for ordering
 - **Completion**: Final chunk includes all image data from the last SSE event
+- **Image count**: fal streams progress updates and ends on the final result. The completed frame's `usage.output_images` is the number of images in the last event that carried any, each relayed under its own `Index`. The stream is priced at that count. A progress event (`progress` with a `message`) is not treated as an error.
 - **Error Handling**: Errors in SSE format are parsed and sent as `BifrostError` chunks
 - **One image per stream**: with `stream: true`, `n` (or `num_images`, `number_of_images`, `num_outputs`, `batch_size`, `num_images_per_prompt`, `num_samples`, `samples` or `max_images` in extra params) must be 1. A streamed request for more than one image is refused with 400 `caller_unsupported_parameter` (`error.param` names the field) before any upstream call: the stream ends on a frame that carries one image and no `usage.output_images`, so the images after the first could not be counted or billed. Send the request without `stream` to get `n` images in `data[]`.
 

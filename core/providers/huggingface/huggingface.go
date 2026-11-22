@@ -1180,6 +1180,8 @@ func (provider *HuggingFaceProvider) ImageGenerationStream(ctx *schemas.BifrostC
 		lastChunkTime := startTime
 		chunkIndex := 0
 		var lastB64Data, lastURLData, lastJsonData string
+		// lastEventImages is the number of images in the last event that carried any (TXE-8082).
+		lastEventImages := 0
 		var lastIndex int
 
 		for {
@@ -1208,7 +1210,9 @@ func (provider *HuggingFaceProvider) ImageGenerationStream(ctx *schemas.BifrostC
 			// Quick check for error/message fields (allocation-free using sonic.GetFromString)
 			errorNode, _ := sonic.GetFromString(jsonData, "error")
 			messageNode, _ := sonic.GetFromString(jsonData, "message")
-			if errorNode.Exists() || messageNode.Exists() {
+			// A progress update carries a message too ({"progress": 0.25, "message": "Generating..."},
+			// https://fal.ai/docs/documentation/model-apis/inference/streaming.md): it is not an error.
+			if errorNode.Exists() || (messageNode.Exists() && !falProgressEvent(jsonData)) {
 				// Only unmarshal when we know there might be an error
 				var errorResp HuggingFaceResponseError
 				if err := sonic.UnmarshalString(jsonData, &errorResp); err == nil {
@@ -1242,6 +1246,9 @@ func (provider *HuggingFaceProvider) ImageGenerationStream(ctx *schemas.BifrostC
 			// Timed as the "convertor" stream phase (per-event mapping / chunk build).
 			convStart := time.Now()
 			images := extractImagesFromStreamResponse(&response)
+			if len(images) > 0 {
+				lastEventImages = len(images)
+			}
 			schemas.AddStreamConvert(ctx, time.Since(convStart))
 			// Process each image in the response
 			for i, img := range images {
@@ -1297,6 +1304,12 @@ func (provider *HuggingFaceProvider) ImageGenerationStream(ctx *schemas.BifrostC
 			finalChunk.BackfillParams(&schemas.BifrostRequest{
 				ImageGenerationRequest: request,
 			})
+			// fal streams progress and ends on the final result, the same object a request without
+			// stream returns (https://fal.ai/docs/documentation/model-apis/inference/streaming.md:
+			// "A model might stream progress updates followed by the final result"). Each image of
+			// that last event was relayed under its own index, so its image count is what the
+			// stream delivered: usage.output_images (fork, TXE-8082, contract C5).
+			finalChunk.SetDeliveredImages(lastEventImages)
 			if lastURLData != "" {
 				finalChunk.URL = lastURLData
 			} else if lastB64Data != "" {
@@ -1570,6 +1583,8 @@ func (provider *HuggingFaceProvider) ImageEditStream(ctx *schemas.BifrostContext
 		lastChunkTime := startTime
 		chunkIndex := 0
 		var lastB64Data, lastURLData, lastJsonData string
+		// lastEventImages is the number of images in the last event that carried any (TXE-8082).
+		lastEventImages := 0
 		var lastIndex int
 
 		for {
@@ -1598,7 +1613,9 @@ func (provider *HuggingFaceProvider) ImageEditStream(ctx *schemas.BifrostContext
 			// Quick check for error/message fields (allocation-free using sonic.GetFromString)
 			errorNode, _ := sonic.GetFromString(jsonData, "error")
 			messageNode, _ := sonic.GetFromString(jsonData, "message")
-			if errorNode.Exists() || messageNode.Exists() {
+			// A progress update carries a message too ({"progress": 0.25, "message": "Generating..."},
+			// https://fal.ai/docs/documentation/model-apis/inference/streaming.md): it is not an error.
+			if errorNode.Exists() || (messageNode.Exists() && !falProgressEvent(jsonData)) {
 				// Only unmarshal when we know there might be an error
 				var errorResp HuggingFaceResponseError
 				if err := sonic.UnmarshalString(jsonData, &errorResp); err == nil {
@@ -1632,6 +1649,9 @@ func (provider *HuggingFaceProvider) ImageEditStream(ctx *schemas.BifrostContext
 			// Timed as the "convertor" stream phase (per-event mapping / chunk build).
 			convStart := time.Now()
 			images := extractImagesFromStreamResponse(&response)
+			if len(images) > 0 {
+				lastEventImages = len(images)
+			}
 			schemas.AddStreamConvert(ctx, time.Since(convStart))
 			// Process each image in the response
 			for i, img := range images {
@@ -1687,6 +1707,12 @@ func (provider *HuggingFaceProvider) ImageEditStream(ctx *schemas.BifrostContext
 			finalChunk.BackfillParams(&schemas.BifrostRequest{
 				ImageEditRequest: request,
 			})
+			// fal streams progress and ends on the final result, the same object a request without
+			// stream returns (https://fal.ai/docs/documentation/model-apis/inference/streaming.md:
+			// "A model might stream progress updates followed by the final result"). Each image of
+			// that last event was relayed under its own index, so its image count is what the
+			// stream delivered: usage.output_images (fork, TXE-8082, contract C5).
+			finalChunk.SetDeliveredImages(lastEventImages)
 			if lastURLData != "" {
 				finalChunk.URL = lastURLData
 			} else if lastB64Data != "" {
@@ -1874,4 +1900,12 @@ func (provider *HuggingFaceProvider) Passthrough(_ *schemas.BifrostContext, _ sc
 
 func (provider *HuggingFaceProvider) PassthroughStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughStreamRequest, provider.GetProviderKey())
+}
+
+// falProgressEvent reports whether a fal stream event is a progress update ({"progress": 0.25,
+// "message": "Generating..."}, https://fal.ai/docs/documentation/model-apis/inference/streaming.md),
+// which carries a message but is not an error (TXE-8082). Only an event with a message is checked.
+func falProgressEvent(jsonData string) bool {
+	progressNode, _ := sonic.GetFromString(jsonData, "progress")
+	return progressNode.Exists()
 }

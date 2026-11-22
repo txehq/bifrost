@@ -1888,6 +1888,17 @@ const wireAnswer = (path, body, bytes) => {
 		if (what === "stream") urls.stream = `${named}/streams/${id}`;
 		return { status: 201, body: JSON.stringify({ id, status: "starting", urls }) };
 	}
+	// Folder 663 (TXE-8082): image streams whose vendor makes three images with n unset, as a hosted model's
+	// default can. Replicate's prediction streams one image and its finished prediction lists three; fal
+	// streams a progress update and ends on the final result with three images.
+	if (path === "/pp/replicate/v1/models/fixture/image-stream-three/predictions") {
+		const own = `http://127.0.0.1:${port}/pp/replicate/v1`;
+		return { status: 201, body: JSON.stringify({ id: "imgstream_three", status: "starting", urls: { get: `${own}/predictions/imgstream_three`, stream: `${own}/streams/imgstream_three` } }) };
+	}
+	if (path === "/pp/hf/fal-ai/fixture/image-stream-three/stream") {
+		const image = (name) => ({ url: `https://v3.fal.media/files/fixture/${name}.jpeg` });
+		return { status: 200, stream: `data: ${JSON.stringify({ progress: 0.5, message: "Generating..." })}\n\ndata: ${JSON.stringify({ images: [image("a"), image("b"), image("c")], seed: 42 })}\n\n` };
+	}
 	// HuggingFace speech through fal-ai (TXE-7117): the answer names the audio file by URL. The model's last
 	// path segment picks where: speech-origin on the provider's own origin, speech-loopback on another
 	// loopback origin (the same fixture by the name localhost).
@@ -2993,6 +3004,18 @@ const handleRequest = (req, res) => {
 		countHit(`replicate.${renderedFile[1]}.download`);
 		res.writeHead(200, { "Content-Type": "video/mp4", "Content-Length": video.length });
 		return res.end(video);
+	}
+	// Folder 663 (TXE-8082): the replicate image stream that relays one image, and its finished prediction,
+	// which made three. Each read is counted.
+	if (req.method === "GET" && path === "/pp/replicate/v1/streams/imgstream_three") {
+		countHit("replicate.imgstream_three.stream");
+		res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+		return res.end("event: output\nid: 1\ndata: data:image/webp;base64,UklGRg==\n\nevent: done\nid: 2\ndata: {}\n\n");
+	}
+	if (req.method === "GET" && path === "/pp/replicate/v1/predictions/imgstream_three") {
+		countHit("replicate.imgstream_three.poll");
+		const delivery = (name) => `https://replicate.delivery/fixture/${name}.webp`;
+		return send(200, {}, JSON.stringify({ id: "imgstream_three", status: "succeeded", output: [delivery("a"), delivery("b"), delivery("c")] }));
 	}
 	// The poll of a folder 490 prediction, counted under the Host it was asked at. A picture prediction's
 	// output is at the address its name says; any other prediction's is a delivery URL nobody fetches.
