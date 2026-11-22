@@ -69,7 +69,7 @@
         },
         "body": {
           "mode": "raw",
-          "raw": "{\"pattern\": \"{{ch_ua_pattern}}\", \"match_type\": \"prefix\", \"app\": \"TXE-6085 CH CLI\", \"is_active\": true}"
+          "raw": "{\"pattern\": \"{{ch_ua_pattern}}\", \"match_type\": \"starts_with\", \"app\": \"TXE-6085 CH CLI\", \"is_active\": true}"
         }
       },
       "event": [
@@ -142,7 +142,7 @@
               "  const m = pm.response.json().mappings.find((x) => x.id === pm.collectionVariables.get('ch_ua_id'));",
               "  pm.expect(m, pm.response.text()).to.be.an('object');",
               "  pm.expect(m.app, pm.response.text()).to.equal('TXE-6085 CH CLI');",
-              "  pm.expect(m.match_type, pm.response.text()).to.equal('prefix');",
+              "  pm.expect(m.match_type, pm.response.text()).to.equal('starts_with');",
               "  pm.expect(m.is_active, pm.response.text()).to.equal(true);",
               "});"
             ]
@@ -174,7 +174,7 @@
         },
         "body": {
           "mode": "raw",
-          "raw": "{\"pattern\": \"{{ch_ua_pattern}}\", \"match_type\": \"prefix\", \"app\": \"TXE-6085 CH CLI renamed\", \"is_active\": false}"
+          "raw": "{\"pattern\": \"{{ch_ua_pattern}}\", \"match_type\": \"starts_with\", \"app\": \"TXE-6085 CH CLI renamed\", \"is_active\": false}"
         }
       },
       "event": [
@@ -276,7 +276,7 @@
         },
         "body": {
           "mode": "raw",
-          "raw": "{\"pattern\": \"x\", \"match_type\": \"prefix\", \"app\": \"X\", \"is_active\": true}"
+          "raw": "{\"pattern\": \"x\", \"match_type\": \"starts_with\", \"app\": \"X\", \"is_active\": true}"
         }
       },
       "event": [

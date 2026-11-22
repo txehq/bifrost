@@ -13,9 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/capsohq/bifrost/framework/internal/testtime"
-
 	"github.com/capsohq/bifrost/core/schemas"
+	"github.com/capsohq/bifrost/framework/internal/testtime"
 	"github.com/capsohq/bifrost/framework/objectstore"
 	"github.com/capsohq/bifrost/framework/queryscope"
 	"github.com/stretchr/testify/assert"
@@ -1985,7 +1984,7 @@ func TestClickHouseUserAgentMappingWritesWaitForTheSharedLock(t *testing.T) {
 		case err := <-done:
 			release()
 			t.Fatalf("write finished while another instance held the mapping lock (err=%v)", err)
-		case <-time.After(300 * time.Millisecond):
+		case <-time.After(testtime.Scale(300 * time.Millisecond)):
 		}
 		release()
 		select {
