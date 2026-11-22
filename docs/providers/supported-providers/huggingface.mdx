@@ -367,6 +367,7 @@ type HuggingFaceFalAIImageStreamRequest struct {
 - **Chunk Indexing**: Each chunk has an `Index` field (0, 1, 2, ...) and `ChunkIndex` for ordering
 - **Completion**: Final chunk includes all image data from the last SSE event
 - **Error Handling**: Errors in SSE format are parsed and sent as `BifrostError` chunks
+- **One image per stream**: with `stream: true`, `n` (or `num_images`, `number_of_images` or `num_outputs` in extra params) must be 1. A streamed request for more than one image is refused with 400 `caller_unsupported_parameter` (`error.param` names the field) before any upstream call: the stream ends on a frame that carries one image and no `usage.output_images`, so the images after the first could not be counted or billed. Send the request without `stream` to get `n` images in `data[]`.
 
 
 ### Example Usage
@@ -490,7 +491,7 @@ Requests use **multipart/form-data**, not JSON.
 | `model` | string | ✅ | Model identifier (must be `huggingface/fal-ai/{model_id}`) |
 | `prompt` | string | ✅ | Text description of the edit |
 | `image[]` | binary | ✅ | Image file(s) to edit (supports multiple images for some models) |
-| `n` | int | ❌ | Number of images to generate (1-10) |
+| `n` | int | ❌ | Number of images to generate (1-10). With `stream: true` it must be 1: a streamed request with `n` greater than 1 is refused with 400 `caller_unsupported_parameter` before any upstream call (see Image Generation Streaming) |
 | `size` | string | ❌ | Image size: `"WxH"` format (e.g., `"1024x1024"`) |
 | `output_format` | string | ❌ | Output format: `"png"`, `"webp"`, `"jpeg"` (note: `"jpg"` is normalized to `"jpeg"`) |
 | `seed` | int | ❌ | Seed for reproducibility (via `ExtraParams["seed"]`) |

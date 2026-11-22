@@ -8897,6 +8897,11 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				if refusal := decideRawImageBodyForAttempt(req.Context, provider, req.RequestType, &req.BifrostRequest); refusal != nil {
 					return nil, refusal
 				}
+				// A streamed image request for more than one image reaches only a provider whose
+				// stream relays and counts every image (TXE-8077); any other attempt is refused here.
+				if refusal := decideImageStreamCountForAttempt(provider, req.RequestType, &req.BifrostRequest); refusal != nil {
+					return nil, refusal
+				}
 				// Decide whether this attempt may skip conversion for a large body, and refuse a
 				// staged large request it would have to convert, before anything is sent.
 				if refusal := decideLargePayloadForAttempt(req.Context, baseProvider, provider.GetProviderKey(), req.RequestType, resolvedModel, originalModelRequested); refusal != nil {

@@ -515,6 +515,8 @@ Image generation streaming provides progressive image updates as data URIs:
 3. `done` event signals completion with final image
 4. Each chunk includes `Index`, `ChunkIndex`, and `B64JSON` fields
 
+**One image per stream:** with `stream: true`, `n` (or `number_of_images`, `num_outputs` or `num_images` in extra params) must be 1, for image generation and image edit. A streamed request for more than one image is refused with 400 `caller_unsupported_parameter` (`error.param` names the field) before any prediction is created: every `output` event is relayed under index 0 and the stream ends on a frame that carries one image and no `usage.output_images`, so the images after the first could not be counted or billed. Replicate's stream reference does not say how a prediction with several images is streamed. Send the request without `stream` to get `n` images in `data[]`.
+
 ---
 
 # 5. Image Edit
