@@ -193,7 +193,8 @@ an App installation and GitHub Enterprise (`*.ghe.com`) domains are no longer su
   **Sign in with GitHub**, or paste a fine-grained personal access token with the **Copilot
   Requests** permission.
 - The stored App credentials are not deleted. They stay in the config store's
-  `github_copilot_*` columns, unused and encrypted with their row when encryption is on, so
+  `github_copilot_*` columns, unused, encrypted with their row when encryption is on and moved to the vault when vault
+  writes are on, so
   rolling back to an earlier version finds them intact.
 - In `config.json`, Bifrost ignores a `github_copilot_key_config` block, and a key that has
   nothing else is reported at startup like any key without a token. `config.schema.json` no

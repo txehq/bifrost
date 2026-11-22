@@ -199,3 +199,87 @@ func TestVaultCallbacks_NoOpWhenDisabled(t *testing.T) {
 	require.NoError(t, db.First(&row, "client_id = ?", "client-2").Error)
 	require.False(t, strings.Contains(row.HeadersJSON, "vault."), "no vault ref expected when disabled: %s", row.HeadersJSON)
 }
+
+// TestVaultCallbacks_GithubCopilotAppColumnsFollowTheVault pins that a GitHub Copilot key's
+// stored App columns, which TableKey no longer maps (TXE-6085), are still protected as they
+// were as mapped fields: with vault writes on, a save of the key moves a plaintext App private
+// key into the vault under the key's path (the older binary's path) and the column holds the
+// reference, with encryption off and on; an env reference is left as written; a delete of the
+// key removes the vault entry. Codex security review P2 on PR 433: before this the plaintext
+// credential stayed in the database on such a deployment.
+func TestVaultCallbacks_GithubCopilotAppColumnsFollowTheVault(t *testing.T) {
+	for i, encryptionKey := range []string{"", "test-encryption-key"} {
+		t.Run(fmt.Sprintf("encryption=%v", encryptionKey != ""), func(t *testing.T) {
+			stored, removed := stubVaultHooks(t)
+			encrypt.Init(encryptionKey, bifrost.NewDefaultLogger(schemas.LogLevelInfo))
+			t.Cleanup(func() { encrypt.Init("", bifrost.NewDefaultLogger(schemas.LogLevelInfo)) })
+
+			db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+			require.NoError(t, err)
+			RegisterVaultCallbacks(db)
+			require.NoError(t, db.AutoMigrate(&tables.TableKey{}))
+			for _, column := range tables.GithubCopilotAppColumns {
+				require.NoError(t, db.Migrator().AddColumn(&tables.TableKeyGithubCopilotApp{}, column))
+			}
+			keyID := fmt.Sprintf("copilot-app-%d", i)
+			const pem = "-----BEGIN RSA PRIVATE KEY-----vault-----END RSA PRIVATE KEY-----"
+			// A key written by the older binary before vault writes were turned on.
+			require.NoError(t, db.Exec(`INSERT INTO config_keys (name, provider_id, provider, key_id, value, encryption_status, created_at, updated_at,
+				github_copilot_app_id, github_copilot_private_key) VALUES (?, 1, 'github-copilot', ?, '', 'plain_text', datetime('now'), datetime('now'), ?, ?)`,
+				keyID, keyID, "env.GITHUB_COPILOT_APP_ID", pem).Error)
+
+			var key tables.TableKey
+			require.NoError(t, db.First(&key, "key_id = ?", keyID).Error)
+			key.Value = schemas.SecretVar{Val: "github_pat_after_upgrade"}
+			require.NoError(t, db.Save(&key).Error)
+
+			path := "bifrost/config_keys/" + keyID + "/github_copilot_private_key"
+			require.Equal(t, pem, stored[path], "the App private key goes to the vault as plaintext")
+			var raw map[string]any
+			require.NoError(t, db.Table("config_keys").Where("key_id = ?", keyID).Take(&raw).Error)
+			require.Equal(t, "vault."+path, raw["github_copilot_private_key"], "the column holds the vault reference")
+			require.Equal(t, "env.GITHUB_COPILOT_APP_ID", raw["github_copilot_app_id"], "an env reference is left as written")
+			for p, v := range stored {
+				require.NotContains(t, v, "GITHUB_COPILOT_APP_ID", "the env reference went to the vault at %s", p)
+			}
+
+			var toDelete tables.TableKey
+			require.NoError(t, db.First(&toDelete, "key_id = ?", keyID).Error)
+			require.NoError(t, db.Delete(&toDelete).Error)
+			require.Contains(t, *removed, path, "deleting the key removes its App vault entry")
+		})
+	}
+}
+
+// TestVaultCallbacks_EncryptedGithubCopilotAppColumnsReachTheVaultDecrypted pins the encrypted
+// case of the test above: an App private key the older binary stored encrypted is decrypted
+// before it goes to the vault, so the vault never holds ciphertext.
+func TestVaultCallbacks_EncryptedGithubCopilotAppColumnsReachTheVaultDecrypted(t *testing.T) {
+	stored, _ := stubVaultHooks(t)
+	encrypt.Init("test-encryption-key", bifrost.NewDefaultLogger(schemas.LogLevelInfo))
+	t.Cleanup(func() { encrypt.Init("", bifrost.NewDefaultLogger(schemas.LogLevelInfo)) })
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	RegisterVaultCallbacks(db)
+	require.NoError(t, db.AutoMigrate(&tables.TableKey{}))
+	for _, column := range tables.GithubCopilotAppColumns {
+		require.NoError(t, db.Migrator().AddColumn(&tables.TableKeyGithubCopilotApp{}, column))
+	}
+	const pem = "-----BEGIN RSA PRIVATE KEY-----encrypted-----END RSA PRIVATE KEY-----"
+	ciphertext, err := encrypt.Encrypt(pem)
+	require.NoError(t, err)
+	require.NoError(t, db.Exec(`INSERT INTO config_keys (name, provider_id, provider, key_id, value, encryption_status, created_at, updated_at,
+		github_copilot_private_key) VALUES ('k', 1, 'github-copilot', 'copilot-enc', '', 'encrypted', datetime('now'), datetime('now'), ?)`, ciphertext).Error)
+
+	var key tables.TableKey
+	require.NoError(t, db.First(&key, "key_id = ?", "copilot-enc").Error)
+	key.Value = schemas.SecretVar{Val: "github_pat_after_upgrade"}
+	require.NoError(t, db.Save(&key).Error)
+
+	path := "bifrost/config_keys/copilot-enc/github_copilot_private_key"
+	require.Equal(t, pem, stored[path], "the vault holds the decrypted App private key")
+	var raw map[string]any
+	require.NoError(t, db.Table("config_keys").Where("key_id = ?", "copilot-enc").Take(&raw).Error)
+	require.Equal(t, "vault."+path, raw["github_copilot_private_key"])
+}
