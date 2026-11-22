@@ -656,6 +656,67 @@ class TheCallerPassesEverySecretTheReleaseJobsRead(unittest.TestCase):
                 self.assertEqual(value, f"${{{{ secrets.{name} }}}}")
 
 
+class ADispatchCanSkipWhatAPushCanSkip(unittest.TestCase):
+    """A push release skips the live provider suites with --skip-core-test in its subject. A
+    dispatch has no head commit, so it carries the same choice as the skip_core_test input,
+    and check-skip turns either into the one skip-core-test output the suites read. The
+    dispatch is how a version is re-released after a workflow fix; without the input it ran
+    test-core-integrations, which no push release runs, and published nothing (sync.15 run
+    45005810435, TXE-8089)."""
+
+    CHECK = next(s for s in JOBS["check-skip"]["steps"] if s.get("id") == "check")
+
+    def skip_core_test(self, event, subject="", input_value=""):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "output"
+            out.write_text("")
+            env = {"PATH": os.environ["PATH"], "GITHUB_OUTPUT": str(out), "COMMIT_MESSAGE": subject,
+                   "EVENT_NAME": event, "SKIP_CORE_TEST_INPUT": input_value}
+            subprocess.run(["bash", "-e", "-c", self.CHECK["run"]], env=env, check=True, capture_output=True)
+            values = dict(line.split("=", 1) for line in out.read_text().splitlines() if "=" in line)
+        return values["skip-core-test"]
+
+    def test_every_dispatch_input_is_declared_and_passed_through(self):
+        dispatch = triggers(ENTRY_DOC)["workflow_dispatch"]["inputs"]
+        called = triggers(WORKFLOW_DOC)["workflow_call"]["inputs"]
+        passed = ENTRY_JOBS["release"]["with"]
+        self.assertEqual(set(dispatch), set(called), "release-pipeline.yml declares exactly release.yml's dispatch inputs")
+        self.assertEqual(set(passed), set(called), "release.yml passes every dispatch input")
+        for name in dispatch:
+            with self.subTest(input=name):
+                self.assertEqual(dispatch[name]["type"], "boolean")
+                self.assertIs(dispatch[name]["default"], False, "a dispatch skips nothing unless asked")
+                self.assertEqual(called[name]["type"], "boolean")
+                self.assertIs(called[name]["default"], False)
+                self.assertEqual(passed[name], f"${{{{ github.event_name == 'workflow_dispatch' && inputs.{name} }}}}")
+
+    def test_check_skip_reads_the_input_through_env_only(self):
+        self.assertEqual(self.CHECK["env"].get("SKIP_CORE_TEST_INPUT"), "${{ inputs.skip_core_test }}")
+        self.assertEqual(self.CHECK["env"].get("EVENT_NAME"), "${{ github.event_name }}")
+        self.assertNotIn("${{", self.CHECK["run"], "the script reads values from env, never interpolated")
+
+    def test_the_input_and_the_subject_flag_give_the_same_skip(self):
+        cases = [
+            ("push", "Merge PR #1: x --skip-core-test", "", "true"),
+            ("push", "Merge PR #1: x", "", "false"),
+            ("push", "Merge PR #1: x\n\nbody --skip-core-test", "", "false"),
+            # release.yml passes false on a push; check-skip does not trust the input there either.
+            ("push", "Merge PR #1: x", "true", "false"),
+            ("workflow_dispatch", "", "true", "true"),
+            ("workflow_dispatch", "", "false", "false"),
+            ("workflow_dispatch", "", "", "false"),
+        ]
+        for event, subject, input_value, expected in cases:
+            with self.subTest(event=event, subject=subject, input=input_value):
+                self.assertEqual(self.skip_core_test(event, subject, input_value), expected)
+
+    def test_the_live_suites_honour_that_one_output(self):
+        for suite in ("test-core", "test-core-integrations"):
+            with self.subTest(suite=suite):
+                self.assertIn("needs.check-skip.outputs.skip-core-test != 'true'", str(JOBS[suite]["if"]))
+        self.assertEqual(JOBS["check-skip"]["outputs"]["skip-core-test"], "${{ steps.check.outputs.skip-core-test }}")
+
+
 class ReleasesShareOneGroup(unittest.TestCase):
     """Two releases must never publish at once (both could see the same tag missing and race
     to create it in release-bifrost-http-finalize.sh), and a push that may not release must

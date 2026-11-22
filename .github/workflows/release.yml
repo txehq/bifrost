@@ -21,6 +21,14 @@ on:
         required: false
         type: boolean
         default: false
+      # The dispatch form of a push subject's --skip-core-test: drops test-core and
+      # test-core-integrations only, so a dispatched release (a re-release after a workflow
+      # fix) can run the same job set as the push it replaces (TXE-8089).
+      skip_core_test:
+        description: "Skip only the live provider suites (test-core, test-core-integrations), like --skip-core-test in a push subject"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -177,6 +185,7 @@ jobs:
     uses: ./.github/workflows/release-pipeline.yml
     with:
       skip_tests: ${{ github.event_name == 'workflow_dispatch' && inputs.skip_tests }}
+      skip_core_test: ${{ github.event_name == 'workflow_dispatch' && inputs.skip_core_test }}
     # Every secret release-pipeline.yml declares, each under its own name; never `inherit`
     # (check-provider-key-environment.py). Provider keys and LIVE_PROVIDERS_CANARY are
     # secrets of the live-providers environment only, so this job's own value of each is
