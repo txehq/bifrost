@@ -52,7 +52,7 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$WORK/.github/workflows/scripts"
 cp "$CHECK" "$WORK/.github/workflows/scripts/"
-cp "$FIXTURES/pass-gated-job-env.yml" "$WORK/.github/workflows/gated.yml"
+cp "$FIXTURES/pass-gated-step-env.yml" "$WORK/.github/workflows/gated.yml"
 cp "$FIXTURES/fail-step-env.yml" "$WORK/.github/workflows/ungated.yaml"
 cases=$((cases + 1))
 out="" status=0

@@ -1,0 +1,29 @@
+# expect: job run-core-tests: names `environment: live-providers` but sets AWS_SECRET_ACCESS_KEY, OPENAI_API_KEY in its job-level env
+# TXE-8192: gated, but the keys sit in the job-level env, so every step, the third-party
+# checkout among them, can read them. Keys belong in the env of the step that runs the suites.
+on:
+  workflow_dispatch:
+    inputs:
+      branch: {required: true, type: string}
+jobs:
+  run-core-tests:
+    environment: live-providers
+    runs-on: ubuntu-24.04
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    steps:
+      - uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+      - id: live-providers-canary
+        env:
+          LIVE_PROVIDERS_CANARY: ${{ secrets.LIVE_PROVIDERS_CANARY }}
+        run: |
+          if [ -z "$LIVE_PROVIDERS_CANARY" ]; then exit 1; fi
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.branch }}
+      - run: |
+          python3 "$GITHUB_WORKSPACE/.github/workflows/scripts/count-provider-keys.py"
+          ./.github/workflows/scripts/test-core.sh
