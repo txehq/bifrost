@@ -9,12 +9,16 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
+	"github.com/capsohq/bifrost/core/providers/anthropic"
+	"github.com/capsohq/bifrost/core/providers/openai"
 	schemas "github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -784,4 +788,196 @@ func BenchmarkRouteSelection(b *testing.B) {
 			}
 		})
 	}
+}
+
+// The request a client sends on each ingress route, carrying the Anthropic features Copilot's
+// feature cells enable (anthropic.ProviderFeatures[schemas.GithubCopilot]): the tool-search
+// tool, a deferred tool, allowed_callers (the advanced-tool-use bundle), context editing and
+// thinking with a budget (interleaved thinking). Each is the shape a real client on that route
+// sends; only the /anthropic route carries a client anthropic-beta header.
+const (
+	copilotFeaturesAnthropicBody = `{"model":"claude-sonnet-4.6","max_tokens":4096,` +
+		`"thinking":{"type":"enabled","budget_tokens":2048},` +
+		`"context_management":{"edits":[{"type":"clear_tool_uses_20250919"}]},` +
+		`"tools":[{"type":"tool_search_tool_regex_20251119","name":"tool_search_tool_regex"},` +
+		`{"name":"get_weather","description":"Weather for a city","input_schema":{"type":"object","properties":{"city":{"type":"string"}}},"defer_loading":true,"allowed_callers":["direct"]}],` +
+		`"messages":[{"role":"user","content":"What is the weather in Paris?"}]}`
+	copilotFeaturesAnthropicBeta = "interleaved-thinking-2025-05-14,context-management-2025-06-27"
+	copilotFeaturesChatBody      = `{"model":"claude-sonnet-4.6","max_tokens":4096,"reasoning":{"max_tokens":2048},` +
+		`"context_management":{"edits":[{"type":"clear_tool_uses_20250919"}]},` +
+		`"tools":[{"type":"function","function":{"name":"get_weather","description":"Weather for a city","parameters":{"type":"object","properties":{"city":{"type":"string"}}}},"defer_loading":true,"allowed_callers":["direct"]}],` +
+		`"messages":[{"role":"user","content":"What is the weather in Paris?"}]}`
+	copilotFeaturesResponsesBody = `{"model":"claude-sonnet-4.6","max_output_tokens":4096,"reasoning":{"effort":"high"},` +
+		`"context_management":[{"type":"compaction","compact_threshold":200000}],` +
+		`"tools":[{"type":"tool_search"},{"type":"function","name":"get_weather","description":"Weather for a city","parameters":{"type":"object","properties":{"city":{"type":"string"}}},"defer_loading":true,"allowed_callers":["direct"]}],` +
+		`"input":"What is the weather in Paris?"}`
+)
+
+// TestCopilotNativeFeaturesReachTheWireOnEveryRoute drives each ingress route's request type
+// (/anthropic/v1/messages, /v1/chat/completions, /v1/responses), unary and streamed, through the
+// Copilot provider to its /v1/messages endpoint, and pins the body fields and the anthropic-beta
+// values the enabled cells keep (TXE-6085, Codex P1 on 02e1d4ef6d). A cell turned off strips
+// its field or header here; the vLLM control below shows the same request without the cells.
+//
+// Not reached, by decision: on /v1/responses the OpenAI context_management entry is compaction,
+// and Copilot's Compaction cell is off, so it is dropped (asserted). input_examples is off too
+// (InputExamples) and is dropped on every route (asserted on /anthropic).
+func TestCopilotNativeFeaturesReachTheWireOnEveryRoute(t *testing.T) {
+	type route struct {
+		name  string
+		send  func(t *testing.T, p *githubCopilotProvider, ctx *schemas.BifrostContext, key schemas.Key, stream bool)
+		body  map[string]string // gjson path -> expected value (Raw for objects, String otherwise)
+		gone  []string          // gjson paths that must be absent
+		betas []string
+	}
+	anthropicIngress := func(t *testing.T, p *githubCopilotProvider, ctx *schemas.BifrostContext, key schemas.Key, stream bool) {
+		body := strings.Replace(copilotFeaturesAnthropicBody, `"allowed_callers":["direct"]`, `"allowed_callers":["direct"],"input_examples":[{"input":{"city":"Paris"}}]`, 1)
+		var req anthropic.AnthropicMessageRequest
+		require.NoError(t, json.Unmarshal([]byte(body), &req))
+		// The API-key flow of the /anthropic route forwards the caller's anthropic-beta here.
+		ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{"anthropic-beta": {copilotFeaturesAnthropicBeta}})
+		sendResponses(t, p, ctx, key, req.ToBifrostResponsesRequest(ctx), stream)
+	}
+	chatIngress := func(t *testing.T, p *githubCopilotProvider, ctx *schemas.BifrostContext, key schemas.Key, stream bool) {
+		var req openai.OpenAIChatRequest
+		require.NoError(t, json.Unmarshal([]byte(copilotFeaturesChatBody), &req))
+		bifrostReq := req.ToBifrostChatRequest(ctx)
+		if stream {
+			ch, bErr := p.ChatCompletionStream(ctx, passThroughPostHook, nil, key, bifrostReq)
+			require.Nil(t, bErr)
+			_, streamErr := drain(ch)
+			require.Nil(t, streamErr)
+			return
+		}
+		_, bErr := p.ChatCompletion(ctx, key, bifrostReq)
+		require.Nil(t, bErr)
+	}
+	responsesIngress := func(t *testing.T, p *githubCopilotProvider, ctx *schemas.BifrostContext, key schemas.Key, stream bool) {
+		var req openai.OpenAIResponsesRequest
+		require.NoError(t, json.Unmarshal([]byte(copilotFeaturesResponsesBody), &req))
+		sendResponses(t, p, ctx, key, req.ToBifrostResponsesRequest(ctx), stream)
+	}
+
+	routes := []route{
+		{
+			name: "/anthropic/v1/messages",
+			send: anthropicIngress,
+			body: map[string]string{
+				"tools.0.type":              "tool_search_tool_regex_20251119",
+				"tools.1.defer_loading":     "true",
+				"tools.1.allowed_callers.0": "direct",
+				"context_management":        `{"edits":[{"type":"clear_tool_uses_20250919"}]}`,
+				"thinking":                  `{"budget_tokens":2048,"type":"enabled"}`,
+			},
+			gone: []string{"tools.1.input_examples"},
+			betas: []string{
+				anthropic.AnthropicInterleavedThinkingBetaHeader,
+				anthropic.AnthropicContextManagementBetaHeader,
+				anthropic.AnthropicToolSearchBetaHeader,
+				anthropic.AnthropicAdvancedToolUseBetaHeader,
+			},
+		},
+		{
+			name: "/v1/chat/completions",
+			send: chatIngress,
+			body: map[string]string{
+				"tools.0.defer_loading":     "true",
+				"tools.0.allowed_callers.0": "direct",
+				"context_management":        `{"edits":[{"type":"clear_tool_uses_20250919"}]}`,
+				"thinking":                  `{"budget_tokens":2048,"type":"enabled"}`,
+			},
+			betas: []string{
+				anthropic.AnthropicInterleavedThinkingBetaHeader,
+				anthropic.AnthropicContextManagementBetaHeader,
+				anthropic.AnthropicToolSearchBetaHeader,
+				anthropic.AnthropicAdvancedToolUseBetaHeader,
+			},
+		},
+		{
+			name: "/v1/responses",
+			send: responsesIngress,
+			body: map[string]string{
+				"tools.0.type":              "tool_search_tool_bm25_20251119",
+				"tools.1.defer_loading":     "true",
+				"tools.1.allowed_callers.0": "direct",
+				"thinking.type":             "adaptive",
+				"output_config.effort":      "high",
+			},
+			gone: []string{"context_management"},
+			betas: []string{
+				anthropic.AnthropicToolSearchBetaHeader,
+				anthropic.AnthropicAdvancedToolUseBetaHeader,
+			},
+		},
+	}
+
+	for _, rt := range routes {
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s stream=%v", rt.name, stream), func(t *testing.T) {
+				api := newFakeCopilotAPI(t)
+				provider, ctx, key := newRoutedProvider(t, api)
+
+				rt.send(t, provider, ctx, key, stream)
+
+				req := api.only(t)
+				assert.Equal(t, "/v1/messages", req.path)
+				raw, err := json.Marshal(req.body)
+				require.NoError(t, err)
+				for path, want := range rt.body {
+					got := gjson.GetBytes(raw, path)
+					require.True(t, got.Exists(), "%s missing from the Copilot body: %s", path, raw)
+					if got.IsObject() || got.IsArray() {
+						assert.JSONEq(t, want, got.Raw, "%s", path)
+					} else {
+						assert.Equal(t, want, got.String(), "%s", path)
+					}
+				}
+				for _, path := range rt.gone {
+					assert.False(t, gjson.GetBytes(raw, path).Exists(), "%s must not reach Copilot: %s", path, raw)
+				}
+				betas := map[string]bool{}
+				for _, v := range req.headers.Values("Anthropic-Beta") {
+					for _, b := range strings.Split(v, ",") {
+						betas[strings.TrimSpace(b)] = true
+					}
+				}
+				for _, b := range rt.betas {
+					assert.True(t, betas[b], "anthropic-beta %s missing; sent %v", b, req.headers.Values("Anthropic-Beta"))
+				}
+				assert.Equal(t, stream, req.body["stream"] == true)
+			})
+		}
+	}
+
+	// Control: the same /anthropic request built for a provider whose cells are off (vLLM)
+	// loses every field above, so the Copilot cells are what keep them.
+	t.Run("a provider with the cells off strips the same fields", func(t *testing.T) {
+		var req anthropic.AnthropicMessageRequest
+		require.NoError(t, json.Unmarshal([]byte(copilotFeaturesAnthropicBody), &req))
+		for _, provider := range []schemas.ModelProvider{schemas.GithubCopilot, schemas.VLLM} {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			bifrostReq := req.ToBifrostResponsesRequest(ctx)
+			bifrostReq.Provider = provider
+			body, bErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, bifrostReq, anthropic.AnthropicRequestBuildConfig{Provider: provider, ValidateTools: true})
+			require.Nil(t, bErr)
+			kept := gjson.GetBytes(body, "context_management").Exists() &&
+				gjson.GetBytes(body, `tools.#(type=="tool_search_tool_regex_20251119")`).Exists() &&
+				gjson.GetBytes(body, `tools.#(name=="get_weather").defer_loading`).Exists() &&
+				gjson.GetBytes(body, `tools.#(name=="get_weather").allowed_callers`).Exists()
+			assert.Equal(t, provider == schemas.GithubCopilot, kept, "%s: %s", provider, body)
+		}
+	})
+}
+
+func sendResponses(t *testing.T, p *githubCopilotProvider, ctx *schemas.BifrostContext, key schemas.Key, req *schemas.BifrostResponsesRequest, stream bool) {
+	t.Helper()
+	if stream {
+		ch, bErr := p.ResponsesStream(ctx, passThroughPostHook, nil, key, req)
+		require.Nil(t, bErr)
+		_, streamErr := drain(ch)
+		require.Nil(t, streamErr)
+		return
+	}
+	_, bErr := p.Responses(ctx, key, req)
+	require.Nil(t, bErr)
 }
