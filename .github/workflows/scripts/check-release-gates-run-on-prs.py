@@ -89,6 +89,12 @@ OFFLINE_PARTS = {
         {"workflow": "go-unit-tests.yml", "job": "api-integrations", "release": "test-api-integrations.sh",
          "pr": "test-offline.sh bash .github/workflows/scripts/test-api-integrations.sh"},
     ],
+    # The gateway's startup on tests/integrations/python/config.json, which stops there with no
+    # key (TXE-8090). The SDK suites call live providers and stay in the release job.
+    "test-core-integrations": [
+        {"workflow": "go-unit-tests.yml", "job": "core-integrations", "release": "test-integrations.sh",
+         "pr": "test-offline.sh bash .github/workflows/scripts/test-integrations.sh"},
+    ],
 }
 
 # Keyless gates that do not run on pull requests, and why.

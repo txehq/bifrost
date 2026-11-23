@@ -1918,6 +1918,41 @@ func (provider *ReplicateProvider) ImageGeneration(ctx *schemas.BifrostContext, 
 	return bifrostResponse, nil
 }
 
+// streamedImageCount returns the number of images a streamed prediction made, for the final
+// frame's usage.output_images (fork, TXE-8082, contract C5). Replicate's stream does not say how a
+// prediction with several images is streamed: its output events are relayed in order under index
+// 0, and done carries no output and no count
+// (https://replicate.com/docs/topics/predictions/streaming). So once done arrives the finished
+// prediction is read once at urls.get (a GET Replicate does not bill), and its output list, which
+// is what Replicate bills, is counted. A hosted model can make several images with n unset, under
+// an input name core does not know, so 1 is never assumed. If that read fails, the count falls back
+// to the images the stream is known to have delivered: 1 when an image was relayed, else 0.
+func (provider *ReplicateProvider) streamedImageCount(ctx *schemas.BifrostContext, key schemas.Key, created *ReplicatePredictionResponse, relayed bool) int {
+	known := 0
+	if relayed {
+		known = 1
+	}
+	predictionURL, urlErr := PredictionPollURL(created)
+	if urlErr != nil {
+		provider.logger.Warn("replicate image stream (TXE-8082): usage.output_images may be under-counted: no urls.get to read the finished prediction, so it reports the %d image(s) relayed", known)
+		return known
+	}
+	finished, _, _, getErr := getPrediction(ctx, provider.client, provider.networkConfig.BaseURL, predictionURL, key, provider.logger, false)
+	if getErr != nil {
+		reason := "no error message"
+		if getErr.Error != nil && getErr.Error.Message != "" {
+			reason = getErr.Error.Message
+		}
+		provider.logger.Warn("replicate image stream (TXE-8082): usage.output_images may be under-counted: reading the finished prediction failed (%s), so it reports the %d image(s) relayed", reason, known)
+		return known
+	}
+	response, convErr := ToBifrostImageGenerationResponse(finished)
+	if convErr != nil {
+		return known
+	}
+	return max(len(response.Data), known)
+}
+
 // ImageGenerationStream performs a streaming image generation request to the replicate API.
 // It creates a prediction with streaming enabled and listens to the stream URL for progressive updates.
 func (provider *ReplicateProvider) ImageGenerationStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
@@ -2186,6 +2221,9 @@ func (provider *ReplicateProvider) ImageGenerationStream(ctx *schemas.BifrostCon
 				// re-reads the finished prediction, so factor mode has no metrics
 				// band to fall back to.
 				applyUpscaleStreamOutputResolution(resolveUpscaleOutputPixels(request, nil), finalChunk)
+
+				// usage.output_images is the number of images the finished prediction made (TXE-8082).
+				finalChunk.SetDeliveredImages(provider.streamedImageCount(ctx, key, prediction, lastB64Data != ""))
 
 				// Set raw request only on final chunk if enabled
 				if sendBackRawRequest {
@@ -2608,6 +2646,9 @@ func (provider *ReplicateProvider) ImageEditStream(ctx *schemas.BifrostContext, 
 				// re-reads the finished prediction, so factor mode has no metrics
 				// band to fall back to.
 				applyUpscaleStreamOutputResolution(resolveUpscaleEditOutputPixels(request, nil), finalChunk)
+
+				// usage.output_images is the number of images the finished prediction made (TXE-8082).
+				finalChunk.SetDeliveredImages(provider.streamedImageCount(ctx, key, prediction, lastB64Data != ""))
 
 				if sendBackRawRequest {
 					providerUtils.ParseAndSetRawRequest(&finalChunk.ExtraFields, jsonData)

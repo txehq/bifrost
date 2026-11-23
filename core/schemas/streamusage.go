@@ -25,6 +25,8 @@ func (u *BifrostLLMUsage) MergeStreamFrame(frame *BifrostLLMUsage) {
 	u.CompletionTokens = max(u.CompletionTokens, frame.CompletionTokens)
 	u.ReasoningTokens = max(u.ReasoningTokens, frame.ReasoningTokens)
 	u.CachedTokens = max(u.CachedTokens, frame.CachedTokens)
+	u.CacheReadInputTokens = max(u.CacheReadInputTokens, frame.CacheReadInputTokens)
+	u.CacheCreationInputTokens = max(u.CacheCreationInputTokens, frame.CacheCreationInputTokens)
 	u.TotalTokens = max(u.TotalTokens, frame.TotalTokens, u.PromptTokens+u.CompletionTokens)
 
 	if frame.PromptTokensDetails != nil {

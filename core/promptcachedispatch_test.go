@@ -1274,6 +1274,164 @@ func TestProviderDispatchStampsRequestedPromptCacheTTL(t *testing.T) {
 	}
 }
 
+// requestedCacheControlTTLKey is schemas.BifrostContextKeyRequestedCacheControlTTL spelled out,
+// for the same reason as requestedPromptCacheTTLKey (TestRequestedCacheControlTTLKeyIsStable).
+const requestedCacheControlTTLKey = schemas.BifrostContextKey("bifrost-requested-cache-control-ttl")
+
+// TXE-8086: on an attempt whose base provider bills a write at a block's cache_control.ttl
+// (CacheControlTTLPricedCacheWrites), every chat and Responses dispatch stamps the longest typed
+// cache_control.ttl, and a request without one clears a stale value. On any other base the
+// request is not walked and the key is left as it was: pricing reads it only for a listed
+// provider, and every attempt on one writes it.
+func TestProviderDispatchStampsRequestedCacheControlTTL(t *testing.T) {
+	hour := "1h"
+	marker := &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral, TTL: &hour}
+	for _, stream := range []bool{false, true} {
+		for _, chat := range []bool{false, true} {
+			for _, c := range []struct {
+				base       schemas.ModelProvider
+				ttl, stale string
+				want       any
+			}{
+				{schemas.OpenRouter, "1h", "", "1h"},
+				{schemas.OpenRouter, "1h", "5m", "1h"},
+				{schemas.OpenRouter, "", "1h", ""},
+				{schemas.OpenRouter, "", "", ""},
+				{schemas.Anthropic, "1h", "", nil},
+				{schemas.Anthropic, "1h", "5m", "5m"},
+			} {
+				t.Run(fmt.Sprintf("stream=%t/chat=%t/%s/ttl=%q/stale=%q", stream, chat, c.base, c.ttl, c.stale), func(t *testing.T) {
+					ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+					ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, c.base)
+					if c.stale != "" {
+						ctx.SetValue(requestedCacheControlTTLKey, c.stale)
+					}
+					var cc *schemas.CacheControl
+					if c.ttl != "" {
+						cc = marker
+					}
+					message := &ChannelMessage{Context: ctx}
+					switch {
+					case chat && stream:
+						message.RequestType = schemas.ChatCompletionStreamRequest
+					case chat:
+						message.RequestType = schemas.ChatCompletionRequest
+					case stream:
+						message.RequestType = schemas.ResponsesStreamRequest
+					default:
+						message.RequestType = schemas.ResponsesRequest
+					}
+					if chat {
+						message.ChatRequest = &schemas.BifrostChatRequest{Provider: c.base, Model: "anthropic/claude-fable-5.2", Input: []schemas.ChatMessage{{
+							Role:    schemas.ChatMessageRoleUser,
+							Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("hi"), CacheControl: cc}}},
+						}}}
+					} else {
+						message.ResponsesRequest = &schemas.BifrostResponsesRequest{Provider: c.base, Model: "anthropic/claude-fable-5.2", Input: []schemas.ResponsesMessage{{
+							Role:         schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+							CacheControl: cc,
+							Content:      &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+						}}}
+					}
+					provider := &ttlCaptureProvider{stubProvider: stubProvider{key: c.base}}
+					client := &Bifrost{}
+					if stream {
+						_, bifrostErr := client.handleProviderStreamRequest(provider, &schemas.ProviderConfig{}, message, schemas.Key{}, nil, nil)
+						require.Nil(t, bifrostErr)
+					} else {
+						_, bifrostErr := client.handleProviderRequest(provider, &schemas.ProviderConfig{}, message, schemas.Key{}, nil)
+						require.Nil(t, bifrostErr)
+					}
+					require.Equal(t, c.want, ctx.Value(requestedCacheControlTTLKey))
+				})
+			}
+		}
+	}
+}
+
+// TXE-8086 (codex-review on #436): prompt_cache injection adds markers after the dispatch stamp,
+// so a request whose only 1h markers are injected must be re-stamped from the prepared request.
+// Without it the body read is skipped and the write is priced at the base rate. Only a listed
+// base is re-stamped, and the shared request keeps no marker.
+func TestPromptCacheInjectionRestampsTheCacheControlTTL(t *testing.T) {
+	hour := "1h"
+	config := &schemas.ProviderConfig{PromptCache: &schemas.PromptCacheConfig{AutoInject: true, TTL: &hour}}
+	for _, base := range []schemas.ModelProvider{schemas.OpenRouter, schemas.Anthropic} {
+		model := "claude-sonnet-4"
+		if base == schemas.OpenRouter {
+			model = "anthropic/claude-sonnet-4"
+		}
+		var want any
+		if base == schemas.OpenRouter {
+			want = "1h"
+		}
+		t.Run(string(base)+"/chat", func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, base)
+			req := chatReqWithText("stable prefix")
+			req.Provider, req.Model = base, model
+			out := promptCacheChatRequest(ctx, config, base, req)
+			require.NotSame(t, req, out, "expected an injected marker")
+			assert.Equal(t, want, ctx.Value(requestedCacheControlTTLKey))
+			assert.Nil(t, req.Input[0].Content.ContentBlocks[0].CacheControl)
+		})
+		t.Run(string(base)+"/responses", func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, base)
+			req := &schemas.BifrostResponsesRequest{Provider: base, Model: model, Input: []schemas.ResponsesMessage{{
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+					Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("stable prefix"),
+				}}},
+			}}}
+			out := promptCacheResponsesRequest(ctx, config, base, req)
+			require.NotSame(t, req, out, "expected an injected marker")
+			assert.Equal(t, want, ctx.Value(requestedCacheControlTTLKey))
+		})
+	}
+}
+
+// The dispatch cost of the cache_control stamp (TXE-8086), on a 200-message chat request: an
+// unlisted base pays a map lookup and a context read; a listed one walks the typed request.
+func BenchmarkStampRequestedCacheControlTTL(b *testing.B) {
+	hour := "1h"
+	messages := func(marked bool) []schemas.ChatMessage {
+		out := make([]schemas.ChatMessage, 200)
+		for i := range out {
+			out[i] = schemas.ChatMessage{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("hi")}}}}
+		}
+		if marked {
+			out[len(out)-1].Content.ContentBlocks[0].CacheControl = &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral, TTL: &hour}
+		}
+		return out
+	}
+	for _, tc := range []struct {
+		name   string
+		base   schemas.ModelProvider
+		marked bool
+	}{
+		{"unlisted", schemas.Anthropic, true},
+		{"openrouter/no-marker", schemas.OpenRouter, false},
+		{"openrouter/1h-marker", schemas.OpenRouter, true},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, tc.base)
+			message := &ChannelMessage{
+				Context: ctx,
+				BifrostRequest: schemas.BifrostRequest{
+					RequestType: schemas.ChatCompletionRequest,
+					ChatRequest: &schemas.BifrostChatRequest{Provider: tc.base, Model: "anthropic/claude-fable-5.2", Input: messages(tc.marked)},
+				},
+			}
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				stampRequestedPromptCacheTTL(message, tc.base)
+			}
+		})
+	}
+}
+
 // The request path's added dispatch cost (TXE-7069): one context write per provider attempt.
 func BenchmarkStampRequestedPromptCacheTTL(b *testing.B) {
 	ttl := "1h"
@@ -1291,7 +1449,7 @@ func BenchmarkStampRequestedPromptCacheTTL(b *testing.B) {
 			}
 			b.ReportAllocs()
 			for i := 0; i < b.N; i++ {
-				stampRequestedPromptCacheTTL(message)
+				stampRequestedPromptCacheTTL(message, schemas.Moonshot)
 			}
 		})
 	}

@@ -534,6 +534,23 @@ const nativeDecisionAnswer = (body) => {
 	}
 	return undefined;
 };
+// Folder 662 (TXE-8087): a Databricks-hosted Claude answer with prompt caching active. Databricks returns the cache counts as
+// top-level usage.cache_read_input_tokens and cache_creation_input_tokens next to the OpenAI-shaped counts (its API
+// reference, Usage table). Written from the docs, in Anthropic's convention: prompt_tokens is the uncached input and
+// total_tokens counts everything. No recorded response exists yet.
+const DATABRICKS_CLAUDE_CACHE_MODEL = "databricks-claude-cache-fixture";
+const DATABRICKS_GEMINI_FIXTURE_MODEL = "databricks-gemini-cache-fixture";
+const databricksClaudeCacheUsage = { prompt_tokens: 12, completion_tokens: 20, total_tokens: 4832, cache_read_input_tokens: 4736, cache_creation_input_tokens: 64 };
+const databricksClaudeCacheAnswer = (stream) => {
+	const base = { id: "chatcmpl-databricks-claude-cache", created: 1, model: DATABRICKS_CLAUDE_CACHE_MODEL };
+	if (!stream) {
+		return JSON.stringify({ ...base, object: "chat.completion", choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }], usage: databricksClaudeCacheUsage });
+	}
+	return [
+		{ ...base, object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", content: "ok" } }] },
+		{ ...base, object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: databricksClaudeCacheUsage },
+	].map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("") + "data: [DONE]\n\n";
+};
 const openRouterDecisionAnswer = () => ({ model: "typesafe/jev-1.13.0", answers: {}, usage: { input_tokens: 1000, output_tokens: 10, cost: 0.25 } });
 
 // The rows the per-call pricing folder is judged against. Every other fixture model stays unpriced.
@@ -574,6 +591,30 @@ const fixturePricing = {
 		provider: "moonshot", mode: "chat",
 		input_cost_per_token: 0.000001, output_cost_per_token: 0.000002,
 		cache_creation_input_token_cost: 0.000003, cache_creation_input_token_cost_above_1hr: 0.000006,
+	},
+	// Folder 660 (TXE-7946): GPT rows on azure and openrouter with OpenAI's two write rates, $3/M at 30 minutes and
+	// $7.50/M at 12 hours, and a Claude row on openrouter with its 1-hour rate. 1,000 input, 2,000 written and 200 output
+	// tokens cost $0.0074 at the base write rate and $0.0164 at the 12-hour rate.
+	"azure/gpt-fixture-cache-ttl": {
+		provider: "azure", mode: "chat",
+		input_cost_per_token: 0.000001, output_cost_per_token: 0.000002,
+		cache_creation_input_token_cost: 0.000003, cache_creation_input_token_cost_above_12hr: 0.0000075,
+	},
+	"openrouter/openai/gpt-fixture-cache-ttl": {
+		provider: "openrouter", mode: "chat",
+		input_cost_per_token: 0.000001, output_cost_per_token: 0.000002,
+		cache_creation_input_token_cost: 0.000003, cache_creation_input_token_cost_above_12hr: 0.0000075,
+	},
+	"openrouter/anthropic/claude-fixture-cache-ttl": {
+		provider: "openrouter", mode: "chat",
+		input_cost_per_token: 0.000001, output_cost_per_token: 0.000002,
+		cache_creation_input_token_cost: 0.000003, cache_creation_input_token_cost_above_1hr: 0.000006,
+	},
+	// Folder 662 (TXE-8087): Claude Sonnet's list rates on Databricks, so the 4,736-token read and 64-token write the fixture
+	// reports price at $0.0019968 in all, against $0.000336 with the cache counts dropped.
+	"databricks/databricks-claude-cache-fixture": {
+		provider: "databricks", mode: "chat",
+		input_cost_per_token: 3e-06, output_cost_per_token: 1.5e-05, cache_read_input_token_cost: 3e-07, cache_creation_input_token_cost: 3.75e-06,
 	},
 	"databricks/databricks-gemini-4-argon": {
 		provider: "databricks", mode: "chat",
@@ -1750,6 +1791,17 @@ const wireAnswer = (path, body, bytes) => {
 	if (path.startsWith("/pp/ownkey/") && path.endsWith("/responses") && body.model === "fixture-kimi-ttl-priced") {
 		return { status: 200, body: JSON.stringify({ id: "resp_ownkey_ttl", object: "response", created_at: 1, status: "completed", model: body.model, output: [{ type: "message", id: "msg_ownkey_ttl", role: "assistant", status: "completed", content: [{ type: "output_text", text: "hello", annotations: [] }] }], usage: { input_tokens: 3000, input_tokens_details: { cached_tokens: 0, cache_write_tokens: 2000 }, output_tokens: 200, total_tokens: 3200 } }) };
 	}
+	// Folder 660 (TXE-7946): Azure's and OpenRouter's Responses API report a cache write as one cache_write_tokens figure,
+	// with no TTL tier and no usage.cost, so the gateway prices the write from the sheet at the tier the request asked for.
+	// azure posts to <endpoint>/openai/v1/responses, openrouter to <base_url>/v1/responses.
+	// Folder 660 (TXE-8086): OpenRouter's Chat Completions API reports a Claude cache write the same way, one
+	// cache_write_tokens figure whatever cache_control.ttl the blocks asked for. openrouter posts to <base_url>/v1/chat/completions.
+	if (path === "/pp/cachettl/v1/chat/completions" && String(body.model || "").includes("fixture-cache-ttl")) {
+		return { status: 200, body: JSON.stringify({ id: "chatcmpl_cachettl", object: "chat.completion", created: 1, model: body.model, choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "hello" } }], usage: { prompt_tokens: 3000, prompt_tokens_details: { cached_tokens: 0, cache_write_tokens: 2000 }, completion_tokens: 200, total_tokens: 3200 } }) };
+	}
+	if ((path === "/pp/cachettl/openai/v1/responses" || path === "/pp/cachettl/v1/responses") && String(body.model || "").includes("fixture-cache-ttl")) {
+		return { status: 200, body: JSON.stringify({ id: "resp_cachettl", object: "response", created_at: 1, status: "completed", model: body.model, output: [{ type: "message", id: "msg_cachettl", role: "assistant", status: "completed", content: [{ type: "output_text", text: "hello", annotations: [] }] }], usage: { input_tokens: 3000, input_tokens_details: { cached_tokens: 0, cache_write_tokens: 2000 }, output_tokens: 200, total_tokens: 3200 } }) };
+	}
 	if (path.startsWith("/pp/ownkey/") && path.endsWith("/chat/completions")) {
 		// Folder 654 (TXE-7996): Kimi reports a cache write as one figure, with no TTL tier.
 		if (body.model === "fixture-kimi-ttl-priced") {
@@ -1841,6 +1893,17 @@ const wireAnswer = (path, body, bytes) => {
 		const urls = { get: `${what === "poll" ? named : own}/predictions/${id}` };
 		if (what === "stream") urls.stream = `${named}/streams/${id}`;
 		return { status: 201, body: JSON.stringify({ id, status: "starting", urls }) };
+	}
+	// Folder 663 (TXE-8082): image streams whose vendor makes three images with n unset, as a hosted model's
+	// default can. Replicate's prediction streams one image and its finished prediction lists three; fal
+	// streams a progress update and ends on the final result with three images.
+	if (path === "/pp/replicate/v1/models/fixture/image-stream-three/predictions") {
+		const own = `http://127.0.0.1:${port}/pp/replicate/v1`;
+		return { status: 201, body: JSON.stringify({ id: "imgstream_three", status: "starting", urls: { get: `${own}/predictions/imgstream_three`, stream: `${own}/streams/imgstream_three` } }) };
+	}
+	if (path === "/pp/hf/fal-ai/fixture/image-stream-three/stream") {
+		const image = (name) => ({ url: `https://v3.fal.media/files/fixture/${name}.jpeg` });
+		return { status: 200, stream: `data: ${JSON.stringify({ progress: 0.5, message: "Generating..." })}\n\ndata: ${JSON.stringify({ images: [image("a"), image("b"), image("c")], seed: 42 })}\n\n` };
 	}
 	// HuggingFace speech through fal-ai (TXE-7117): the answer names the audio file by URL. The model's last
 	// path segment picks where: speech-origin on the provider's own origin, speech-loopback on another
@@ -2948,6 +3011,18 @@ const handleRequest = (req, res) => {
 		res.writeHead(200, { "Content-Type": "video/mp4", "Content-Length": video.length });
 		return res.end(video);
 	}
+	// Folder 663 (TXE-8082): the replicate image stream that relays one image, and its finished prediction,
+	// which made three. Each read is counted.
+	if (req.method === "GET" && path === "/pp/replicate/v1/streams/imgstream_three") {
+		countHit("replicate.imgstream_three.stream");
+		res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+		return res.end("event: output\nid: 1\ndata: data:image/webp;base64,UklGRg==\n\nevent: done\nid: 2\ndata: {}\n\n");
+	}
+	if (req.method === "GET" && path === "/pp/replicate/v1/predictions/imgstream_three") {
+		countHit("replicate.imgstream_three.poll");
+		const delivery = (name) => `https://replicate.delivery/fixture/${name}.webp`;
+		return send(200, {}, JSON.stringify({ id: "imgstream_three", status: "succeeded", output: [delivery("a"), delivery("b"), delivery("c")] }));
+	}
 	// The poll of a folder 490 prediction, counted under the Host it was asked at. A picture prediction's
 	// output is at the address its name says; any other prediction's is a delivery URL nobody fetches.
 	if (req.method === "GET" && path.startsWith("/pp/replicate/v1/predictions/pred_")) {
@@ -3482,6 +3557,37 @@ const handleRequest = (req, res) => {
 	if (req.method === "GET" && /^\/v1\/batches\/[^/]+$/.test(path)) {
 		countHit("batch.retrieve");
 		return send(200, {}, JSON.stringify(fixtureBatch("in_progress")));
+	}
+	// Folder 662 (TXE-8087): a pay-per-token Claude endpoint declines native Responses with this 400, so the gateway
+	// emulates /v1/responses through the chat route below.
+	if (req.method === "POST" && path === "/serving-endpoints/responses") {
+		return drain(req, () => {
+			countHit("databricks.responses");
+			send(400, {}, JSON.stringify({ error: { message: "Responses API passthrough is not supported for model databricks-claude-cache-fixture.", type: "invalid_request_error" } }));
+		});
+	}
+	// Folder 662 (TXE-8087): Databricks Model Serving's chat route, reached on the TLS listener (Databricks is https only).
+	if (req.method === "POST" && path === "/serving-endpoints/chat/completions") {
+		const body = [];
+		req.on("data", (c) => body.push(c));
+		return req.on("end", () => {
+			let parsed = {};
+			try { parsed = JSON.parse(Buffer.concat(body).toString("utf8")) || {}; } catch {}
+			countHit("databricks.chat");
+			// Folder 664 (TXE-8179) reads the body that arrived from /__wire, to see which cache_control markers reached Databricks.
+			wireCalls.push({ path, query: "", body: Buffer.concat(body).toString("utf8") });
+			if (req.headers.authorization !== "Bearer test-key") return send(401, {}, errorBody("Invalid access token", "invalid_request_error", "unauthenticated"));
+			// Folder 664's control: a non-Claude endpoint, which Databricks documents as taking no cache_control.
+			if (parsed.model === DATABRICKS_GEMINI_FIXTURE_MODEL) {
+				return send(200, {}, JSON.stringify({ id: "chatcmpl-databricks-gemini", object: "chat.completion", created: 1, model: parsed.model, choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }], usage: { prompt_tokens: 12, completion_tokens: 2, total_tokens: 14 } }));
+			}
+			if (parsed.model !== DATABRICKS_CLAUDE_CACHE_MODEL) return send(404, {}, errorBody(`unknown fixture endpoint ${parsed.model}`, "invalid_request_error", "RESOURCE_DOES_NOT_EXIST"));
+			if (parsed.stream === true) {
+				res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+				return res.end(databricksClaudeCacheAnswer(true));
+			}
+			return send(200, {}, databricksClaudeCacheAnswer(false));
+		});
 	}
 	if (req.method !== "POST" || (path !== "/v1/chat/completions" && path !== "/openai/v1/chat/completions" && path !== "/v1/responses" && path !== "/v1/live/sessions" && path !== "/mcp" && path !== "/v1/decisions" && path !== "/alpha/decisions" && path !== "/v1/audio/speech" && path !== "/v1/completions" && path !== "/chat/completions")) {
 		return send(404, {}, errorBody("not found", "invalid_request_error", "not_found"));

@@ -1,4 +1,6 @@
-# The finding's job, gated: a reviewer approves the run before the job gets the keys.
+# expect: job run-core-tests: names `environment: live-providers` but sets AWS_SECRET_ACCESS_KEY, OPENAI_API_KEY in its job-level env
+# TXE-8192: gated, but the keys sit in the job-level env, so every step, the third-party
+# checkout among them, can read them. Keys belong in the env of the step that runs the suites.
 on:
   workflow_dispatch:
     inputs:
@@ -22,4 +24,6 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.branch }}
-      - run: ./.github/workflows/scripts/test-core.sh
+      - run: |
+          python3 "$GITHUB_WORKSPACE/.github/workflows/scripts/count-provider-keys.py"
+          ./.github/workflows/scripts/test-core.sh

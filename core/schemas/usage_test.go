@@ -929,17 +929,131 @@ func TestMergeStreamFrameCarriesNormalizedCachedTokens(t *testing.T) {
 	}
 }
 
+// Anthropic's top-level cache spellings (Databricks-hosted Claude, TXE-8087) are counted apart
+// from the base input by default: they land under prompt_tokens_details and are added to
+// prompt_tokens once, and total_tokens never ends below prompt+completion. A total equal to
+// prompt+completion proves the base already includes them, so prompt_tokens is left alone. A
+// canonical cached count already set wins, and a zero, negative or absent count changes nothing.
+func TestBifrostLLMUsageNormalizeAnthropicCacheTokens(t *testing.T) {
+	cases := []struct {
+		name                  string
+		body                  string
+		want                  AnthropicCacheFold
+		wantDetails           bool
+		wantPrompt, wantTotal int
+		wantRead, wantWrite   int
+	}{
+		{"total counts the cache: exclusive", `{"prompt_tokens":12,"completion_tokens":20,"total_tokens":4832,"cache_read_input_tokens":4736,"cache_creation_input_tokens":64}`, AnthropicCacheFoldAdded, true, 4812, 4832, 4736, 64},
+		{"no total: exclusive", `{"prompt_tokens":12,"completion_tokens":20,"cache_read_input_tokens":4736,"cache_creation_input_tokens":64}`, AnthropicCacheFoldAdded, true, 4812, 4832, 4736, 64},
+		{"write only, no total", `{"prompt_tokens":12,"completion_tokens":20,"cache_creation_input_tokens":3000}`, AnthropicCacheFoldAdded, true, 3012, 3032, 0, 3000},
+		{"total that matches neither is raised", `{"prompt_tokens":12,"completion_tokens":20,"total_tokens":40,"cache_read_input_tokens":900}`, AnthropicCacheFoldAdded, true, 912, 932, 900, 0},
+		{"total equal to prompt+completion: inclusive", `{"prompt_tokens":5000,"completion_tokens":20,"total_tokens":5020,"cache_read_input_tokens":4736,"cache_creation_input_tokens":64}`, AnthropicCacheFoldInclusive, true, 5000, 5020, 4736, 64},
+		{"canonical read already set wins", `{"prompt_tokens":100,"completion_tokens":1,"total_tokens":101,"prompt_tokens_details":{"cached_tokens":40},"cache_read_input_tokens":10}`, AnthropicCacheFoldSkipped, true, 100, 101, 40, 0},
+		{"canonical write already set wins", `{"prompt_tokens":100,"completion_tokens":1,"total_tokens":101,"prompt_tokens_details":{"cached_write_tokens":30},"cache_creation_input_tokens":10}`, AnthropicCacheFoldSkipped, true, 100, 101, 0, 30},
+		{"zeros create nothing", `{"prompt_tokens":12,"completion_tokens":20,"total_tokens":32,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}`, AnthropicCacheFoldNone, false, 12, 32, 0, 0},
+		{"negatives create nothing", `{"prompt_tokens":12,"completion_tokens":20,"total_tokens":32,"cache_read_input_tokens":-5}`, AnthropicCacheFoldNone, false, 12, 32, 0, 0},
+		{"absent creates nothing", `{"prompt_tokens":12,"completion_tokens":20,"total_tokens":32}`, AnthropicCacheFoldNone, false, 12, 32, 0, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var u BifrostLLMUsage
+			if err := Unmarshal([]byte(tc.body), &u); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			before := InclusiveAnthropicCacheFolds()
+			if got := u.NormalizeVendorSpellings(); got != tc.want {
+				t.Errorf("fold = %d, want %d", got, tc.want)
+			}
+			if tc.want == AnthropicCacheFoldInclusive && InclusiveAnthropicCacheFolds() == before {
+				t.Error("an inclusive fold did not increment InclusiveAnthropicCacheFolds")
+			}
+			// Normalizing twice must not add the cache counts twice.
+			if got := u.NormalizeVendorSpellings(); got != AnthropicCacheFoldNone {
+				t.Errorf("second normalize = %d, want none", got)
+			}
+			if u.CacheReadInputTokens != 0 || u.CacheCreationInputTokens != 0 {
+				t.Errorf("top-level cache spellings = %d/%d after normalizing, want cleared", u.CacheReadInputTokens, u.CacheCreationInputTokens)
+			}
+			if u.PromptTokens != tc.wantPrompt || u.TotalTokens != tc.wantTotal {
+				t.Errorf("prompt/total = %d/%d, want %d/%d", u.PromptTokens, u.TotalTokens, tc.wantPrompt, tc.wantTotal)
+			}
+			if !tc.wantDetails {
+				if u.PromptTokensDetails != nil {
+					t.Fatalf("prompt_tokens_details = %+v, want nil", u.PromptTokensDetails)
+				}
+				return
+			}
+			if u.PromptTokensDetails == nil {
+				t.Fatal("prompt_tokens_details = nil")
+			}
+			if d := u.PromptTokensDetails; d.CachedReadTokens != tc.wantRead || d.CachedWriteTokens != tc.wantWrite {
+				t.Errorf("cached read/write = %d/%d, want %d/%d", d.CachedReadTokens, d.CachedWriteTokens, tc.wantRead, tc.wantWrite)
+			}
+		})
+	}
+	var nilUsage *BifrostLLMUsage
+	if got := nilUsage.NormalizeAnthropicCacheTokens(); got != AnthropicCacheFoldNone {
+		t.Errorf("nil usage fold = %d, want none", got)
+	}
+	if got := nilUsage.FoldAnthropicCacheTokens(5, 5, true); got != AnthropicCacheFoldNone {
+		t.Errorf("nil usage FoldAnthropicCacheTokens = %d, want none", got)
+	}
+}
+
+// Anthropic's input_tokens and Bedrock's inputTokens are documented exclusive: with openAIBase
+// false a total equal to base+completion does not flip the convention (the batch settlement's
+// Bedrock lines report totalTokens that way).
+func TestFoldAnthropicCacheTokensDocumentedExclusiveBase(t *testing.T) {
+	u := &BifrostLLMUsage{PromptTokens: 12, CompletionTokens: 6, TotalTokens: 18}
+	if got := u.FoldAnthropicCacheTokens(0, 7, false); got != AnthropicCacheFoldAdded {
+		t.Fatalf("fold = %d, want added", got)
+	}
+	if u.PromptTokens != 19 || u.TotalTokens != 25 || u.PromptTokensDetails.CachedWriteTokens != 7 {
+		t.Errorf("usage = %d/%d write %d, want 19/25 write 7", u.PromptTokens, u.TotalTokens, u.PromptTokensDetails.CachedWriteTokens)
+	}
+}
+
+// Every streamed frame is normalized as it is decoded. A Claude stream that reports the cache
+// counts on one frame and only the base counts on the next must keep them in the accumulated
+// usage, counted once.
+func TestMergeStreamFrameCarriesNormalizedAnthropicCacheTokens(t *testing.T) {
+	acc := &BifrostLLMUsage{}
+	for _, body := range []string{
+		`{"prompt_tokens":12,"completion_tokens":1,"total_tokens":4813,"cache_read_input_tokens":4736,"cache_creation_input_tokens":64}`,
+		`{"prompt_tokens":12,"completion_tokens":20,"total_tokens":4832}`,
+	} {
+		var frame BifrostLLMUsage
+		if err := Unmarshal([]byte(body), &frame); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		frame.NormalizeVendorSpellings()
+		acc.MergeStreamFrame(&frame)
+	}
+	if d := acc.PromptTokensDetails; d == nil || d.CachedReadTokens != 4736 || d.CachedWriteTokens != 64 {
+		t.Fatalf("accumulated details = %+v, want cached read 4736 and write 64", acc.PromptTokensDetails)
+	}
+	if acc.PromptTokens != 4812 || acc.CompletionTokens != 20 || acc.TotalTokens != 4832 {
+		t.Errorf("accumulated prompt/completion/total = %d/%d/%d, want 4812/20/4832", acc.PromptTokens, acc.CompletionTokens, acc.TotalTokens)
+	}
+}
+
 // BenchmarkBifrostLLMUsageNormalizeVendorSpellings measures the response-path cost of decoding a
 // usage object and normalizing it (TXE-6439). A usage with no top-level vendor spelling, which
-// is every vendor but SGLang and StepFun, must pay nothing beyond the decode: the normalizer is
-// two integer comparisons there. Only the StepFun row allocates, for the details object it fills.
+// is every vendor but SGLang, StepFun and an Anthropic-spelled cache count, must pay nothing
+// beyond the decode: the normalizer is four integer comparisons there. Only the StepFun and the
+// Anthropic-cache rows allocate, for the details object they fill (TXE-8087 added the two
+// anthropic-cache rows; the PR records before/after numbers).
 func BenchmarkBifrostLLMUsageNormalizeVendorSpellings(b *testing.B) {
 	bodies := map[string][]byte{
 		"tokens-only":      []byte(`{"prompt_tokens":591,"completion_tokens":120,"total_tokens":711}`),
 		"nested-details":   []byte(`{"prompt_tokens":591,"completion_tokens":120,"total_tokens":711,"prompt_tokens_details":{"cached_tokens":512,"audio_tokens":0},"completion_tokens_details":{"reasoning_tokens":4,"audio_tokens":0,"accepted_prediction_tokens":0,"rejected_prediction_tokens":0}}`),
 		"top-level-cached": []byte(`{"cached_tokens":512,"prompt_tokens":591,"completion_tokens":120,"total_tokens":711}`),
+		// Databricks-hosted Claude (TXE-8087): folded and added to prompt_tokens, and the same
+		// counts with a total that marks them inclusive.
+		"anthropic-cache":           []byte(`{"prompt_tokens":12,"completion_tokens":20,"total_tokens":4832,"cache_read_input_tokens":4736,"cache_creation_input_tokens":64}`),
+		"anthropic-cache-inclusive": []byte(`{"prompt_tokens":5000,"completion_tokens":20,"total_tokens":5020,"cache_read_input_tokens":4736,"cache_creation_input_tokens":64}`),
 	}
-	for _, name := range []string{"tokens-only", "nested-details", "top-level-cached"} {
+	for _, name := range []string{"tokens-only", "nested-details", "top-level-cached", "anthropic-cache", "anthropic-cache-inclusive"} {
 		body := bodies[name]
 		b.Run("decode/"+name, func(b *testing.B) {
 			b.ReportAllocs()
@@ -1843,4 +1957,120 @@ func promptDetailsJSONKey(e ast.Expr) (string, bool) {
 
 func promptDetailsTypeName(e ast.Expr) string {
 	return types.ExprString(unparenStar(e))
+}
+
+// openAIShapeUsageFixtures returns every JSON usage object with a prompt_tokens field found in a
+// string literal of the provider tests under core/providers, keyed by file and position. Each is
+// a usage some provider's test already decodes, so the corpus grows with the tests.
+func openAIShapeUsageFixtures(t *testing.T) map[string]string {
+	t.Helper()
+	fixtures := map[string]string{}
+	fset := token.NewFileSet()
+	err := filepath.WalkDir(filepath.Join("..", "providers"), func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, "_test.go") {
+			return err
+		}
+		file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+		if err != nil {
+			return err
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			lit, ok := n.(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				return true
+			}
+			text, err := strconv.Unquote(lit.Value)
+			if err != nil || !strings.Contains(text, `"prompt_tokens"`) {
+				return true
+			}
+			for i, obj := range usageObjects(text) {
+				fixtures[fmt.Sprintf("%s#%d", fset.Position(lit.Pos()), i)] = obj
+			}
+			return true
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk provider tests: %v", err)
+	}
+	return fixtures
+}
+
+// usageObjects returns each balanced JSON object that follows a "usage": key in text and parses
+// as JSON with a prompt_tokens field.
+func usageObjects(text string) []string {
+	var out []string
+	for rest := text; ; {
+		i := strings.Index(rest, `"usage"`)
+		if i < 0 {
+			return out
+		}
+		rest = rest[i+len(`"usage"`):]
+		j := strings.IndexByte(rest, '{')
+		if j < 0 || strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(rest[:j]), ":")) != "" {
+			continue
+		}
+		depth, inString, escaped := 0, false, false
+		for k := j; k < len(rest); k++ {
+			c := rest[k]
+			switch {
+			case escaped:
+				escaped = false
+			case c == '\\' && inString:
+				escaped = true
+			case c == '"':
+				inString = !inString
+			case inString:
+			case c == '{':
+				depth++
+			case c == '}':
+				depth--
+			}
+			if depth == 0 && !inString {
+				obj := rest[j : k+1]
+				var probe map[string]json.RawMessage
+				if json.Unmarshal([]byte(obj), &probe) == nil && probe["prompt_tokens"] != nil {
+					out = append(out, obj)
+				}
+				break
+			}
+		}
+	}
+}
+
+// Every OpenAI-shaped usage a provider test already decodes must come out of
+// NormalizeVendorSpellings exactly as it did before the Anthropic cache fold (TXE-8087) unless it
+// carries a top-level Anthropic cache spelling and no canonical cached count: a provider that
+// reports cache_read/cached_tokens in the OpenAI convention is never counted twice.
+func TestAnthropicCacheFoldLeavesOpenAIShapeProviderFixturesAlone(t *testing.T) {
+	fixtures := openAIShapeUsageFixtures(t)
+	if len(fixtures) < 20 {
+		t.Fatalf("found %d OpenAI-shape usage fixtures under core/providers, want at least 20: the scan is broken", len(fixtures))
+	}
+	folded := 0
+	for name, body := range fixtures {
+		var before, after BifrostLLMUsage
+		if Unmarshal([]byte(body), &before) != nil || Unmarshal([]byte(body), &after) != nil {
+			continue
+		}
+		hasAnthropic := before.CacheReadInputTokens > 0 || before.CacheCreationInputTokens > 0
+		before.NormalizeReasoningTokens()
+		before.NormalizeCachedTokens()
+		hasCanonical := before.PromptTokensDetails != nil &&
+			(before.PromptTokensDetails.CachedReadTokens > 0 || before.PromptTokensDetails.CachedWriteTokens > 0)
+		before.CacheReadInputTokens, before.CacheCreationInputTokens = 0, 0
+
+		fold := after.NormalizeVendorSpellings()
+		if hasAnthropic && !hasCanonical {
+			folded++
+			continue
+		}
+		if fold == AnthropicCacheFoldAdded || fold == AnthropicCacheFoldInclusive {
+			t.Errorf("%s: fold = %d on %s, want none or skipped", name, fold, body)
+		}
+		if !reflect.DeepEqual(before, after) {
+			t.Errorf("%s: the Anthropic cache fold changed %s:\nbefore %+v\nafter  %+v", name, body, before, after)
+		}
+	}
+	t.Logf("%d OpenAI-shape usage fixtures checked, %d carry only Anthropic spellings and fold", len(fixtures), folded)
 }

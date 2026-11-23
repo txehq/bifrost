@@ -2,6 +2,7 @@ package replicate_test
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -2129,4 +2130,122 @@ func BenchmarkToReplicateVideoGenerationInput(b *testing.B) {
 			_, _ = replicate.ToReplicateVideoGenerationInput(withVideo)
 		}
 	})
+}
+
+// warnRecorder is a testLogger that keeps every Warn message.
+type warnRecorder struct {
+	testLogger
+	mu    sync.Mutex
+	warns []string
+}
+
+func (l *warnRecorder) Warn(format string, args ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.warns = append(l.warns, fmt.Sprintf(format, args...))
+}
+
+// TXE-8082: the final frame of a replicate image stream reports usage.output_images, and the
+// NImages count the stream is priced by, as the number of images the finished prediction made,
+// read once at urls.get after done. Replicate's stream carries no count, and a hosted model can
+// make several images with n unset, so 1 is never assumed. When the read fails, the count is the
+// images the stream is known to have delivered.
+func TestReplicateImageStreamReportsDeliveredImages(t *testing.T) {
+	cases := []struct {
+		name       string
+		finished   string // urls.get answer; "" answers 500
+		wantImages int
+	}{
+		{"one image", `{"id":"p1","status":"succeeded","output":"https://replicate.delivery/a.webp"}`, 1},
+		{"a model default of three images", `{"id":"p1","status":"succeeded","output":["https://replicate.delivery/a.webp","https://replicate.delivery/b.webp","https://replicate.delivery/c.webp"]}`, 3},
+		{"the finished prediction cannot be read", "", 1},
+	}
+	for _, tc := range cases {
+		for _, edit := range []bool{false, true} {
+			name := tc.name + "/generation"
+			if edit {
+				name = tc.name + "/edit"
+			}
+			t.Run(name, func(t *testing.T) {
+				var getCalls int
+				var mu sync.Mutex
+				var srv *httptest.Server
+				srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					switch {
+					case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/predictions"):
+						w.Header().Set("Content-Type", "application/json")
+						w.WriteHeader(http.StatusCreated)
+						_, _ = w.Write([]byte(`{"id":"p1","status":"starting","urls":{"get":"` + srv.URL + `/v1/predictions/p1","cancel":"` + srv.URL + `/v1/predictions/p1/cancel","stream":"` + srv.URL + `/v1/streams/p1"}}`))
+					case r.URL.Path == "/v1/streams/p1":
+						w.Header().Set("Content-Type", "text/event-stream")
+						_, _ = w.Write([]byte("event: output\ndata: data:image/webp;base64,QUFB\n\nevent: output\ndata: data:image/webp;base64,QkJC\n\nevent: done\ndata: {}\n\n"))
+					case r.URL.Path == "/v1/predictions/p1":
+						mu.Lock()
+						getCalls++
+						mu.Unlock()
+						if tc.finished == "" {
+							w.WriteHeader(http.StatusInternalServerError)
+							_, _ = w.Write([]byte(`{"detail":"boom"}`))
+							return
+						}
+						w.Header().Set("Content-Type", "application/json")
+						_, _ = w.Write([]byte(tc.finished))
+					default:
+						http.NotFound(w, r)
+					}
+				}))
+				defer srv.Close()
+				logger := &warnRecorder{}
+				provider, err := replicate.NewReplicateProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: srv.URL, DefaultRequestTimeoutInSeconds: 10}}, logger)
+				require.NoError(t, err)
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				defer ctx.Cancel()
+				ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+				postHook := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+					return result, err
+				}
+				key := schemas.Key{Value: *schemas.NewSecretVar("r8_test_key")}
+				var stream chan *schemas.BifrostStreamChunk
+				var bifrostErr *schemas.BifrostError
+				if edit {
+					stream, bifrostErr = provider.ImageEditStream(ctx, postHook, nil, key, &schemas.BifrostImageEditRequest{Provider: schemas.Replicate, Model: "owner/model",
+						Input: &schemas.ImageEditInput{Prompt: "make it blue", Images: []schemas.ImageInput{{URL: "https://example.com/a.png"}}}})
+				} else {
+					stream, bifrostErr = provider.ImageGenerationStream(ctx, postHook, nil, key, &schemas.BifrostImageGenerationRequest{Provider: schemas.Replicate, Model: "owner/model",
+						Input: &schemas.ImageGenerationInput{Prompt: "a lighthouse"}})
+				}
+				require.Nil(t, bifrostErr)
+				var final *schemas.BifrostImageGenerationStreamResponse
+				for chunk := range stream {
+					require.Nil(t, chunk.BifrostError)
+					if r := chunk.BifrostImageGenerationStreamResponse; r != nil && (r.Type == schemas.ImageGenerationEventTypeCompleted || r.Type == schemas.ImageEditEventTypeCompleted) {
+						final = r
+					}
+				}
+				require.NotNil(t, final, "no completed frame")
+				require.NotNil(t, final.Usage, "the completed frame carries no usage")
+				require.NotNil(t, final.Usage.OutputImages, "the completed frame carries no usage.output_images")
+				assert.Equal(t, tc.wantImages, *final.Usage.OutputImages)
+				require.NotNil(t, final.Usage.OutputTokensDetails)
+				assert.Equal(t, tc.wantImages, final.Usage.OutputTokensDetails.NImages, "the stream must be priced at the images made")
+				mu.Lock()
+				defer mu.Unlock()
+				assert.Equal(t, 1, getCalls, "the finished prediction is read once")
+				// The fallback can under-count, so it must say so when it fires, and only then.
+				logger.mu.Lock()
+				defer logger.mu.Unlock()
+				var underCount []string
+				for _, w := range logger.warns {
+					if strings.Contains(w, "TXE-8082") && strings.Contains(w, "under-counted") && strings.Contains(w, "replicate") {
+						underCount = append(underCount, w)
+					}
+				}
+				if tc.finished == "" {
+					assert.Len(t, underCount, 1, "the fallback must warn once, naming replicate and TXE-8082: %v", logger.warns)
+				} else {
+					assert.Empty(t, underCount, "no under-count warning when the finished prediction was read")
+				}
+			})
+		}
+	}
 }

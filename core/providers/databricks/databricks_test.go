@@ -18,7 +18,9 @@ import (
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/internal/llmtests"
 	"github.com/capsohq/bifrost/core/livetest"
+	"github.com/capsohq/bifrost/core/providers/anthropic"
 	"github.com/capsohq/bifrost/core/providers/databricks"
+	"github.com/capsohq/bifrost/core/providers/openai"
 	"github.com/capsohq/bifrost/core/schemas"
 )
 
@@ -1653,5 +1655,376 @@ func TestDatabricksDecisionWithoutAnswersFails(t *testing.T) {
 	resp, bErr := databricks.ToBifrostDecisionResponse(&databricks.DatabricksDecisionResponse{}, newDatabricksDecisionRequest(schemas.DecisionInput{Text: schemas.Ptr("hi")}))
 	if bErr == nil || bErr.Error == nil || bErr.Error.Message != "databricks returned no answers" {
 		t.Errorf("got %+v, %+v; want the no-answers error", resp, bErr)
+	}
+}
+
+// databricksClaudeCacheUsage is a Databricks-hosted Claude usage with prompt caching active.
+// Databricks documents cache_read_input_tokens and cache_creation_input_tokens as "a top-level
+// usage field for Databricks-hosted Claude endpoints when caching is active"
+// (docs.databricks.com/aws/en/machine-learning/foundation-model-apis/api-reference, Usage table,
+// read 2026-11-22). The docs do not say whether prompt_tokens includes them and no recorded
+// response exists, so this is written from the docs in Anthropic's convention, where the cache
+// counts sit apart from the base input and total_tokens counts everything (the convention the
+// batch settlement already applies to these spellings, framework/jobaccounting usageFromValue).
+// TXE-8087.
+const databricksClaudeCacheUsage = `{"prompt_tokens":12,"completion_tokens":20,"total_tokens":4832,"cache_read_input_tokens":4736,"cache_creation_input_tokens":64}`
+
+// assertDatabricksClaudeCacheUsage checks the unified usage of databricksClaudeCacheUsage: reads
+// and writes under prompt_tokens_details, each counted once inside prompt_tokens, and no
+// top-level Anthropic spelling left to serialize.
+func assertDatabricksClaudeCacheUsage(t *testing.T, label string, u *schemas.BifrostLLMUsage) {
+	t.Helper()
+	if u == nil || u.PromptTokensDetails == nil {
+		t.Fatalf("%s: usage = %+v, want prompt_tokens_details", label, u)
+	}
+	d := u.PromptTokensDetails
+	if d.CachedReadTokens != 4736 || d.CachedWriteTokens != 64 {
+		t.Errorf("%s: cached read/write = %d/%d, want 4736/64", label, d.CachedReadTokens, d.CachedWriteTokens)
+	}
+	if u.PromptTokens != 12+4736+64 || u.CompletionTokens != 20 || u.TotalTokens != 12+4736+64+20 {
+		t.Errorf("%s: prompt/completion/total = %d/%d/%d, want 4812/20/4832", label, u.PromptTokens, u.CompletionTokens, u.TotalTokens)
+	}
+	out, err := schemas.Marshal(u)
+	if err != nil {
+		t.Fatalf("%s: marshal: %v", label, err)
+	}
+	if strings.Contains(string(out), "cache_read_input_tokens") || strings.Contains(string(out), "cache_creation_input_tokens") {
+		t.Errorf("%s: served usage %s still carries a top-level Anthropic cache spelling", label, out)
+	}
+}
+
+// TestDatabricksClaudeCacheUsage pins that a Databricks Claude answer's top-level cache counts
+// reach unified usage (contract C5) on the buffered and the streamed chat route, so a cache
+// write is priced at cache_creation_input_token_cost and a read at the cache-read rate instead of
+// being dropped (TXE-8087).
+func TestDatabricksClaudeCacheUsage(t *testing.T) {
+	t.Parallel()
+
+	stream := "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"databricks-claude-sonnet-4-5\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"}}]}\n\n" +
+		"data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"databricks-claude-sonnet-4-5\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":" + databricksClaudeCacheUsage + "}\n\n" +
+		"data: [DONE]\n\n"
+	buffered := `{"id":"c1","object":"chat.completion","created":1700000000,"model":"databricks-claude-sonnet-4-5",` +
+		`"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":` + databricksClaudeCacheUsage + `}`
+
+	provider, server := newStubProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["stream"] == true {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte(stream))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(buffered))
+	})
+	key := schemas.Key{
+		Models: []string{"*"},
+		Value:  *schemas.NewSecretVar("dapi-test"),
+		DatabricksKeyConfig: &schemas.DatabricksKeyConfig{
+			WorkspaceURL: *schemas.NewSecretVar(serverHost(t, server)),
+		},
+	}
+	newRequest := func() *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Provider: schemas.Databricks,
+			Model:    "databricks-claude-sonnet-4-5",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hey")}}},
+		}
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	resp, bErr := provider.ChatCompletion(ctx, key, newRequest())
+	if bErr != nil {
+		t.Fatalf("ChatCompletion: %v", bErr)
+	}
+	assertDatabricksClaudeCacheUsage(t, "buffered", resp.Usage)
+
+	streamCtx, streamCancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+	defer streamCancel()
+	postHookRunner := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, bErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return result, bErr
+	}
+	chunks, bErr := provider.ChatCompletionStream(streamCtx, postHookRunner, nil, key, newRequest())
+	if bErr != nil {
+		t.Fatalf("ChatCompletionStream: %v", bErr)
+	}
+	var last *schemas.BifrostLLMUsage
+	for chunk := range chunks {
+		if chunk == nil {
+			continue
+		}
+		if chunk.BifrostError != nil {
+			t.Fatalf("stream error: %+v", chunk.BifrostError)
+		}
+		if chunk.BifrostChatResponse != nil && chunk.BifrostChatResponse.Usage != nil {
+			last = chunk.BifrostChatResponse.Usage
+		}
+	}
+	assertDatabricksClaudeCacheUsage(t, "streamed", last)
+}
+
+// TestDatabricksClaudeCacheUsageThroughResponsesFallback pins the same cache counts on the
+// Responses route. A pay-per-token Claude endpoint declines native Responses, so the provider
+// emulates through chat completions; the counts must survive that and the conversion to
+// Responses usage (input_tokens_details), buffered and streamed (TXE-8087).
+func TestDatabricksClaudeCacheUsageThroughResponsesFallback(t *testing.T) {
+	t.Parallel()
+
+	stream := "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"databricks-claude-sonnet-4-5\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"}}]}\n\n" +
+		"data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"databricks-claude-sonnet-4-5\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":" + databricksClaudeCacheUsage + "}\n\n" +
+		"data: [DONE]\n\n"
+	buffered := `{"id":"c1","object":"chat.completion","created":1700000000,"model":"databricks-claude-sonnet-4-5",` +
+		`"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":` + databricksClaudeCacheUsage + `}`
+
+	provider, server := newStubProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if strings.HasSuffix(r.URL.Path, "/responses") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(passthroughUnsupportedBody))
+			return
+		}
+		if body["stream"] == true {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte(stream))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(buffered))
+	})
+	key := schemas.Key{
+		Models: []string{"*"},
+		Value:  *schemas.NewSecretVar("dapi-test"),
+		DatabricksKeyConfig: &schemas.DatabricksKeyConfig{
+			WorkspaceURL: *schemas.NewSecretVar(serverHost(t, server)),
+		},
+	}
+	newRequest := func() *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{
+			Provider: schemas.Databricks,
+			Model:    "databricks-claude-sonnet-4-5",
+			Input: []schemas.ResponsesMessage{{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hey")},
+			}},
+		}
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	resp, bErr := provider.Responses(ctx, key, newRequest())
+	if bErr != nil {
+		t.Fatalf("Responses: %v", bErr)
+	}
+	u := resp.Usage
+	if u == nil || u.InputTokensDetails == nil {
+		t.Fatalf("responses usage = %+v, want input_tokens_details", u)
+	}
+	if u.InputTokensDetails.CachedReadTokens != 4736 || u.InputTokensDetails.CachedWriteTokens != 64 {
+		t.Errorf("responses cached read/write = %d/%d, want 4736/64", u.InputTokensDetails.CachedReadTokens, u.InputTokensDetails.CachedWriteTokens)
+	}
+	if u.InputTokens != 4812 || u.OutputTokens != 20 || u.TotalTokens != 4832 {
+		t.Errorf("responses input/output/total = %d/%d/%d, want 4812/20/4832", u.InputTokens, u.OutputTokens, u.TotalTokens)
+	}
+	assertDatabricksClaudeCacheUsage(t, "responses buffered (as chat usage)", u.ToBifrostLLMUsage())
+
+	// The stream is emulated through chat; core converts the chat chunks to Responses events
+	// above the provider, so the provider's chunks carry the chat usage.
+	streamCtx, streamCancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+	defer streamCancel()
+	postHookRunner := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, bErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return result, bErr
+	}
+	chunks, bErr := provider.ResponsesStream(streamCtx, postHookRunner, nil, key, newRequest())
+	if bErr != nil {
+		t.Fatalf("ResponsesStream: %v", bErr)
+	}
+	var last *schemas.BifrostLLMUsage
+	for chunk := range chunks {
+		if chunk == nil {
+			continue
+		}
+		if chunk.BifrostError != nil {
+			t.Fatalf("stream error: %+v", chunk.BifrostError)
+		}
+		if chunk.BifrostChatResponse != nil && chunk.BifrostChatResponse.Usage != nil {
+			last = chunk.BifrostChatResponse.Usage
+		}
+		if chunk.BifrostResponsesStreamResponse != nil && chunk.BifrostResponsesStreamResponse.Response != nil && chunk.BifrostResponsesStreamResponse.Response.Usage != nil {
+			last = chunk.BifrostResponsesStreamResponse.Response.Usage.ToBifrostLLMUsage()
+		}
+	}
+	assertDatabricksClaudeCacheUsage(t, "responses streamed", last)
+}
+
+// TestDatabricksClaudeReceivesPerBlockCacheControl pins TXE-8179: a Databricks Claude endpoint
+// receives the caller's per-block cache_control (content block, tool call, tool definition),
+// which Databricks documents for its Claude models only, and a non-Claude endpoint does not. A
+// ttl on a marker Databricks would receive is refused before any upstream call.
+func TestDatabricksClaudeReceivesPerBlockCacheControl(t *testing.T) {
+	t.Parallel()
+
+	bodies := make(chan string, 4)
+	provider, server := newStubProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		bodies <- string(raw)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(stubChatResponse))
+	})
+	key := schemas.Key{
+		Models: []string{"*"},
+		Value:  *schemas.NewSecretVar("dapi-test"),
+		DatabricksKeyConfig: &schemas.DatabricksKeyConfig{
+			WorkspaceURL: *schemas.NewSecretVar(serverHost(t, server)),
+		},
+	}
+	request := func(model string, ttl *string) *schemas.BifrostChatRequest {
+		cc := &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral, TTL: ttl}
+		return &schemas.BifrostChatRequest{
+			Provider: schemas.Databricks,
+			Model:    model,
+			Input: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+					{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("long shared prefix"), CacheControl: cc},
+				}}},
+			},
+			Params: &schemas.ChatParameters{Tools: []schemas.ChatTool{
+				{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "lookup"}, CacheControl: cc},
+			}},
+		}
+	}
+	send := func(model string, ttl *string) (string, *schemas.BifrostError) {
+		ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_, bErr := provider.ChatCompletion(ctx, key, request(model, ttl))
+		if bErr != nil {
+			return "", bErr
+		}
+		select {
+		case b := <-bodies:
+			return b, nil
+		case <-time.After(5 * time.Second):
+			t.Fatal("stub received no request")
+			return "", nil
+		}
+	}
+
+	for _, model := range []string{"databricks-claude-sonnet-4-5", "system.ai.claude-sonnet-4-5"} {
+		body, bErr := send(model, nil)
+		if bErr != nil {
+			t.Fatalf("%s: %+v", model, bErr.Error)
+		}
+		if got := strings.Count(body, `"cache_control":{"type":"ephemeral"}`); got != 2 {
+			t.Errorf("%s: cache_control markers on the wire = %d, want 2 (content block and tool): %s", model, got, body)
+		}
+	}
+	body, bErr := send("databricks-gemini-3-pro", nil)
+	if bErr != nil {
+		t.Fatalf("gemini: %+v", bErr.Error)
+	}
+	if strings.Contains(body, "cache_control") {
+		t.Errorf("a non-Claude endpoint received cache_control: %s", body)
+	}
+
+	_, bErr = send("databricks-claude-sonnet-4-5", schemas.Ptr("1h"))
+	if bErr == nil || bErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter || bErr.Error == nil || bErr.Error.Param != "cache_control.ttl" {
+		t.Fatalf("a 1h marker to Databricks Claude = %+v, want 400 caller_unsupported_parameter on cache_control.ttl", bErr)
+	}
+	select {
+	case b := <-bodies:
+		t.Errorf("the refused request reached Databricks: %s", b)
+	default:
+	}
+}
+
+// TestDatabricksClaudeCacheControlSurvivesConvertedIngress pins TXE-8179 on the routes that reach
+// the chat encoder through a conversion: an OpenAI Responses body (/v1/responses) and an
+// Anthropic Messages body (/anthropic/v1/messages), each turned into a Responses request by its
+// ingress converter and served through Databricks' chat emulation once the endpoint declines
+// native Responses. The markers must reach Databricks, and a ttl must be refused before any call.
+func TestDatabricksClaudeCacheControlSurvivesConvertedIngress(t *testing.T) {
+	t.Parallel()
+
+	bodies := make(chan string, 8)
+	provider, server := newStubProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		if strings.HasSuffix(r.URL.Path, "/responses") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(passthroughUnsupportedBody))
+			return
+		}
+		bodies <- string(raw)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(stubChatResponse))
+	})
+	key := schemas.Key{
+		Models: []string{"*"},
+		Value:  *schemas.NewSecretVar("dapi-test"),
+		DatabricksKeyConfig: &schemas.DatabricksKeyConfig{
+			WorkspaceURL: *schemas.NewSecretVar(serverHost(t, server)),
+		},
+	}
+	cc := func(ttl string) string {
+		if ttl == "" {
+			return `{"type":"ephemeral"}`
+		}
+		return `{"type":"ephemeral","ttl":"` + ttl + `"}`
+	}
+	ingress := map[string]func(ctx *schemas.BifrostContext, ttl string) *schemas.BifrostResponsesRequest{
+		"/v1/responses": func(ctx *schemas.BifrostContext, ttl string) *schemas.BifrostResponsesRequest {
+			var req openai.OpenAIResponsesRequest
+			body := `{"model":"databricks-claude-sonnet-4-5","input":[{"role":"user","content":[{"type":"input_text","text":"long shared prefix","cache_control":` + cc(ttl) + `}]}],` +
+				`"tools":[{"type":"function","name":"lookup","parameters":{"type":"object","properties":{}},"cache_control":` + cc(ttl) + `}]}`
+			if err := schemas.Unmarshal([]byte(body), &req); err != nil {
+				t.Fatalf("decode responses body: %v", err)
+			}
+			out := req.ToBifrostResponsesRequest(ctx)
+			out.Provider = schemas.Databricks
+			return out
+		},
+		"/anthropic/v1/messages": func(ctx *schemas.BifrostContext, ttl string) *schemas.BifrostResponsesRequest {
+			var req anthropic.AnthropicMessageRequest
+			body := `{"model":"databricks-claude-sonnet-4-5","max_tokens":64,"messages":[{"role":"user","content":[{"type":"text","text":"long shared prefix","cache_control":` + cc(ttl) + `}]}],` +
+				`"tools":[{"name":"lookup","input_schema":{"type":"object","properties":{}},"cache_control":` + cc(ttl) + `}]}`
+			if err := schemas.Unmarshal([]byte(body), &req); err != nil {
+				t.Fatalf("decode messages body: %v", err)
+			}
+			out := req.ToBifrostResponsesRequest(ctx)
+			out.Provider = schemas.Databricks
+			out.Model = "databricks-claude-sonnet-4-5"
+			return out
+		},
+	}
+	for route, build := range ingress {
+		t.Run(route, func(t *testing.T) {
+			ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if _, bErr := provider.Responses(ctx, key, build(ctx, "")); bErr != nil {
+				t.Fatalf("Responses: %+v", bErr.Error)
+			}
+			select {
+			case body := <-bodies:
+				if got := strings.Count(body, `"cache_control":{"type":"ephemeral"}`); got != 2 {
+					t.Errorf("cache_control markers on the wire = %d, want 2 (content block and tool): %s", got, body)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("stub received no chat request")
+			}
+
+			ttlCtx, ttlCancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+			defer ttlCancel()
+			_, bErr := provider.Responses(ttlCtx, key, build(ttlCtx, "1h"))
+			if bErr == nil || bErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter || bErr.Error == nil || bErr.Error.Param != "cache_control.ttl" {
+				t.Fatalf("a 1h marker = %+v, want 400 caller_unsupported_parameter on cache_control.ttl", bErr)
+			}
+			select {
+			case body := <-bodies:
+				t.Errorf("the refused request reached Databricks: %s", body)
+			default:
+			}
+		})
 	}
 }

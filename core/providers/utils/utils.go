@@ -3581,10 +3581,10 @@ func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGette
 		if mt != nil {
 			mt.EndSpan(mhdl, schemas.SpanStatusOk, "")
 		}
-		stampPromptCacheTTLFromBody(ctx, jsonBody)
+		stampPromptCacheTTLFromBody(ctx, jsonBody, false)
 		return jsonBody, nil
 	} else {
-		stampPromptCacheTTLFromBody(ctx, rawBody)
+		stampPromptCacheTTLFromBody(ctx, rawBody, true)
 		return rawBody, nil
 	}
 }
@@ -3597,16 +3597,138 @@ func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGette
 // fails when they differ. Pricing reads the TTL only for a vendor in
 // schemas.RequestTTLPricedCacheWrites, so the body is scanned only when the attempt's base
 // provider (a custom provider's included) is one of them.
-func stampPromptCacheTTLFromBody(ctx context.Context, body []byte) {
+//
+// Even then, a converted body (rawBody false) is scanned only when the attempt's stamp is not
+// empty or its extra params are merged into the body. A converter writes prompt_cache_options
+// only from the typed request, and stampRequestedPromptCacheTTL has already read the typed
+// TTL and, with the merge on, the extra param. So a converted body whose request carries
+// neither has no TTL, and the stamp of "" stands. That keeps the scan off the common Azure and
+// OpenRouter request (TXE-7946): on a 256 KB body it costs about 77 µs, against a context read
+// (BenchmarkStampPromptCacheTTLFromBody). A raw body is the caller's own bytes, so it is always
+// scanned. A substring pre-check would miss a key spelled with a JSON escape, which gjson and
+// the vendor both still read.
+func stampPromptCacheTTLFromBody(ctx context.Context, body []byte, rawBody bool) {
 	bifrostCtx, ok := ctx.(*schemas.BifrostContext)
 	if !ok || bifrostCtx == nil {
 		return
 	}
 	base, _ := bifrostCtx.Value(schemas.BifrostContextKeyBaseProviderType).(schemas.ModelProvider)
-	if _, priced := schemas.RequestTTLPricedCacheWrites[base]; !priced {
+	if _, priced := schemas.RequestTTLPricedCacheWrites[base]; priced &&
+		bodyMayCarryStampedTTL(bifrostCtx, schemas.BifrostContextKeyRequestedPromptCacheTTL, rawBody) {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyRequestedPromptCacheTTL, PromptCacheTTLInBody(body))
+	}
+	// The same, for a vendor that bills a write at a block's cache_control.ttl (fork, TXE-8086).
+	// stampRequestedPromptCacheTTL stamps the typed request's longest cache_control.ttl first, and
+	// the body read replaces it: an encoder that strips cache_control (an OpenAI-shape chat target
+	// whose perBlockCacheControlRules entry does not send it, TXE-8179) or turns it into a TTL-less
+	// prompt_cache_breakpoint (OpenRouter Responses) leaves no TTL in the body, so none is priced.
+	if _, priced := schemas.CacheControlTTLPricedCacheWrites[base]; priced &&
+		bodyMayCarryStampedTTL(bifrostCtx, schemas.BifrostContextKeyRequestedCacheControlTTL, rawBody) {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyRequestedCacheControlTTL, CacheControlTTLInBody(body))
+	}
+}
+
+// bodyMayCarryStampedTTL reports whether the body must be read for the TTL stamped under key: it
+// is raw, the attempt's typed request carries one (the stamp is set), or extra params are
+// merged into it. A converter writes the field only from the typed request, so a converted body
+// with neither has none to find.
+//
+// key is any, not BifrostContextKey: a typed key held in a variable is boxed on every ctx.Value
+// call, while the constant each caller passes converts to an interface without allocating.
+func bodyMayCarryStampedTTL(ctx *schemas.BifrostContext, key any, rawBody bool) bool {
+	if rawBody {
+		return true
+	}
+	if stamped, _ := ctx.Value(key).(string); stamped != "" {
+		return true
+	}
+	return ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true
+}
+
+// CacheControlTTLInBody returns the longest string cache_control.ttl a Chat Completions request
+// body carries where a vendor reads a cache marker, or "" when it carries none (fork, TXE-8086).
+// One write figure covers every block, so the longest is the tier the vendor may have billed. The
+// positions are the request's own cache_control, each tool's, each content block's
+// (messages[].content[]) and each assistant tool call's (messages[].tool_calls[]), which are
+// where Bifrost's chat encoder writes a marker and OpenRouter reads one. A cache_control anywhere
+// else is data, such as a tool schema's default, and is not read. So is any marker in a Responses
+// body: OpenRouter's Responses API reads no per-block cache_control.
+//
+// It reads in place without decoding, and the walk has a fixed depth, so a body costs one pass
+// over each message whatever its nesting. gjson unescapes keys, so a key spelled with a \u escape
+// is read as a decoder reads it. A message or item whose text holds neither the literal
+// cache_control nor a \u escape (the only way to spell those letters otherwise) cannot hold a
+// marker and is skipped without parsing its members. The TTL returned never aliases body.
+func CacheControlTTLInBody(body []byte) string {
+	root := gjson.Parse(unsafe.String(unsafe.SliceData(body), len(body)))
+	if !root.IsObject() {
+		return ""
+	}
+	var w cacheControlTTLReader
+	root.ForEach(func(key, value gjson.Result) bool {
+		switch key.Str {
+		case "cache_control":
+			w.marker(value)
+		case "tools":
+			w.eachMarkerIn(value)
+		case "messages":
+			if value.IsArray() {
+				value.ForEach(func(_, msg gjson.Result) bool {
+					if msg.IsObject() && mayHoldCacheControl(msg.Raw) {
+						msg.ForEach(func(field, v gjson.Result) bool {
+							switch field.Str {
+							case "content", "tool_calls":
+								w.eachMarkerIn(v)
+							}
+							return true
+						})
+					}
+					return true
+				})
+			}
+		}
+		return true
+	})
+	return strings.Clone(w.max.String())
+}
+
+type cacheControlTTLReader struct{ max schemas.CacheTTLMax }
+
+// mayHoldCacheControl reports whether raw JSON could hold a "cache_control" member: it spells
+// the key literally, or carries a \u escape that could spell it.
+func mayHoldCacheControl(raw string) bool {
+	return strings.Contains(raw, "cache_control") || strings.Contains(raw, `\u`)
+}
+
+// eachMarkerIn reads the cache_control member of every object in the array v.
+func (w *cacheControlTTLReader) eachMarkerIn(v gjson.Result) {
+	if !v.IsArray() {
 		return
 	}
-	bifrostCtx.SetValue(schemas.BifrostContextKeyRequestedPromptCacheTTL, PromptCacheTTLInBody(body))
+	v.ForEach(func(_, item gjson.Result) bool {
+		if item.IsObject() && mayHoldCacheControl(item.Raw) {
+			item.ForEach(func(field, value gjson.Result) bool {
+				if field.Str == "cache_control" {
+					w.marker(value)
+				}
+				return true
+			})
+		}
+		return true
+	})
+}
+
+// marker reads the string ttl members of one cache_control object.
+func (w *cacheControlTTLReader) marker(v gjson.Result) {
+	if !v.IsObject() {
+		return
+	}
+	v.ForEach(func(field, ttl gjson.Result) bool {
+		if field.Str == "ttl" && ttl.Type == gjson.String {
+			w.max.Add(ttl.Str)
+		}
+		return true
+	})
 }
 
 // PromptCacheTTLInBody returns the string prompt_cache_options.ttl of a JSON request body, or ""

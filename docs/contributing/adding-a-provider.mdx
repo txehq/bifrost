@@ -1739,7 +1739,7 @@ Your provider's API key is a secret of the `live-providers` GitHub environment, 
 - Read it only in jobs that name `environment: live-providers`: `run-tests` in `.github/workflows/pr-tests.yml`, `run-core-tests` in `.github/workflows/run-core-tests.yml`, and the live test and release jobs in `.github/workflows/release-pipeline.yml`. The workflow-lint job fails a provider credential read in any other job.
 - If no test needs the key yet, leave it out of the workflows.
 
-Add the variable to the `env:` of a step (or job) in one of those jobs:
+Add the variable to the `env:` of the step that runs the provider suites in one of those jobs, never to the job's `env:`. Job-level env reaches every step, third-party actions included, and the workflow-lint job fails a provider credential there:
 
 ```yaml
 jobs:

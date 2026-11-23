@@ -198,6 +198,15 @@ cleanup() {
     wait "$MCP_SERVER_PID" 2>/dev/null || true
   fi
 
+  # Set only by an offline run (Step 2).
+  if [ -n "${DATASHEET_PID:-}" ]; then
+    kill "$DATASHEET_PID" 2>/dev/null || true
+    wait "$DATASHEET_PID" 2>/dev/null || true
+  fi
+  if [ -n "${OFFLINE_APP_DIR:-}" ] && [ -d "$OFFLINE_APP_DIR" ]; then
+    rm -rf "$OFFLINE_APP_DIR" 2>/dev/null || true
+  fi
+
   # :- guards both: cleanup is defined before either variable is assigned.
   rm -f "${LOG_FILE:-}" "${MCP_SERVER_LOG_FILE:-}" 2>/dev/null || true
   if [ -n "${TEST_LOG_DIR:-}" ] && [ -d "$TEST_LOG_DIR" ]; then
@@ -311,9 +320,33 @@ if [ "$SKIP_GATEWAY_START" = "1" ]; then
   fi
   echo "   Its config is whatever it was started with, not necessarily tests/integrations/python"
 else
+  APP_DIR="$REPO_ROOT/tests/integrations/python"
+  # Under scripts/test-offline.sh (BIFROST_TEST_OFFLINE=1: the pull-request job "Core
+  # integrations startup (offline)", TXE-8090) the gateway cannot download its pricing
+  # datasheets, and every dial off loopback is refused. So it boots a copy of the config in a
+  # temporary app dir: its sqlite stores are fresh files there, so no state an earlier run left
+  # in tests/integrations/python carries over, and its datasheets are empty ones served from
+  # loopback. test-offline.sh also removes every
+  # provider key, so an offline run always stops at the startup smoke test below. The release
+  # job is not offline and boots tests/integrations/python itself, as before.
+  if [ "${BIFROST_TEST_OFFLINE:-}" = "1" ]; then
+    OFFLINE_APP_DIR="$(mktemp -d /tmp/bifrost-integrations-app.XXXXXX)"
+    # shellcheck source=offline-datasheets.sh
+    source "$SCRIPT_DIR/offline-datasheets.sh"
+    serve_offline_datasheets "$OFFLINE_APP_DIR"
+    jq --arg cfg "$OFFLINE_APP_DIR/config.db" --arg logs "$OFFLINE_APP_DIR/logs.db" --arg origin "$DATASHEET_ORIGIN" \
+      '.config_store.config.path = $cfg
+       | .logs_store.config.path = $logs
+       | .framework.pricing.pricing_url = ($origin + "/pricing.json")
+       | .framework.pricing.model_parameters_url = ($origin + "/model-parameters.json")' \
+      "$APP_DIR/config.json" > "$OFFLINE_APP_DIR/config.json"
+    APP_DIR="$OFFLINE_APP_DIR"
+  fi
+
   echo ""
   echo "🚀 Starting Bifrost server..."
   echo "   Config: tests/integrations/python/config.json"
+  echo "   App dir: $APP_DIR"
   echo "   Host: $TEST_HOST"
   echo "   Port: $TEST_PORT"
 
@@ -323,7 +356,7 @@ else
     -port "$TEST_PORT" \
     -log-style json \
     -log-level info \
-    -app-dir "$REPO_ROOT/tests/integrations/python" \
+    -app-dir "$APP_DIR" \
     > "$LOG_FILE" 2>&1 &
 
   BIFROST_PID=$!

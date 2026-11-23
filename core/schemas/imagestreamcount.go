@@ -126,3 +126,25 @@ func NewImageStreamCountError(provider ModelProvider, param, value string) *Bifr
 		"%s must be 1 when stream is true: the %s image stream does not deliver and count more than one image, got %s=%s; send the request without stream to get several images",
 		param, provider, param, value))
 }
+
+// SetDeliveredImages writes on the final frame of an image stream the number of finished images
+// the stream delivered (fork, TXE-8082, contract C5): usage.output_images, which the caller and
+// Tokun read, and the internal NImages count the cost path prices a stream by. A count the vendor
+// reported itself is kept. A negative delivered count writes nothing.
+func (r *BifrostImageGenerationStreamResponse) SetDeliveredImages(delivered int) {
+	if r == nil || delivered < 0 {
+		return
+	}
+	if r.Usage == nil {
+		r.Usage = &ImageUsage{}
+	}
+	if r.Usage.OutputImages == nil {
+		r.Usage.OutputImages = &delivered
+	}
+	if r.Usage.OutputTokensDetails == nil {
+		r.Usage.OutputTokensDetails = &ImageTokenDetails{}
+	}
+	if r.Usage.OutputTokensDetails.NImages == 0 && *r.Usage.OutputImages > 0 {
+		r.Usage.OutputTokensDetails.NImages = *r.Usage.OutputImages
+	}
+}

@@ -38,9 +38,11 @@ name: Go unit tests (offline)
 #   check-release-gates-run-on-prs.py fails when such a release job has no PR counterpart.
 #   api-integrations (TXE-7464) runs the offline part of test-api-integrations, which reads
 #   vendor keys: the api-management collection against a gateway with none.
+#   core-integrations (TXE-8090) runs the offline part of test-core-integrations: the gateway
+#   boots tests/integrations/python/config.json and answers /health, with no vendor key.
 # - The required check is the `Go unit tests (offline)` job, which fails unless every shard,
-#   fixture-folders, live-fake, agentgateway, migrations, cost-accuracy and api-integrations
-#   passed. No paths filter: a path-filtered required check never reports on a PR outside its
+#   fixture-folders, live-fake, agentgateway, migrations, cost-accuracy, api-integrations and
+#   core-integrations passed. No paths filter: a path-filtered required check never reports on a PR outside its
 #   paths, which blocks that PR's merge. No concurrency group either: a cancelled run of a
 #   required check leaves the PR blocked beside a passing one (TXE-7104).
 # - On a push to main, warm-cache compiles every test binary and saves the go-unit build cache
@@ -715,6 +717,68 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  # The offline part of the Release Pipeline's test-core-integrations (TXE-8090): the gateway
+  # boots tests/integrations/python/config.json and answers /health, with no provider key. With
+  # no key the script stops there, before the SDK suites, as the release job does while
+  # live-providers holds no provider keys. A config that names a service this job does not start
+  # (sync.15's release died dialling a Weaviate nobody started) fails here, on the pull request.
+  core-integrations:
+    if: github.event_name == 'pull_request'
+    name: Core integrations startup (offline)
+    environment: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'pr-testing' || 'ci-trusted-branch' }}
+    runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
+    permissions:
+      contents: read
+    timeout-minutes: 20
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: block
+          # Setup only: setup-go (api.github.com, github.com, release-assets.githubusercontent.com,
+          # storage.googleapis.com) and the Go modules (proxy.golang.org, sum.golang.org). The
+          # gateway, the MCP fixture and the datasheets are on loopback.
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            proxy.golang.org:443
+            release-assets.githubusercontent.com:443
+            storage.googleapis.com:443
+            sum.golang.org:443
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: ./.github/actions/setup-go
+
+      - name: Restore the Go build cache
+        uses: ./.github/actions/go-cache
+        with:
+          purpose: go-unit
+
+      # Built before the offline run, whose guard would refuse the module downloads. The
+      # startup smoke does not load the UI, so the embed gets a placeholder, as in test-live.sh.
+      - name: Build bifrost-http
+        run: |
+          source .github/workflows/scripts/setup-go-workspace.sh
+          mkdir -p tmp transports/bifrost-http/ui
+          [ -n "$(ls -A transports/bifrost-http/ui)" ] || echo "placeholder" > transports/bifrost-http/ui/.gitkeep
+          (cd transports/bifrost-http && go build -o ../../tmp/bifrost-http .)
+
+      # The SSE server behind config.json's sse_mcp client, which test-integrations.sh starts on
+      # loopback. Only this one: the release job's `make setup-mcp-tests` also builds the
+      # TypeScript servers, whose npm installs this job does not need.
+      - name: Build the MCP test server
+        run: cd examples/mcps/remote-test-server && GOWORK=off go build -o bin/remote-test-server .
+
+      - name: Boot the core integrations gateway offline
+        env:
+          SKIP_GATEWAY_BUILD: "1"
+        run: scripts/test-offline.sh bash .github/workflows/scripts/test-integrations.sh --parallel-files
+
   # The one check to require on main: it fails unless every job above passed.
   # A live test runs only on BIFROST_LIVE_TESTS=1, through core/livetest (TXE-7530). A plain
   # `go test ./...` with DEEPSEEK_API_KEY exported called api.deepseek.com until the package
@@ -764,7 +828,7 @@ jobs:
 
   go-unit-tests:
     if: always() && github.event_name == 'pull_request'
-    needs: [shard, fixture-folders, live-fake, agentgateway, migrations, migrations-fork, cost-accuracy, api-integrations, live-tests-off]
+    needs: [shard, fixture-folders, live-fake, agentgateway, migrations, migrations-fork, cost-accuracy, api-integrations, core-integrations, live-tests-off]
     name: Go unit tests (offline)
     runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     timeout-minutes: 5
@@ -786,6 +850,7 @@ jobs:
           SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
           COST_ACCURACY: ${{ needs.cost-accuracy.result }}
           API_INTEGRATIONS: ${{ needs.api-integrations.result }}
+          CORE_INTEGRATIONS: ${{ needs.core-integrations.result }}
           LIVE_TESTS_OFF: ${{ needs.live-tests-off.result }}
         run: |
           echo "shards: $RESULT"
@@ -795,12 +860,13 @@ jobs:
           echo "Migration tests: $MIGRATIONS (fork PR notice: $MIGRATIONS_FORK)"
           echo "Cost accuracy: $COST_ACCURACY"
           echo "API integrations: $API_INTEGRATIONS"
+          echo "Core integrations startup: $CORE_INTEGRATIONS"
           echo "Live tests stay off without the opt-in: $LIVE_TESTS_OFF"
           # A PR from this repository must pass the migrations; a fork's PR gets the notice job.
           if [ "$SAME_REPO" = true ]; then migrations_ok=$MIGRATIONS; else migrations_ok=$MIGRATIONS_FORK; fi
           [ "$RESULT" = success ] && [ "$FIXTURE_FOLDERS" = success ] && [ "$LIVE_FAKE" = success ] &&
             [ "$AGENTGATEWAY" = success ] && [ "$migrations_ok" = success ] && [ "$COST_ACCURACY" = success ] &&
-            [ "$API_INTEGRATIONS" = success ] && [ "$LIVE_TESTS_OFF" = success ]
+            [ "$API_INTEGRATIONS" = success ] && [ "$CORE_INTEGRATIONS" = success ] && [ "$LIVE_TESTS_OFF" = success ]
 
   warm-cache:
     if: github.event_name == 'push'

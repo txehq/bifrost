@@ -1,0 +1,336 @@
+{
+  "name": "663. Replicate and Hugging Face image streams report the images delivered (image stream output count) [SERIAL]",
+  "description": "TXE-8082 regression, contract C5. Local fixture regression, no live provider calls: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream. The replicate and huggingface image streams used to end on a completed frame with no usage.output_images, and a stream was priced as one image whatever the vendor made. The fixture's replicate model fixture/image-stream-three streams one image and its finished prediction (urls.get) lists three, as a hosted model whose default is three images would. Its fal model fal-ai/fixture/image-stream-three streams a progress update ({progress, message}) and ends on the final result with three images. Pinned, on JSON /v1/images/generations and multipart /v1/images/edits, with n unset: the stream answers 200 with no error frame (a fal progress update used to end the stream as an error), ends on one completed frame, and that frame's usage.output_images is 3. On replicate, /__hits shows the finished prediction was read once.",
+  "item": [
+    {
+      "name": "replicate /v1/images/generations stream with n unset, whose finished prediction made three images, reports output_images 3 (image stream output count)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"replicate/fixture/image-stream-three\", \"prompt\": \"a lighthouse at dusk\", \"stream\": true}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('image stream output count setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "// The gateway's SSE frames, in order; [DONE] and comments are skipped.",
+              "var frames = pm.response.text().split(/\\r?\\n/).filter(function (l) { return l.indexOf('data:') === 0; }).map(function (l) { return l.slice(5).trim(); }).filter(function (d) { return d && d !== '[DONE]'; }).map(function (d) { try { return JSON.parse(d); } catch (e) { return { unparsed: d }; } });",
+              "pm.test('no frame is an error', function () { pm.expect(frames.filter(function (f) { return f.error; }), pm.response.text()).to.have.length(0); });",
+              "var completed = frames.filter(function (f) { return f.type === 'image_generation.completed' || f.type === 'image_edit.completed'; });",
+              "pm.test('the stream ends on one completed frame', function () { pm.expect(completed, pm.response.text()).to.have.length(1); });",
+              "var usage = completed.length ? completed[0].usage : undefined;",
+              "pm.test('the completed frame reports usage.output_images 3, the images the vendor made', function () { pm.expect(usage && usage.output_images, JSON.stringify(completed)).to.equal(3); });",
+              "pm.sendRequest({ url: FX + '/__hits', method: 'GET' }, function (err, res) { pm.test('the finished prediction was read once', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.json().data[0].hits['replicate.imgstream_three.poll'], JSON.stringify(res.json())).to.equal(1); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "replicate multipart /v1/images/edits stream with n unset, whose finished prediction made three images, reports output_images 3 (image stream output count)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          }
+        ],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "model",
+              "value": "replicate/fixture/image-stream-three",
+              "type": "text"
+            },
+            {
+              "key": "prompt",
+              "value": "make the background a deep blue",
+              "type": "text"
+            },
+            {
+              "key": "stream",
+              "value": "true",
+              "type": "text"
+            },
+            {
+              "key": "image",
+              "src": "tests/e2e/api/fixtures/sample.png",
+              "type": "file"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/edits",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "edits"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('image stream output count setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "// The gateway's SSE frames, in order; [DONE] and comments are skipped.",
+              "var frames = pm.response.text().split(/\\r?\\n/).filter(function (l) { return l.indexOf('data:') === 0; }).map(function (l) { return l.slice(5).trim(); }).filter(function (d) { return d && d !== '[DONE]'; }).map(function (d) { try { return JSON.parse(d); } catch (e) { return { unparsed: d }; } });",
+              "pm.test('no frame is an error', function () { pm.expect(frames.filter(function (f) { return f.error; }), pm.response.text()).to.have.length(0); });",
+              "var completed = frames.filter(function (f) { return f.type === 'image_generation.completed' || f.type === 'image_edit.completed'; });",
+              "pm.test('the stream ends on one completed frame', function () { pm.expect(completed, pm.response.text()).to.have.length(1); });",
+              "var usage = completed.length ? completed[0].usage : undefined;",
+              "pm.test('the completed frame reports usage.output_images 3, the images the vendor made', function () { pm.expect(usage && usage.output_images, JSON.stringify(completed)).to.equal(3); });",
+              "pm.sendRequest({ url: FX + '/__hits', method: 'GET' }, function (err, res) { pm.test('the finished prediction was read once', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.json().data[0].hits['replicate.imgstream_three.poll'], JSON.stringify(res.json())).to.equal(1); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "huggingface fal-ai /v1/images/generations stream with n unset, ending on three images after a progress update, reports output_images 3 (image stream output count)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"huggingface/fal-ai/fixture/image-stream-three\", \"prompt\": \"a lighthouse at dusk\", \"stream\": true}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('image stream output count setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "// The gateway's SSE frames, in order; [DONE] and comments are skipped.",
+              "var frames = pm.response.text().split(/\\r?\\n/).filter(function (l) { return l.indexOf('data:') === 0; }).map(function (l) { return l.slice(5).trim(); }).filter(function (d) { return d && d !== '[DONE]'; }).map(function (d) { try { return JSON.parse(d); } catch (e) { return { unparsed: d }; } });",
+              "pm.test('no frame is an error', function () { pm.expect(frames.filter(function (f) { return f.error; }), pm.response.text()).to.have.length(0); });",
+              "var completed = frames.filter(function (f) { return f.type === 'image_generation.completed' || f.type === 'image_edit.completed'; });",
+              "pm.test('the stream ends on one completed frame', function () { pm.expect(completed, pm.response.text()).to.have.length(1); });",
+              "var usage = completed.length ? completed[0].usage : undefined;",
+              "pm.test('the completed frame reports usage.output_images 3, the images the vendor made', function () { pm.expect(usage && usage.output_images, JSON.stringify(completed)).to.equal(3); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "huggingface fal-ai multipart /v1/images/edits stream with n unset, ending on three images after a progress update, reports output_images 3 (image stream output count)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "local-error-fixture"
+          }
+        ],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "model",
+              "value": "huggingface/fal-ai/fixture/image-stream-three",
+              "type": "text"
+            },
+            {
+              "key": "prompt",
+              "value": "make the background a deep blue",
+              "type": "text"
+            },
+            {
+              "key": "stream",
+              "value": "true",
+              "type": "text"
+            },
+            {
+              "key": "image",
+              "src": "tests/e2e/api/fixtures/sample.png",
+              "type": "file"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/edits",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "edits"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('image stream output count setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "// The gateway's SSE frames, in order; [DONE] and comments are skipped.",
+              "var frames = pm.response.text().split(/\\r?\\n/).filter(function (l) { return l.indexOf('data:') === 0; }).map(function (l) { return l.slice(5).trim(); }).filter(function (d) { return d && d !== '[DONE]'; }).map(function (d) { try { return JSON.parse(d); } catch (e) { return { unparsed: d }; } });",
+              "pm.test('no frame is an error', function () { pm.expect(frames.filter(function (f) { return f.error; }), pm.response.text()).to.have.length(0); });",
+              "var completed = frames.filter(function (f) { return f.type === 'image_generation.completed' || f.type === 'image_edit.completed'; });",
+              "pm.test('the stream ends on one completed frame', function () { pm.expect(completed, pm.response.text()).to.have.length(1); });",
+              "var usage = completed.length ? completed[0].usage : undefined;",
+              "pm.test('the completed frame reports usage.output_images 3, the images the vendor made', function () { pm.expect(usage && usage.output_images, JSON.stringify(completed)).to.equal(3); });"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -34,6 +34,9 @@ set -euo pipefail
 #       and needs no vendor key has a required PR check that runs what it runs, or a recorded
 #       reason (TXE-7424): tests/live's fake suite ran only in the release, so #292's regression
 #       first failed there.
+#   check-test-config-services.py             every test config a CI job boots names only services
+#       that job starts (TXE-8090): tests/integrations/python/config.json named a Weaviate no
+#       job started, and sync.15's test-core-integrations died at startup.
 #   validate-helm-schema.sh                   values.schema.json agrees with config.schema.json;
 #       the release's test-bifrost-http job starts with it and fails the release when it does not.
 #   test-migration-fixtures.py                 the v2.0.0 migration seed SQL; needs no service.
@@ -93,6 +96,11 @@ echo ""
 echo "🧪 check-release-gates-run-on-prs.py (every keyless release gate has a required PR check, TXE-7424)"
 python3 "$SCRIPT_DIR/check-release-gates-run-on-prs.py" --self-test
 python3 "$SCRIPT_DIR/check-release-gates-run-on-prs.py"
+
+echo ""
+echo "🧪 check-test-config-services.py (every service a booted test config names is started by its job, TXE-8090)"
+python3 "$SCRIPT_DIR/check-test-config-services.py" --self-test
+python3 "$SCRIPT_DIR/check-test-config-services.py"
 
 echo ""
 echo "🧪 validate-helm-schema.sh (the release's test-bifrost-http starts with it; on PRs since TXE-7424)"

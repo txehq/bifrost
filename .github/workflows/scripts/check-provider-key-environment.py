@@ -69,6 +69,21 @@ A job in a called workflow gets the environment's secrets only if GitHub hands t
 it. The canary shows they arrived on every run, before any provider key is used, and
 without the keys being present.
 
+It also fails when a job that names `environment: live-providers` does not count its
+provider keys (TXE-8129). The canary shows the environment's secrets arrived, not that a
+provider key is among them; with none, the provider suites skip and the job still passes.
+So the step that holds the keys runs count-provider-keys.py as its first command, which
+warns and writes "keyless: provider suites skipped" to the step summary when none is set.
+The steps that run it must between them see every provider credential the job reads in
+their own env.
+
+It also fails when a job that names `environment: live-providers` sets a provider
+credential in its job-level env (TXE-8192): a variable named as one, a literal placeholder
+included, or one whose value reads one. Job-level env reaches every step, third-party
+actions included, so the keys go in the env of the step that runs the provider suites,
+as the release-pipeline jobs have them. The environment gates who runs the job; the step
+scope limits which code in it sees the keys.
+
 The repository half, that the keys exist only as environment secrets and that the
 environment requires a reviewer, is a setting this check cannot read with a pull
 request's token: see AGENTS.md step 6.
@@ -81,9 +96,16 @@ import os
 import re
 import sys
 
-import yaml
-
 ENVIRONMENT = "live-providers"
+
+
+def load_yaml(path):
+    # Imported here, not at the top: count-provider-keys.py loads this module on the
+    # live-providers runners for is_provider_credential alone, and needs no PyYAML.
+    import yaml
+
+    with open(path) as fh:
+        return yaml.safe_load(fh) or {}
 
 # Vendor credentials in the provider test jobs whose names do not end in _API_KEY.
 OTHER_PROVIDER_CREDENTIALS = {
@@ -248,6 +270,79 @@ def canary_problem(job):
     return None
 
 
+KEY_COUNT_COMMAND = 'python3 "$GITHUB_WORKSPACE/.github/workflows/scripts/count-provider-keys.py"'
+
+# Literal values a live-providers job may give a provider credential instead of a secret.
+# Each one lets a provider register without making an upstream call, so it is not a key:
+# count-provider-keys.py does not count a credential set to one of these. Any other literal
+# value of a provider credential in a live-providers job fails the check, so a new
+# placeholder cannot pass for a key that arrived (Codex on PR #438).
+REGISTRATION_ONLY_PLACEHOLDERS = {
+    "registration-only-no-upstream-call",  # BFL_API_KEY: registers BFL, calls nothing
+}
+
+
+def first_command(run):
+    for line in str(run).splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            return line
+    return None
+
+
+def key_count_problem(job):
+    """Describes what is wrong with a live-providers job's provider-key count, or returns
+    None (TXE-8129). The count runs as the first command of a step, so it counts what that
+    step's suites get, and the steps that run it must between them see every provider
+    credential the job reads (their own env or the job's)."""
+    counting = [s for s in job.get("steps") or []
+                if isinstance(s, dict) and first_command(s.get("run", "")) == KEY_COUNT_COMMAND]
+    if not counting:
+        named = any(isinstance(s, dict) and "count-provider-keys.py" in str(s.get("run", ""))
+                    for s in job.get("steps") or [])
+        if named:
+            return f"runs count-provider-keys.py, but not as `{KEY_COUNT_COMMAND}` first in its step"
+        return f"has no step that runs `{KEY_COUNT_COMMAND}` as its first command"
+    job_env = {str(k).upper() for k in (job.get("env") or {})}
+    seen = set(job_env)
+    for step in counting:
+        seen |= {str(k).upper() for k in (step.get("env") or {})}
+    read = {n.upper() for _, n in secret_reads(job, "job") if n is not None} - {CANARY_SECRET}
+    unseen = read - seen
+    if unseen:
+        return (f"reads {listed(unseen)} in a step where count-provider-keys.py does not "
+                f"run, so the count would not show whether those keys arrived")
+    literal = set()
+    for env in [job.get("env")] + [s.get("env") for s in job.get("steps") or [] if isinstance(s, dict)]:
+        for key, value in (env if isinstance(env, dict) else {}).items():
+            if (isinstance(key, str) and is_provider_credential(key) and key.upper() != CANARY_SECRET
+                    and "${{" not in str(value) and str(value) not in REGISTRATION_ONLY_PLACEHOLDERS):
+                literal.add(key)
+    if literal:
+        return (f"sets {listed(literal)} to a literal that is not in "
+                f"REGISTRATION_ONLY_PLACEHOLDERS, so count-provider-keys.py would count it as "
+                f"a provider key that arrived")
+    return None
+
+
+def job_env_keys(job):
+    """Returns the job-level env variables of a job that hold a provider credential: those
+    named as one (a literal placeholder too) and those whose value reads one, or reads
+    secrets dynamically (TXE-8192). Job-level env reaches every step of the job, third-party
+    actions included, so a live-providers job sets its keys in the env of the step that runs
+    the provider suites instead."""
+    env = job.get("env")
+    if not isinstance(env, dict):  # an expression that builds the whole env
+        return {"an expression"} if list(secret_reads(env, "job.env")) else set()
+    found = set()
+    for key, value in env.items():
+        if isinstance(key, str) and is_provider_credential(key):
+            found.add(key)
+        elif list(secret_reads(value, f"job.env.{key}")):
+            found.add(str(key))
+    return found
+
+
 GUARD_STEP_ID = "environment-only-secrets"
 GUARD_LIST = re.compile(r"for name in\s+(.*?);\s*do\b", re.DOTALL)
 
@@ -322,8 +417,7 @@ def called_workflow(caller_path, uses):
     path = os.path.join(os.path.dirname(os.path.abspath(caller_path)), uses[len(LOCAL_WORKFLOW):])
     if not os.path.isfile(path):
         return None
-    with open(path) as fh:
-        doc = yaml.safe_load(fh) or {}
+    doc = load_yaml(path)
     return doc if workflow_call(doc) is not None else None
 
 
@@ -340,8 +434,7 @@ def listed(names):
 
 
 def problems(path):
-    with open(path) as fh:
-        doc = yaml.safe_load(fh) or {}
+    doc = load_yaml(path)
     name = os.path.basename(path)
     call = workflow_call(doc)
     declared = {str(k).upper() for k in ((call or {}).get("secrets") or {})}
@@ -413,6 +506,17 @@ def problems(path):
                 yield (f"{where}: names `environment: {ENVIRONMENT}` but {problem}; the "
                        f"canary step fails the job when the environment's secrets did not "
                        f"reach it (TXE-7574)")
+            keys = job_env_keys(job)
+            if keys:
+                yield (f"{where}: names `environment: {ENVIRONMENT}` but sets {listed(keys)} in "
+                       f"its job-level env, which every step of the job reads, third-party "
+                       f"actions included; set provider keys in the env of the step that runs the "
+                       f"provider suites (TXE-8192)")
+            problem = key_count_problem(job)
+            if problem:
+                yield (f"{where}: names `environment: {ENVIRONMENT}` but {problem}; a job "
+                       f"with no provider key skips its suites and still passes, and the count "
+                       f"is what says so (TXE-8129)")
             if call is not None:
                 reads = {s for _, s in all_secret_reads(job, "job")
                          if s is None or s.upper() != "GITHUB_TOKEN"}

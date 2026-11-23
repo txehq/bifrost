@@ -48,6 +48,7 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 	// Canonical model for capability gating only; wire model (openaiReq.Model) is untouched.
 	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
 	caps := schemas.ResolveModelCaps(bifrostReq.Provider, capModel)
+	openaiReq.CacheControlOnWire = schemas.Ptr(perBlockCacheControlOnWire(ctx, bifrostReq.Provider, capModel))
 
 	if bifrostReq.Params != nil {
 		openaiReq.ChatParameters = *bifrostReq.Params
@@ -502,8 +503,9 @@ func chatServiceTierUndeliverableError(ctx *schemas.BifrostContext, bifrostReq *
 // first, inside its request converter, so a refused request makes no upstream call: a
 // service tier the model cannot take (ChatServiceTierError) or the provider does not send
 // (chatServiceTierUndeliverableError), a reasoning setting the provider's branch would change
-// into another level (chatReasoningRefusal), then a prompt-cache field the provider's branch
-// would not deliver (ChatPromptCacheFieldError). A refusal added later goes here, not at the call
+// into another level (chatReasoningRefusal), a per-block cache_control ttl the provider would
+// not deliver (cacheControlTTLRefusal), then a prompt-cache field the provider's branch would
+// not deliver (ChatPromptCacheFieldError). A refusal added later goes here, not at the call
 // sites.
 func ChatRequestRefusal(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostChatRequest) *schemas.BifrostError {
 	if tierErr := ChatServiceTierError(ctx, bifrostReq); tierErr != nil {
@@ -514,6 +516,9 @@ func ChatRequestRefusal(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifrost
 	}
 	if reasoningErr := chatReasoningRefusal(ctx, bifrostReq); reasoningErr != nil {
 		return reasoningErr
+	}
+	if ttlErr := cacheControlTTLRefusal(ctx, bifrostReq); ttlErr != nil {
+		return ttlErr
 	}
 	return ChatPromptCacheFieldError(ctx, bifrostReq)
 }

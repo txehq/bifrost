@@ -9334,7 +9334,22 @@ func promptCacheResponsesRequest(ctx *schemas.BifrostContext, config *schemas.Pr
 	}
 	cp := *r
 	cp.Input = providerUtils.InjectResponsesCacheBreakpointsSkipping(promptCache, r.Input, injectedMCPInstructionsResponsesIndex(ctx, r.Input))
+	restampInjectedCacheControlTTL(ctx, provider, &schemas.BifrostRequest{ResponsesRequest: &cp})
 	return &cp
+}
+
+// restampInjectedCacheControlTTL re-reads the longest typed cache_control.ttl after prompt_cache
+// injection added markers (a configured ttl: "1h"), which happens after
+// stampRequestedPromptCacheTTL. Without it, a request whose only 1h markers were injected would
+// skip the body read and be priced at the base rate (fork, TXE-8086). Only a base provider in
+// CacheControlTTLPricedCacheWrites is stamped.
+func restampInjectedCacheControlTTL(ctx *schemas.BifrostContext, provider schemas.ModelProvider, prepared *schemas.BifrostRequest) {
+	if ctx == nil {
+		return
+	}
+	if _, listed := schemas.CacheControlTTLPricedCacheWrites[schemas.ResolveBaseProvider(ctx, provider)]; listed {
+		ctx.SetValue(schemas.BifrostContextKeyRequestedCacheControlTTL, prepared.RequestedCacheControlTTL())
+	}
 }
 
 // prepareResponsesRequest returns the Responses request to dispatch for one attempt:
@@ -9581,6 +9596,7 @@ func promptCacheChatRequest(ctx *schemas.BifrostContext, config *schemas.Provide
 	}
 	cp := *r
 	cp.Input = providerUtils.InjectChatCacheBreakpointsSkipping(promptCache, r.Input, injectedMCPInstructionsChatIndex(ctx, r.Input))
+	restampInjectedCacheControlTTL(ctx, provider, &schemas.BifrostRequest{ChatRequest: &cp})
 	return &cp
 }
 
@@ -9753,18 +9769,37 @@ func (bifrost *Bifrost) dispatchResponsesStream(ctx *schemas.BifrostContext, pro
 // none, so a value a caller or an earlier attempt left there is never priced. Pricing reads it
 // through datasheet.LookupScopesFromContext to cost a cache write for a vendor that prices it by
 // the TTL and reports no tier (Kimi; fork, TXE-7069). usage is left as the vendor reported it.
-func stampRequestedPromptCacheTTL(req *ChannelMessage) {
+func stampRequestedPromptCacheTTL(req *ChannelMessage, base schemas.ModelProvider) {
 	if req == nil || req.Context == nil {
 		return
 	}
 	merged, _ := req.Context.Value(schemas.BifrostContextKeyPassthroughExtraParams).(bool)
 	req.Context.SetValue(schemas.BifrostContextKeyRequestedPromptCacheTTL, req.BifrostRequest.RequestedPromptCacheTTLOnWire(merged))
+	// The longest cache_control.ttl, walked from the typed request only on an attempt whose base
+	// provider (base, a custom provider's included) bills a write at it
+	// (CacheControlTTLPricedCacheWrites; fork, TXE-8086); the request path then reads it from the
+	// body sent. Such an attempt always writes the key, so a value a caller or an earlier attempt
+	// left is never priced. Pricing reads the key only for a listed provider, so any other attempt
+	// leaves it alone and pays one map lookup.
+	if _, listed := schemas.CacheControlTTLPricedCacheWrites[base]; listed {
+		req.Context.SetValue(schemas.BifrostContextKeyRequestedCacheControlTTL, req.BifrostRequest.RequestedCacheControlTTL())
+	}
+}
+
+// attemptBaseProvider is the provider an attempt's vendor is: the provider itself, or a custom
+// provider's base_provider_type. requestWorker stamps the same value on the context
+// (BifrostContextKeyBaseProviderType).
+func attemptBaseProvider(provider schemas.Provider, config *schemas.ProviderConfig) schemas.ModelProvider {
+	if config != nil && config.CustomProviderConfig != nil && config.CustomProviderConfig.BaseProviderType != "" {
+		return config.CustomProviderConfig.BaseProviderType
+	}
+	return provider.GetProviderKey()
 }
 
 // handleProviderRequest handles the request to the provider based on the request type
 // key is used for single-key operations, keys is used for batch/file operations that need multiple keys
 func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config *schemas.ProviderConfig, req *ChannelMessage, key schemas.Key, keys []schemas.Key) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	stampRequestedPromptCacheTTL(req)
+	stampRequestedPromptCacheTTL(req, attemptBaseProvider(provider, config))
 	response := &schemas.BifrostResponse{}
 	switch req.RequestType {
 	case schemas.ListModelsRequest:
@@ -10255,7 +10290,7 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 
 // handleProviderStreamRequest handles the stream request to the provider based on the request type
 func (bifrost *Bifrost) handleProviderStreamRequest(provider schemas.Provider, config *schemas.ProviderConfig, req *ChannelMessage, key schemas.Key, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context)) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	stampRequestedPromptCacheTTL(req)
+	stampRequestedPromptCacheTTL(req, attemptBaseProvider(provider, config))
 	switch req.RequestType {
 	case schemas.TextCompletionStreamRequest:
 		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ChatCompletionRequest {
