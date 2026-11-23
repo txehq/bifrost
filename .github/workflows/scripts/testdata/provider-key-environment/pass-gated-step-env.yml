@@ -1,0 +1,31 @@
+# The finding's job, gated, with the keys scoped to the one step that runs the suites
+# (TXE-8192): the checkout and other steps never see them.
+on:
+  workflow_dispatch:
+    inputs:
+      branch: {required: true, type: string}
+jobs:
+  run-core-tests:
+    environment: live-providers
+    runs-on: ubuntu-24.04
+    env:
+      GOFLAGS: -mod=readonly
+    steps:
+      - uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+      - id: live-providers-canary
+        env:
+          LIVE_PROVIDERS_CANARY: ${{ secrets.LIVE_PROVIDERS_CANARY }}
+        run: |
+          if [ -z "$LIVE_PROVIDERS_CANARY" ]; then exit 1; fi
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.branch }}
+      - env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          BFL_API_KEY: registration-only-no-upstream-call
+        run: |
+          python3 "$GITHUB_WORKSPACE/.github/workflows/scripts/count-provider-keys.py"
+          ./.github/workflows/scripts/test-core.sh

@@ -74,8 +74,15 @@ provider keys (TXE-8129). The canary shows the environment's secrets arrived, no
 provider key is among them; with none, the provider suites skip and the job still passes.
 So the step that holds the keys runs count-provider-keys.py as its first command, which
 warns and writes "keyless: provider suites skipped" to the step summary when none is set.
-The steps that run it must between them see every provider credential the job reads, in
-their own env or the job's.
+The steps that run it must between them see every provider credential the job reads in
+their own env.
+
+It also fails when a job that names `environment: live-providers` sets a provider
+credential in its job-level env (TXE-8192): a variable named as one, a literal placeholder
+included, or one whose value reads one. Job-level env reaches every step, third-party
+actions included, so the keys go in the env of the step that runs the provider suites,
+as the release-pipeline jobs have them. The environment gates who runs the job; the step
+scope limits which code in it sees the keys.
 
 The repository half, that the keys exist only as environment secrets and that the
 environment requires a reviewer, is a setting this check cannot read with a pull
@@ -318,6 +325,24 @@ def key_count_problem(job):
     return None
 
 
+def job_env_keys(job):
+    """Returns the job-level env variables of a job that hold a provider credential: those
+    named as one (a literal placeholder too) and those whose value reads one, or reads
+    secrets dynamically (TXE-8192). Job-level env reaches every step of the job, third-party
+    actions included, so a live-providers job sets its keys in the env of the step that runs
+    the provider suites instead."""
+    env = job.get("env")
+    if not isinstance(env, dict):  # an expression that builds the whole env
+        return {"an expression"} if list(secret_reads(env, "job.env")) else set()
+    found = set()
+    for key, value in env.items():
+        if isinstance(key, str) and is_provider_credential(key):
+            found.add(key)
+        elif list(secret_reads(value, f"job.env.{key}")):
+            found.add(str(key))
+    return found
+
+
 GUARD_STEP_ID = "environment-only-secrets"
 GUARD_LIST = re.compile(r"for name in\s+(.*?);\s*do\b", re.DOTALL)
 
@@ -481,6 +506,12 @@ def problems(path):
                 yield (f"{where}: names `environment: {ENVIRONMENT}` but {problem}; the "
                        f"canary step fails the job when the environment's secrets did not "
                        f"reach it (TXE-7574)")
+            keys = job_env_keys(job)
+            if keys:
+                yield (f"{where}: names `environment: {ENVIRONMENT}` but sets {listed(keys)} in "
+                       f"its job-level env, which every step of the job reads, third-party "
+                       f"actions included; set provider keys in the env of the step that runs the "
+                       f"provider suites (TXE-8192)")
             problem = key_count_problem(job)
             if problem:
                 yield (f"{where}: names `environment: {ENVIRONMENT}` but {problem}; a job "

@@ -1,0 +1,25 @@
+# expect: job test-core: names `environment: live-providers` but sets PROVIDER_TOKEN in its job-level env
+# TXE-8192: a job-level variable whose name is not a credential's still hands the credential it
+# reads to every step.
+on: workflow_dispatch
+jobs:
+  test-core:
+    environment: live-providers
+    runs-on: ubuntu-24.04
+    env:
+      PROVIDER_TOKEN: ${{ secrets.OPENAI_API_KEY }}
+    steps:
+      - uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+      - id: live-providers-canary
+        env:
+          LIVE_PROVIDERS_CANARY: ${{ secrets.LIVE_PROVIDERS_CANARY }}
+        run: |
+          if [ -z "$LIVE_PROVIDERS_CANARY" ]; then exit 1; fi
+      - uses: actions/checkout@v6
+      - env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python3 "$GITHUB_WORKSPACE/.github/workflows/scripts/count-provider-keys.py"
+          ./.github/workflows/scripts/test-core.sh
