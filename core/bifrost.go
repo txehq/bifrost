@@ -11482,7 +11482,7 @@ func (bifrost *Bifrost) getAllSupportedKeys(ctx *schemas.BifrostContext, provide
 			bifrost.logger.Warn("error validating key %s (%s) for provider %s: %s, skipping key", key.Name, key.ID, providerKey, err.Error())
 			continue
 		}
-		if strings.TrimSpace(key.Value.GetValue()) != "" || keyValueMayBeEmpty(baseProviderType, &key) {
+		if KeyHasCredential(baseProviderType, &key) {
 			supportedKeys = append(supportedKeys, key)
 		}
 	}
@@ -11547,7 +11547,7 @@ func (bifrost *Bifrost) getKeysForBatchAndFileOps(ctx *schemas.BifrostContext, p
 		}
 
 		// Check key value (or if provider allows empty keys or has Azure Entra ID credentials)
-		if strings.TrimSpace(k.Value.GetValue()) != "" || keyValueMayBeEmpty(baseProviderType, &k) {
+		if KeyHasCredential(baseProviderType, &k) {
 			filteredKeys = append(filteredKeys, k)
 		}
 	}
@@ -11705,7 +11705,7 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 				bifrost.logger.Warn("error validating key %s (%s) for provider %s: %s, skipping key", key.Name, key.ID, providerKey, err.Error())
 				continue
 			}
-			if strings.TrimSpace(key.Value.GetValue()) != "" || keyValueMayBeEmpty(baseProviderType, &key) {
+			if KeyHasCredential(baseProviderType, &key) {
 				supportedKeys = append(supportedKeys, key)
 			}
 		}
@@ -11720,7 +11720,7 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 				bifrost.logger.Warn("error validating key %s (%s) for provider %s: %s, skipping key", key.Name, key.ID, providerKey, err.Error())
 				continue
 			}
-			hasValue := strings.TrimSpace(key.Value.GetValue()) != "" || keyValueMayBeEmpty(baseProviderType, &key)
+			hasValue := KeyHasCredential(baseProviderType, &key)
 			// ["*"] = allow all models; [] = deny all; specific list = allow only listed
 			// NOTE: Model filtering uses the original requested model (which may be an alias).
 			// key.Models and key.BlacklistedModels must therefore be expressed in alias keys.

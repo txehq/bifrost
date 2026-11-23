@@ -14426,18 +14426,14 @@ func migrationAddDatabricksKeyConfigColumns(ctx context.Context, db *gorm.DB, lo
 	return nil
 }
 
-// githubCopilotConfigColumns are the GitHub App credential columns on the key table.
-var githubCopilotConfigColumns = []string{
-	"github_copilot_app_id",
-	"github_copilot_installation_id",
-	"github_copilot_repository_id",
-	"github_copilot_private_key",
-	"github_copilot_github_domain",
-}
-
 // migrationAddGithubCopilotConfigColumns adds the GitHub App credential columns to the key
-// table. There is nothing to backfill: github-copilot is a new provider, so no existing row
-// can carry these values.
+// table. There is nothing to backfill: github-copilot was a new provider, so no existing row
+// could carry these values.
+//
+// Upstream removed this migration with App auth (d9633b2fa). The fork keeps it (TXE-6085):
+// the columns keep their data for a rollback to a binary with App auth, and a fresh database
+// gets them too, so every configstore has the same config_keys shape. They are mapped by
+// tables.TableKeyGithubCopilotApp, not TableKey.
 func migrationAddGithubCopilotConfigColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "add_github_copilot_config_columns"
 	logger.Info("[configstore] starting migration %s", migrationName)
@@ -14447,8 +14443,8 @@ func migrationAddGithubCopilotConfigColumns(ctx context.Context, db *gorm.DB, lo
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			for _, column := range githubCopilotConfigColumns {
-				if err := addColumnIfNotExists(tx, logger, &tables.TableKey{}, column); err != nil {
+			for _, column := range tables.GithubCopilotAppColumns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableKeyGithubCopilotApp{}, column); err != nil {
 					return err
 				}
 			}

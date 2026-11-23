@@ -37,6 +37,11 @@ set -euo pipefail
 #   check-test-config-services.py             every test config a CI job boots names only services
 #       that job starts (TXE-8090): tests/integrations/python/config.json named a Weaviate no
 #       job started, and sync.15's test-core-integrations died at startup.
+#   check-fixture-containers.py               the fixture-folder job's containers have one home,
+#       fixture-containers.sh (TXE-6085): each image matches its compose service, and every job
+#       that starts one allows exactly its address:ports and pulls its image.
+#   fixture-containers.test.sh                 fixture_run against a stub docker: it replaces only a
+#       container this job run labelled, and refuses a foreign container or network (TXE-6085).
 #   validate-helm-schema.sh                   values.schema.json agrees with config.schema.json;
 #       the release's test-bifrost-http job starts with it and fails the release when it does not.
 #   test-migration-fixtures.py                 the v2.0.0 migration seed SQL; needs no service.
@@ -101,6 +106,15 @@ echo ""
 echo "🧪 check-test-config-services.py (every service a booted test config names is started by its job, TXE-8090)"
 python3 "$SCRIPT_DIR/check-test-config-services.py" --self-test
 python3 "$SCRIPT_DIR/check-test-config-services.py"
+
+echo ""
+echo "🧪 check-fixture-containers.py (fixture images, addresses and allowlists have one home, TXE-6085)"
+python3 "$SCRIPT_DIR/check-fixture-containers.py" --self-test
+python3 "$SCRIPT_DIR/check-fixture-containers.py"
+
+echo ""
+echo "🧪 fixture-containers.test.sh (a fixture start never removes a container it does not own, TXE-6085)"
+bash "$SCRIPT_DIR/fixture-containers.test.sh"
 
 echo ""
 echo "🧪 validate-helm-schema.sh (the release's test-bifrost-http starts with it; on PRs since TXE-7424)"

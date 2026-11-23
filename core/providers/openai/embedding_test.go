@@ -113,3 +113,34 @@ func BenchmarkEmbeddingRequestBody(b *testing.B) {
 		}
 	}
 }
+
+func benchEmbeddingRequest(texts ...string) *schemas.BifrostEmbeddingRequest {
+	items := make([]schemas.EmbeddingInputItem, len(texts))
+	for i := range texts {
+		items[i] = schemas.EmbeddingInputItem{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &texts[i]}}}
+	}
+	return &schemas.BifrostEmbeddingRequest{Provider: schemas.OpenAI, Model: "text-embedding-3-small", Input: items}
+}
+
+// BenchmarkToOpenAIEmbeddingRequest measures the shared embedding conversion. The single-text
+// case is where TXE-6085 added the GitHub Copilot comparison (Copilot is sent string[]).
+func BenchmarkToOpenAIEmbeddingRequest(b *testing.B) {
+	for _, bc := range []struct {
+		name     string
+		provider schemas.ModelProvider
+		req      *schemas.BifrostEmbeddingRequest
+	}{
+		{"openai/one", schemas.OpenAI, benchEmbeddingRequest("the quick brown fox")},
+		{"openai/three", schemas.OpenAI, benchEmbeddingRequest("a", "b", "c")},
+		{"githubcopilot/one", schemas.GithubCopilot, benchEmbeddingRequest("the quick brown fox")},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := openai.ToOpenAIEmbeddingRequest(bc.req, bc.provider); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}

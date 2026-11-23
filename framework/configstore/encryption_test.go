@@ -1679,3 +1679,100 @@ func BenchmarkCredentialLookupFallback(b *testing.B) {
 		}
 	})
 }
+
+// TestEncryptPlaintextKeys_GithubCopilotAppColumnsFollowTheirRow pins that the GitHub App
+// columns a Copilot key kept from before App auth was removed (TXE-6085) are encrypted when
+// their row is. TableKey no longer maps them, so without TableKey.BeforeSave's
+// encryptGithubCopilotAppColumns the startup pass marked the row encrypted over plaintext App
+// columns, and a rollback to a binary with App auth, which decrypts them whenever the row
+// says encrypted, could no longer load the key. A later save must leave them as they are.
+func TestEncryptPlaintextKeys_GithubCopilotAppColumnsFollowTheirRow(t *testing.T) {
+	store, db := setupEncryptionTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, migrationAddGithubCopilotConfigColumns(ctx, db, testMigrationLogger))
+	now := time.Now().UTC().Format("2006-01-02 15:04:05")
+
+	const pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIEow\n-----END RSA PRIVATE KEY-----"
+	want := map[string]string{
+		"github_copilot_app_id":          "123456",
+		"github_copilot_installation_id": "87654321",
+		"github_copilot_repository_id":   "999000111",
+		"github_copilot_private_key":     pem,
+		"github_copilot_github_domain":   "acme.ghe.com",
+	}
+	insertPlaintextRow(t, db,
+		`INSERT INTO config_keys (name, provider_id, provider, key_id, value, encryption_status, created_at, updated_at,
+		 github_copilot_app_id, github_copilot_installation_id, github_copilot_repository_id, github_copilot_private_key, github_copilot_github_domain)
+		 VALUES (?, ?, ?, ?, '', 'plain_text', ?, ?, ?, ?, ?, ?, ?)`,
+		"copilot-app", 1, "github-copilot", "ck-app", now, now,
+		want["github_copilot_app_id"], want["github_copilot_installation_id"], want["github_copilot_repository_id"], want["github_copilot_private_key"], want["github_copilot_github_domain"])
+	// A plaintext row with no App columns, and one whose App id is an env reference, which
+	// encryption leaves as written.
+	insertPlaintextRow(t, db,
+		`INSERT INTO config_keys (name, provider_id, provider, key_id, value, encryption_status, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, 'plain_text', ?, ?)`,
+		"copilot-pat", 1, "github-copilot", "ck-pat", "github_pat_plain", now, now)
+	insertPlaintextRow(t, db,
+		`INSERT INTO config_keys (name, provider_id, provider, key_id, value, encryption_status, created_at, updated_at, github_copilot_app_id)
+		 VALUES (?, ?, ?, ?, '', 'plain_text', ?, ?, ?)`,
+		"copilot-env", 1, "github-copilot", "ck-env", now, now, "env.GITHUB_COPILOT_APP_ID")
+
+	count, err := store.encryptPlaintextKeys(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 3, count)
+
+	rawApp := func(name string) map[string]any {
+		var row map[string]any
+		require.NoError(t, db.Table("config_keys").Where("name = ?", name).Take(&row).Error)
+		return row
+	}
+	// What a binary with App auth does on read: decrypt every App column of an encrypted row.
+	readAsOlderBinary := func(name string) map[string]string {
+		var app tables.TableKeyGithubCopilotApp
+		require.NoError(t, db.Where("name = ?", name).Take(&app).Error)
+		require.Equal(t, tables.EncryptionStatusEncrypted, app.EncryptionStatus)
+		got := map[string]string{}
+		for column, field := range map[string]*schemas.SecretVar{
+			"github_copilot_app_id":          app.GithubCopilotAppID,
+			"github_copilot_installation_id": app.GithubCopilotInstallationID,
+			"github_copilot_repository_id":   app.GithubCopilotRepositoryID,
+			"github_copilot_private_key":     app.GithubCopilotPrivateKey,
+			"github_copilot_github_domain":   app.GithubCopilotGithubDomain,
+		} {
+			if field == nil {
+				continue
+			}
+			if field.IsFromSecret() {
+				got[column] = field.String()
+				continue
+			}
+			plain, err := encrypt.Decrypt(field.Val)
+			require.NoError(t, err, "%s of %s must decrypt, as the older binary will", column, name)
+			got[column] = plain
+		}
+		return got
+	}
+
+	raw := rawApp("copilot-app")
+	assert.Equal(t, "encrypted", raw["encryption_status"])
+	for column, plain := range want {
+		assert.NotEqual(t, plain, raw[column], "%s is stored plaintext in an encrypted row", column)
+	}
+	assert.Equal(t, want, readAsOlderBinary("copilot-app"))
+	assert.Empty(t, readAsOlderBinary("copilot-pat"))
+	assert.Nil(t, rawApp("copilot-pat")["github_copilot_private_key"])
+
+	// A save of the encrypted row (any key update) must not touch them again.
+	var key tables.TableKey
+	require.NoError(t, db.Where("name = ?", "copilot-app").First(&key).Error)
+	key.Value = *schemas.NewSecretVar("github_pat_after_upgrade")
+	require.NoError(t, db.Save(&key).Error)
+	after := rawApp("copilot-app")
+	for column := range want {
+		assert.Equal(t, raw[column], after[column], "%s changed on a later save", column)
+	}
+	assert.Equal(t, want, readAsOlderBinary("copilot-app"))
+	var reread tables.TableKey
+	require.NoError(t, db.Where("name = ?", "copilot-app").First(&reread).Error)
+	assert.Equal(t, "github_pat_after_upgrade", reread.Value.GetValue())
+}

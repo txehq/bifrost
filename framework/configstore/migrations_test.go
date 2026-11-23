@@ -4079,57 +4079,40 @@ func TestMigrationClearPluginConfigHashes(t *testing.T) {
 // App private key, which GitHub lets you download exactly once: dropping the column does
 // not merely lose a config value, it forces the operator to generate a new key on GitHub
 // and re-install it. The columns are additive, so an older binary ignores them safely and
-// there is nothing a rollback needs to undo.
+// there is nothing a rollback needs to undo. App auth is gone (TXE-6085), but the columns
+// and their data stay for a rollback to a binary that still has it.
 func TestMigrationAddGithubCopilotConfigColumns_NonRollbackable(t *testing.T) {
 	db := setupTestDB(t)
 	ctx := context.Background()
-
-	columns := []string{
-		"github_copilot_app_id",
-		"github_copilot_installation_id",
-		"github_copilot_repository_id",
-		"github_copilot_private_key",
-		"github_copilot_github_domain",
-	}
+	app := &tables.TableKeyGithubCopilotApp{}
 
 	require.NoError(t, db.AutoMigrate(&tables.TableKey{}))
-	for _, column := range columns {
-		require.NoError(t, db.Migrator().DropColumn(&tables.TableKey{}, column))
+	for _, column := range tables.GithubCopilotAppColumns {
+		if db.Migrator().HasColumn(app, column) {
+			require.NoError(t, db.Migrator().DropColumn(app, column))
+		}
 	}
 
 	require.NoError(t, migrationAddGithubCopilotConfigColumns(ctx, db, testMigrationLogger))
-	for _, column := range columns {
-		require.True(t, db.Migrator().HasColumn(&tables.TableKey{}, column),
-			"migration should have added %s", column)
+	for _, column := range tables.GithubCopilotAppColumns {
+		require.True(t, db.Migrator().HasColumn(app, column), "migration should have added %s", column)
 	}
 
 	// A key carrying App credentials is exactly the state a rollback would destroy.
-	seed := &tables.TableKey{
-		Name:       "copilot-rollback",
-		ProviderID: 1,
-		Provider:   "github-copilot",
-		KeyID:      "copilot-rollback-1",
-		GithubCopilotKeyConfig: &schemas.GithubCopilotKeyConfig{
-			AppID:          *schemas.NewSecretVar("123456"),
-			InstallationID: *schemas.NewSecretVar("87654321"),
-			RepositoryID:   *schemas.NewSecretVar("999000111"),
-			PrivateKey:     *schemas.NewSecretVar("-----BEGIN RSA PRIVATE KEY-----"),
-		},
-	}
-	require.NoError(t, db.Create(seed).Error)
+	require.NoError(t, db.Exec(`INSERT INTO config_keys (name, provider_id, provider, key_id, value, encryption_status, created_at, updated_at, github_copilot_private_key)
+		VALUES ('copilot-rollback', 1, 'github-copilot', 'copilot-rollback-1', '', 'plain_text', ?, ?, '-----BEGIN RSA PRIVATE KEY-----')`, time.Now(), time.Now()).Error)
 
 	err := rollbackGithubCopilotConfigColumns(db)
 	require.Error(t, err, "rollback must refuse: dropping the columns destroys an unrecoverable App private key")
 	assert.Contains(t, err.Error(), "non-rollbackable")
-	for _, column := range columns {
-		assert.True(t, db.Migrator().HasColumn(&tables.TableKey{}, column),
-			"a refused rollback must leave %s intact", column)
+	for _, column := range tables.GithubCopilotAppColumns {
+		assert.True(t, db.Migrator().HasColumn(app, column), "a refused rollback must leave %s intact", column)
 	}
 
-	var got tables.TableKey
-	require.NoError(t, db.Where("key_id = ?", seed.KeyID).First(&got).Error)
-	require.NotNil(t, got.GithubCopilotKeyConfig)
-	assert.Equal(t, "-----BEGIN RSA PRIVATE KEY-----", got.GithubCopilotKeyConfig.PrivateKey.GetValue(),
+	var got tables.TableKeyGithubCopilotApp
+	require.NoError(t, db.Where("key_id = ?", "copilot-rollback-1").Take(&got).Error)
+	require.NotNil(t, got.GithubCopilotPrivateKey)
+	assert.Equal(t, "-----BEGIN RSA PRIVATE KEY-----", got.GithubCopilotPrivateKey.GetValue(),
 		"the private key must survive the refused rollback")
 }
 

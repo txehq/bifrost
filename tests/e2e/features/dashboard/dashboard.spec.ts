@@ -115,6 +115,25 @@ test.describe('Dashboard', () => {
     }
   })
 
+  test.describe('Date picker timezone', () => {
+    // The calendar follows the timezone picked in the date picker, not the browser's
+    // (upstream #8872). Kiritimati (UTC+14) and Pago Pago (UTC-11) are 25 hours apart, so
+    // their dates always differ and one browser-local calendar cannot pass for both.
+    for (const zone of ['Pacific/Kiritimati', 'Pacific/Pago_Pago']) {
+      test(`marks today in ${zone}`, async ({ dashboardPage }) => {
+        await dashboardPage.page.evaluate((z) => localStorage.setItem('bifrost.timezone', z), zone)
+        await dashboardPage.goto()
+        await dashboardPage.closePopups()
+        await dashboardPage.getDatePickerTrigger().click()
+        const popover = dashboardPage.page.locator('[data-radix-popper-content-wrapper]').last()
+        const today = popover.locator('[data-today="true"]').first()
+        await expect(today).toBeVisible()
+        const expected = new Intl.DateTimeFormat('en-US', { timeZone: zone, day: 'numeric' }).format(new Date())
+        await expect(today).toHaveText(expected)
+      })
+    }
+  })
+
   test.describe('Chart Type Toggling', () => {
     test('should toggle volume chart type', async ({ dashboardPage }) => {
       // Get initial toggle state from DOM

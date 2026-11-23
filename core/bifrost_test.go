@@ -11185,6 +11185,44 @@ func BenchmarkGetKeysForBatchAndFileOps(b *testing.B) {
 	}
 }
 
+// BenchmarkSelectKeyFromProviderForModelWithPool measures the key pool an inference request
+// is given, the path every request takes. TXE-6085 routes its credential test through
+// KeyHasCredential (the rule the gateway also reports unusable keys with at load); the pool
+// and its cost are unchanged. One key in eight has no value, as a GitHub Copilot key whose
+// App credentials were removed does, and is left out of the pool.
+func BenchmarkSelectKeyFromProviderForModelWithPool(b *testing.B) {
+	account := NewMockAccount()
+	keys := make([]schemas.Key, 0, 8)
+	for i := range 8 {
+		value := fmt.Sprintf("sk-%d", i)
+		if i == 7 {
+			value = ""
+		}
+		keys = append(keys, schemas.Key{
+			ID:     fmt.Sprintf("key-%d", i),
+			Name:   fmt.Sprintf("tk-key-%d", i),
+			Value:  *schemas.NewSecretVar(value),
+			Models: schemas.WhiteList{"*"},
+			Weight: 1,
+		})
+	}
+	bifrost := &Bifrost{account: account, logger: NewDefaultLogger(schemas.LogLevelError), keySelector: keyselectors.WeightedRandom}
+	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.GithubCopilot} {
+		account.AddProvider(provider, 1, 10)
+		account.SetKeysForProvider(provider, keys)
+		b.Run(string(provider), func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			b.ReportAllocs()
+			for b.Loop() {
+				pool, _, err := bifrost.selectKeyFromProviderForModelWithPool(ctx, schemas.ChatCompletionRequest, provider, "gpt-5-mini", provider)
+				if err != nil || len(pool) != 7 {
+					b.Fatalf("pool = %d keys, err %v, want 7", len(pool), err)
+				}
+			}
+		})
+	}
+}
+
 // A results response is partial when the caller asked for a page or more lines follow; the
 // last page of a paged read is partial too, though nothing follows it.
 func TestIsPartialBatchResults(t *testing.T) {
@@ -12302,6 +12340,17 @@ func guardBodyOutsideField(t *testing.T, body []byte, field string) []byte {
 	return rest
 }
 
+// guardBaseURL is the base URL a provider is configured with: the guard upstream over http,
+// or over https for a provider that refuses http to anything but localhost. GitHub Copilot
+// sends a Copilot API token only to an https base_url (upstream d9633b2fa); the guard's
+// intercepting proxy terminates TLS with its own CA, so both reach the same upstream.
+func guardBaseURL(provider schemas.ModelProvider) string {
+	if provider == schemas.GithubCopilot {
+		return "https://" + guardUpstreamHost
+	}
+	return "http://" + guardUpstreamHost
+}
+
 func TestExtraParamsNeverReplaceTheModelOrInputOnAnyProvider(t *testing.T) {
 	upstream := newGuardUpstream(t)
 	client := &Bifrost{logger: NewNoOpLogger()}
@@ -12329,7 +12378,7 @@ func TestExtraParamsNeverReplaceTheModelOrInputOnAnyProvider(t *testing.T) {
 		providerKey := tc.provider
 		t.Run(tc.name, func(t *testing.T) {
 			config := &schemas.ProviderConfig{
-				NetworkConfig: schemas.NetworkConfig{BaseURL: "http://" + guardUpstreamHost, DefaultRequestTimeoutInSeconds: 10},
+				NetworkConfig: schemas.NetworkConfig{BaseURL: guardBaseURL(providerKey), DefaultRequestTimeoutInSeconds: 10},
 				ProxyConfig: &schemas.ProxyConfig{
 					Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(upstream.proxyURL), CACertPEM: schemas.NewSecretVar(upstream.caPEM),
 				},

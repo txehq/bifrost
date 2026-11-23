@@ -212,12 +212,17 @@ jobs:
           # pulls hit `toomanyrequests`, TXE-7684), and the container's fixed address on its
           # own network (start-fixture-weaviate.sh), which the published loopback port DNATs to
           # and Weaviate gossips to itself on (7946/7947 as the script binds them, and 8301, which
-          # release-pipeline.yml allows for the same image).
+          # release-pipeline.yml allows for the same image). Folder 671's ClickHouse (TXE-6085):
+          # the digest-pinned image tests/docker-compose.yml uses, from the same mirror, at its
+          # fixed address on that network (start-fixture-clickhouse.sh), native protocol only.
+          # Each fixture's address, ports and image live in scripts/fixture-containers.sh;
+          # check-fixture-containers.py fails when this list and that file disagree.
           allowed-endpoints: >
             172.39.0.12:7946
             172.39.0.12:7947
             172.39.0.12:8080
             172.39.0.12:8301
+            172.39.0.13:9000
             api.github.com:443
             github.com:443
             nodejs.org:443
@@ -237,7 +242,7 @@ jobs:
       - name: Use the GHCR image mirror
         uses: ./.github/actions/ci-images
         with:
-          pull: .github/workflows/scripts/start-fixture-weaviate.sh
+          pull: .github/workflows/scripts/fixture-containers.sh
 
       - name: Set up Go
         uses: ./.github/actions/setup-go
@@ -271,6 +276,11 @@ jobs:
       # writes FIXTURE_WEAVIATE_URL for the warp-wire group.
       - name: Start Weaviate for the warp-wire group
         run: bash .github/workflows/scripts/start-fixture-weaviate.sh
+
+      # Folder 671 needs a ClickHouse log store (TXE-6085): digest-pinned, published on loopback
+      # only. It writes FIXTURE_CLICKHOUSE_URL for the clickhouse-logstore group.
+      - name: Start ClickHouse for the clickhouse-logstore group
+        run: bash .github/workflows/scripts/start-fixture-clickhouse.sh
 
       - name: Run the fixture folders
         run: scripts/test-offline.sh node tests/e2e/api/runners/fixture-folders.mjs run --gateway "$RUNNER_TEMP/bifrost-http" --work-dir "$RUNNER_TEMP/fixture-folders"

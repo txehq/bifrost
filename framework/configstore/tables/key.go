@@ -3,6 +3,7 @@ package tables
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -119,12 +120,8 @@ type TableKey struct {
 
 	EncryptionStatus string `gorm:"type:varchar(20);default:'plain_text'" json:"-"`
 
-	// GitHub Copilot config fields (embedded)
-	GithubCopilotAppID          *schemas.SecretVar `gorm:"type:text" json:"github_copilot_app_id,omitempty"`
-	GithubCopilotInstallationID *schemas.SecretVar `gorm:"type:text" json:"github_copilot_installation_id,omitempty"`
-	GithubCopilotRepositoryID   *schemas.SecretVar `gorm:"type:text" json:"github_copilot_repository_id,omitempty"`
-	GithubCopilotPrivateKey     *schemas.SecretVar `gorm:"type:text" json:"github_copilot_private_key,omitempty"`
-	GithubCopilotGithubDomain   *schemas.SecretVar `gorm:"type:text" json:"github_copilot_github_domain,omitempty"`
+	// The GitHub App columns of GitHub Copilot keys are not mapped here; see
+	// TableKeyGithubCopilotApp.
 
 	// oauth_key_config: the credential fields get their own encrypted columns; the
 	// non-secret settings (grant, scopes, claims, auth style) travel as one JSON column.
@@ -148,13 +145,148 @@ type TableKey struct {
 	SGLKeyConfig           *schemas.SGLKeyConfig           `gorm:"-" json:"sgl_key_config,omitempty"`
 	DatabricksKeyConfig    *schemas.DatabricksKeyConfig    `gorm:"-" json:"databricks_key_config,omitempty"`
 	BFLKeyConfig           *schemas.BFLKeyConfig           `gorm:"-" json:"bfl_key_config,omitempty"`
-	GithubCopilotKeyConfig *schemas.GithubCopilotKeyConfig `gorm:"-" json:"github_copilot_key_config,omitempty"`
 	CloudflareKeyConfig    *schemas.CloudflareKeyConfig    `gorm:"-" json:"cloudflare_key_config,omitempty"`
 	OAuthKeyConfig         *schemas.OAuthKeyConfig         `gorm:"-" json:"oauth_key_config,omitempty"`
+
+	githubCopilotApp *TableKeyGithubCopilotApp // the App columns of a row being deleted; see BeforeDelete
 }
 
 // TableName sets the table name for each model
 func (TableKey) TableName() string { return "config_keys" }
+
+// GithubCopilotAppColumns are the GitHub App credential columns that GitHub Copilot keys
+// stored until App auth was removed (upstream d9633b2fa, adopted by the fork in TXE-6085).
+var GithubCopilotAppColumns = []string{
+	"github_copilot_app_id",
+	"github_copilot_installation_id",
+	"github_copilot_repository_id",
+	"github_copilot_private_key",
+	"github_copilot_github_domain",
+}
+
+// TableKeyGithubCopilotApp maps the GitHub App columns of config_keys and nothing else.
+//
+// Nothing reads them at runtime any more. They are kept, data included, so a rollback to a
+// binary with App auth finds its keys intact: GitHub issues an App private key once. TableKey
+// does not map them, so no save built from a schemas.Key writes them, and a new binary can
+// neither clear nor overwrite them. What TableKey's hooks did for them as mapped fields, they
+// still do through this model, so the stored credentials stay as protected as before: a save
+// moves plaintext ones into the vault when vault writes are on, encrypts them when it marks
+// their row encrypted (the older binary decrypts them whenever the row says encrypted), and a
+// delete removes the vault entries they own. See secureGithubCopilotAppColumns and
+// TableKey.BeforeDelete. Field names are the ones TableKey had, so the vault paths are too.
+type TableKeyGithubCopilotApp struct {
+	ID                          uint               `gorm:"primaryKey"`
+	EncryptionStatus            string             `gorm:"type:varchar(20)"`
+	GithubCopilotAppID          *schemas.SecretVar `gorm:"type:text"`
+	GithubCopilotInstallationID *schemas.SecretVar `gorm:"type:text"`
+	GithubCopilotRepositoryID   *schemas.SecretVar `gorm:"type:text"`
+	GithubCopilotPrivateKey     *schemas.SecretVar `gorm:"type:text"`
+	GithubCopilotGithubDomain   *schemas.SecretVar `gorm:"type:text"`
+}
+
+// TableName is config_keys: these are columns of TableKey's table.
+func (TableKeyGithubCopilotApp) TableName() string { return TableKey{}.TableName() }
+
+func (a *TableKeyGithubCopilotApp) fields() []**schemas.SecretVar {
+	return []**schemas.SecretVar{&a.GithubCopilotAppID, &a.GithubCopilotInstallationID, &a.GithubCopilotRepositoryID, &a.GithubCopilotPrivateKey, &a.GithubCopilotGithubDomain}
+}
+
+// loadGithubCopilotApp reads the stored App columns of key row id in tx's transaction, or nil
+// for a new row, a table without the columns, or a row with none set.
+func loadGithubCopilotApp(tx *gorm.DB, id uint) (*TableKeyGithubCopilotApp, *gorm.DB, error) {
+	if id == 0 {
+		return nil, nil, nil
+	}
+	db := tx.Session(&gorm.Session{NewDB: true, Context: tx.Statement.Context})
+	if !db.Migrator().HasColumn(&TableKeyGithubCopilotApp{}, "github_copilot_private_key") {
+		return nil, nil, nil
+	}
+	var stored []TableKeyGithubCopilotApp
+	if err := db.Where("id = ?", id).Limit(1).Find(&stored).Error; err != nil {
+		return nil, nil, err
+	}
+	if len(stored) == 0 {
+		return nil, nil, nil
+	}
+	for _, field := range stored[0].fields() {
+		if *field != nil {
+			return &stored[0], db, nil
+		}
+	}
+	return nil, nil, nil
+}
+
+// secureGithubCopilotAppColumns gives the stored App columns of the key being saved what
+// TableKey.BeforeSave gives its mapped secrets, in the same transaction and order:
+//
+//   - vault writes on: a plaintext value (decrypted first when the row is encrypted) is stored
+//     in the vault under the key's path, and the column becomes its vault reference;
+//   - encryption on and the row stored plaintext: this save marks the row encrypted, so the
+//     remaining values are encrypted, with the encoding the older binary wrote.
+//
+// References (env. and vault.) are left as written, as encryptSecretVar does. It runs only when
+// vault writes or encryption are on, for an existing row, and costs a column check and one
+// primary-key read then (plus one update when something changed); key saves are configuration
+// writes, never on the request path. An encrypted row with encryption off is left alone: its
+// values cannot be read.
+func secureGithubCopilotAppColumns(tx *gorm.DB, k *TableKey) error {
+	vault := schemas.VaultStoreWriteEnabled()
+	encrypting := encrypt.IsEnabled()
+	if !vault && !encrypting {
+		return nil
+	}
+	row, db, err := loadGithubCopilotApp(tx, k.ID)
+	if err != nil || row == nil {
+		return err
+	}
+	wasEncrypted := row.EncryptionStatus == EncryptionStatusEncrypted
+	changed := false
+	if vault && (!wasEncrypted || encrypting) {
+		pending := false
+		for _, field := range row.fields() {
+			if *field != nil && !(*field).IsFromSecret() && (*field).GetValue() != "" {
+				pending = true
+			}
+		}
+		if pending {
+			if wasEncrypted {
+				for _, field := range row.fields() {
+					if err := decryptSecretVarPtr(field); err != nil {
+						return err
+					}
+				}
+			}
+			if err := schemas.StoreOwnedVaultSecretVars(tx.Statement.Context, schemas.VaultBasePath(TableKey{}.TableName(), k.VaultPathKey()), row); err != nil {
+				return err
+			}
+			if wasEncrypted {
+				// The row stays encrypted: whatever is not a vault reference now is encrypted again.
+				for _, field := range row.fields() {
+					if err := encryptSecretVarPtr(field); err != nil {
+						return err
+					}
+				}
+			}
+			changed = true
+		}
+	}
+	if encrypting && !wasEncrypted {
+		for _, field := range row.fields() {
+			if *field == nil || (*field).IsFromSecret() || (*field).GetValue() == "" {
+				continue
+			}
+			if err := encryptSecretVarPtr(field); err != nil {
+				return err
+			}
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return db.Model(&TableKeyGithubCopilotApp{ID: row.ID}).Select(GithubCopilotAppColumns).Updates(row).Error
+}
 
 // BeforeSave is a GORM hook that serializes runtime config structs into JSON columns and
 // encrypts sensitive fields (API key value, Azure endpoint/client ID/secret/tenant ID/API version,
@@ -563,48 +695,6 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 	} else {
 		k.BFLWebhookURLPrefixesJSON = nil
 	}
-	// GitHub Copilot. Every SecretVar is value-copied before assignment, per the invariant
-	// above: the caller may retain the config struct pointer, and encryption mutates in
-	// place, so sharing one would corrupt the caller's in-memory config.
-	if k.GithubCopilotKeyConfig != nil {
-		if k.GithubCopilotKeyConfig.AppID.IsSet() {
-			v := k.GithubCopilotKeyConfig.AppID
-			k.GithubCopilotAppID = &v
-		} else {
-			k.GithubCopilotAppID = nil
-		}
-		if k.GithubCopilotKeyConfig.InstallationID.IsSet() {
-			v := k.GithubCopilotKeyConfig.InstallationID
-			k.GithubCopilotInstallationID = &v
-		} else {
-			k.GithubCopilotInstallationID = nil
-		}
-		if k.GithubCopilotKeyConfig.RepositoryID.IsSet() {
-			v := k.GithubCopilotKeyConfig.RepositoryID
-			k.GithubCopilotRepositoryID = &v
-		} else {
-			k.GithubCopilotRepositoryID = nil
-		}
-		if k.GithubCopilotKeyConfig.PrivateKey.IsSet() {
-			v := k.GithubCopilotKeyConfig.PrivateKey
-			k.GithubCopilotPrivateKey = &v
-		} else {
-			k.GithubCopilotPrivateKey = nil
-		}
-		if k.GithubCopilotKeyConfig.GithubDomain.IsSet() {
-			v := k.GithubCopilotKeyConfig.GithubDomain
-			k.GithubCopilotGithubDomain = &v
-		} else {
-			k.GithubCopilotGithubDomain = nil
-		}
-	} else {
-		k.GithubCopilotAppID = nil
-		k.GithubCopilotInstallationID = nil
-		k.GithubCopilotRepositoryID = nil
-		k.GithubCopilotPrivateKey = nil
-		k.GithubCopilotGithubDomain = nil
-
-	}
 	// oauth_key_config. The credential fields are value-copied into their own columns, per
 	// the invariant above; the rest is serialised with those fields cleared so no secret
 	// ever lands in the settings column.
@@ -651,6 +741,12 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		if err := schemas.StoreOwnedVaultSecretVars(tx.Statement.Context, base, k); err != nil {
 			return fmt.Errorf("failed to store key secrets to vault: %w", err)
 		}
+	}
+
+	// GitHub Copilot's stored App columns are not mapped (TableKeyGithubCopilotApp): vault
+	// them and encrypt them as the mapped secrets around this point are.
+	if err := secureGithubCopilotAppColumns(tx, k); err != nil {
+		return fmt.Errorf("failed to secure stored github copilot app columns: %w", err)
 	}
 
 	// Encrypt sensitive fields after serialization
@@ -785,23 +881,6 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		// BFL
 		if err := encryptSecretVarPtr(&k.BFLWebhookSecret); err != nil {
 			return fmt.Errorf("failed to encrypt bfl webhook secret: %w", err)
-		}
-		// GitHub Copilot. The private key is the whole credential, so it must never sit
-		// in the database in plaintext when encryption is enabled.
-		if err := encryptSecretVarPtr(&k.GithubCopilotAppID); err != nil {
-			return fmt.Errorf("failed to encrypt github copilot app id: %w", err)
-		}
-		if err := encryptSecretVarPtr(&k.GithubCopilotInstallationID); err != nil {
-			return fmt.Errorf("failed to encrypt github copilot installation id: %w", err)
-		}
-		if err := encryptSecretVarPtr(&k.GithubCopilotRepositoryID); err != nil {
-			return fmt.Errorf("failed to encrypt github copilot repository id: %w", err)
-		}
-		if err := encryptSecretVarPtr(&k.GithubCopilotPrivateKey); err != nil {
-			return fmt.Errorf("failed to encrypt github copilot private key: %w", err)
-		}
-		if err := encryptSecretVarPtr(&k.GithubCopilotGithubDomain); err != nil {
-			return fmt.Errorf("failed to encrypt github copilot github domain: %w", err)
 		}
 		// oauth_key_config. The client secret or private key is the whole credential.
 		if err := encryptSecretVarPtr(&k.OAuthTokenURL); err != nil {
@@ -963,21 +1042,6 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 			return fmt.Errorf("failed to decrypt bfl webhook secret: %w", err)
 		}
 		// GitHub Copilot
-		if err := decryptSecretVarPtr(&k.GithubCopilotAppID); err != nil {
-			return fmt.Errorf("failed to decrypt github copilot app id: %w", err)
-		}
-		if err := decryptSecretVarPtr(&k.GithubCopilotInstallationID); err != nil {
-			return fmt.Errorf("failed to decrypt github copilot installation id: %w", err)
-		}
-		if err := decryptSecretVarPtr(&k.GithubCopilotRepositoryID); err != nil {
-			return fmt.Errorf("failed to decrypt github copilot repository id: %w", err)
-		}
-		if err := decryptSecretVarPtr(&k.GithubCopilotPrivateKey); err != nil {
-			return fmt.Errorf("failed to decrypt github copilot private key: %w", err)
-		}
-		if err := decryptSecretVarPtr(&k.GithubCopilotGithubDomain); err != nil {
-			return fmt.Errorf("failed to decrypt github copilot github domain: %w", err)
-		}
 		// oauth_key_config
 		if err := decryptSecretVarPtr(&k.OAuthTokenURL); err != nil {
 			return fmt.Errorf("failed to decrypt oauth token url: %w", err)
@@ -1228,30 +1292,6 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 	} else {
 		k.BFLKeyConfig = nil
 	}
-	// Reconstruct GitHub Copilot config if any field is present
-	if k.GithubCopilotAppID != nil || k.GithubCopilotInstallationID != nil ||
-		k.GithubCopilotRepositoryID != nil || k.GithubCopilotPrivateKey != nil ||
-		k.GithubCopilotGithubDomain != nil {
-		config := &schemas.GithubCopilotKeyConfig{}
-		if k.GithubCopilotAppID != nil {
-			config.AppID = *k.GithubCopilotAppID
-		}
-		if k.GithubCopilotInstallationID != nil {
-			config.InstallationID = *k.GithubCopilotInstallationID
-		}
-		if k.GithubCopilotRepositoryID != nil {
-			config.RepositoryID = *k.GithubCopilotRepositoryID
-		}
-		if k.GithubCopilotPrivateKey != nil {
-			config.PrivateKey = *k.GithubCopilotPrivateKey
-		}
-		if k.GithubCopilotGithubDomain != nil {
-			config.GithubDomain = *k.GithubCopilotGithubDomain
-		}
-		k.GithubCopilotKeyConfig = config
-	} else {
-		k.GithubCopilotKeyConfig = nil
-	}
 	// Reconstruct oauth_key_config if any part is present
 	settings := ""
 	if k.OAuthSettingsJSON != nil {
@@ -1281,6 +1321,36 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		k.OAuthKeyConfig = config
 	} else {
 		k.OAuthKeyConfig = nil
+	}
+	return nil
+}
+
+// BeforeDelete reads the stored GitHub App columns of the key being deleted, when vault writes
+// are on, so AfterDelete can remove the vault entries they own: the global vault callback
+// removes only what TableKey maps, and these columns are not (TableKeyGithubCopilotApp).
+func (k *TableKey) BeforeDelete(tx *gorm.DB) error {
+	if !schemas.VaultStoreWriteEnabled() {
+		return nil
+	}
+	row, _, err := loadGithubCopilotApp(tx, k.ID)
+	if err != nil {
+		return err
+	}
+	k.githubCopilotApp = row
+	return nil
+}
+
+// AfterDelete removes the vault entries owned by the deleted key's GitHub App columns, best
+// effort as the global vault callback does: the row is already gone.
+func (k *TableKey) AfterDelete(tx *gorm.DB) error {
+	row := k.githubCopilotApp
+	k.githubCopilotApp = nil
+	if row == nil {
+		return nil
+	}
+	base := schemas.VaultBasePath(TableKey{}.TableName(), k.VaultPathKey())
+	for _, err := range schemas.RemoveOwnedVaultSecretVars(tx.Statement.Context, base, row) {
+		log.Printf("vault: failed to remove a github copilot app secret for %s: %v", base, err)
 	}
 	return nil
 }

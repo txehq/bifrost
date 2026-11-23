@@ -145,3 +145,35 @@ test.describe("Caching mode switch", () => {
     expect(savedBodies[0].config).toMatchObject({ provider: "", embedding_model: "", dimension: 1 });
   });
 });
+
+test.describe("Caching cleared fields", () => {
+  // An update merges its config over the saved one, so a blank field left out of the body
+  // keeps the saved value and the form shows it again after the save (upstream #8871).
+  test("clearing the default cache key and namespace saves them as empty strings", async ({
+    configSettingsPage,
+  }) => {
+    const page = configSettingsPage.page;
+    const savedBodies = await mockCachePlugin(page, {
+      dimension: 1,
+      ttl: 300,
+      threshold: 0.8,
+      cache_by_model: true,
+      cache_by_provider: true,
+      default_cache_key: "feature-x",
+      vector_store_namespace: "tenant-a",
+    });
+
+    await configSettingsPage.goto("caching");
+    const cacheKey = page.getByTestId("caching-default-cache-key-input");
+    const namespace = page.getByTestId("caching-vector-store-namespace-input");
+    await expect(cacheKey).toHaveValue("feature-x");
+    await expect(namespace).toHaveValue("tenant-a");
+
+    await cacheKey.fill("");
+    await namespace.fill("");
+    await page.getByTestId("caching-save-button").click();
+    await expect.poll(() => savedBodies.length).toBe(1);
+    expect(savedBodies[0].config).toHaveProperty("default_cache_key", "");
+    expect(savedBodies[0].config).toHaveProperty("vector_store_namespace", "");
+  });
+});

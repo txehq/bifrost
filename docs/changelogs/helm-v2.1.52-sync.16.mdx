@@ -1,0 +1,15 @@
+---
+title: "v2.1.52-sync.16"
+description: "Helm v2.1.52-sync.16 prerelease changelog - 2026-11-22"
+---
+
+<Update label="Bifrost Helm" description="v2.1.52-sync.16 (prerelease)">
+
+## Changelog
+
+Prerelease of the txehq fork for transport v2.4.0-sync.16; the stable chart stays 2.1.51 until a stable version supersedes it. Install this one with `helm install --devel` or `--version 2.1.52-sync.16`.
+
+- The chart's templates and values are unchanged from 2.1.52-sync.15, so a chart that renders today renders the same `config.json`. `values.schema.json` drops the GitHub Copilot `github_copilot_key_config` block, so a values file that still sets it fails `helm install` and `helm upgrade` validation; replace it with the key's `value`.
+- `appVersion` is now `2.4.0-sync.16`, so an empty `image.tag` selects `v2.4.0-sync.16`. That transport authenticates GitHub Copilot keys only with a token (a fine-grained personal access token, or Sign in with GitHub from the key form) and removes GitHub App auth and GitHub Enterprise domains (TXE-6085). A key that held only App credentials is never selected and is reported at startup; its stored App credentials stay in the database, so a rollback finds them. It adds the ClickHouse table `user_agent_mappings` (created if missing) and no configstore schema change. Read the transport changelog before upgrading.
+
+</Update>

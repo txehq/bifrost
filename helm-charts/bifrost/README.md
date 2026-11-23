@@ -4,9 +4,15 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/txehq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.51 (prereleases 2.1.52-sync.15, 2.1.52-sync.14, 2.1.52-sync.13, 2.1.52-sync.12, 2.1.52-sync.11, 2.1.52-sync.10, 2.1.52-sync.9, 2.1.52-sync.8, 2.1.52-sync.7, 2.1.52-sync.6, 2.1.52-sync.5, 2.1.52-sync.4, 2.1.52-sync.3, 2.1.52-sync.2 and 2.1.52-sync.1 carry the changes below; install them with `--devel`)
+**Latest Version:** 2.1.51 (prereleases 2.1.52-sync.16, 2.1.52-sync.15, 2.1.52-sync.14, 2.1.52-sync.13, 2.1.52-sync.12, 2.1.52-sync.11, 2.1.52-sync.10, 2.1.52-sync.9, 2.1.52-sync.8, 2.1.52-sync.7, 2.1.52-sync.6, 2.1.52-sync.5, 2.1.52-sync.4, 2.1.52-sync.3, 2.1.52-sync.2 and 2.1.52-sync.1 carry the changes below; install them with `--devel`)
 
 ## Changelog
+
+### 2.1.52-sync.16 (prerelease)
+
+The prerelease chart for transport v2.4.0-sync.16. Its templates and values are unchanged from 2.1.52-sync.15, so a chart that renders today renders the same `config.json`; `values.schema.json` drops the GitHub Copilot `github_copilot_key_config` block, so a values file that still sets it fails `helm install` and `helm upgrade` validation; replace it with the key's `value`:
+
+- `appVersion` is now `2.4.0-sync.16`, so an empty `image.tag` selects `v2.4.0-sync.16`. That transport takes upstream's GitHub Copilot token auth (a fine-grained personal access token, or Sign in with GitHub) and removes GitHub App auth and GitHub Enterprise domains: a key that held only App credentials has no token, is never selected, and is reported at startup; its stored App credentials stay in the database for a rollback. It adds a ClickHouse table `user_agent_mappings` (create-if-missing, additive). Read the transport changelog before upgrading.
 
 ### 2.1.52-sync.15 (prerelease)
 

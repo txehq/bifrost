@@ -132,6 +132,29 @@ export const GROUPS = [
 		vars: (p) => ({ ...providerError.vars(p), hybridLogstoreFixture: "1" }),
 	},
 	{
+		// The ClickHouse log store (TXE-6085, upstream 293999f1f): the provider-error gateway with its
+		// log store on a real ClickHouse, which the fixture-folder job starts as a digest-pinned
+		// container on loopback (start-fixture-clickhouse.sh, FIXTURE_CLICKHOUSE_URL). Folder 671 drives
+		// /api/logs/user-agent-mappings through it. Only the pinned folder runs here: every other
+		// folder's log reads assume the provider-error gateway's own store.
+		id: "clickhouse-logstore",
+		...providerError,
+		variables: ["clickhouseLogstoreFixture"],
+		files: ["671-clickhouse-log-store-user-agent-mappings-over-the-management-api.json"],
+		configPatch: (config) => {
+			const raw = process.env.FIXTURE_CLICKHOUSE_URL;
+			if (!raw) throw new Error("FIXTURE_CLICKHOUSE_URL is not set: this group needs a ClickHouse on loopback; start one with .github/workflows/scripts/start-fixture-clickhouse.sh [port] and set the URL it prints");
+			const url = new URL(raw);
+			if (!["127.0.0.1", "localhost"].includes(url.hostname)) throw new Error(`FIXTURE_CLICKHOUSE_URL must be on loopback, not ${url.hostname}`);
+			config.logs_store = {
+				enabled: true,
+				type: "clickhouse",
+				config: { host: url.hostname, port: url.port, database: "bifrost", username: "bifrost", password: "bifrost_password" },
+			};
+		},
+		vars: (p) => ({ ...providerError.vars(p), clickhouseLogstoreFixture: "1" }),
+	},
+	{
 		id: "vertex-endpoint",
 		variables: ["vertexEndpointFixture", "vertexEndpointFixtureUrl"],
 		ports: { main: 8792 },
