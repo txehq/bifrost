@@ -215,6 +215,8 @@ jobs:
           # release-pipeline.yml allows for the same image). Folder 671's ClickHouse (TXE-6085):
           # the digest-pinned image tests/docker-compose.yml uses, from the same mirror, at its
           # fixed address on that network (start-fixture-clickhouse.sh), native protocol only.
+          # Each fixture's address, ports and image live in scripts/fixture-containers.sh;
+          # check-fixture-containers.py fails when this list and that file disagree.
           allowed-endpoints: >
             172.39.0.12:7946
             172.39.0.12:7947
@@ -240,7 +242,7 @@ jobs:
       - name: Use the GHCR image mirror
         uses: ./.github/actions/ci-images
         with:
-          pull: .github/workflows/scripts/start-fixture-weaviate.sh .github/workflows/scripts/start-fixture-clickhouse.sh
+          pull: .github/workflows/scripts/fixture-containers.sh
 
       - name: Set up Go
         uses: ./.github/actions/setup-go
